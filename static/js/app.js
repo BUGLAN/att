@@ -7,6 +7,9 @@ class App {
         this.currentRecordId = null;  // 当前录音的 record ID
         this.records = [];             // 所有记录列表
         this.isRecording = false;
+        this.selectMode = false;       // 选择模式
+        this.selectedRecords = new Set(); // 选中的记录 ID
+        this.recordingStartTime = null; // 录音开始时间
 
         // 录音器
         this.recorder = new AudioRecorder({
@@ -26,7 +29,15 @@ class App {
             optimizeBtn: document.getElementById('optimizeBtn'),
             copyBtn: document.getElementById('copyBtn'),
             duration: document.getElementById('duration'),
-            toast: document.getElementById('toast')
+            toast: document.getElementById('toast'),
+            transcriptionTime: document.getElementById('transcriptionTime'),
+            settingsPopup: document.getElementById('settingsPopup'),
+            headerSettingsBtn: document.getElementById('headerSettingsBtn'),
+            selectModeBtn: document.getElementById('selectModeBtn'),
+            selectToolbar: document.getElementById('selectToolbar'),
+            selectAllCheckbox: document.getElementById('selectAllCheckbox'),
+            deleteSelectedBtn: document.getElementById('deleteSelectedBtn'),
+            cancelSelectBtn: document.getElementById('cancelSelectBtn')
         };
 
         // 当前播放的音频
@@ -57,6 +68,33 @@ class App {
 
         // 文本编辑保存
         this.elements.textDisplay.addEventListener('blur', () => this.saveText());
+
+        // 设置弹窗事件
+        this.elements.headerSettingsBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.showSettingsPopup(this.elements.headerSettingsBtn);
+        });
+        this.elements.selectModeBtn.addEventListener('click', () => this.enterSelectMode());
+
+        // 选择模式工具栏事件
+        this.elements.selectAllCheckbox.addEventListener('change', (e) => this.toggleSelectAll(e.target.checked));
+        this.elements.deleteSelectedBtn.addEventListener('click', () => this.deleteSelectedRecords());
+        this.elements.cancelSelectBtn.addEventListener('click', () => this.exitSelectMode());
+
+        // 点击外部关闭设置弹窗
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.settings-popup') && !e.target.closest('.settings-btn')) {
+                this.hideSettingsPopup();
+            }
+        });
+
+        // ESC 关闭弹窗
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                this.hideSettingsPopup();
+                this.exitSelectMode();
+            }
+        });
     }
 
     /**
@@ -77,6 +115,8 @@ class App {
         // 清空当前记录
         this.currentRecordId = null;
         this.elements.textDisplay.value = '';
+        this.recordingStartTime = Date.now();
+        this.elements.transcriptionTime.textContent = '耗时: 0.00s';
 
         // 开始录音
         await this.recorder.start();
@@ -130,6 +170,12 @@ class App {
         console.log('Upload complete:', result);
         this.currentRecordId = result.record_id;
 
+        // 计算耗时
+        if (this.recordingStartTime) {
+            const elapsed = (Date.now() - this.recordingStartTime) / 1000;
+            this.elements.transcriptionTime.textContent = `耗时: ${elapsed.toFixed(2)}s`;
+        }
+
         // 更新文本显示
         if (result.transcription_text) {
             this.elements.textDisplay.value = result.transcription_text;
@@ -167,19 +213,23 @@ class App {
 
         // 渲染记录卡片
         this.elements.recordsList.innerHTML = this.records.map(r => `
-            <div class="record-item" data-id="${r.id}">
+            <div class="record-item ${this.selectMode ? 'select-mode' : ''}" data-id="${r.id}">
+                <input type="checkbox"
+                       class="record-checkbox"
+                       data-id="${r.id}"
+                       ${this.selectedRecords.has(r.id) ? 'checked' : ''}
+                       style="display: ${this.selectMode ? 'block' : 'none'};">
                 <div class="record-audio">
                     <button class="audio-play-btn" data-id="${r.id}" title="试听">
                         <span class="play-icon">▶</span>
                     </button>
                 </div>
                 <div class="record-content">
-                    <div class="record-time">${this.formatDateTime(r.created_at)}</div>
                     <div class="record-text">${this.escapeHtml(r.optimized_text || r.raw_text || '处理中...')}</div>
                 </div>
                 <div class="record-actions">
                     <span class="record-duration">${this.formatDuration(r.duration)}</span>
-                    <span class="record-status ${r.status}">${this.getStatusText(r.status)}</span>
+                    <span class="record-time">${this.formatDateTime(r.created_at)}</span>
                 </div>
             </div>
         `).join('');
@@ -192,14 +242,30 @@ class App {
      * 绑定记录项事件
      */
     bindRecordEvents() {
-        // 点击记录项复制文本
+        // 点击记录项复制文本（非选择模式）
         this.elements.recordsList.querySelectorAll('.record-item').forEach(item => {
             item.addEventListener('click', (e) => {
-                // 忽略播放按钮点击
-                if (e.target.closest('.audio-play-btn')) return;
+                // 忽略播放按钮和设置按钮点击
+                if (e.target.closest('.audio-play-btn') || e.target.closest('.settings-btn') || e.target.closest('.record-checkbox')) return;
 
                 const recordId = item.dataset.id;
-                this.copyRecordText(recordId);
+
+                if (this.selectMode) {
+                    // 选择模式下切换选中状态
+                    this.toggleRecordSelection(recordId);
+                } else {
+                    // 复制文本
+                    this.copyRecordText(recordId);
+                }
+            });
+        });
+
+        // 复选框事件
+        this.elements.recordsList.querySelectorAll('.record-checkbox').forEach(checkbox => {
+            checkbox.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const recordId = checkbox.dataset.id;
+                this.toggleRecordSelection(recordId);
             });
         });
 
@@ -255,6 +321,131 @@ class App {
         };
 
         audio.play();
+    }
+
+    /**
+     * 显示设置弹窗
+     */
+    showSettingsPopup(btn) {
+        const popup = this.elements.settingsPopup;
+        const rect = btn.getBoundingClientRect();
+
+        // 定位弹窗
+        popup.style.top = `${rect.bottom + 4}px`;
+        popup.style.left = `${rect.right - 140}px`;
+        popup.style.display = 'block';
+    }
+
+    /**
+     * 隐藏设置弹窗
+     */
+    hideSettingsPopup() {
+        this.elements.settingsPopup.style.display = 'none';
+    }
+
+    /**
+     * 删除单条记录
+     */
+    async deleteRecord(recordId) {
+        try {
+            const response = await fetch(`/api/records/${recordId}`, {
+                method: 'DELETE'
+            });
+
+            if (!response.ok) {
+                throw new Error('Delete failed');
+            }
+
+            this.showToast('已删除');
+            await this.fetchRecords();
+        } catch (error) {
+            this.handleError(error);
+        }
+    }
+
+    /**
+     * 进入选择模式
+     */
+    enterSelectMode() {
+        this.hideSettingsPopup();
+        this.selectMode = true;
+        this.selectedRecords.clear();
+        this.elements.selectToolbar.style.display = 'flex';
+        this.elements.selectAllCheckbox.checked = false;
+        this.renderRecords();
+    }
+
+    /**
+     * 退出选择模式
+     */
+    exitSelectMode() {
+        this.selectMode = false;
+        this.selectedRecords.clear();
+        this.elements.selectToolbar.style.display = 'none';
+        this.renderRecords();
+    }
+
+    /**
+     * 切换记录选中状态
+     */
+    toggleRecordSelection(recordId) {
+        if (this.selectedRecords.has(recordId)) {
+            this.selectedRecords.delete(recordId);
+        } else {
+            this.selectedRecords.add(recordId);
+        }
+
+        // 更新复选框状态
+        const checkbox = document.querySelector(`.record-checkbox[data-id="${recordId}"]`);
+        if (checkbox) {
+            checkbox.checked = this.selectedRecords.has(recordId);
+        }
+
+        // 更新全选复选框状态
+        this.elements.selectAllCheckbox.checked = this.selectedRecords.size === this.records.length;
+    }
+
+    /**
+     * 全选/取消全选
+     */
+    toggleSelectAll(checked) {
+        if (checked) {
+            this.records.forEach(r => this.selectedRecords.add(r.id));
+        } else {
+            this.selectedRecords.clear();
+        }
+
+        // 更新所有复选框
+        document.querySelectorAll('.record-checkbox').forEach(checkbox => {
+            checkbox.checked = checked;
+        });
+    }
+
+    /**
+     * 删除选中的记录
+     */
+    async deleteSelectedRecords() {
+        if (this.selectedRecords.size === 0) {
+            this.showToast('请选择要删除的记录');
+            return;
+        }
+
+        if (!confirm(`确定删除选中的 ${this.selectedRecords.size} 条记录？`)) return;
+
+        try {
+            // 并行删除所有选中记录
+            const deletePromises = Array.from(this.selectedRecords).map(id =>
+                fetch(`/api/records/${id}`, { method: 'DELETE' })
+            );
+
+            await Promise.all(deletePromises);
+
+            this.showToast(`已删除 ${this.selectedRecords.size} 条记录`);
+            this.exitSelectMode();
+            await this.fetchRecords();
+        } catch (error) {
+            this.handleError(error);
+        }
     }
 
     /**
@@ -321,7 +512,7 @@ class App {
         this.elements.optimizeBtn.textContent = '优化中...';
 
         try {
-            const response = await fetch(`/api/records/${this.currentRecordId}/optimize?style=formal`, {
+            const response = await fetch(`/api/records/${this.currentRecordId}/optimize?style=default`, {
                 method: 'POST'
             });
 
@@ -398,21 +589,6 @@ class App {
         const mins = Math.floor(seconds / 60);
         const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
         return `${mins}:${secs}`;
-    }
-
-    /**
-     * 获取状态文本
-     */
-    getStatusText(status) {
-        const statusMap = {
-            pending: '等待中',
-            transcribing: '转写中',
-            transcribed: '已转写',
-            optimizing: '优化中',
-            optimized: '已优化',
-            failed: '失败'
-        };
-        return statusMap[status] || status;
     }
 
     /**

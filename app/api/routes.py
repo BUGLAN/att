@@ -223,7 +223,7 @@ async def get_record_audio(record_id: str) -> FileResponse:
 @router.post("/records/{record_id}/optimize")
 async def optimize_record(
     record_id: str,
-    style: str = "formal"
+    style: str = "default"
 ) -> dict:
     """Optimize record text with AI"""
     record = await record_manager.get_record(record_id)

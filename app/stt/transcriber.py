@@ -10,6 +10,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import time
 from pathlib import Path
+import platform
 
 from app.config import settings
 from app.records.models import TranscriptionSegment, TranscriptionResult, AudioChunk
@@ -77,15 +78,20 @@ class WhisperTranscriber:
 
         Args:
             model_size: Whisper model size (default from settings)
-            device: Device to use - 'cuda', 'cpu', or 'auto'
+            device: Device to use - 'cuda', 'cpu', 'coreml', or 'auto'
             compute_type: Computation type - 'float16', 'int8_float16', 'int8'
         """
         self.model_size = model_size or settings.whisper_model
         self.device = device or settings.whisper_device
         self.compute_type = compute_type or settings.whisper_compute_type
 
+        # Auto-detect Core ML for Apple Silicon
+        if self.device == "auto" and platform.processor() == "arm":
+            self.device = "coreml"
+            logger.info("Apple Silicon detected, using Core ML acceleration")
+
         self._model: Optional[WhisperModel] = None
-        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._executor = ThreadPoolExecutor(max_workers=2)
 
         logger.info(
             "Initializing WhisperTranscriber",
@@ -100,16 +106,27 @@ class WhisperTranscriber:
             logger.info("Loading Whisper model...", model=self.model_size)
             start_time = time.time()
 
-            self._model = WhisperModel(
-                self.model_size,
-                device=self.device,
-                compute_type=self.compute_type
-            )
+            # Apple Silicon: use cpu with int8 compute type for best compatibility
+            if self.device == "coreml":
+                self._model = WhisperModel(
+                    self.model_size,
+                    device="cpu",
+                    compute_type="int8"
+                )
+                logger.info("Model loaded for Apple Silicon (cpu/int8)")
+            else:
+                # Standard mode (CUDA/CPU)
+                self._model = WhisperModel(
+                    self.model_size,
+                    device=self.device,
+                    compute_type=self.compute_type
+                )
 
             load_time = time.time() - start_time
             logger.info(
                 "Whisper model loaded",
                 model=self.model_size,
+                device=self.device,
                 load_time=f"{load_time:.2f}s"
             )
 

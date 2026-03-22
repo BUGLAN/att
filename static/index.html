@@ -34,6 +34,7 @@
         <section class="transcription-section">
             <div class="section-header">
                 <h2>实时转写</h2>
+                <span class="transcription-time" id="transcriptionTime">耗时: 0.00s</span>
                 <div class="section-actions">
                     <button id="optimizeBtn" class="btn btn-secondary" disabled>
                         AI优化
@@ -57,12 +58,31 @@
         <section class="records-section">
             <div class="section-header">
                 <h2>历史录音</h2>
-                <span class="record-count" id="recordCount">0 条记录</span>
+                <div class="section-header-right">
+                    <span class="record-count" id="recordCount">0 条记录</span>
+                    <button class="header-settings-btn" id="headerSettingsBtn" title="设置">⚙</button>
+                </div>
             </div>
             <div class="records-list" id="recordsList">
                 <p class="placeholder">暂无录音记录</p>
             </div>
+            <!-- Select Mode Toolbar (hidden by default) -->
+            <div class="select-toolbar" id="selectToolbar" style="display: none;">
+                <label class="select-all-label">
+                    <input type="checkbox" id="selectAllCheckbox">
+                    <span>全选</span>
+                </label>
+                <button class="btn-delete-selected" id="deleteSelectedBtn">删除选中</button>
+                <button class="btn-cancel-select" id="cancelSelectBtn">取消</button>
+            </div>
         </section>
+    </div>
+
+    <!-- Settings Popup (positioned via JS) -->
+    <div class="settings-popup" id="settingsPopup" style="display: none;">
+        <div class="settings-popup-body">
+            <button class="settings-action select-mode-btn" id="selectModeBtn">选择多条删除</button>
+        </div>
     </div>
 
     <!-- Toast Notification -->

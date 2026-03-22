@@ -19,7 +19,7 @@ uvicorn app.main:app --reload
 python tests/test_basic.py
 
 # Download Whisper models (optional, auto-downloads on first use)
-python scripts/download_models.py --model tiny
+python scripts/download_models.py --model large-v3
 ```
 
 ## Architecture
@@ -36,9 +36,10 @@ python scripts/download_models.py --model tiny
 - **`app/main.py`** - FastAPI app entry, lifespan management, static file serving
 - **`app/api/routes.py`** - REST API endpoints, processors initialized via `init_processors()`
 - **`app/audio/processor.py`** - Audio validation, format conversion, chunking. Webm/ogg formats use ffprobe instead of pydub (pydub cannot read webm from memory)
-- **`app/stt/transcriber.py`** - Faster-whisper integration with Chinese optimization config
-- **`app/llm/optimizer.py`** - DeepSeek API client with multiple prompt templates (formal, meeting, novel, command)
-- **`app/fragments/manager.py`** - SQLite-based fragment CRUD, merging, export (TXT/JSON/SRT)
+- **`app/stt/transcriber.py`** - Faster-whisper integration with Chinese optimization config. Auto-detects Apple Silicon and uses Core ML acceleration
+- **`app/llm/optimizer.py`** - DeepSeek API client with multiple prompt templates
+- **`app/records/manager.py`** - JSON-based record storage (one recording = one record)
+- **`app/records/models.py`** - Data models: Record, RecordStatus, AudioMetadata, TranscriptionResult
 
 ### Frontend
 
@@ -48,20 +49,24 @@ python scripts/download_models.py --model tiny
 
 ## Configuration
 
-Environment variables in `.env`:
+Environment variables in `.env` (see `.env.example`):
 - `WHISPER_MODEL` - Model size (tiny/base/small/medium/large-v3)
-- `WHISPER_DEVICE` - auto/cuda/cpu
+- `WHISPER_DEVICE` - auto/cuda/cpu (auto-detects Apple Silicon → Core ML)
+- `WHISPER_COMPUTE_TYPE` - float16/int8 (int8 for CPU/Core ML)
 - `DEEPSEEK_API_KEY` - Required for text optimization
 
 ## API Endpoints
 
 ```
-POST /api/sessions              # Create session
 POST /api/audio/upload          # Upload audio (sync transcription)
-GET  /api/fragments?session_id= # List fragments
-POST /api/fragments/{id}/optimize  # AI optimize text
-POST /api/fragments/merge       # Merge fragments
-GET  /api/export/{session_id}   # Export (format=txt/json/srt)
+GET  /api/records               # List records
+GET  /api/records/{id}          # Get record details
+PUT  /api/records/{id}          # Update record text
+DELETE /api/records/{id}        # Delete record
+GET  /api/records/{id}/audio    # Serve audio file
+POST /api/records/{id}/optimize # AI optimize text
+GET  /api/records/{id}/export   # Export (format=txt/json)
+GET  /api/health                # Health check
 ```
 
 ## Key Implementation Notes
@@ -72,4 +77,6 @@ GET  /api/export/{session_id}   # Export (format=txt/json/srt)
 
 3. **Recording workflow** - Frontend collects audio chunks during recording, merges into single blob on stop, then uploads. Individual chunks lack container headers and cannot be decoded separately
 
-4. **Database** - SQLite with aiosqlite. Schema auto-created on first run via `FragmentManager.initialize()`
+4. **JSON storage** - Records stored as individual JSON files in `data/records/`. Each record contains: id, audio_path, duration, raw_text, optimized_text, status
+
+5. **Apple Silicon support** - Auto-detects arm64 processor and uses Core ML via CPU with int8 compute type for compatibility

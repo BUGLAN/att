@@ -40,63 +40,70 @@ class TextOptimizer:
     - Retry logic with exponential backoff
     """
 
-    # Prompt templates for different optimization styles
+    # Default prompt for voice-to-text optimization
+    DEFAULT_PROMPT = """你是一位语音转文字大师，拥有专业的文字编辑能力和语言敏感度。你的任务是将语音识别后的文字转化为准确、流畅、规范的书面文字。
+
+## 核心能力
+
+1. **语音识别错误修正**
+   - 识别并修正同音字错误（如："他在工作" 误识别为 "他在工做"）
+   - 修正近音字错误（如："问题" 误识别为 "问提"）
+   - 根据上下文推断正确词汇
+   - 保留专有名词、人名、地名的正确写法
+
+2. **口语化转书面语**
+   - 去除口头禅和填充词（如：那个、嗯、啊、然后、就是说、这个、对吧）
+   - 去除重复表达和冗余内容
+   - 将口语句式转换为书面句式
+   - 保持原意，不改变事实内容
+
+3. **标点符号优化**
+   - 根据语义正确添加标点符号
+   - 区分句号、问号、感叹号的使用场景
+   - 正确使用逗号、顿号、分号
+   - 适当使用引号标注对话或专有名词
+
+4. **段落结构优化**
+   - 根据内容主题合理分段
+   - 保持段落逻辑连贯
+   - 适当使用过渡词连接段落
+
+## 处理规则
+
+1. **必须遵守**
+   - 保持原文的核心意思和事实内容
+   - 不添加原文没有的信息
+   - 不删除关键信息
+   - 保持专业术语的准确性
+
+2. **灵活处理**
+   - 对于模糊表达，根据上下文推断最合理的含义
+   - 对于无法确定的内容，保留原文或标注疑问
+   - 对于数字、日期、时间，统一格式规范
+
+3. **禁止行为**
+   - 禁止改变原文的立场和观点
+   - 禁止添加主观评价
+   - 禁止过度润色导致失真
+
+## 输出要求
+
+直接输出优化后的文字，无需解释或说明。
+
+---
+
+原文：
+{text}
+
+"""
+
+    # Keep PROMPTS dict for backward compatibility
     PROMPTS = {
-        "formal": """你是一位专业文字编辑。请将以下口语化文字转换为书面语。
-
-要求：
-1. 保持原意，不改变事实内容
-2. 去除口语填充词（如"那个"、"嗯"、"然后"、"就是说"等）
-3. 修正语法错误和不通顺的表达
-4. 调整标点符号，使文章通顺
-5. 保持适当的段落结构
-6. 不要添加原文没有的内容
-
-原文：
-{text}
-
-优化后的文字：""",
-
-        "meeting": """你是一位会议记录专家。请将以下口语化的会议内容整理成规范的会议记录。
-
-要求：
-1. 提取关键信息和要点
-2. 去除无关的口语表达
-3. 保持发言者的原意
-4. 使用简洁明了的书面语
-5. 适当分段，提高可读性
-
-原文：
-{text}
-
-整理后的内容：""",
-
-        "novel": """你是一位文学编辑。请将以下口述内容整理成适合小说阅读的文字。
-
-要求：
-1. 保持故事情节和细节
-2. 润色语言，使其更加流畅
-3. 去除口语化的表达
-4. 保持叙述的连贯性
-5. 注意场景和对话的区分
-
-原文：
-{text}
-
-整理后的文字：""",
-
-        "command": """请将以下语音指令转换为简洁明确的文字命令。
-
-要求：
-1. 提取核心指令内容
-2. 去除无关的口语表达
-3. 使用祈使句或简洁陈述句
-4. 保持指令的完整性
-
-原文：
-{text}
-
-转换后的命令："""
+        "default": DEFAULT_PROMPT,
+        "formal": DEFAULT_PROMPT,
+        "meeting": DEFAULT_PROMPT,
+        "novel": DEFAULT_PROMPT,
+        "command": DEFAULT_PROMPT,
     }
 
     def __init__(
@@ -144,14 +151,14 @@ class TextOptimizer:
     async def optimize(
         self,
         text: str,
-        style: str = "formal"
+        style: str = "default"
     ) -> OptimizationResult:
         """
         Optimize text using DeepSeek API
 
         Args:
             text: Original text to optimize
-            style: Optimization style (formal, meeting, novel, command)
+            style: Optimization style (all styles use the same prompt now)
 
         Returns:
             OptimizationResult with optimized text
@@ -166,7 +173,7 @@ class TextOptimizer:
                 processing_time=0
             )
 
-        prompt_template = self.PROMPTS.get(style, self.PROMPTS["formal"])
+        prompt_template = self.PROMPTS.get(style, self.DEFAULT_PROMPT)
         prompt = prompt_template.format(text=text)
 
         logger.debug(
@@ -216,7 +223,7 @@ class TextOptimizer:
     async def batch_optimize(
         self,
         texts: List[str],
-        style: str = "formal",
+        style: str = "default",
         batch_size: int = 5
     ) -> List[OptimizationResult]:
         """
@@ -253,7 +260,7 @@ class TextOptimizer:
     async def optimize_long_text(
         self,
         text: str,
-        style: str = "formal",
+        style: str = "default",
         chunk_size: int = 2000
     ) -> OptimizationResult:
         """

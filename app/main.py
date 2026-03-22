@@ -45,6 +45,10 @@ async def lifespan(app: FastAPI):
     # Pass to routes
     init_processors(audio_processor, transcriber, optimizer, record_manager)
 
+    # Preload model to eliminate first-request latency
+    logger.info("Preloading Whisper model...")
+    transcriber._load_model()
+
     logger.info("All processors initialized")
 
     yield
