@@ -12,7 +12,7 @@
         <!-- Header -->
         <header class="header">
             <h1>Audio to Text</h1>
-            <p class="subtitle">实时录音 · AI优化 · 一键导出</p>
+            <p class="subtitle">实时录音 · AI优化 · 双击复制</p>
         </header>
 
         <!-- Recorder Section -->
@@ -38,67 +38,35 @@
                     <button id="optimizeBtn" class="btn btn-secondary" disabled>
                         AI优化
                     </button>
-                    <button id="mergeBtn" class="btn btn-secondary" disabled>
-                        合并片段
-                    </button>
-                    <button id="exportBtn" class="btn btn-secondary" disabled>
-                        导出
+                    <button id="copyBtn" class="btn btn-secondary" disabled>
+                        复制
                     </button>
                 </div>
             </div>
             <div class="transcription-content">
-                <div class="text-display" id="textDisplay">
-                    <p class="placeholder">点击「开始录音」后，转写文本将在此显示...</p>
-                </div>
+                <textarea
+                    id="textDisplay"
+                    class="text-display-editable"
+                    placeholder="点击「开始录音」后，转写文本将在此显示...&#10;&#10;双击可复制到剪贴板"
+                    rows="8"
+                ></textarea>
             </div>
         </section>
 
-        <!-- Fragments Section -->
-        <section class="fragments-section">
+        <!-- Records Section -->
+        <section class="records-section">
             <div class="section-header">
-                <h2>片段列表</h2>
-                <span class="fragment-count" id="fragmentCount">0 个片段</span>
+                <h2>历史录音</h2>
+                <span class="record-count" id="recordCount">0 条记录</span>
             </div>
-            <div class="fragments-list" id="fragmentsList">
-                <p class="placeholder">暂无片段</p>
+            <div class="records-list" id="recordsList">
+                <p class="placeholder">暂无录音记录</p>
             </div>
         </section>
-
-        <!-- Export Modal -->
-        <div class="modal" id="exportModal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h3>导出选项</h3>
-                    <button class="modal-close" id="closeModal">&times;</button>
-                </div>
-                <div class="modal-body">
-                    <div class="export-options">
-                        <button class="export-option" data-format="txt">
-                            <span class="format-icon">📄</span>
-                            <div class="format-info">
-                                <span class="format-name">TXT</span>
-                                <span class="format-desc">纯文本格式</span>
-                            </div>
-                        </button>
-                        <button class="export-option" data-format="json">
-                            <span class="format-icon">📊</span>
-                            <div class="format-info">
-                                <span class="format-name">JSON</span>
-                                <span class="format-desc">结构化数据</span>
-                            </div>
-                        </button>
-                        <button class="export-option" data-format="srt">
-                            <span class="format-icon">🎬</span>
-                            <div class="format-info">
-                                <span class="format-name">SRT</span>
-                                <span class="format-desc">字幕格式</span>
-                            </div>
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
     </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast" style="display: none;"></div>
 
     <script src="/static/js/recorder.js"></script>
     <script src="/static/js/app.js"></script>

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from app.config import settings
-from app.fragments.models import TranscriptionSegment, TranscriptionResult, AudioChunk
+from app.records.models import TranscriptionSegment, TranscriptionResult, AudioChunk
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)

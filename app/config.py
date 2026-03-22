@@ -34,9 +34,6 @@ class Settings(BaseSettings):
     max_upload_size: int = 500 * 1024 * 1024  # 500MB
     chunk_duration: int = 30  # seconds
 
-    # Database
-    database_url: str = "sqlite+aiosqlite:///data/fragments.db"
-
     # Audio Processing
     supported_formats: set = Field(
         default={'wav', 'mp3', 'm4a', 'flac', 'ogg', 'webm'}
@@ -59,6 +56,16 @@ class Settings(BaseSettings):
     @property
     def audio_permanent_path(self) -> Path:
         return self.data_path / "audio" / "permanent"
+
+    @property
+    def records_path(self) -> Path:
+        """Path for JSON record files"""
+        return self.data_path / "records"
+
+    @property
+    def audio_records_path(self) -> Path:
+        """Path for WAV audio files"""
+        return self.data_path / "audio" / "records"
 
     class Config:
         env_file = ".env"

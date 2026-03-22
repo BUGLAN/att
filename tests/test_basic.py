@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.audio.processor import AudioProcessor
 from app.stt.transcriber import WhisperTranscriber
-from app.fragments.manager import FragmentManager
+from app.records.manager import RecordManager
+from app.config import settings
 
 
 async def test_audio_processor():
@@ -38,33 +39,34 @@ async def test_audio_processor():
     print("✓ Audio processor test passed")
 
 
-async def test_fragment_manager():
-    """Test fragment manager"""
-    print("\n=== Testing Fragment Manager ===")
+async def test_record_manager():
+    """Test record manager"""
+    print("\n=== Testing Record Manager ===")
 
-    manager = FragmentManager()
+    manager = RecordManager(settings.data_path)
     await manager.initialize()
 
-    # Create session
-    session = await manager.create_session(name="Test Session")
-    print(f"✓ Session created: {session.id}")
-
-    # Create fragment
-    fragment = await manager.create_fragment(
-        session_id=session.id,
-        raw_text="这是一个测试文本。",
-        start_time=0,
-        end_time=5
+    # Create record
+    record = await manager.create_record(
+        audio_path="test/path.wav",
+        duration=5.0
     )
-    print(f"✓ Fragment created: {fragment.id}")
+    print(f"✓ Record created: {record.id}")
 
-    # List fragments
-    fragments = await manager.list_fragments(session_id=session.id)
-    print(f"✓ Listed {len(fragments)} fragments")
+    # Update record
+    updated = await manager.update_record(
+        record.id,
+        raw_text="这是一个测试文本。"
+    )
+    print(f"✓ Record updated: {updated.raw_text}")
+
+    # List records
+    records = await manager.list_records()
+    print(f"✓ Listed {len(records)} records")
 
     # Cleanup
-    await manager.delete_session(session.id)
-    print("✓ Fragment manager test passed")
+    await manager.delete_record(record.id)
+    print("✓ Record manager test passed")
 
 
 async def main():
@@ -73,7 +75,7 @@ async def main():
 
     try:
         await test_audio_processor()
-        await test_fragment_manager()
+        await test_record_manager()
 
         print("\n=== All tests passed! ===")
         print("\nNote: Whisper model test skipped (requires model download)")

@@ -9,13 +9,12 @@ class AudioRecorder {
         this.mediaRecorder = null;
         this.mediaStream = null;
         this.isRecording = false;
-        this.sessionId = null;
         this.startTime = null;
         this.durationTimer = null;
         this.audioChunks = []; // 收集音频片段
 
         // 回调函数
-        this.onChunkUploaded = options.onChunkUploaded || (() => {});
+        this.onUploadComplete = options.onUploadComplete || (() => {});
         this.onRecordingStart = options.onRecordingStart || (() => {});
         this.onRecordingStop = options.onRecordingStop || (() => {});
         this.onError = options.onError || (() => {});
@@ -40,7 +39,7 @@ class AudioRecorder {
         }
     }
 
-    async start(sessionId) {
+    async start() {
         if (this.isRecording) {
             console.warn('Already recording');
             return;
@@ -59,7 +58,6 @@ class AudioRecorder {
                 mimeType: this.mimeType
             });
 
-            this.sessionId = sessionId;
             this.isRecording = true;
             this.startTime = Date.now();
             this.audioChunks = [];
@@ -81,7 +79,7 @@ class AudioRecorder {
             this._startDurationTimer();
 
             this.onRecordingStart();
-            console.log('Recording started, sessionId:', sessionId);
+            console.log('Recording started');
 
         } catch (error) {
             console.error('Failed to start recording:', error);
@@ -131,10 +129,6 @@ class AudioRecorder {
         formData.append('file', blob, `recording_${Date.now()}.${extension}`);
         formData.append('auto_transcribe', 'true');
 
-        if (this.sessionId && this.sessionId.trim() !== '') {
-            formData.append('session_id', this.sessionId);
-        }
-
         try {
             const response = await fetch('/api/audio/upload', {
                 method: 'POST',
@@ -150,11 +144,7 @@ class AudioRecorder {
             const result = await response.json();
             console.log('Upload result:', result);
 
-            if (result.session_id && !this.sessionId) {
-                this.sessionId = result.session_id;
-            }
-
-            this.onChunkUploaded(result);
+            this.onUploadComplete(result);
 
         } catch (error) {
             console.error('Failed to upload audio:', error);

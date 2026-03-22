@@ -13,7 +13,7 @@ from app.config import settings
 from app.audio.processor import AudioProcessor
 from app.stt.transcriber import WhisperTranscriber
 from app.llm.optimizer import TextOptimizer
-from app.fragments.manager import FragmentManager
+from app.records.manager import RecordManager
 from app.api.routes import init_processors
 from app.utils.logging import setup_logging, get_logger
 
@@ -37,13 +37,13 @@ async def lifespan(app: FastAPI):
     audio_processor = AudioProcessor()
     transcriber = WhisperTranscriber()
     optimizer = TextOptimizer()
-    fragment_manager = FragmentManager()
+    record_manager = RecordManager(settings.data_path)
 
-    # Initialize database
-    await fragment_manager.initialize()
+    # Initialize directories
+    await record_manager.initialize()
 
     # Pass to routes
-    init_processors(audio_processor, transcriber, optimizer, fragment_manager)
+    init_processors(audio_processor, transcriber, optimizer, record_manager)
 
     logger.info("All processors initialized")
 

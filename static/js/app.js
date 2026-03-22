@@ -4,17 +4,15 @@
 class App {
     constructor() {
         // 状态
-        this.sessionId = null;
-        this.fragments = [];
+        this.currentRecordId = null;  // 当前录音的 record ID
+        this.records = [];             // 所有记录列表
         this.isRecording = false;
-        this.pollInterval = null;
 
         // 录音器
         this.recorder = new AudioRecorder({
-            chunkInterval: 5000, // 5秒一片段
             onRecordingStart: () => this.handleRecordingStart(),
             onRecordingStop: () => this.handleRecordingStop(),
-            onChunkUploaded: (result) => this.handleChunkUploaded(result),
+            onUploadComplete: (result) => this.handleUploadComplete(result),
             onError: (error) => this.handleError(error)
         });
 
@@ -23,18 +21,22 @@ class App {
             recordBtn: document.getElementById('recordBtn'),
             recordingStatus: document.getElementById('recordingStatus'),
             textDisplay: document.getElementById('textDisplay'),
-            fragmentsList: document.getElementById('fragmentsList'),
-            fragmentCount: document.getElementById('fragmentCount'),
+            recordsList: document.getElementById('recordsList'),
+            recordCount: document.getElementById('recordCount'),
             optimizeBtn: document.getElementById('optimizeBtn'),
-            mergeBtn: document.getElementById('mergeBtn'),
-            exportBtn: document.getElementById('exportBtn'),
-            exportModal: document.getElementById('exportModal'),
-            closeModal: document.getElementById('closeModal'),
-            duration: document.getElementById('duration')
+            copyBtn: document.getElementById('copyBtn'),
+            duration: document.getElementById('duration'),
+            toast: document.getElementById('toast')
         };
+
+        // 当前播放的音频
+        this.currentAudio = null;
 
         // 绑定事件
         this.bindEvents();
+
+        // 加载历史记录
+        this.fetchRecords();
     }
 
     /**
@@ -45,31 +47,16 @@ class App {
         this.elements.recordBtn.addEventListener('click', () => this.toggleRecording());
 
         // 优化按钮
-        this.elements.optimizeBtn.addEventListener('click', () => this.optimizeCurrentSession());
+        this.elements.optimizeBtn.addEventListener('click', () => this.optimizeCurrentRecord());
 
-        // 合并按钮
-        this.elements.mergeBtn.addEventListener('click', () => this.mergeFragments());
+        // 复制按钮
+        this.elements.copyBtn.addEventListener('click', () => this.copyText());
 
-        // 导出按钮
-        this.elements.exportBtn.addEventListener('click', () => this.showExportModal());
+        // 双击复制
+        this.elements.textDisplay.addEventListener('dblclick', () => this.copyText());
 
-        // 关闭弹窗
-        this.elements.closeModal.addEventListener('click', () => this.hideExportModal());
-
-        // 导出选项
-        document.querySelectorAll('.export-option').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const format = e.currentTarget.dataset.format;
-                this.exportSession(format);
-            });
-        });
-
-        // 点击弹窗外部关闭
-        this.elements.exportModal.addEventListener('click', (e) => {
-            if (e.target === this.elements.exportModal) {
-                this.hideExportModal();
-            }
-        });
+        // 文本编辑保存
+        this.elements.textDisplay.addEventListener('blur', () => this.saveText());
     }
 
     /**
@@ -87,21 +74,12 @@ class App {
      * 开始录音
      */
     async startRecording() {
-        // 每次录音都创建新 session
-        try {
-            const response = await fetch('/api/sessions?name=' + encodeURIComponent('录音会话 ' + new Date().toLocaleString()), {
-                method: 'POST'
-            });
-            const session = await response.json();
-            this.sessionId = session.id;
-            console.log('Session created:', this.sessionId);
-        } catch (error) {
-            this.handleError(error);
-            return;
-        }
+        // 清空当前记录
+        this.currentRecordId = null;
+        this.elements.textDisplay.value = '';
 
         // 开始录音
-        await this.recorder.start(this.sessionId);
+        await this.recorder.start();
     }
 
     /**
@@ -115,18 +93,12 @@ class App {
         this.elements.recordingStatus.querySelector('.status-text').textContent = '上传转写中...';
         this.elements.recordBtn.disabled = true;
 
-        // 停止轮询
-        this.stopPolling();
-
         await this.recorder.stop();
-
-        // 最后一次获取片段
-        await this.fetchFragments();
 
         // 统一设置最终状态
         this.elements.recordBtn.disabled = false;
         this.elements.recordBtn.querySelector('.btn-text').textContent = '开始录音';
-        this.elements.recordingStatus.querySelector('.status-text').textContent = '录音结束';
+        this.elements.recordingStatus.querySelector('.status-text').textContent = '准备就绪';
         this.updateButtonStates();
     }
 
@@ -141,13 +113,6 @@ class App {
         this.elements.recordBtn.querySelector('.btn-text').textContent = '停止录音';
         this.elements.recordingStatus.classList.add('recording');
         this.elements.recordingStatus.querySelector('.status-text').textContent = '正在录音...';
-
-        // 清空显示
-        this.elements.textDisplay.innerHTML = '<p class="placeholder">录音中，转写结果将实时显示...</p>';
-        this.fragments = [];
-
-        // 开始轮询获取片段
-        this.startPolling();
     }
 
     /**
@@ -155,21 +120,252 @@ class App {
      */
     handleRecordingStop() {
         this.isRecording = false;
-        // 文本状态由 stopRecording() 统一管理，避免 disabled 期间文本不一致
+        // 文本状态由 stopRecording() 统一管理
     }
 
     /**
-     * 片段上传完成回调
+     * 上传完成回调
      */
-    handleChunkUploaded(result) {
-        console.log('Chunk uploaded:', result);
-        // 同步 session_id（后端可能创建了新 session）
-        if (result.session_id && result.session_id !== this.sessionId) {
-            this.sessionId = result.session_id;
-            console.log('Session synced:', this.sessionId);
+    async handleUploadComplete(result) {
+        console.log('Upload complete:', result);
+        this.currentRecordId = result.record_id;
+
+        // 更新文本显示
+        if (result.transcription_text) {
+            this.elements.textDisplay.value = result.transcription_text;
         }
-        // 立即获取最新片段
-        this.fetchFragments();
+
+        // 刷新记录列表
+        await this.fetchRecords();
+        this.updateButtonStates();
+    }
+
+    /**
+     * 获取记录列表
+     */
+    async fetchRecords() {
+        try {
+            const response = await fetch('/api/records?limit=100');
+            this.records = await response.json();
+            this.renderRecords();
+        } catch (error) {
+            console.error('Failed to fetch records:', error);
+        }
+    }
+
+    /**
+     * 渲染记录列表
+     */
+    renderRecords() {
+        // 更新记录数量
+        this.elements.recordCount.textContent = `${this.records.length} 条记录`;
+
+        if (this.records.length === 0) {
+            this.elements.recordsList.innerHTML = '<p class="placeholder">暂无录音记录</p>';
+            return;
+        }
+
+        // 渲染记录卡片
+        this.elements.recordsList.innerHTML = this.records.map(r => `
+            <div class="record-item" data-id="${r.id}">
+                <div class="record-audio">
+                    <button class="audio-play-btn" data-id="${r.id}" title="试听">
+                        <span class="play-icon">▶</span>
+                    </button>
+                </div>
+                <div class="record-content">
+                    <div class="record-time">${this.formatDateTime(r.created_at)}</div>
+                    <div class="record-text">${this.escapeHtml(r.optimized_text || r.raw_text || '处理中...')}</div>
+                </div>
+                <div class="record-actions">
+                    <span class="record-duration">${this.formatDuration(r.duration)}</span>
+                    <span class="record-status ${r.status}">${this.getStatusText(r.status)}</span>
+                </div>
+            </div>
+        `).join('');
+
+        // 绑定事件
+        this.bindRecordEvents();
+    }
+
+    /**
+     * 绑定记录项事件
+     */
+    bindRecordEvents() {
+        // 点击记录项复制文本
+        this.elements.recordsList.querySelectorAll('.record-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                // 忽略播放按钮点击
+                if (e.target.closest('.audio-play-btn')) return;
+
+                const recordId = item.dataset.id;
+                this.copyRecordText(recordId);
+            });
+        });
+
+        // 播放按钮
+        this.elements.recordsList.querySelectorAll('.audio-play-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const recordId = btn.dataset.id;
+                this.toggleAudioPlayback(recordId, btn);
+            });
+        });
+    }
+
+    /**
+     * 切换音频播放
+     */
+    toggleAudioPlayback(recordId, btn) {
+        // 检查点击的是否是当前正在播放的
+        const isCurrentPlaying = this.currentAudio && btn.querySelector('.play-icon').textContent === '⏸';
+
+        // 如果正在播放同一个，则停止
+        if (isCurrentPlaying) {
+            this.currentAudio.pause();
+            this.currentAudio = null;
+            btn.querySelector('.play-icon').textContent = '▶';
+            return;
+        }
+
+        // 停止当前播放的其他音频
+        if (this.currentAudio) {
+            this.currentAudio.pause();
+            this.currentAudio = null;
+            document.querySelectorAll('.audio-play-btn .play-icon').forEach(icon => {
+                icon.textContent = '▶';
+            });
+        }
+
+        // 开始新的播放
+        const audio = new Audio(`/api/records/${recordId}/audio`);
+        this.currentAudio = audio;
+
+        btn.querySelector('.play-icon').textContent = '⏸';
+
+        audio.onended = () => {
+            btn.querySelector('.play-icon').textContent = '▶';
+            this.currentAudio = null;
+        };
+
+        audio.onerror = () => {
+            btn.querySelector('.play-icon').textContent = '▶';
+            this.showToast('音频加载失败');
+            this.currentAudio = null;
+        };
+
+        audio.play();
+    }
+
+    /**
+     * 复制记录文本
+     */
+    async copyRecordText(recordId) {
+        const record = this.records.find(r => r.id === recordId);
+        if (!record) return;
+
+        const text = record.optimized_text || record.raw_text;
+        if (!text) {
+            this.showToast('暂无文本');
+            return;
+        }
+
+        await navigator.clipboard.writeText(text);
+        this.showToast('已复制到剪贴板');
+    }
+
+    /**
+     * 复制当前文本
+     */
+    async copyText() {
+        const text = this.elements.textDisplay.value;
+        if (!text) {
+            this.showToast('暂无文本');
+            return;
+        }
+
+        await navigator.clipboard.writeText(text);
+        this.showToast('已复制到剪贴板');
+    }
+
+    /**
+     * 保存文本编辑
+     */
+    async saveText() {
+        if (!this.currentRecordId) return;
+
+        const text = this.elements.textDisplay.value;
+        if (!text) return;
+
+        try {
+            await fetch(`/api/records/${this.currentRecordId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ raw_text: text })
+            });
+        } catch (error) {
+            console.error('Failed to save text:', error);
+        }
+    }
+
+    /**
+     * 优化当前记录
+     */
+    async optimizeCurrentRecord() {
+        if (!this.currentRecordId) {
+            this.showToast('请先录音');
+            return;
+        }
+
+        this.elements.optimizeBtn.disabled = true;
+        this.elements.optimizeBtn.textContent = '优化中...';
+
+        try {
+            const response = await fetch(`/api/records/${this.currentRecordId}/optimize?style=formal`, {
+                method: 'POST'
+            });
+
+            if (!response.ok) {
+                throw new Error('Optimization failed');
+            }
+
+            const result = await response.json();
+            this.elements.textDisplay.value = result.optimized_text;
+            this.showToast('优化完成');
+
+            // 刷新记录列表
+            await this.fetchRecords();
+
+        } catch (error) {
+            this.handleError(error);
+        } finally {
+            this.elements.optimizeBtn.textContent = 'AI优化';
+            this.updateButtonStates();
+        }
+    }
+
+    /**
+     * 更新按钮状态
+     */
+    updateButtonStates() {
+        const hasText = this.elements.textDisplay.value.length > 0;
+        const hasRecord = !!this.currentRecordId;
+
+        this.elements.optimizeBtn.disabled = !hasRecord || this.isRecording;
+        this.elements.copyBtn.disabled = !hasText;
+    }
+
+    /**
+     * 显示 Toast 提示
+     */
+    showToast(message) {
+        const toast = this.elements.toast;
+        toast.textContent = message;
+        toast.style.display = 'block';
+
+        setTimeout(() => {
+            toast.style.display = 'none';
+        }, 2000);
     }
 
     /**
@@ -177,204 +373,29 @@ class App {
      */
     handleError(error) {
         console.error('Error:', error);
-        alert('发生错误: ' + error.message);
+        this.showToast('发生错误: ' + error.message);
     }
 
     /**
-     * 开始轮询获取片段
+     * 格式化日期时间
      */
-    startPolling() {
-        this.pollInterval = setInterval(() => {
-            this.fetchFragments();
-        }, 2000); // 每2秒轮询一次
+    formatDateTime(isoString) {
+        if (!isoString) return '';
+        const date = new Date(isoString);
+        return date.toLocaleString('zh-CN', {
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
     }
 
     /**
-     * 停止轮询
+     * 格式化时长
      */
-    stopPolling() {
-        if (this.pollInterval) {
-            clearInterval(this.pollInterval);
-            this.pollInterval = null;
-        }
-    }
-
-    /**
-     * 获取片段列表
-     */
-    async fetchFragments() {
-        if (!this.sessionId) return;
-
-        try {
-            const response = await fetch(`/api/fragments?session_id=${this.sessionId}&limit=100`);
-            this.fragments = await response.json();
-            this.renderFragments();
-            this.updateButtonStates();
-        } catch (error) {
-            console.error('Failed to fetch fragments:', error);
-        }
-    }
-
-    /**
-     * 渲染片段列表
-     */
-    renderFragments() {
-        // 更新片段数量
-        this.elements.fragmentCount.textContent = `${this.fragments.length} 个片段`;
-
-        // 更新文本显示
-        if (this.fragments.length === 0) {
-            this.elements.textDisplay.innerHTML = '<p class="placeholder">暂无转写内容</p>';
-            this.elements.fragmentsList.innerHTML = '<p class="placeholder">暂无片段</p>';
-            return;
-        }
-
-        // 显示合并后的文本
-        const allText = this.fragments
-            .map(f => f.optimized_text || f.raw_text || '')
-            .filter(t => t)
-            .join('\n\n');
-
-        this.elements.textDisplay.innerHTML = allText || '<p class="placeholder">正在转写中...</p>';
-
-        // 渲染片段列表
-        this.elements.fragmentsList.innerHTML = this.fragments.map(f => `
-            <div class="fragment-item" data-id="${f.id}">
-                <div class="fragment-info">
-                    <div class="fragment-time">
-                        ${this.formatTime(f.start_time)} - ${this.formatTime(f.end_time)}
-                    </div>
-                    <div class="fragment-preview">
-                        ${this.escapeHtml(f.optimized_text || f.raw_text || '处理中...')}
-                    </div>
-                </div>
-                <span class="fragment-status ${f.status}">
-                    ${this.getStatusText(f.status)}
-                </span>
-            </div>
-        `).join('');
-    }
-
-    /**
-     * 更新按钮状态
-     */
-    updateButtonStates() {
-        const hasFragments = this.fragments.length > 0;
-        const hasTranscribed = this.fragments.some(f => f.status === 'transcribed');
-        const hasOptimized = this.fragments.some(f => f.status === 'optimized');
-
-        this.elements.optimizeBtn.disabled = !hasTranscribed || this.isRecording;
-        this.elements.mergeBtn.disabled = !hasFragments || this.isRecording;
-        this.elements.exportBtn.disabled = !hasFragments || this.isRecording;
-    }
-
-    /**
-     * 优化当前会话的所有片段
-     */
-    async optimizeCurrentSession() {
-        const transcribedFragments = this.fragments.filter(f =>
-            f.status === 'transcribed' && f.raw_text
-        );
-
-        if (transcribedFragments.length === 0) {
-            alert('没有可优化的片段');
-            return;
-        }
-
-        this.elements.optimizeBtn.disabled = true;
-        this.elements.optimizeBtn.textContent = '⏳ 优化中...';
-
-        try {
-            // 逐个优化
-            for (const fragment of transcribedFragments) {
-                const response = await fetch(`/api/fragments/${fragment.id}/optimize?style=formal`, {
-                    method: 'POST'
-                });
-                if (response.ok) {
-                    console.log('Optimized:', fragment.id);
-                }
-            }
-
-            // 刷新片段列表
-            await this.fetchFragments();
-
-        } catch (error) {
-            this.handleError(error);
-        } finally {
-            this.elements.optimizeBtn.textContent = '✨ AI优化';
-            this.updateButtonStates();
-        }
-    }
-
-    /**
-     * 合并片段
-     */
-    async mergeFragments() {
-        if (this.fragments.length === 0) {
-            alert('没有可合并的片段');
-            return;
-        }
-
-        try {
-            const fragmentIds = this.fragments.map(f => f.id);
-            const response = await fetch('/api/fragments/merge', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    fragment_ids: fragmentIds,
-                    use_optimized: true
-                })
-            });
-
-            const result = await response.json();
-
-            // 显示合并结果
-            this.elements.textDisplay.innerHTML = `
-                <div class="merged-text">${this.escapeHtml(result.merged_text)}</div>
-            `;
-
-        } catch (error) {
-            this.handleError(error);
-        }
-    }
-
-    /**
-     * 显示导出弹窗
-     */
-    showExportModal() {
-        this.elements.exportModal.classList.add('active');
-    }
-
-    /**
-     * 隐藏导出弹窗
-     */
-    hideExportModal() {
-        this.elements.exportModal.classList.remove('active');
-    }
-
-    /**
-     * 导出会话
-     */
-    exportSession(format) {
-        if (!this.sessionId) {
-            alert('没有可导出的内容');
-            return;
-        }
-
-        // 打开下载链接
-        const url = `/api/export/${this.sessionId}?format=${format}&use_optimized=true`;
-        window.open(url, '_blank');
-        this.hideExportModal();
-    }
-
-    /**
-     * 格式化时间
-     */
-    formatTime(seconds) {
-        if (!seconds) return '00:00';
-        const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
+    formatDuration(seconds) {
+        if (!seconds) return '0:00';
+        const mins = Math.floor(seconds / 60);
         const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
         return `${mins}:${secs}`;
     }

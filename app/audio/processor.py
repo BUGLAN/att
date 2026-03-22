@@ -14,7 +14,7 @@ from pydub import AudioSegment
 import aiofiles
 
 from app.config import settings
-from app.fragments.models import AudioMetadata, AudioChunk
+from app.records.models import AudioMetadata, AudioChunk
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -397,6 +397,115 @@ class AudioProcessor:
 
         logger.info("Audio saved to permanent storage", path=str(output_path))
         return output_path
+
+    async def save_as_wav_for_record(
+        self,
+        file_content: bytes,
+        filename: str,
+        record_id: str,
+        records_path: Path
+    ) -> tuple[Path, AudioMetadata]:
+        """
+        Convert and save audio as WAV for a specific record
+
+        Args:
+            file_content: Raw audio file bytes
+            filename: Original filename
+            record_id: Record ID for naming
+            records_path: Path to records audio directory
+
+        Returns:
+            Tuple of (output_path, metadata)
+        """
+        # Ensure directory exists
+        records_path.mkdir(parents=True, exist_ok=True)
+
+        extension = Path(filename).suffix.lower().lstrip('.')
+
+        # For webm/ogg, need to save temp file first
+        if extension in {'webm', 'ogg'}:
+            temp_path = self.storage_path / f"temp_record_{record_id}.{extension}"
+            async with aiofiles.open(temp_path, 'wb') as f:
+                await f.write(file_content)
+
+            try:
+                # Load from file
+                audio = await asyncio.to_thread(
+                    AudioSegment.from_file,
+                    str(temp_path)
+                )
+
+                # Convert
+                audio = audio.set_frame_rate(self.TARGET_SAMPLE_RATE)
+                audio = audio.set_channels(self.TARGET_CHANNELS)
+
+                # Export
+                output_path = records_path / f"{record_id}.wav"
+
+                await asyncio.to_thread(
+                    audio.export,
+                    str(output_path),
+                    format="wav"
+                )
+
+                metadata = AudioMetadata(
+                    filename=filename,
+                    format="wav",
+                    duration=len(audio) / 1000.0,
+                    sample_rate=self.TARGET_SAMPLE_RATE,
+                    channels=self.TARGET_CHANNELS,
+                    file_size=output_path.stat().st_size
+                )
+
+                logger.info(
+                    "Audio converted and saved for record",
+                    record_id=record_id,
+                    output_path=str(output_path),
+                    duration=metadata.duration
+                )
+
+                return output_path, metadata
+
+            finally:
+                if temp_path.exists():
+                    temp_path.unlink()
+
+        # Other formats - convert directly from memory
+        audio = await asyncio.to_thread(
+            AudioSegment.from_file,
+            io.BytesIO(file_content)
+        )
+
+        # Convert to optimal format
+        audio = audio.set_frame_rate(self.TARGET_SAMPLE_RATE)
+        audio = audio.set_channels(self.TARGET_CHANNELS)
+
+        # Export
+        output_path = records_path / f"{record_id}.wav"
+
+        await asyncio.to_thread(
+            audio.export,
+            str(output_path),
+            format="wav"
+        )
+
+        metadata = AudioMetadata(
+            filename=filename,
+            format="wav",
+            duration=len(audio) / 1000.0,
+            sample_rate=self.TARGET_SAMPLE_RATE,
+            channels=self.TARGET_CHANNELS,
+            file_size=output_path.stat().st_size
+        )
+
+        logger.info(
+            "Audio converted and saved for record",
+            record_id=record_id,
+            output_path=str(output_path),
+            duration=metadata.duration
+        )
+
+        return output_path, metadata
 
     async def cleanup_temp_files(self, chunk_ids: List[str]) -> None:
         """
