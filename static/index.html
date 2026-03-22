@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音频转文字 - 实时录音</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 标题 -->
+        <header class="header">
+            <h1>🎤 音频转文字</h1>
+            <p class="subtitle">实时录音 · AI优化 · 一键导出</p>
+        </header>
+
+        <!-- 录音控制区 -->
+        <section class="recorder-section">
+            <div class="recorder-controls">
+                <button id="recordBtn" class="record-btn">
+                    <span class="btn-icon">●</span>
+                    <span class="btn-text">开始录音</span>
+                </button>
+                <div class="recording-status" id="recordingStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-text">准备就绪</span>
+                    <span class="duration" id="duration">00:00</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- 实时转写区 -->
+        <section class="transcription-section">
+            <div class="section-header">
+                <h2>📝 实时转写</h2>
+                <div class="section-actions">
+                    <button id="optimizeBtn" class="btn btn-secondary" disabled>
+                        ✨ AI优化
+                    </button>
+                    <button id="mergeBtn" class="btn btn-secondary" disabled>
+                        📎 合并片段
+                    </button>
+                    <button id="exportBtn" class="btn btn-secondary" disabled>
+                        📥 导出
+                    </button>
+                </div>
+            </div>
+            <div class="transcription-content">
+                <div class="text-display" id="textDisplay">
+                    <p class="placeholder">点击"开始录音"后，转写文本将在此显示...</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 片段列表 -->
+        <section class="fragments-section">
+            <div class="section-header">
+                <h2>📋 片段列表</h2>
+                <span class="fragment-count" id="fragmentCount">0 个片段</span>
+            </div>
+            <div class="fragments-list" id="fragmentsList">
+                <p class="placeholder">暂无片段</p>
+            </div>
+        </section>
+
+        <!-- 导出弹窗 -->
+        <div class="modal" id="exportModal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>导出选项</h3>
+                    <button class="modal-close" id="closeModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="export-options">
+                        <button class="export-option" data-format="txt">
+                            <span class="format-icon">📄</span>
+                            <span class="format-name">TXT</span>
+                            <span class="format-desc">纯文本格式</span>
+                        </button>
+                        <button class="export-option" data-format="json">
+                            <span class="format-icon">📊</span>
+                            <span class="format-name">JSON</span>
+                            <span class="format-desc">结构化数据</span>
+                        </button>
+                        <button class="export-option" data-format="srt">
+                            <span class="format-icon">🎬</span>
+                            <span class="format-name">SRT</span>
+                            <span class="format-desc">字幕格式</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/recorder.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
