@@ -5,16 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>音频转文字 - 实时录音</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙</text></svg>">
 </head>
 <body>
     <div class="container">
-        <!-- 标题 -->
+        <!-- Header -->
         <header class="header">
-            <h1>🎤 音频转文字</h1>
+            <h1>Audio to Text</h1>
             <p class="subtitle">实时录音 · AI优化 · 一键导出</p>
         </header>
 
-        <!-- 录音控制区 -->
+        <!-- Recorder Section -->
         <section class="recorder-section">
             <div class="recorder-controls">
                 <button id="recordBtn" class="record-btn">
@@ -29,33 +30,33 @@
             </div>
         </section>
 
-        <!-- 实时转写区 -->
+        <!-- Transcription Section -->
         <section class="transcription-section">
             <div class="section-header">
-                <h2>📝 实时转写</h2>
+                <h2>实时转写</h2>
                 <div class="section-actions">
                     <button id="optimizeBtn" class="btn btn-secondary" disabled>
-                        ✨ AI优化
+                        AI优化
                     </button>
                     <button id="mergeBtn" class="btn btn-secondary" disabled>
-                        📎 合并片段
+                        合并片段
                     </button>
                     <button id="exportBtn" class="btn btn-secondary" disabled>
-                        📥 导出
+                        导出
                     </button>
                 </div>
             </div>
             <div class="transcription-content">
                 <div class="text-display" id="textDisplay">
-                    <p class="placeholder">点击"开始录音"后，转写文本将在此显示...</p>
+                    <p class="placeholder">点击「开始录音」后，转写文本将在此显示...</p>
                 </div>
             </div>
         </section>
 
-        <!-- 片段列表 -->
+        <!-- Fragments Section -->
         <section class="fragments-section">
             <div class="section-header">
-                <h2>📋 片段列表</h2>
+                <h2>片段列表</h2>
                 <span class="fragment-count" id="fragmentCount">0 个片段</span>
             </div>
             <div class="fragments-list" id="fragmentsList">
@@ -63,7 +64,7 @@
             </div>
         </section>
 
-        <!-- 导出弹窗 -->
+        <!-- Export Modal -->
         <div class="modal" id="exportModal">
             <div class="modal-content">
                 <div class="modal-header">
@@ -74,18 +75,24 @@
                     <div class="export-options">
                         <button class="export-option" data-format="txt">
                             <span class="format-icon">📄</span>
-                            <span class="format-name">TXT</span>
-                            <span class="format-desc">纯文本格式</span>
+                            <div class="format-info">
+                                <span class="format-name">TXT</span>
+                                <span class="format-desc">纯文本格式</span>
+                            </div>
                         </button>
                         <button class="export-option" data-format="json">
                             <span class="format-icon">📊</span>
-                            <span class="format-name">JSON</span>
-                            <span class="format-desc">结构化数据</span>
+                            <div class="format-info">
+                                <span class="format-name">JSON</span>
+                                <span class="format-desc">结构化数据</span>
+                            </div>
                         </button>
                         <button class="export-option" data-format="srt">
                             <span class="format-icon">🎬</span>
-                            <span class="format-name">SRT</span>
-                            <span class="format-desc">字幕格式</span>
+                            <div class="format-info">
+                                <span class="format-name">SRT</span>
+                                <span class="format-desc">字幕格式</span>
+                            </div>
                         </button>
                     </div>
                 </div>

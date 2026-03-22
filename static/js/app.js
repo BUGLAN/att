@@ -108,12 +108,23 @@ class App {
      * 停止录音
      */
     async stopRecording() {
+        // 显示处理中状态
+        this.elements.recordBtn.classList.remove('recording');
+        this.elements.recordBtn.querySelector('.btn-text').textContent = '处理中...';
+        this.elements.recordingStatus.classList.remove('recording');
+        this.elements.recordingStatus.querySelector('.status-text').textContent = '上传转写中...';
+        this.elements.recordBtn.disabled = true;
+
+        // 停止轮询
+        this.stopPolling();
+
         await this.recorder.stop();
 
         // 最后一次获取片段
         await this.fetchFragments();
 
         // 更新按钮状态
+        this.elements.recordBtn.disabled = false;
         this.updateButtonStates();
     }
 
@@ -143,14 +154,9 @@ class App {
     handleRecordingStop() {
         this.isRecording = false;
 
-        // 更新 UI
-        this.elements.recordBtn.classList.remove('recording');
+        // 更新 UI - 最终状态由 stopRecording 设置
         this.elements.recordBtn.querySelector('.btn-text').textContent = '开始录音';
-        this.elements.recordingStatus.classList.remove('recording');
         this.elements.recordingStatus.querySelector('.status-text').textContent = '录音结束';
-
-        // 停止轮询
-        this.stopPolling();
     }
 
     /**
@@ -158,6 +164,11 @@ class App {
      */
     handleChunkUploaded(result) {
         console.log('Chunk uploaded:', result);
+        // 同步 session_id（后端可能创建了新 session）
+        if (result.session_id && result.session_id !== this.sessionId) {
+            this.sessionId = result.session_id;
+            console.log('Session synced:', this.sessionId);
+        }
         // 立即获取最新片段
         this.fetchFragments();
     }

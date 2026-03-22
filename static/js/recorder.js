@@ -1,9 +1,10 @@
 /**
  * 录音模块 - 使用 MediaRecorder API
+ * 策略：录音时收集 chunks，停止时合并上传完整音频
  */
 class AudioRecorder {
     constructor(options = {}) {
-        this.chunkInterval = options.chunkInterval || 5000; // 默认5秒一片段
+        this.chunkInterval = options.chunkInterval || 5000;
         this.mimeType = 'audio/webm;codecs=opus';
         this.mediaRecorder = null;
         this.mediaStream = null;
@@ -11,6 +12,7 @@ class AudioRecorder {
         this.sessionId = null;
         this.startTime = null;
         this.durationTimer = null;
+        this.audioChunks = []; // 收集音频片段
 
         // 回调函数
         this.onChunkUploaded = options.onChunkUploaded || (() => {});
@@ -18,7 +20,6 @@ class AudioRecorder {
         this.onRecordingStop = options.onRecordingStop || (() => {});
         this.onError = options.onError || (() => {});
 
-        // 检查支持的 MIME 类型
         this._checkMimeType();
     }
 
@@ -39,9 +40,6 @@ class AudioRecorder {
         }
     }
 
-    /**
-     * 开始录音
-     */
     async start(sessionId) {
         if (this.isRecording) {
             console.warn('Already recording');
@@ -49,7 +47,6 @@ class AudioRecorder {
         }
 
         try {
-            // 获取麦克风权限
             this.mediaStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     echoCancellation: true,
@@ -58,7 +55,6 @@ class AudioRecorder {
                 }
             });
 
-            // 创建 MediaRecorder
             this.mediaRecorder = new MediaRecorder(this.mediaStream, {
                 mimeType: this.mimeType
             });
@@ -66,11 +62,13 @@ class AudioRecorder {
             this.sessionId = sessionId;
             this.isRecording = true;
             this.startTime = Date.now();
+            this.audioChunks = [];
 
-            // 处理数据
-            this.mediaRecorder.ondataavailable = async (event) => {
+            // 收集数据 - 不立即上传
+            this.mediaRecorder.ondataavailable = (event) => {
                 if (event.data.size > 0) {
-                    await this._uploadChunk(event.data);
+                    this.audioChunks.push(event.data);
+                    console.log('Collected chunk:', event.data.size, 'bytes, total:', this.audioChunks.length);
                 }
             };
 
@@ -79,10 +77,7 @@ class AudioRecorder {
                 this.onError(event.error);
             };
 
-            // 开始录音，每 chunkInterval 毫秒触发一次 ondataavailable
             this.mediaRecorder.start(this.chunkInterval);
-
-            // 开始计时
             this._startDurationTimer();
 
             this.onRecordingStart();
@@ -94,9 +89,6 @@ class AudioRecorder {
         }
     }
 
-    /**
-     * 停止录音
-     */
     async stop() {
         if (!this.isRecording) {
             return;
@@ -107,10 +99,15 @@ class AudioRecorder {
                 this.isRecording = false;
                 this._stopDurationTimer();
 
-                // 停止所有音轨
                 if (this.mediaStream) {
                     this.mediaStream.getTracks().forEach(track => track.stop());
                     this.mediaStream = null;
+                }
+
+                // 合并并上传所有音频片段
+                if (this.audioChunks.length > 0) {
+                    console.log('Uploading', this.audioChunks.length, 'chunks...');
+                    await this._uploadMergedAudio();
                 }
 
                 this.onRecordingStop();
@@ -122,20 +119,18 @@ class AudioRecorder {
         });
     }
 
-    /**
-     * 上传音频片段
-     */
-    async _uploadChunk(blob) {
-        const formData = new FormData();
+    async _uploadMergedAudio() {
+        // 合并所有 chunk 为一个完整的 webm 文件
+        const blob = new Blob(this.audioChunks, { type: this.mimeType });
+        console.log('Merged audio size:', blob.size, 'bytes');
 
-        // 根据类型确定文件扩展名
+        const formData = new FormData();
         const extension = this.mimeType.includes('webm') ? 'webm' :
                          this.mimeType.includes('mp4') ? 'm4a' : 'ogg';
 
-        formData.append('file', blob, `chunk_${Date.now()}.${extension}`);
+        formData.append('file', blob, `recording_${Date.now()}.${extension}`);
         formData.append('auto_transcribe', 'true');
 
-        // 只有在 sessionId 有效时才传递
         if (this.sessionId && this.sessionId.trim() !== '') {
             formData.append('session_id', this.sessionId);
         }
@@ -149,13 +144,12 @@ class AudioRecorder {
             if (!response.ok) {
                 const errorText = await response.text();
                 console.error('Upload failed:', response.status, errorText);
-                throw new Error(`Upload failed: ${response.status} - ${errorText}`);
+                throw new Error(`Upload failed: ${response.status}`);
             }
 
             const result = await response.json();
-            console.log('Chunk uploaded:', result);
+            console.log('Upload result:', result);
 
-            // 如果返回了新的 session_id，更新本地
             if (result.session_id && !this.sessionId) {
                 this.sessionId = result.session_id;
             }
@@ -163,14 +157,11 @@ class AudioRecorder {
             this.onChunkUploaded(result);
 
         } catch (error) {
-            console.error('Failed to upload chunk:', error);
+            console.error('Failed to upload audio:', error);
             this.onError(error);
         }
     }
 
-    /**
-     * 开始计时器
-     */
     _startDurationTimer() {
         const durationEl = document.getElementById('duration');
         if (!durationEl) return;
@@ -183,9 +174,6 @@ class AudioRecorder {
         }, 1000);
     }
 
-    /**
-     * 停止计时器
-     */
     _stopDurationTimer() {
         if (this.durationTimer) {
             clearInterval(this.durationTimer);
@@ -193,14 +181,10 @@ class AudioRecorder {
         }
     }
 
-    /**
-     * 获取录音时长（秒）
-     */
     getDuration() {
         if (!this.startTime) return 0;
         return Math.floor((Date.now() - this.startTime) / 1000);
     }
 }
 
-// 导出
 window.AudioRecorder = AudioRecorder;

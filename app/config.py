@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # Whisper Configuration
     whisper_model: str = "large-v3"
     whisper_device: str = "auto"  # auto, cuda, cpu
-    whisper_compute_type: str = "float16"  # float16, int8_float16, int8
+    whisper_compute_type: str = "int8"  # float16 (CUDA), int8_float16, int8 (CPU/macOS)
 
     # DeepSeek API
     deepseek_api_key: str = ""

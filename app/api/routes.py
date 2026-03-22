@@ -212,7 +212,7 @@ async def upload_audio(
         "auto_transcribe": auto_transcribe,
         "auto_optimize": auto_optimize,
         "transcription_status": transcription_status.value,
-        "transcription_text": transcription_text[:200] if transcription_text else ""
+        "transcription_text": transcription_text if transcription_text else ""
     }
 
 
