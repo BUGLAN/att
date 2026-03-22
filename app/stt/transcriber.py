@@ -132,6 +132,38 @@ class WhisperTranscriber:
 
         return self._model
 
+    def _transcribe_sync(
+        self,
+        model: WhisperModel,
+        audio_path: str,
+        config: dict,
+        language: str
+    ) -> tuple[list[TranscriptionSegment], float, float, str, float]:
+        """
+        Synchronous transcription helper - runs entirely in thread pool.
+
+        This must be a separate method to ensure the generator iteration
+        also happens in the thread pool, not blocking the event loop.
+        """
+        start_time = time.time()
+
+        segments_gen, info = model.transcribe(audio_path, **config)
+
+        # Collect segments (this loop was blocking the event loop before)
+        segments = []
+        for seg in segments_gen:
+            segments.append(TranscriptionSegment(
+                start=seg.start,
+                end=seg.end,
+                text=seg.text.strip(),
+                confidence=getattr(seg, 'avg_logprob', 0),
+                language=language
+            ))
+
+        processing_time = time.time() - start_time
+
+        return segments, processing_time, info.duration, info.language, info.language_probability
+
     async def transcribe(
         self,
         audio_path: str | Path,
@@ -160,33 +192,20 @@ class WhisperTranscriber:
             language=language
         )
 
-        start_time = time.time()
-
-        # Run transcription in thread pool (blocking operation)
-        segments_gen, info = await asyncio.to_thread(
-            model.transcribe,
+        # Run entire transcription (including segment iteration) in thread pool
+        segments, processing_time, duration, detected_lang, lang_prob = await asyncio.to_thread(
+            self._transcribe_sync,
+            model,
             str(audio_path),
-            **config
+            config,
+            language
         )
-
-        # Collect segments
-        segments = []
-        for seg in segments_gen:
-            segments.append(TranscriptionSegment(
-                start=seg.start,
-                end=seg.end,
-                text=seg.text.strip(),
-                confidence=getattr(seg, 'avg_logprob', 0),
-                language=language
-            ))
-
-        processing_time = time.time() - start_time
 
         result = TranscriptionResult(
             segments=segments,
-            language=info.language,
-            language_probability=info.language_probability,
-            duration=info.duration,
+            language=detected_lang,
+            language_probability=lang_prob,
+            duration=duration,
             processing_time=processing_time
         )
 
@@ -195,7 +214,7 @@ class WhisperTranscriber:
             duration=result.duration,
             processing_time=f"{processing_time:.2f}s",
             num_segments=len(segments),
-            detected_language=info.language
+            detected_language=detected_lang
         )
 
         return result
