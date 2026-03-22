@@ -123,8 +123,10 @@ class App {
         // 最后一次获取片段
         await this.fetchFragments();
 
-        // 更新按钮状态
+        // 统一设置最终状态
         this.elements.recordBtn.disabled = false;
+        this.elements.recordBtn.querySelector('.btn-text').textContent = '开始录音';
+        this.elements.recordingStatus.querySelector('.status-text').textContent = '录音结束';
         this.updateButtonStates();
     }
 
@@ -153,10 +155,7 @@ class App {
      */
     handleRecordingStop() {
         this.isRecording = false;
-
-        // 更新 UI - 最终状态由 stopRecording 设置
-        this.elements.recordBtn.querySelector('.btn-text').textContent = '开始录音';
-        this.elements.recordingStatus.querySelector('.status-text').textContent = '录音结束';
+        // 文本状态由 stopRecording() 统一管理，避免 disabled 期间文本不一致
     }
 
     /**
