@@ -6,7 +6,8 @@ from fastapi import (
     UploadFile,
     File,
     HTTPException,
-    Query
+    Query,
+    BackgroundTasks
 )
 from fastapi.responses import PlainTextResponse, FileResponse
 from typing import Optional, List
@@ -46,22 +47,82 @@ def init_processors(
     record_manager = records
 
 
+# ==================== Background Tasks ====================
+
+async def _transcribe_audio_background(
+    record_id: str,
+    audio_path: str,
+    transcriber: WhisperTranscriber,
+    record_manager: RecordManager
+) -> None:
+    """
+    Background task for audio transcription.
+
+    Args:
+        record_id: Record ID to update
+        audio_path: Path to audio file
+        transcriber: Transcriber instance (passed explicitly to avoid global issues)
+        record_manager: Record manager instance
+    """
+    try:
+        # Update status to transcribing
+        await record_manager.update_record(
+            record_id,
+            status=RecordStatus.TRANSCRIBING
+        )
+
+        logger.info(
+            "Background transcription started",
+            record_id=record_id
+        )
+
+        # Execute transcription
+        result = await transcriber.transcribe(audio_path)
+
+        # Update with result
+        await record_manager.update_record(
+            record_id,
+            raw_text=result.text,
+            status=RecordStatus.TRANSCRIBED
+        )
+
+        logger.info(
+            "Background transcription complete",
+            record_id=record_id,
+            duration=result.duration,
+            processing_time=f"{result.processing_time:.2f}s"
+        )
+
+    except Exception as e:
+        logger.error(
+            "Background transcription failed",
+            record_id=record_id,
+            error=str(e)
+        )
+        await record_manager.update_record(
+            record_id,
+            status=RecordStatus.FAILED
+        )
+
+
 # ==================== Audio Upload Endpoint ====================
 
 @router.post("/audio/upload", response_model=dict)
 async def upload_audio(
     file: UploadFile = File(...),
-    auto_transcribe: bool = True
+    auto_transcribe: bool = True,
+    background_tasks: BackgroundTasks = None
 ) -> dict:
     """
     Upload an audio file for processing
 
     Args:
         file: Audio file (wav, mp3, m4a, flac, ogg, webm)
-        auto_transcribe: Automatically transcribe after upload
+        auto_transcribe: Automatically transcribe after upload (async)
+        background_tasks: FastAPI background tasks
 
     Returns:
-        Upload status with record_id
+        Upload status with record_id (transcription happens in background)
     """
     # Validate file
     if not file.filename:
@@ -87,7 +148,7 @@ async def upload_audio(
         settings.audio_records_path
     )
 
-    # Create record
+    # Create record with PENDING status
     record = await record_manager.create_record(
         audio_path=str(audio_path),
         duration=wav_metadata.duration,
@@ -100,56 +161,28 @@ async def upload_audio(
         duration=wav_metadata.duration
     )
 
-    # Sync transcription (not using background tasks to avoid global variable issues)
-    transcription_text = ""
-    transcription_status = RecordStatus.PENDING
-
-    if auto_transcribe:
-        try:
-            # Update status to transcribing
-            await record_manager.update_record(
-                record.id,
-                status=RecordStatus.TRANSCRIBING
-            )
-
-            # Execute transcription
-            result = await transcriber.transcribe(str(audio_path))
-            transcription_text = result.text
-            transcription_status = RecordStatus.TRANSCRIBED
-
-            # Update transcription result
-            await record_manager.update_record(
-                record.id,
-                raw_text=transcription_text,
-                status=transcription_status
-            )
-
-            logger.info(
-                "Audio transcribed",
-                record_id=record.id,
-                status=transcription_status.value
-            )
-
-        except Exception as e:
-            logger.error(
-                "Transcription failed",
-                record_id=record.id,
-                error=str(e)
-            )
-            await record_manager.update_record(
-                record.id,
-                status=RecordStatus.FAILED
-            )
-            transcription_status = RecordStatus.FAILED
-
-    return {
+    # Prepare response
+    response_data = {
         "status": "uploaded",
         "record_id": record.id,
         "duration": wav_metadata.duration,
-        "auto_transcribe": auto_transcribe,
-        "transcription_status": transcription_status.value,
-        "transcription_text": transcription_text if transcription_text else ""
+        "transcription_status": RecordStatus.PENDING.value
     }
+
+    # Schedule background transcription
+    if auto_transcribe and background_tasks:
+        # Pass instances explicitly to avoid global variable issues
+        background_tasks.add_task(
+            _transcribe_audio_background,
+            record.id,
+            str(audio_path),
+            transcriber,
+            record_manager
+        )
+        response_data["transcription_status"] = RecordStatus.TRANSCRIBING.value
+        logger.info("Scheduled background transcription", record_id=record.id)
+
+    return response_data
 
 
 # ==================== Record Endpoints ====================
@@ -175,6 +208,25 @@ async def get_record(record_id: str) -> dict:
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
     return record.to_dict()
+
+
+@router.get("/records/{record_id}/status", response_model=dict)
+async def get_record_status(record_id: str) -> dict:
+    """
+    Get record transcription status (for polling).
+
+    Returns minimal data for efficient polling.
+    """
+    record = await record_manager.get_record(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    return {
+        "record_id": record.id,
+        "status": record.status.value,
+        "raw_text": record.raw_text if record.status == RecordStatus.TRANSCRIBED else None,
+        "duration": record.duration
+    }
 
 
 @router.put("/records/{record_id}", response_model=dict)

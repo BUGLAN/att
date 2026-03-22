@@ -6,15 +6,19 @@ class App {
         // 状态
         this.currentRecordId = null;  // 当前录音的 record ID
         this.records = [];             // 所有记录列表
+        this.pendingRecords = [];      // 临时记录列表（乐观更新）
         this.isRecording = false;
         this.selectMode = false;       // 选择模式
         this.selectedRecords = new Set(); // 选中的记录 ID
         this.recordingStartTime = null; // 录音开始时间
+        this.pollingIntervals = new Map(); // 轮询管理
+        this.processingTimes = new Map(); // 记录转录耗时
 
         // 录音器
         this.recorder = new AudioRecorder({
             onRecordingStart: () => this.handleRecordingStart(),
             onRecordingStop: () => this.handleRecordingStop(),
+            onUploadStarted: () => this.handleUploadStarted(),
             onUploadComplete: (result) => this.handleUploadComplete(result),
             onError: (error) => this.handleError(error)
         });
@@ -48,6 +52,11 @@ class App {
 
         // 加载历史记录
         this.fetchRecords();
+
+        // 页面卸载时清理轮询
+        window.addEventListener('beforeunload', () => {
+            this.stopAllPolling();
+        });
     }
 
     /**
@@ -126,18 +135,16 @@ class App {
      * 停止录音
      */
     async stopRecording() {
-        // 显示处理中状态
+        // 更新 UI 状态
         this.elements.recordBtn.classList.remove('recording');
-        this.elements.recordBtn.querySelector('.btn-text').textContent = '处理中...';
+        this.elements.recordBtn.querySelector('.btn-text').textContent = '开始录音';
         this.elements.recordingStatus.classList.remove('recording');
-        this.elements.recordingStatus.querySelector('.status-text').textContent = '上传转写中...';
-        this.elements.recordBtn.disabled = true;
+        this.elements.recordingStatus.querySelector('.status-text').textContent = '上传中...';
+        // 不禁用按钮，允许立即开始新录音
 
         await this.recorder.stop();
 
-        // 统一设置最终状态
-        this.elements.recordBtn.disabled = false;
-        this.elements.recordBtn.querySelector('.btn-text').textContent = '开始录音';
+        // 立即恢复状态，允许新录音
         this.elements.recordingStatus.querySelector('.status-text').textContent = '准备就绪';
         this.updateButtonStates();
     }
@@ -160,30 +167,60 @@ class App {
      */
     handleRecordingStop() {
         this.isRecording = false;
-        // 文本状态由 stopRecording() 统一管理
+
+        // 乐观更新：立即添加临时记录到列表
+        const tempRecord = {
+            id: 'temp_' + Date.now(),
+            isTemp: true,  // 标记为临时记录
+            status: 'pending',
+            duration: this.recorder.getDuration(),
+            created_at: new Date().toISOString(),
+            raw_text: '',
+            optimized_text: ''
+        };
+        this.pendingRecords.unshift(tempRecord);
+        this.renderRecords();  // 立即渲染
     }
 
     /**
-     * 上传完成回调
+     * 上传开始回调（上传发起时触发，不等待转录）
+     */
+    handleUploadStarted() {
+        // 清空文本显示，准备接收新录音
+        this.elements.textDisplay.value = '';
+        this.recordingStartTime = Date.now();
+        this.elements.transcriptionTime.textContent = '耗时: 0.00s';
+        // 注意：不在这里 fetchRecords()，因为记录还没创建
+        // 临时记录已在 handleRecordingStop() 中添加
+    }
+
+    /**
+     * 上传完成回调（上传完成，但转录可能还在进行）
      */
     async handleUploadComplete(result) {
         console.log('Upload complete:', result);
         this.currentRecordId = result.record_id;
 
-        // 计算耗时
-        if (this.recordingStartTime) {
-            const elapsed = (Date.now() - this.recordingStartTime) / 1000;
-            this.elements.transcriptionTime.textContent = `耗时: ${elapsed.toFixed(2)}s`;
+        // 移除最早的临时记录（乐观更新完成）
+        const tempIndex = this.pendingRecords.findIndex(r => r.isTemp);
+        if (tempIndex !== -1) {
+            this.pendingRecords.splice(tempIndex, 1);
         }
 
-        // 更新文本显示
-        if (result.transcription_text) {
-            this.elements.textDisplay.value = result.transcription_text;
-        }
-
-        // 刷新记录列表
+        // 刷新记录列表，显示"转写中"状态
         await this.fetchRecords();
-        this.updateButtonStates();
+
+        // 如果转录还在进行中，开始轮询
+        if (result.transcription_status === 'transcribing' ||
+            result.transcription_status === 'pending') {
+            this.startPolling(result.record_id);
+        } else if (result.transcription_status === 'transcribed' && result.raw_text) {
+            // 如果已经转录完成（快速返回），直接显示
+            this.elements.textDisplay.value = result.raw_text || '';
+            this.updateButtonStates();
+        }
+
+        this.showToast('上传完成，正在转写...');
     }
 
     /**
@@ -203,16 +240,40 @@ class App {
      * 渲染记录列表
      */
     renderRecords() {
-        // 更新记录数量
-        this.elements.recordCount.textContent = `${this.records.length} 条记录`;
+        // 合并临时记录和真实记录（临时记录在前）
+        const allRecords = [...this.pendingRecords, ...this.records];
 
-        if (this.records.length === 0) {
+        // 更新记录数量
+        this.elements.recordCount.textContent = `${allRecords.length} 条记录`;
+
+        if (allRecords.length === 0) {
             this.elements.recordsList.innerHTML = '<p class="placeholder">暂无录音记录</p>';
             return;
         }
 
         // 渲染记录卡片
-        this.elements.recordsList.innerHTML = this.records.map(r => `
+        this.elements.recordsList.innerHTML = allRecords.map(r => {
+            const isTranscribing = r.status === 'pending' || r.status === 'transcribing';
+            const isCompleted = r.status === 'transcribed' || r.status === 'optimized';
+            const isFailed = r.status === 'failed';
+
+            // 状态显示
+            let statusBadge = '';
+            if (isTranscribing) {
+                statusBadge = '<span class="record-status-badge transcribing"><span class="spinner-small"></span>转写中</span>';
+            } else if (isFailed) {
+                statusBadge = '<span class="record-status-badge failed">转写失败</span>';
+            }
+
+            // 文本内容
+            let textContent = '正在转写...';
+            if (isCompleted) {
+                textContent = this.escapeHtml(r.optimized_text || r.raw_text || '');
+            } else if (isFailed) {
+                textContent = '转写失败，请重试';
+            }
+
+            return `
             <div class="record-item ${this.selectMode ? 'select-mode' : ''}" data-id="${r.id}">
                 <input type="checkbox"
                        class="record-checkbox"
@@ -220,19 +281,35 @@ class App {
                        ${this.selectedRecords.has(r.id) ? 'checked' : ''}
                        style="display: ${this.selectMode ? 'block' : 'none'};">
                 <div class="record-audio">
-                    <button class="audio-play-btn" data-id="${r.id}" title="试听">
-                        <span class="play-icon">▶</span>
-                    </button>
+                    ${isTranscribing ? `
+                        <span class="transcribing-spinner" title="转写中"></span>
+                    ` : `
+                        <button class="audio-play-btn" data-id="${r.id}" title="试听" ${isFailed ? 'disabled' : ''}>
+                            <span class="play-icon">▶</span>
+                        </button>
+                    `}
                 </div>
                 <div class="record-content">
-                    <div class="record-text">${this.escapeHtml(r.optimized_text || r.raw_text || '处理中...')}</div>
+                    <div class="record-text">${textContent}</div>
+                    ${statusBadge}
                 </div>
-                <div class="record-actions">
-                    <span class="record-duration">${this.formatDuration(r.duration)}</span>
-                    <span class="record-time">${this.formatDateTime(r.created_at)}</span>
+                <div class="record-meta">
+                    <div class="record-times">
+                        <span class="record-duration" title="音频时长">${this.formatDuration(r.duration)}</span>
+                        ${this.processingTimes.has(r.id) ? `
+                            <span class="record-processing" title="转录耗时">⏱${this.processingTimes.get(r.id).toFixed(1)}s</span>
+                        ` : ''}
+                        <span class="record-time" title="生成时间">${this.formatDateTime(r.created_at)}</span>
+                    </div>
+                    ${isCompleted ? `
+                        <div class="record-actions">
+                            <button class="btn-record-action btn-optimize" data-id="${r.id}" title="AI优化文本">✨优化</button>
+                            <button class="btn-record-action btn-copy" data-id="${r.id}" title="复制文本">复制</button>
+                        </div>
+                    ` : ''}
                 </div>
             </div>
-        `).join('');
+        `}).join('');
 
         // 绑定事件
         this.bindRecordEvents();
@@ -246,7 +323,10 @@ class App {
         this.elements.recordsList.querySelectorAll('.record-item').forEach(item => {
             item.addEventListener('click', (e) => {
                 // 忽略播放按钮和设置按钮点击
-                if (e.target.closest('.audio-play-btn') || e.target.closest('.settings-btn') || e.target.closest('.record-checkbox')) return;
+                if (e.target.closest('.audio-play-btn') ||
+                    e.target.closest('.settings-btn') ||
+                    e.target.closest('.record-checkbox') ||
+                    e.target.closest('.btn-record-action')) return;
 
                 const recordId = item.dataset.id;
 
@@ -275,6 +355,24 @@ class App {
                 e.stopPropagation();
                 const recordId = btn.dataset.id;
                 this.toggleAudioPlayback(recordId, btn);
+            });
+        });
+
+        // 优化按钮
+        this.elements.recordsList.querySelectorAll('.btn-optimize').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const recordId = btn.dataset.id;
+                await this.optimizeRecord(recordId);
+            });
+        });
+
+        // 复制按钮
+        this.elements.recordsList.querySelectorAll('.btn-copy').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const recordId = btn.dataset.id;
+                await this.copyRecordText(recordId);
             });
         });
     }
@@ -536,6 +634,48 @@ class App {
     }
 
     /**
+     * 优化指定记录（从历史记录中调用）
+     */
+    async optimizeRecord(recordId) {
+        const record = this.records.find(r => r.id === recordId);
+        if (!record || !record.raw_text) {
+            this.showToast('暂无文本可优化');
+            return;
+        }
+
+        // 找到对应的按钮并显示加载状态
+        const btn = document.querySelector(`.btn-optimize[data-id="${recordId}"]`);
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-small"></span>优化中';
+        }
+
+        // 更新当前记录 ID
+        this.currentRecordId = recordId;
+        this.elements.textDisplay.value = record.raw_text;
+
+        try {
+            const response = await fetch(`/api/records/${recordId}/optimize?style=default`, {
+                method: 'POST'
+            });
+
+            if (!response.ok) {
+                throw new Error('Optimization failed');
+            }
+
+            const result = await response.json();
+            this.elements.textDisplay.value = result.optimized_text;
+            this.showToast('优化完成');
+
+            // 刷新记录列表
+            await this.fetchRecords();
+
+        } catch (error) {
+            this.handleError(error);
+        }
+    }
+
+    /**
      * 更新按钮状态
      */
     updateButtonStates() {
@@ -565,6 +705,88 @@ class App {
     handleError(error) {
         console.error('Error:', error);
         this.showToast('发生错误: ' + error.message);
+    }
+
+    /**
+     * 开始轮询转录状态
+     */
+    startPolling(recordId) {
+        // 清除可能存在的旧轮询
+        this.stopPolling(recordId);
+
+        console.log('Start polling for record:', recordId);
+
+        const pollInterval = setInterval(async () => {
+            try {
+                const response = await fetch(`/api/records/${recordId}/status`);
+                if (!response.ok) {
+                    console.error('Polling failed:', response.status);
+                    return;
+                }
+
+                const data = await response.json();
+                console.log('Poll result:', data.status);
+
+                if (data.status === 'transcribed') {
+                    // 转录完成
+                    this.stopPolling(recordId);
+
+                    // 计算并存储耗时
+                    if (this.recordingStartTime) {
+                        const elapsed = (Date.now() - this.recordingStartTime) / 1000;
+                        this.processingTimes.set(recordId, elapsed);
+                    }
+
+                    // 如果是当前记录，更新文本显示
+                    if (this.currentRecordId === recordId) {
+                        this.elements.textDisplay.value = data.raw_text || '';
+
+                        // 显示耗时
+                        const elapsed = this.processingTimes.get(recordId);
+                        if (elapsed) {
+                            this.elements.transcriptionTime.textContent = `耗时: ${elapsed.toFixed(1)}s`;
+                        }
+
+                        this.updateButtonStates();
+                    }
+
+                    // 刷新记录列表
+                    await this.fetchRecords();
+                    this.showToast('转写完成');
+
+                } else if (data.status === 'failed') {
+                    // 转录失败
+                    this.stopPolling(recordId);
+                    this.showToast('转写失败');
+                    await this.fetchRecords();
+                }
+
+            } catch (error) {
+                console.error('Polling error:', error);
+            }
+        }, 2000);  // 每 2 秒轮询一次
+
+        this.pollingIntervals.set(recordId, pollInterval);
+    }
+
+    /**
+     * 停止轮询
+     */
+    stopPolling(recordId) {
+        if (this.pollingIntervals.has(recordId)) {
+            clearInterval(this.pollingIntervals.get(recordId));
+            this.pollingIntervals.delete(recordId);
+        }
+    }
+
+    /**
+     * 停止所有轮询
+     */
+    stopAllPolling() {
+        for (const interval of this.pollingIntervals.values()) {
+            clearInterval(interval);
+        }
+        this.pollingIntervals.clear();
     }
 
     /**

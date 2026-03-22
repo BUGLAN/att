@@ -965,13 +965,6 @@ button:focus-visible {
     min-width: 0;
 }
 
-.record-time {
-    font-family: var(--font-mono);
-    font-size: 0.6875rem;
-    color: var(--text-muted);
-}
-}
-
 .record-text {
     font-size: 0.875rem;
     color: var(--text-secondary);
@@ -983,7 +976,7 @@ button:focus-visible {
 }
 
 /* Record Actions */
-.record-actions {
+.record-meta {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
@@ -991,11 +984,33 @@ button:focus-visible {
     flex-shrink: 0;
 }
 
-.record-duration {
+.record-times {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
     font-family: var(--font-mono);
-    font-size: 0.8125rem;
-    color: var(--text-secondary);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.record-times .record-duration {
     font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.record-times .record-time {
+    font-size: 0.6875rem;
+}
+
+.record-times .record-processing {
+    color: var(--accent);
+}
+
+.record-actions {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-xs);
 }
 
 /* ============================================
@@ -1136,4 +1151,91 @@ button:focus-visible {
 
 .record-item.select-mode:hover {
     background: var(--bg-card);
+}
+
+/* ============================================
+   Transcribing Status
+   ============================================ */
+
+/* Transcribing Spinner */
+.transcribing-spinner {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Small Spinner for Status Badge */
+.spinner-small {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--border);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-right: var(--space-xs);
+}
+
+/* Record Status Badge */
+.record-status-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-top: var(--space-xs);
+    padding: 2px var(--space-sm);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    border-radius: var(--radius-sm);
+}
+
+.record-status-badge.transcribing {
+    background: var(--accent-dim);
+    color: var(--accent);
+}
+
+.record-status-badge.failed {
+    background: rgba(248, 113, 113, 0.1);
+    color: var(--danger);
+}
+
+/* ============================================
+   Record Action Buttons
+   ============================================ */
+
+.btn-record-action {
+    padding: 2px var(--space-sm);
+    font-size: 0.6875rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    white-space: nowrap;
+}
+
+.btn-record-action:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.btn-record-action.btn-optimize:hover {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: rgba(201, 162, 39, 0.3);
+}
+
+.btn-record-action.btn-copy:hover {
+    background: rgba(74, 222, 128, 0.1);
+    color: var(--success);
+    border-color: rgba(74, 222, 128, 0.2);
 }

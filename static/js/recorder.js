@@ -1,6 +1,7 @@
 /**
  * 录音模块 - 使用 MediaRecorder API
  * 策略：录音时收集 chunks，停止时合并上传完整音频
+ * 异步上传：上传开始后立即返回，不等待转录完成
  */
 class AudioRecorder {
     constructor(options = {}) {
@@ -14,6 +15,7 @@ class AudioRecorder {
         this.audioChunks = []; // 收集音频片段
 
         // 回调函数
+        this.onUploadStarted = options.onUploadStarted || (() => {});
         this.onUploadComplete = options.onUploadComplete || (() => {});
         this.onRecordingStart = options.onRecordingStart || (() => {});
         this.onRecordingStop = options.onRecordingStop || (() => {});
@@ -102,15 +104,18 @@ class AudioRecorder {
                     this.mediaStream = null;
                 }
 
-                // 合并并上传所有音频片段
+                // 合并并上传音频片段（不等待转录完成）
                 if (this.audioChunks.length > 0) {
                     console.log('Uploading', this.audioChunks.length, 'chunks...');
-                    await this._uploadMergedAudio();
+                    // 触发上传开始回调
+                    this.onUploadStarted();
+                    // 异步上传，不阻塞
+                    this._uploadMergedAudio();
                 }
 
                 this.onRecordingStop();
                 console.log('Recording stopped');
-                resolve();
+                resolve();  // 立即 resolve，不等待上传完成
             };
 
             this.mediaRecorder.stop();
