@@ -8,11 +8,15 @@ class App {
         this.records = [];             // 所有记录列表
         this.pendingRecords = [];      // 临时记录列表（乐观更新）
         this.isRecording = false;
+        this.isTranscribing = false;   // 转写中状态
         this.selectMode = false;       // 选择模式
         this.selectedRecords = new Set(); // 选中的记录 ID
         this.recordingStartTime = null; // 录音开始时间
         this.pollingIntervals = new Map(); // 轮询管理
         this.processingTimes = new Map(); // 记录转录耗时
+
+        // WebSocket 客户端
+        this.wsClient = null;
 
         // 录音器
         this.recorder = new AudioRecorder({
@@ -41,7 +45,13 @@ class App {
             selectToolbar: document.getElementById('selectToolbar'),
             selectAllCheckbox: document.getElementById('selectAllCheckbox'),
             deleteSelectedBtn: document.getElementById('deleteSelectedBtn'),
-            cancelSelectBtn: document.getElementById('cancelSelectBtn')
+            cancelSelectBtn: document.getElementById('cancelSelectBtn'),
+            // 侧边栏元素
+            sidebar: document.getElementById('sidebar'),
+            sidebarToggle: document.getElementById('sidebarToggle'),
+            connectionStatus: document.getElementById('connectionStatus'),
+            clientCount: document.getElementById('clientCount'),
+            clientCountNum: document.getElementById('clientCountNum')
         };
 
         // 当前播放的音频
@@ -50,13 +60,136 @@ class App {
         // 绑定事件
         this.bindEvents();
 
+        // 初始化 WebSocket
+        this.initWebSocket();
+
+        // 初始化侧边栏
+        this.initSidebar();
+
         // 加载历史记录
         this.fetchRecords();
 
-        // 页面卸载时清理轮询
+        // 页面卸载时清理
         window.addEventListener('beforeunload', () => {
             this.stopAllPolling();
+            if (this.wsClient) {
+                this.wsClient.disconnect();
+            }
         });
+    }
+
+    /**
+     * 初始化 WebSocket 客户端
+     */
+    initWebSocket() {
+        this.wsClient = new WebSocketClient({
+            onConnect: () => this.handleWSConnect(),
+            onDisconnect: () => this.handleWSDisconnect(),
+            onRecordingCommand: (data) => this.handleRecordingCommand(data),
+            onStatusUpdate: (data) => this.handleStatusUpdate(data),
+            onError: (error) => console.error('WebSocket error:', error)
+        });
+
+        this.wsClient.connect();
+    }
+
+    /**
+     * 初始化侧边栏
+     */
+    initSidebar() {
+        // 侧边栏折叠
+        this.elements.sidebarToggle.addEventListener('click', () => {
+            this.elements.sidebar.classList.toggle('collapsed');
+        });
+
+        // 导航项点击
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.preventDefault();
+                const page = item.dataset.page;
+                this.switchPage(page);
+
+                // 更新活动状态
+                document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+                item.classList.add('active');
+            });
+        });
+    }
+
+    /**
+     * 切换页面（预留，暂时只显示首页）
+     */
+    switchPage(page) {
+        console.log('Switch to page:', page);
+        // TODO: 实现页面切换逻辑
+    }
+
+    /**
+     * WebSocket 连接成功
+     */
+    handleWSConnect() {
+        const indicator = this.elements.connectionStatus.querySelector('.status-indicator');
+        const text = this.elements.connectionStatus.querySelector('.status-text');
+        indicator.classList.remove('disconnected');
+        indicator.classList.add('connected');
+        text.textContent = '已连接';
+    }
+
+    /**
+     * WebSocket 断开连接
+     */
+    handleWSDisconnect() {
+        const indicator = this.elements.connectionStatus.querySelector('.status-indicator');
+        const text = this.elements.connectionStatus.querySelector('.status-text');
+        indicator.classList.remove('connected');
+        indicator.classList.add('disconnected');
+        text.textContent = '未连接';
+
+        // 隐藏客户端数量
+        this.elements.clientCount.style.display = 'none';
+    }
+
+    /**
+     * 收到录音命令
+     */
+    async handleRecordingCommand(data) {
+        console.log('Received recording command:', data.action);
+
+        if (data.action === 'start' && !this.isRecording) {
+            await this.startRecording();
+        } else if (data.action === 'stop' && this.isRecording) {
+            await this.stopRecording();
+        }
+    }
+
+    /**
+     * 状态更新
+     */
+    handleStatusUpdate(data) {
+        // 更新客户端数量显示
+        if (data.connected_clients !== undefined) {
+            if (data.connected_clients > 1) {
+                this.elements.clientCount.style.display = 'flex';
+                this.elements.clientCountNum.textContent = data.connected_clients;
+            } else {
+                this.elements.clientCount.style.display = 'none';
+            }
+        }
+    }
+
+    /**
+     * 广播状态到 WebSocket
+     */
+    broadcastStatus(status = {}) {
+        if (this.wsClient && this.wsClient.isConnected) {
+            this.wsClient.sendStatusUpdate({
+                recording: this.isRecording,
+                transcribing: this.isTranscribing,
+                record_id: this.currentRecordId,
+                duration: this.recorder ? this.recorder.getDuration() : 0,
+                ...status
+            });
+        }
     }
 
     /**
@@ -160,6 +293,9 @@ class App {
         this.elements.recordBtn.querySelector('.btn-text').textContent = '停止录音';
         this.elements.recordingStatus.classList.add('recording');
         this.elements.recordingStatus.querySelector('.status-text').textContent = '正在录音...';
+
+        // 广播状态
+        this.broadcastStatus({ recording: true });
     }
 
     /**
@@ -180,6 +316,9 @@ class App {
         };
         this.pendingRecords.unshift(tempRecord);
         this.renderRecords();  // 立即渲染
+
+        // 广播状态
+        this.broadcastStatus({ recording: false });
     }
 
     /**
@@ -716,6 +855,10 @@ class App {
 
         console.log('Start polling for record:', recordId);
 
+        // 设置转写中状态
+        this.isTranscribing = true;
+        this.broadcastStatus({ transcribing: true, record_id: recordId });
+
         const pollInterval = setInterval(async () => {
             try {
                 const response = await fetch(`/api/records/${recordId}/status`);
@@ -730,6 +873,7 @@ class App {
                 if (data.status === 'transcribed') {
                     // 转录完成
                     this.stopPolling(recordId);
+                    this.isTranscribing = false;
 
                     // 计算并存储耗时
                     if (this.recordingStartTime) {
@@ -754,11 +898,18 @@ class App {
                     await this.fetchRecords();
                     this.showToast('转写完成');
 
+                    // 广播状态
+                    this.broadcastStatus({ transcribing: false });
+
                 } else if (data.status === 'failed') {
                     // 转录失败
                     this.stopPolling(recordId);
+                    this.isTranscribing = false;
                     this.showToast('转写失败');
                     await this.fetchRecords();
+
+                    // 广播状态
+                    this.broadcastStatus({ transcribing: false });
                 }
 
             } catch (error) {

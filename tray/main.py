@@ -1,0 +1,352 @@
+"""
+System Tray Application for Audio-to-Text
+Main entry point for the tray tool
+"""
+import asyncio
+import platform
+import sys
+import logging
+from pathlib import Path
+from typing import Optional
+
+# Setup path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+except ImportError:
+    print("Required packages: pip install pystray Pillow")
+    sys.exit(1)
+
+from tray.websocket_client import TrayWebSocketClient
+from tray.hotkey import create_hotkey_listener
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Platform detection
+IS_MACOS = platform.system() == "Darwin"
+
+
+class TrayApp:
+    """
+    System tray application for Audio-to-Text.
+
+    Features:
+    - Global hotkey for recording (Cmd+Shift+R on macOS, Ctrl+Shift+R on Windows)
+    - WebSocket connection to backend
+    - Status indicator in tray icon
+    """
+
+    def __init__(self, server_url: str = "ws://localhost:8000/api/ws/tray"):
+        """
+        Initialize tray application.
+
+        Args:
+            server_url: WebSocket server URL
+        """
+        self.server_url = server_url
+
+        # Components
+        self.ws_client: Optional[TrayWebSocketClient] = None
+        self.hotkey_listener = None
+        self.tray_icon: Optional[pystray.Icon] = None
+
+        # State
+        self.is_recording = False
+        self.is_transcribing = False
+        self.is_connected = False
+        self.connected_clients = 0
+
+        # Event loop
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws_task: Optional[asyncio.Task] = None
+
+    def _create_icon_image(self, status: str = "idle") -> Image.Image:
+        """
+        Create tray icon image.
+
+        Args:
+            status: Icon status (idle, recording, transcribing, disconnected)
+
+        Returns:
+            PIL Image for tray icon
+        """
+        # Icon size (32x32 for most platforms)
+        size = 32
+
+        # Colors for different states
+        colors = {
+            "idle": "#52525b",      # Gray
+            "recording": "#f87171",  # Red
+            "transcribing": "#c9a227",  # Gold
+            "disconnected": "#71717a"  # Lighter gray
+        }
+
+        color = colors.get(status, colors["idle"])
+
+        # Create image
+        image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+
+        # Draw microphone icon
+        center = size // 2
+        radius = size // 3
+
+        # Outer circle
+        draw.ellipse(
+            [center - radius, center - radius, center + radius, center + radius],
+            fill=color
+        )
+
+        # Inner circle (microphone hole)
+        inner_radius = radius // 2
+        draw.ellipse(
+            [center - inner_radius, center - inner_radius, center + inner_radius, center + inner_radius],
+            fill="#000000"
+        )
+
+        # Base line
+        draw.rectangle(
+            [center - radius + 2, center + radius - 4, center + radius - 2, center + radius + 2],
+            fill=color
+        )
+
+        return image
+
+    def _create_menu(self) -> pystray.Menu:
+        """Create tray menu."""
+        return pystray.Menu(
+            pystray.MenuItem(
+                lambda item: f"状态: {'录音中' if self.is_recording else '空闲'}",
+                None,
+                enabled=False
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                lambda item: f"WebSocket: {'已连接' if self.is_connected else '未连接'}",
+                None,
+                enabled=False
+            ),
+            pystray.MenuItem(
+                lambda item: f"快捷键: {'⌘⇧R' if IS_MACOS else 'Ctrl+Shift+R'}",
+                None,
+                enabled=False
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("重连", self._reconnect),
+            pystray.MenuItem("退出", self._quit)
+        )
+
+    def _update_icon(self) -> None:
+        """Update tray icon based on current state."""
+        if not self.tray_icon:
+            return
+
+        if not self.is_connected:
+            status = "disconnected"
+        elif self.is_recording:
+            status = "recording"
+        elif self.is_transcribing:
+            status = "transcribing"
+        else:
+            status = "idle"
+
+        try:
+            self.tray_icon.icon = self._create_icon_image(status)
+            self.tray_icon.menu = self._create_menu()
+        except Exception as e:
+            logger.error(f"Failed to update icon: {e}")
+
+    def _on_status_update(self, status: dict) -> None:
+        """Handle status update from server."""
+        self.is_recording = status.get("recording", False)
+        self.is_transcribing = status.get("transcribing", False)
+        self.connected_clients = status.get("connected_clients", 0)
+
+        logger.info(f"Status update: recording={self.is_recording}, transcribing={self.is_transcribing}")
+
+        # Update icon
+        if self.tray_icon:
+            self._update_icon()
+
+    def _on_connected(self) -> None:
+        """Handle WebSocket connected."""
+        self.is_connected = True
+        logger.info("WebSocket connected")
+        self._update_icon()
+
+    def _on_disconnected(self) -> None:
+        """Handle WebSocket disconnected."""
+        self.is_connected = False
+        logger.info("WebSocket disconnected")
+        self._update_icon()
+
+    async def _on_hotkey_press(self) -> None:
+        """Handle hotkey press - start recording."""
+        if self.is_recording:
+            logger.info("Already recording, ignoring hotkey")
+            return
+
+        logger.info("Hotkey pressed - starting recording")
+
+        if self.ws_client and self.ws_client.is_connected:
+            await self.ws_client.send_recording_command("start")
+            self.is_recording = True
+            self._update_icon()
+
+    async def _on_hotkey_release(self) -> None:
+        """Handle hotkey release - stop recording."""
+        if not self.is_recording:
+            return
+
+        logger.info("Hotkey released - stopping recording")
+
+        if self.ws_client and self.ws_client.is_connected:
+            await self.ws_client.send_recording_command("stop")
+            self.is_recording = False
+            self._update_icon()
+
+    def _reconnect(self) -> None:
+        """Manually reconnect WebSocket."""
+        if self.loop and self.ws_client:
+            asyncio.run_coroutine_threadsafe(
+                self.ws_client.connect(),
+                self.loop
+            )
+
+    def _quit(self) -> None:
+        """Quit the application."""
+        logger.info("Quitting tray application")
+
+        # Stop hotkey listener
+        if self.hotkey_listener:
+            self.hotkey_listener.stop()
+
+        # Stop tray icon
+        if self.tray_icon:
+            self.tray_icon.stop()
+
+    async def _run_async(self) -> None:
+        """Run async components."""
+        logger.info("_run_async started")
+
+        # Initialize WebSocket client
+        self.ws_client = TrayWebSocketClient(
+            url=self.server_url,
+            on_status_update=self._on_status_update,
+            on_connected=self._on_connected,
+            on_disconnected=self._on_disconnected
+        )
+
+        # Connect to server
+        connected = await self.ws_client.connect()
+        logger.info(f"connect() returned: {connected}")
+
+        # Keep running
+        try:
+            while self.tray_icon and self.tray_icon.visible:
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            logger.info("_run_async cancelled")
+        finally:
+            # Cleanup
+            if self.ws_client:
+                await self.ws_client.disconnect()
+
+    def run(self) -> None:
+        """Run the tray application."""
+        logger.info("Starting Audio-to-Text tray application")
+        logger.info(f"Platform: {platform.system()}")
+        logger.info(f"Server URL: {self.server_url}")
+
+        # macOS accessibility permission reminder
+        if IS_MACOS:
+            print("\n" + "=" * 60)
+            print("⚠️  macOS 权限提示")
+            print("=" * 60)
+            print("如果快捷键不工作，请授予辅助功能权限：")
+            print("系统偏好设置 → 安全性与隐私 → 隐私 → 辅助功能")
+            print("添加 Terminal 或 Python 到允许列表")
+            print("=" * 60 + "\n")
+
+        # Create tray icon
+        self.tray_icon = pystray.Icon(
+            "att_tray",
+            icon=self._create_icon_image("disconnected"),
+            menu=self._create_menu()
+        )
+
+        # Start async loop in separate thread (creates event loop)
+        import threading
+
+        def run_async_loop():
+            logger.info("Async thread started")
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+
+            # Now create and set the hotkey listener with the loop
+            self.hotkey_listener = create_hotkey_listener(
+                on_press=self._on_hotkey_press,
+                on_release=self._on_hotkey_release
+            )
+            # Set the event loop for the hotkey listener
+            if hasattr(self.hotkey_listener, 'set_loop'):
+                self.hotkey_listener.set_loop(self.loop)
+
+            # Start hotkey listener
+            if not self.hotkey_listener.start():
+                logger.error("Failed to start hotkey listener")
+
+            logger.info("Running async loop...")
+            try:
+                self.loop.run_until_complete(self._run_async())
+            except Exception as e:
+                logger.error(f"Async loop error: {type(e).__name__}: {e}")
+            logger.info("Async thread ended")
+
+        async_thread = threading.Thread(target=run_async_loop, daemon=True)
+        async_thread.start()
+
+        # Wait a bit for the event loop to be created
+        import time
+        time.sleep(0.1)
+
+        # Run tray icon (blocking)
+        self.tray_icon.run()
+
+        logger.info("Tray application stopped")
+
+
+def main():
+    """Main entry point."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Audio-to-Text Tray Tool")
+    parser.add_argument(
+        "--server",
+        default="ws://localhost:8000/api/ws/tray",
+        help="WebSocket server URL (default: ws://localhost:8000/api/ws/tray)"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging"
+    )
+
+    args = parser.parse_args()
+
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    app = TrayApp(server_url=args.server)
+    app.run()
+
+
+if __name__ == "__main__":
+    main()

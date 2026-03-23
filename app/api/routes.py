@@ -7,11 +7,14 @@ from fastapi import (
     File,
     HTTPException,
     Query,
-    BackgroundTasks
+    BackgroundTasks,
+    WebSocket,
+    WebSocketDisconnect
 )
 from fastapi.responses import PlainTextResponse, FileResponse
 from typing import Optional, List
 from pathlib import Path
+from datetime import datetime
 import uuid
 
 from app.config import settings
@@ -20,6 +23,7 @@ from app.stt.transcriber import WhisperTranscriber
 from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
 from app.records.models import Record, RecordStatus, ExportFormat
+from app.services.websocket import manager as ws_manager
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -353,5 +357,92 @@ async def health_check() -> dict:
     return {
         "status": "healthy",
         "whisper_model": settings.whisper_model,
-        "deepseek_configured": bool(settings.deepseek_api_key)
+        "deepseek_configured": bool(settings.deepseek_api_key),
+        "ws_clients": ws_manager.client_count
     }
+
+
+# ==================== WebSocket Endpoints ====================
+
+@router.websocket("/ws/{client_type}")
+async def websocket_endpoint(websocket: WebSocket, client_type: str):
+    """
+    WebSocket endpoint for real-time communication.
+
+    Args:
+        websocket: WebSocket connection
+        client_type: Client type ("web" or "tray")
+    """
+    client_id = str(uuid.uuid4())
+
+    await ws_manager.connect(websocket, client_id, client_type)
+
+    try:
+        while True:
+            # 接收消息
+            data = await websocket.receive_json()
+
+            # 处理消息
+            await _handle_websocket_message(client_id, data)
+
+    except WebSocketDisconnect:
+        ws_manager.disconnect(client_id)
+        await ws_manager.broadcast_status()
+
+    except Exception as e:
+        logger.error(
+            "WebSocket error",
+            client_id=client_id,
+            error=str(e)
+        )
+        ws_manager.disconnect(client_id)
+        await ws_manager.broadcast_status()
+
+
+async def _handle_websocket_message(client_id: str, data: dict) -> None:
+    """
+    Handle incoming WebSocket messages.
+
+    Args:
+        client_id: Sender client ID
+        data: Message data
+    """
+    message_type = data.get("type")
+
+    if message_type == "recording":
+        # 录音控制命令（来自托盘工具）
+        action = data.get("action")  # "start" | "stop"
+        logger.info(
+            "Received recording command",
+            client_id=client_id,
+            action=action
+        )
+
+        # 广播给其他客户端（web 前端）
+        await ws_manager.broadcast({
+            "type": "recording_command",
+            "action": action,
+            "source": client_id,
+            "timestamp": int(datetime.now().timestamp() * 1000)
+        }, exclude=client_id)
+
+    elif message_type == "status_update":
+        # 状态更新（来自 web 客户端）
+        await ws_manager.update_status(
+            recording=data.get("recording", False),
+            transcribing=data.get("transcribing", False),
+            record_id=data.get("record_id"),
+            duration=data.get("duration", 0.0)
+        )
+
+    elif message_type == "ping":
+        # 心跳
+        await ws_manager.send_to_client(client_id, {"type": "pong"})
+
+    else:
+        logger.warning(
+            "Unknown WebSocket message type",
+            client_id=client_id,
+            message_type=message_type
+        )
+

@@ -8,75 +8,114 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙</text></svg>">
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <h1>Audio to Text</h1>
-            <p class="subtitle">实时录音 · AI优化 · 双击复制</p>
-        </header>
-
-        <!-- Recorder Section -->
-        <section class="recorder-section">
-            <div class="recorder-controls">
-                <button id="recordBtn" class="record-btn">
-                    <span class="btn-icon">●</span>
-                    <span class="btn-text">开始录音</span>
-                </button>
-                <div class="recording-status" id="recordingStatus">
-                    <span class="status-dot"></span>
-                    <span class="status-text">准备就绪</span>
-                    <span class="duration" id="duration">00:00</span>
-                </div>
+    <!-- 侧边栏 -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button class="sidebar-toggle" id="sidebarToggle" title="收起侧边栏">
+                <span class="toggle-icon">«</span>
+            </button>
+            <div class="sidebar-logo">
+                <span class="logo-icon">🎙</span>
+                <span class="logo-text">ATT</span>
             </div>
-        </section>
+        </div>
 
-        <!-- Transcription Section (hidden for async workflow) -->
-        <section class="transcription-section" style="display: none;">
-            <div class="section-header">
-                <h2>实时转写</h2>
-                <span class="transcription-time" id="transcriptionTime">耗时: 0.00s</span>
-                <div class="section-actions">
-                    <button id="optimizeBtn" class="btn btn-secondary" disabled>
-                        AI优化
+        <nav class="sidebar-nav">
+            <a href="#" class="nav-item active" data-page="home">
+                <span class="nav-icon">🏠</span>
+                <span class="nav-text">首页</span>
+            </a>
+            <a href="#" class="nav-item" data-page="settings">
+                <span class="nav-icon">⚙</span>
+                <span class="nav-text">设置</span>
+            </a>
+        </nav>
+
+        <!-- WebSocket 连接状态 -->
+        <div class="sidebar-status">
+            <div class="connection-status" id="connectionStatus">
+                <span class="status-indicator disconnected"></span>
+                <span class="status-text">未连接</span>
+            </div>
+            <div class="client-count" id="clientCount" style="display: none;">
+                <span class="client-icon">👥</span>
+                <span class="client-text">已连接: <span id="clientCountNum">1</span></span>
+            </div>
+        </div>
+    </aside>
+
+    <!-- 主内容区 -->
+    <main class="main-content" id="mainContent">
+        <div class="container">
+            <!-- Header -->
+            <header class="header">
+                <h1>Audio to Text</h1>
+                <p class="subtitle">实时录音 · AI优化 · 双击复制</p>
+            </header>
+
+            <!-- Recorder Section -->
+            <section class="recorder-section">
+                <div class="recorder-controls">
+                    <button id="recordBtn" class="record-btn">
+                        <span class="btn-icon">●</span>
+                        <span class="btn-text">开始录音</span>
                     </button>
-                    <button id="copyBtn" class="btn btn-secondary" disabled>
-                        复制
-                    </button>
+                    <div class="recording-status" id="recordingStatus">
+                        <span class="status-dot"></span>
+                        <span class="status-text">准备就绪</span>
+                        <span class="duration" id="duration">00:00</span>
+                    </div>
                 </div>
-            </div>
-            <div class="transcription-content">
-                <textarea
-                    id="textDisplay"
-                    class="text-display-editable"
-                    placeholder="点击「开始录音」后，转写文本将在此显示...&#10;&#10;双击可复制到剪贴板"
-                    rows="8"
-                ></textarea>
-            </div>
-        </section>
+            </section>
 
-        <!-- Records Section -->
-        <section class="records-section">
-            <div class="section-header">
-                <h2>历史录音</h2>
-                <div class="section-header-right">
-                    <span class="record-count" id="recordCount">0 条记录</span>
-                    <button class="header-settings-btn" id="headerSettingsBtn" title="设置">⚙</button>
+            <!-- Transcription Section (hidden for async workflow) -->
+            <section class="transcription-section" style="display: none;">
+                <div class="section-header">
+                    <h2>实时转写</h2>
+                    <span class="transcription-time" id="transcriptionTime">耗时: 0.00s</span>
+                    <div class="section-actions">
+                        <button id="optimizeBtn" class="btn btn-secondary" disabled>
+                            AI优化
+                        </button>
+                        <button id="copyBtn" class="btn btn-secondary" disabled>
+                            复制
+                        </button>
+                    </div>
                 </div>
-            </div>
-            <div class="records-list" id="recordsList">
-                <p class="placeholder">暂无录音记录</p>
-            </div>
-            <!-- Select Mode Toolbar (hidden by default) -->
-            <div class="select-toolbar" id="selectToolbar" style="display: none;">
-                <label class="select-all-label">
-                    <input type="checkbox" id="selectAllCheckbox">
-                    <span>全选</span>
-                </label>
-                <button class="btn-delete-selected" id="deleteSelectedBtn">删除选中</button>
-                <button class="btn-cancel-select" id="cancelSelectBtn">取消</button>
-            </div>
-        </section>
-    </div>
+                <div class="transcription-content">
+                    <textarea
+                        id="textDisplay"
+                        class="text-display-editable"
+                        placeholder="点击「开始录音」后，转写文本将在此显示...&#10;&#10;双击可复制到剪贴板"
+                        rows="8"
+                    ></textarea>
+                </div>
+            </section>
+
+            <!-- Records Section -->
+            <section class="records-section">
+                <div class="section-header">
+                    <h2>历史录音</h2>
+                    <div class="section-header-right">
+                        <span class="record-count" id="recordCount">0 条记录</span>
+                        <button class="header-settings-btn" id="headerSettingsBtn" title="设置">⚙</button>
+                    </div>
+                </div>
+                <div class="records-list" id="recordsList">
+                    <p class="placeholder">暂无录音记录</p>
+                </div>
+                <!-- Select Mode Toolbar (hidden by default) -->
+                <div class="select-toolbar" id="selectToolbar" style="display: none;">
+                    <label class="select-all-label">
+                        <input type="checkbox" id="selectAllCheckbox">
+                        <span>全选</span>
+                    </label>
+                    <button class="btn-delete-selected" id="deleteSelectedBtn">删除选中</button>
+                    <button class="btn-cancel-select" id="cancelSelectBtn">取消</button>
+                </div>
+            </section>
+        </div>
+    </main>
 
     <!-- Settings Popup (positioned via JS) -->
     <div class="settings-popup" id="settingsPopup" style="display: none;">
@@ -89,6 +128,7 @@
     <div class="toast" id="toast" style="display: none;"></div>
 
     <script src="/static/js/recorder.js"></script>
+    <script src="/static/js/websocket.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>
