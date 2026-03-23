@@ -49,7 +49,7 @@ python scripts/download_models.py --model large-v3
 - **`app/stt/transcriber.py`** - Faster-whisper integration with Chinese optimization config. Auto-detects Apple Silicon and uses Core ML acceleration
 - **`app/llm/optimizer.py`** - DeepSeek API client with multiple prompt templates
 - **`app/records/manager.py`** - JSON-based record storage (one recording = one record)
-- **`app/records/models.py`** - Data models: Record, RecordStatus, AudioMetadata, TranscriptionResult
+- **`app/records/models.py`** - Data models: Record (includes processing_time), RecordStatus (PENDING/TRANSCRIBING/TRANSCRIBED/OPTIMIZING/OPTIMIZED/FAILED), AudioMetadata, TranscriptionResult
 - **`app/services/websocket.py`** - WebSocket connection manager for real-time communication between tray tool and web frontend
 - **`app/config.py`** - Settings (env vars) and UserSettings (persistent user config in `data/settings.json`)
 
@@ -57,8 +57,8 @@ python scripts/download_models.py --model large-v3
 
 System tray application for global hotkey recording control:
 - **`tray/main.py`** - Tray app entry, icon management, event loop coordination
-- **`tray/hotkey.py`** - Global hotkey listener (Cmd+Shift+R on macOS, Ctrl+Shift+R on Windows). Uses pynput on macOS (more reliable)
-- **`tray/websocket_client.py`** - WebSocket client connecting to backend for recording commands
+- **`tray/hotkey.py`** - Global hotkey listener (configurable via settings, default: Alt+Cmd on macOS, Alt+Ctrl on Windows). Uses pynput on macOS (more reliable). Supports dynamic hotkey updates via WebSocket
+- **`tray/websocket_client.py`** - WebSocket client connecting to backend for recording commands and hotkey updates
 - **`tray/audio_controller.py`** - Pauses/resumes media playback during recording via AppleScript media keys (macOS only)
 
 ### Frontend
@@ -81,6 +81,7 @@ User settings in `data/settings.json` (persisted via `/api/settings`):
 - `whisper_model`, `whisper_device` - Model selection
 - `pause_audio_on_recording` - Auto-pause media during recording
 - `auto_optimize` - Auto-optimize text after transcription
+- `hotkey` - Configurable recording hotkey (platform-specific default: Alt+Cmd on macOS, Alt+Ctrl on Windows)
 
 ## API Endpoints
 
@@ -108,12 +109,19 @@ WS   /api/ws/{client_type}      # WebSocket (client_type: "web" or "tray")
 
 3. **Recording workflow** - Frontend collects audio chunks during recording, merges into single blob on stop, then uploads. Individual chunks lack container headers and cannot be decoded separately
 
-4. **JSON storage** - Records stored as individual JSON files in `data/records/`. Each record contains: id, audio_path, duration, raw_text, optimized_text, status
+4. **JSON storage** - Records stored as individual JSON files in `data/records/`. Each record contains: id, audio_path, duration, raw_text, optimized_text, status, processing_time
 
-5. **Apple Silicon support** - Auto-detects arm64 processor and uses Core ML via CPU with int8 compute type for compatibility
+5. **Status flow** - Record status transitions:
+   - Normal: `pending` → `transcribing` → `transcribed`
+   - With auto-optimization: `pending` → `transcribing` → `transcribed` → `optimizing` → `optimized`
+   - Frontend polling must check for both `transcribed` and `optimized` as completion states
 
-6. **WebSocket message flow**:
+6. **Apple Silicon support** - Auto-detects arm64 processor and uses Core ML via CPU with int8 compute type for compatibility
+
+7. **WebSocket message flow**:
    - Tray tool sends `{"type": "recording", "action": "start|stop"}` → Server broadcasts to web clients
    - Web clients send `{"type": "status_update", ...}` → Server tracks and broadcasts status
+   - Web clients send `{"type": "hotkey_update", "hotkey": {...}}` → Server validates, saves, and broadcasts to tray clients
+   - Server sends `{"type": "hotkey_changed", "hotkey": {...}}` → Tray tool updates its hotkey listener
 
-7. **Tray tool threading** - pystray runs blocking in main thread, asyncio event loop runs in separate daemon thread. Hotkey callbacks must use `asyncio.run_coroutine_threadsafe()` to schedule async work
+8. **Tray tool threading** - pystray runs blocking in main thread, asyncio event loop runs in separate daemon thread. Hotkey callbacks must use `asyncio.run_coroutine_threadsafe()` to schedule async work

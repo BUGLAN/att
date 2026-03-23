@@ -29,3 +29,4 @@ pystray>=0.19.5
 pynput>=1.7.6
 Pillow>=10.0.0
 keyboard>=0.13.5
+pyobjc>=9.0; sys_platform == 'darwin'  # Required for macOS tray icon
