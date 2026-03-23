@@ -103,6 +103,7 @@ class App {
         // 侧边栏折叠
         this.elements.sidebarToggle.addEventListener('click', () => {
             this.elements.sidebar.classList.toggle('collapsed');
+            this.elements.mainContent.classList.toggle('sidebar-collapsed');
         });
 
         // 导航项点击

@@ -1247,20 +1247,21 @@ button:focus-visible {
 
 /* 侧边栏 */
 .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    height: 100vh;
     width: 220px;
-    min-width: 220px;
     background: var(--bg-secondary);
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    transition: width var(--transition-base), min-width var(--transition-base);
-    position: relative;
+    transition: width var(--transition-base);
     z-index: 100;
 }
 
 .sidebar.collapsed {
     width: 60px;
-    min-width: 60px;
 }
 
 /* 侧边栏头部 */
@@ -1330,7 +1331,8 @@ button:focus-visible {
 /* 导航菜单 */
 .sidebar-nav {
     flex: 1;
-    padding: var(--space-md);
+    /* padding: var(--space-md); */
+    padding-top: 10px;
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
@@ -1375,9 +1377,31 @@ button:focus-visible {
     width: 0;
 }
 
+/* 折叠状态导航项优化 */
+.sidebar.collapsed .sidebar-nav {
+    gap: var(--space-sm);
+}
+
 .sidebar.collapsed .nav-item {
     justify-content: center;
     padding: var(--space-sm);
+    gap: 0;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-sm);
+    margin: 0 auto var(--space-xs);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+}
+
+.sidebar.collapsed .nav-item:last-child {
+    margin-bottom: 0;
+}
+
+.sidebar.collapsed .nav-item.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: rgba(201, 162, 39, 0.3);
 }
 
 /* 连接状态 */
@@ -1449,9 +1473,15 @@ button:focus-visible {
 
 /* 主内容区 */
 .main-content {
+    margin-left: 220px;
     flex: 1;
     overflow-y: auto;
+    min-height: 100vh;
     transition: margin-left var(--transition-base);
+}
+
+.main-content.sidebar-collapsed {
+    margin-left: 60px;
 }
 
 /* 响应式：移动端侧边栏 */

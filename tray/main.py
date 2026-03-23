@@ -70,6 +70,7 @@ class TrayApp:
         # Event loop
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._ws_task: Optional[asyncio.Task] = None
+        self._running = False
 
     def _create_icon_image(self, status: str = "idle") -> Image.Image:
         """
@@ -233,6 +234,7 @@ class TrayApp:
     def _quit(self) -> None:
         """Quit the application."""
         logger.info("Quitting tray application")
+        self._running = False  # Signal async loop to stop
 
         # Stop hotkey listener
         if self.hotkey_listener:
@@ -260,7 +262,7 @@ class TrayApp:
 
         # Keep running
         try:
-            while self.tray_icon and self.tray_icon.visible:
+            while self._running:
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             logger.info("_run_async cancelled")
@@ -320,6 +322,8 @@ class TrayApp:
                 logger.error(f"Async loop error: {type(e).__name__}: {e}")
             logger.info("Async thread ended")
 
+        # Set running flag before starting async thread
+        self._running = True
         async_thread = threading.Thread(target=run_async_loop, daemon=True)
         async_thread.start()
 
