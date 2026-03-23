@@ -86,6 +86,7 @@ class AudioRecorder {
         } catch (error) {
             console.error('Failed to start recording:', error);
             this.onError(error);
+            throw error;  // 重新抛出异常，让调用者知道失败了
         }
     }
 
@@ -93,6 +94,10 @@ class AudioRecorder {
         if (!this.isRecording) {
             return;
         }
+
+        // 检查录音时长
+        const duration = this.getDuration();
+        const MIN_DURATION = 1; // 最短 1 秒
 
         return new Promise((resolve) => {
             this.mediaRecorder.onstop = async () => {
@@ -102,6 +107,15 @@ class AudioRecorder {
                 if (this.mediaStream) {
                     this.mediaStream.getTracks().forEach(track => track.stop());
                     this.mediaStream = null;
+                }
+
+                // 时长检查
+                if (duration < MIN_DURATION) {
+                    console.log('Recording too short:', duration, 'seconds');
+                    this.onError(new Error(`录音时间过短（${duration}秒），至少需要 ${MIN_DURATION} 秒`));
+                    // 注意：不调用 onRecordingStop()，避免添加临时记录
+                    resolve();
+                    return;
                 }
 
                 // 合并并上传音频片段（不等待转录完成）

@@ -29,6 +29,7 @@ class AudioProcessor:
 
     SUPPORTED_FORMATS = {'wav', 'mp3', 'm4a', 'flac', 'ogg', 'webm'}
     MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
+    MIN_DURATION = 0.5  # 最短 0.5 秒
     CHUNK_DURATION = 30  # seconds (optimal for faster-whisper)
     OVERLAP_DURATION = 1  # second overlap to avoid word boundary issues
     TARGET_SAMPLE_RATE = 16000  # whisper optimal
@@ -80,7 +81,7 @@ class AudioProcessor:
         # 对于 webm/ogg 格式，faster-whisper 可以直接处理
         # 跳过 pydub 验证（pydub 无法从内存管道读取 webm）
         if extension in {'webm', 'ogg'}:
-            # 尝试用 ffprobe 获取时长，失败则返回 0
+            # 尝试用 ffprobe 获取时长，失败则跳过时长检查
             duration = 0.0
 
             # 保存临时文件用于 ffprobe
@@ -110,6 +111,12 @@ class AudioProcessor:
                 if 'temp_path' in dir() and temp_path.exists():
                     temp_path.unlink()
 
+            # 检查最短时长（仅在成功获取时长时检查）
+            if duration > 0 and duration < self.MIN_DURATION:
+                raise ValueError(
+                    f"音频时间过短（{duration:.1f}秒），至少需要 {self.MIN_DURATION} 秒"
+                )
+
             return AudioMetadata(
                 filename=filename,
                 format=extension,
@@ -133,6 +140,12 @@ class AudioProcessor:
             channels=audio.channels,
             file_size=len(file_content)
         )
+
+        # 检查最短时长
+        if metadata.duration < self.MIN_DURATION:
+            raise ValueError(
+                f"音频时间过短（{metadata.duration:.1f}秒），至少需要 {self.MIN_DURATION} 秒"
+            )
 
         logger.info(
             "Audio validated",

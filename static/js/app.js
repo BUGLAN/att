@@ -175,10 +175,21 @@ class App {
     async handleRecordingCommand(data) {
         console.log('Received recording command:', data.action);
 
-        if (data.action === 'start' && !this.isRecording) {
-            await this.startRecording();
-        } else if (data.action === 'stop' && this.isRecording) {
-            await this.stopRecording();
+        if (data.action === 'start') {
+            // 开始录音（如果已在录音中，startRecording 会处理）
+            if (!this.isRecording) {
+                await this.startRecording();
+            }
+        } else if (data.action === 'stop') {
+            // 停止录音（始终尝试，即使状态不一致）
+            if (this.isRecording) {
+                await this.stopRecording();
+            } else {
+                // 状态不一致：收到 stop 但 isRecording=false
+                // 可能是 start 失败了，需要通知 tray 恢复
+                console.warn('Received stop command but not recording');
+                this.broadcastStatus({ recording: false });
+            }
         }
     }
 
@@ -274,14 +285,21 @@ class App {
      * 开始录音
      */
     async startRecording() {
-        // 清空当前记录
-        this.currentRecordId = null;
-        this.elements.textDisplay.value = '';
-        this.recordingStartTime = Date.now();
-        this.elements.transcriptionTime.textContent = '耗时: 0.00s';
+        try {
+            // 清空当前记录
+            this.currentRecordId = null;
+            this.elements.textDisplay.value = '';
+            this.recordingStartTime = Date.now();
+            this.elements.transcriptionTime.textContent = '耗时: 0.00s';
 
-        // 开始录音
-        await this.recorder.start();
+            // 开始录音
+            await this.recorder.start();
+        } catch (error) {
+            console.error('Failed to start recording:', error);
+            // 广播状态，让 tray 知道录音失败了
+            this.broadcastStatus({ recording: false });
+            this.showToast('录音启动失败：' + error.message);
+        }
     }
 
     /**
@@ -410,8 +428,38 @@ class App {
             const response = await fetch('/api/records?limit=100');
             this.records = await response.json();
             this.renderRecords();
+
+            // 恢复未完成记录的轮询
+            this._resumePollingForPendingRecords();
         } catch (error) {
             console.error('Failed to fetch records:', error);
+        }
+    }
+
+    /**
+     * 为未完成的记录恢复轮询（页面刷新后）
+     */
+    _resumePollingForPendingRecords() {
+        // 找出所有正在转写的记录
+        const pendingRecords = this.records.filter(r =>
+            r.status === 'pending' || r.status === 'transcribing' || r.status === 'optimizing'
+        );
+
+        if (pendingRecords.length > 0) {
+            console.log('Found', pendingRecords.length, 'pending records, resuming polling...');
+
+            // 为每个未完成记录启动轮询
+            pendingRecords.forEach(r => {
+                if (!this.pollingIntervals.has(r.id)) {
+                    this.startPolling(r.id);
+                }
+            });
+
+            // 设置当前记录为最新的未完成记录
+            if (!this.currentRecordId) {
+                this.currentRecordId = pendingRecords[0].id;
+                this.isTranscribing = true;
+            }
         }
     }
 
@@ -894,6 +942,26 @@ class App {
      */
     handleError(error) {
         console.error('Error:', error);
+
+        // 重置录音状态（处理录音取消的情况）
+        if (this.isRecording) {
+            this.isRecording = false;
+            this.elements.recordBtn.classList.remove('recording');
+            this.elements.recordBtn.querySelector('.btn-text').textContent = '开始录音';
+            this.elements.recordingStatus.classList.remove('recording');
+            this.elements.recordingStatus.querySelector('.status-text').textContent = '准备就绪';
+            this.broadcastStatus({ recording: false });
+
+            // 通知托盘工具恢复音频
+            if (this.wsClient && this.wsClient.isConnected) {
+                this.wsClient.send({
+                    type: 'web_recording',
+                    action: 'stop',
+                    timestamp: Date.now()
+                });
+            }
+        }
+
         this.showToast('发生错误: ' + error.message);
     }
 

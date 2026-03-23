@@ -5,9 +5,88 @@ Mutes and unmutes system output during recording
 import subprocess
 import platform
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from audio_controller import AudioController
 
 logger = logging.getLogger(__name__)
+
+
+class MuteContext:
+    """
+    Context manager for system mute state.
+
+    Ensures mute state is always restored when exiting the context,
+    even if exceptions occur. Designed for cross-method usage where
+    __aenter__ and __aexit__ are called separately.
+
+    Usage:
+        # Normal usage with 'async with'
+        async with audio_controller.mute_context():
+            # System is muted here
+            await do_recording()
+        # System is restored here
+
+        # Cross-method usage (for hotkey press/release)
+        self._mute_context = audio_controller.mute_context()
+        await self._mute_context.__aenter__()  # On press
+        # ... later ...
+        await self._mute_context.__aexit__(None, None, None)  # On release
+    """
+
+    def __init__(self, controller: 'AudioController'):
+        self.controller = controller
+        self._original_muted: Optional[bool] = None
+        self._entered: bool = False
+
+    async def __aenter__(self) -> 'MuteContext':
+        """Enter mute context - save state and mute."""
+        # Skip if already inside this context (re-entrant)
+        if self._entered:
+            logger.debug("MuteContext: Already entered, skipping nested entry")
+            return self
+
+        if not self.controller.enabled or not self.controller.is_macos:
+            logger.debug("MuteContext: Audio control disabled or not macOS")
+            self._entered = True
+            return self
+
+        logger.info("MuteContext: Entering - saving and muting system")
+
+        # Save current mute state
+        try:
+            self._original_muted = self.controller.is_muted()
+        except Exception:
+            self._original_muted = False
+
+        # Mute if not already muted
+        if not self._original_muted:
+            if not self.controller.set_mute(True):
+                logger.warning("MuteContext: Failed to mute system")
+
+        self._entered = True
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> bool:
+        """Exit mute context - restore state (always)."""
+        if not self._entered:
+            logger.debug("MuteContext: Not entered, skipping exit")
+            return False
+
+        # Always attempt restore, even on exception
+        try:
+            if self.controller.enabled and self.controller.is_macos:
+                logger.info("MuteContext: Exiting - restoring mute state")
+                if self._original_muted is not None:
+                    self.controller.set_mute(self._original_muted)
+        except Exception as e:
+            logger.error(f"MuteContext: Failed to restore mute state: {e}")
+        finally:
+            self._entered = False
+
+        # Don't suppress exceptions
+        return False
 
 
 class AudioController:
@@ -142,6 +221,31 @@ class AudioController:
         """
         self.enabled = enabled
         logger.info(f"Audio control {'enabled' if enabled else 'disabled'}")
+
+    def mute_context(self) -> MuteContext:
+        """
+        Create a context manager for safe mute control.
+
+        The context manager ensures mute state is always restored when
+        exiting, even if exceptions occur or the calling code doesn't
+        complete normally.
+
+        Returns:
+            MuteContext instance for use with 'async with'
+
+        Example:
+            async with audio_controller.mute_context():
+                # System is muted
+                await record_audio()
+            # System restored automatically
+
+            # Cross-method usage (for hotkey press/release):
+            ctx = audio_controller.mute_context()
+            await ctx.__aenter__()  # On press - mutes system
+            # ... recording happens ...
+            await ctx.__aexit__(None, None, None)  # On release - restores
+        """
+        return MuteContext(self)
 
 
 # Singleton instance for convenience
