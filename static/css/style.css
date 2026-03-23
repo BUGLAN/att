@@ -1538,8 +1538,15 @@ button:focus-visible {
    Settings Page
    ============================================ */
 .settings-page {
+    margin-left: 220px;
     flex: 1;
     overflow-y: auto;
+    min-height: 100vh;
+    transition: margin-left var(--transition-base);
+}
+
+.settings-page.sidebar-collapsed {
+    margin-left: 60px;
 }
 
 .settings-section {
