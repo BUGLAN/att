@@ -5,6 +5,59 @@ from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import Optional
 from pathlib import Path
+import json
+
+
+class UserSettings:
+    """
+    User-configurable settings stored in data/settings.json
+    """
+    DEFAULT_SETTINGS = {
+        "whisper_model": "large-v3",
+        "whisper_device": "auto",
+        "pause_audio_on_recording": True,
+        "auto_optimize": False
+    }
+
+    def __init__(self, settings_path: Path):
+        self.settings_path = settings_path
+        self._settings = self._load()
+
+    def _load(self) -> dict:
+        """Load settings from file or create default."""
+        if self.settings_path.exists():
+            try:
+                with open(self.settings_path, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                    # Merge with defaults to ensure all keys exist
+                    return {**self.DEFAULT_SETTINGS, **loaded}
+            except (json.JSONDecodeError, IOError):
+                return self.DEFAULT_SETTINGS.copy()
+        return self.DEFAULT_SETTINGS.copy()
+
+    def _save(self) -> None:
+        """Save settings to file."""
+        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.settings_path, 'w', encoding='utf-8') as f:
+            json.dump(self._settings, f, indent=2, ensure_ascii=False)
+
+    def get(self, key: str, default=None):
+        """Get a setting value."""
+        return self._settings.get(key, default)
+
+    def set(self, key: str, value) -> None:
+        """Set a setting value and save."""
+        self._settings[key] = value
+        self._save()
+
+    def update(self, updates: dict) -> None:
+        """Update multiple settings and save."""
+        self._settings.update(updates)
+        self._save()
+
+    def get_all(self) -> dict:
+        """Get all settings."""
+        return self._settings.copy()
 
 
 class Settings(BaseSettings):
@@ -74,3 +127,6 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
+
+# User settings instance (for configurable options)
+user_settings = UserSettings(settings.data_path / "settings.json")

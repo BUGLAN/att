@@ -51,7 +51,10 @@ class App {
             sidebarToggle: document.getElementById('sidebarToggle'),
             connectionStatus: document.getElementById('connectionStatus'),
             clientCount: document.getElementById('clientCount'),
-            clientCountNum: document.getElementById('clientCountNum')
+            clientCountNum: document.getElementById('clientCountNum'),
+            // 页面元素
+            mainContent: document.getElementById('mainContent'),
+            settingsPage: document.getElementById('settingsPage')
         };
 
         // 当前播放的音频
@@ -117,11 +120,25 @@ class App {
     }
 
     /**
-     * 切换页面（预留，暂时只显示首页）
+     * 切换页面
      */
     switchPage(page) {
         console.log('Switch to page:', page);
-        // TODO: 实现页面切换逻辑
+
+        if (page === 'settings') {
+            // 显示设置页面
+            this.elements.mainContent.style.display = 'none';
+            this.elements.settingsPage.style.display = 'block';
+
+            // 加载设置
+            if (window.settingsManager) {
+                window.settingsManager.load();
+            }
+        } else {
+            // 显示首页
+            this.elements.mainContent.style.display = 'block';
+            this.elements.settingsPage.style.display = 'none';
+        }
     }
 
     /**

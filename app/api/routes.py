@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime
 import uuid
 
-from app.config import settings
+from app.config import settings, user_settings
 from app.audio.processor import AudioProcessor
 from app.stt.transcriber import WhisperTranscriber
 from app.llm.optimizer import TextOptimizer
@@ -360,6 +360,31 @@ async def health_check() -> dict:
         "deepseek_configured": bool(settings.deepseek_api_key),
         "ws_clients": ws_manager.client_count
     }
+
+
+# ==================== Settings Endpoints ====================
+
+@router.get("/settings")
+async def get_settings() -> dict:
+    """Get user settings"""
+    return user_settings.get_all()
+
+
+@router.put("/settings")
+async def update_settings(updates: dict) -> dict:
+    """Update user settings"""
+    # Filter to only allowed keys
+    allowed_keys = {
+        "whisper_model", "whisper_device",
+        "pause_audio_on_recording", "auto_optimize"
+    }
+    filtered = {k: v for k, v in updates.items() if k in allowed_keys}
+
+    if not filtered:
+        raise HTTPException(status_code=400, detail="No valid settings provided")
+
+    user_settings.update(filtered)
+    return user_settings.get_all()
 
 
 # ==================== WebSocket Endpoints ====================

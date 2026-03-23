@@ -124,11 +124,84 @@
         </div>
     </div>
 
+    <!-- Settings Page -->
+    <div class="settings-page" id="settingsPage" style="display: none;">
+        <div class="container">
+            <header class="header">
+                <h1>设置</h1>
+                <p class="subtitle">配置您的偏好</p>
+            </header>
+
+            <section class="settings-section">
+                <div class="settings-group">
+                    <h3 class="settings-group-title">语音识别</h3>
+
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <span class="setting-label">识别模型</span>
+                            <span class="setting-desc">较大的模型准确率更高，但速度更慢</span>
+                        </div>
+                        <select class="setting-select" id="settingWhisperModel">
+                            <option value="tiny">tiny (最快)</option>
+                            <option value="base">base</option>
+                            <option value="small">small</option>
+                            <option value="medium">medium</option>
+                            <option value="large-v3">large-v3 (最准确)</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <span class="setting-label">计算设备</span>
+                            <span class="setting-desc">选择用于语音识别的硬件</span>
+                        </div>
+                        <select class="setting-select" id="settingWhisperDevice">
+                            <option value="auto">自动选择</option>
+                            <option value="cuda">CUDA (NVIDIA GPU)</option>
+                            <option value="cpu">CPU</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="settings-group">
+                    <h3 class="settings-group-title">录音设置</h3>
+
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <span class="setting-label">录音时暂停其他音频</span>
+                            <span class="setting-desc">录音时自动暂停 Spotify、Music 等播放</span>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingPauseAudio">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <span class="setting-label">自动 AI 优化</span>
+                            <span class="setting-desc">转写完成后自动优化文本</span>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingAutoOptimize">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="settings-actions">
+                    <button class="btn btn-primary" id="saveSettingsBtn">保存设置</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
     <!-- Toast Notification -->
     <div class="toast" id="toast" style="display: none;"></div>
 
     <script src="/static/js/recorder.js"></script>
     <script src="/static/js/websocket.js"></script>
+    <script src="/static/js/settings.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>
