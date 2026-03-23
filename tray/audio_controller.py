@@ -1,6 +1,6 @@
 """
 Audio Controller for macOS
-Pauses and resumes media playback during recording
+Mutes and unmutes system output during recording
 """
 import subprocess
 import platform
@@ -12,11 +12,10 @@ logger = logging.getLogger(__name__)
 
 class AudioController:
     """
-    Controls media playback on macOS.
+    Controls system output mute on macOS.
 
-    Uses AppleScript to send media key events (Play/Pause).
-    This provides a simple and reliable way to pause/resume
-    any media playing on the system (Spotify, Music, Chrome, etc.)
+    Uses AppleScript to mute/unmute system output volume.
+    This ensures no other audio interferes with recording.
 
     Note: This only works on macOS. On other platforms, the controller
     will be disabled and methods will return False.
@@ -31,113 +30,108 @@ class AudioController:
         """
         self.enabled = enabled
         self.is_macos = platform.system() == "Darwin"
-        self._was_paused = False  # Track if we paused something
+        self._original_muted = False  # Track original mute state
 
         if not self.is_macos:
             logger.info("Audio control only supported on macOS")
 
-    def pause_all(self) -> bool:
+    def is_muted(self) -> bool:
         """
-        Pause all media playback.
-
-        Sends a Play/Pause media key event, which will pause
-        any currently playing media.
+        Check if system output is currently muted.
 
         Returns:
-            True if successful, False otherwise
+            True if muted, False otherwise
         """
-        if not self.enabled or not self.is_macos:
-            return False
-
-        logger.info("Pausing media playback...")
-
-        # Send Play/Pause key to pause current playback
-        success = self._send_media_key("playpause")
-
-        if success:
-            self._was_paused = True
-
-        return success
-
-    def resume_all(self) -> bool:
-        """
-        Resume media playback.
-
-        Sends another Play/Pause media key event to resume.
-        Only resumes if we previously paused something.
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self.enabled or not self.is_macos:
-            return False
-
-        # Only resume if we paused something
-        if not self._was_paused:
-            logger.info("No media was paused, skipping resume")
-            return True
-
-        logger.info("Resuming media playback...")
-
-        # Send Play/Pause key to resume
-        success = self._send_media_key("playpause")
-
-        if success:
-            self._was_paused = False
-
-        return success
-
-    def _send_media_key(self, key: str) -> bool:
-        """
-        Send media key event via AppleScript.
-
-        Args:
-            key: Media key type ('playpause', 'next', 'previous')
-
-        Returns:
-            True if successful, False otherwise
-        """
-        # Media key codes for macOS
-        # Reference: https://eastmanreference.com/complete-list-of-applescript-key-codes
-        key_codes = {
-            "playpause": 16,    # Play/Pause
-            "next": 17,         # Next track
-            "previous": 18      # Previous track
-        }
-
-        code = key_codes.get(key)
-        if code is None:
-            logger.error(f"Unknown media key: {key}")
-            return False
-
-        script = f'''
-        tell application "System Events"
-            key code {code}
-        end tell
-        '''
-
+        cmd = 'osascript -e "output muted of (get volume settings)"'
         try:
             result = subprocess.run(
-                ["osascript", "-e", script],
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            return result.stdout.strip().lower() == "true"
+        except Exception as e:
+            logger.error(f"Failed to check mute status: {e}")
+            return False
+
+    def set_mute(self, mute: bool) -> bool:
+        """
+        Set system output mute state.
+
+        Args:
+            mute: True to mute, False to unmute
+
+        Returns:
+            True if successful, False otherwise
+        """
+        state = "true" if mute else "false"
+        cmd = f'osascript -e "set volume output muted {state}"'
+        try:
+            subprocess.run(
+                cmd,
+                shell=True,
                 check=True,
                 capture_output=True,
                 text=True,
                 timeout=5
             )
-            logger.debug(f"Media key sent: {key} (code {code})")
+            logger.debug(f"System {'muted' if mute else 'unmuted'}")
+            return True
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout setting mute state")
+            return False
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to set mute state: {e.stderr}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error setting mute state: {e}")
+            return False
+
+    def pause_all(self) -> bool:
+        """
+        Mute system output (called before recording).
+
+        Saves the current mute state and mutes the system.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.enabled or not self.is_macos:
+            return False
+
+        logger.info("Muting system output...")
+
+        # Save current mute state
+        try:
+            self._original_muted = self.is_muted()
+        except Exception:
+            self._original_muted = False
+
+        # Mute system (unless already muted)
+        if self._original_muted:
+            logger.debug("System already muted, skipping")
             return True
 
-        except subprocess.TimeoutExpired:
-            logger.error("Timeout sending media key")
+        return self.set_mute(True)
+
+    def resume_all(self) -> bool:
+        """
+        Restore system mute state (called after recording).
+
+        Restores the original mute state before recording started.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.enabled or not self.is_macos:
             return False
 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to send media key: {e.stderr}")
-            return False
+        logger.info("Restoring system mute state...")
 
-        except Exception as e:
-            logger.error(f"Unexpected error sending media key: {e}")
-            return False
+        # Restore original mute state
+        return self.set_mute(self._original_muted)
 
     def set_enabled(self, enabled: bool) -> None:
         """

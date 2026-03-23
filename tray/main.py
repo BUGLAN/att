@@ -201,7 +201,8 @@ class TrayApp:
         logger.info("Hotkey pressed - starting recording")
 
         # Pause other audio playback
-        self.audio_controller.pause_all()
+        if not self.audio_controller.pause_all():
+            logger.warning("Failed to pause media playback")
 
         if self.ws_client and self.ws_client.is_connected:
             await self.ws_client.send_recording_command("start")
@@ -221,7 +222,8 @@ class TrayApp:
             self._update_icon()
 
         # Resume audio playback
-        self.audio_controller.resume_all()
+        if not self.audio_controller.resume_all():
+            logger.warning("Failed to resume media playback")
 
     def _reconnect(self) -> None:
         """Manually reconnect WebSocket."""

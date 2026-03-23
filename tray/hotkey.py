@@ -260,7 +260,14 @@ class PynputHotkeyListener:
                     result = self.on_press()
                     if asyncio.iscoroutine(result) and self.loop:
                         # Schedule coroutine on main event loop
-                        asyncio.run_coroutine_threadsafe(result, self.loop)
+                        future = asyncio.run_coroutine_threadsafe(result, self.loop)
+                        # Add callback to check for exceptions
+                        def _check_exception(f):
+                            try:
+                                f.result()
+                            except Exception as e:
+                                logger.error(f"Error in on_press coroutine: {e}")
+                        future.add_done_callback(_check_exception)
                 except Exception as e:
                     logger.error(f"Error in on_press callback: {e}")
 
@@ -277,7 +284,14 @@ class PynputHotkeyListener:
                     result = self.on_release()
                     if asyncio.iscoroutine(result) and self.loop:
                         # Schedule coroutine on main event loop
-                        asyncio.run_coroutine_threadsafe(result, self.loop)
+                        future = asyncio.run_coroutine_threadsafe(result, self.loop)
+                        # Add callback to check for exceptions
+                        def _check_exception(f):
+                            try:
+                                f.result()
+                            except Exception as e:
+                                logger.error(f"Error in on_release coroutine: {e}")
+                        future.add_done_callback(_check_exception)
                 except Exception as e:
                     logger.error(f"Error in on_release callback: {e}")
 
