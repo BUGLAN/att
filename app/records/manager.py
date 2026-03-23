@@ -96,7 +96,8 @@ class RecordManager:
         record_id: str,
         raw_text: Optional[str] = None,
         optimized_text: Optional[str] = None,
-        status: Optional[RecordStatus] = None
+        status: Optional[RecordStatus] = None,
+        processing_time: Optional[float] = None
     ) -> Optional[Record]:
         """Update a record"""
         record = await self.get_record(record_id)
@@ -109,6 +110,8 @@ class RecordManager:
             record.optimized_text = optimized_text
         if status is not None:
             record.status = status
+        if processing_time is not None:
+            record.processing_time = processing_time
 
         await self._save_json(record)
         return record

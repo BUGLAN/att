@@ -130,7 +130,8 @@ class ConnectionManager:
     async def broadcast(
         self,
         message: dict,
-        exclude: Optional[str] = None
+        exclude: Optional[str] = None,
+        client_type_filter: Optional[str] = None
     ) -> None:
         """
         Broadcast message to all connected clients.
@@ -138,11 +139,16 @@ class ConnectionManager:
         Args:
             message: Message dictionary to broadcast
             exclude: Optional client_id to exclude from broadcast
+            client_type_filter: Optional client type to filter ("web" or "tray")
         """
         disconnected = []
 
         for client_id, connection in self.active_connections.items():
             if client_id == exclude:
+                continue
+
+            # Filter by client type if specified
+            if client_type_filter and self.client_types.get(client_id) != client_type_filter:
                 continue
 
             try:

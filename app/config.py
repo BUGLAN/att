@@ -6,6 +6,28 @@ from pydantic import Field
 from typing import Optional
 from pathlib import Path
 import json
+import platform
+
+
+def get_default_hotkey() -> dict:
+    """
+    Get default hotkey based on platform.
+
+    Returns:
+        Hotkey config dict with modifiers, key, and display fields
+    """
+    if platform.system() == "Darwin":  # macOS
+        return {
+            "modifiers": ["alt", "cmd"],
+            "key": None,
+            "display": "⌥⌘"
+        }
+    else:  # Windows/Linux
+        return {
+            "modifiers": ["alt", "ctrl"],
+            "key": None,
+            "display": "Alt+Ctrl"
+        }
 
 
 class UserSettings:
@@ -16,7 +38,8 @@ class UserSettings:
         "whisper_model": "large-v3",
         "whisper_device": "auto",
         "pause_audio_on_recording": True,
-        "auto_optimize": False
+        "auto_optimize": False,
+        "hotkey": None  # Will be set dynamically based on platform
     }
 
     def __init__(self, settings_path: Path):
@@ -30,10 +53,18 @@ class UserSettings:
                 with open(self.settings_path, 'r', encoding='utf-8') as f:
                     loaded = json.load(f)
                     # Merge with defaults to ensure all keys exist
-                    return {**self.DEFAULT_SETTINGS, **loaded}
+                    settings = {**self.DEFAULT_SETTINGS, **loaded}
+                    # Set platform-specific default hotkey if not set
+                    if settings.get("hotkey") is None:
+                        settings["hotkey"] = get_default_hotkey()
+                    return settings
             except (json.JSONDecodeError, IOError):
-                return self.DEFAULT_SETTINGS.copy()
-        return self.DEFAULT_SETTINGS.copy()
+                settings = self.DEFAULT_SETTINGS.copy()
+                settings["hotkey"] = get_default_hotkey()
+                return settings
+        settings = self.DEFAULT_SETTINGS.copy()
+        settings["hotkey"] = get_default_hotkey()
+        return settings
 
     def _save(self) -> None:
         """Save settings to file."""

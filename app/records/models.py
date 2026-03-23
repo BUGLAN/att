@@ -82,6 +82,7 @@ class Record:
     raw_text: str = ""
     optimized_text: str = ""
     status: RecordStatus = RecordStatus.PENDING
+    processing_time: float = 0.0  # Transcription processing time in seconds
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON storage"""
@@ -93,7 +94,8 @@ class Record:
             "duration": self.duration,
             "raw_text": self.raw_text,
             "optimized_text": self.optimized_text,
-            "status": self.status.value
+            "status": self.status.value,
+            "processing_time": self.processing_time
         }
 
     @classmethod
@@ -107,5 +109,6 @@ class Record:
             duration=data["duration"],
             raw_text=data.get("raw_text", ""),
             optimized_text=data.get("optimized_text", ""),
-            status=RecordStatus(data.get("status", "pending"))
+            status=RecordStatus(data.get("status", "pending")),
+            processing_time=data.get("processing_time", 0.0)
         )

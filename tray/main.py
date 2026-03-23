@@ -23,6 +23,12 @@ from tray.websocket_client import TrayWebSocketClient
 from tray.hotkey import create_hotkey_listener
 from tray.audio_controller import get_audio_controller
 
+# Import get_default_hotkey from app config
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from app.config import get_default_hotkey
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -66,6 +72,12 @@ class TrayApp:
 
         # Audio controller
         self.audio_controller = get_audio_controller(enabled=True)
+
+        # Hotkey configuration
+        self.hotkey_config: Optional[dict] = None
+
+        # Settings
+        self.pause_audio_on_recording: bool = True  # Default value
 
         # Event loop
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -126,6 +138,9 @@ class TrayApp:
 
     def _create_menu(self) -> pystray.Menu:
         """Create tray menu."""
+        # Get current hotkey display
+        hotkey_display = self._get_hotkey_display()
+
         return pystray.Menu(
             pystray.MenuItem(
                 lambda item: f"状态: {'录音中' if self.is_recording else '空闲'}",
@@ -139,7 +154,7 @@ class TrayApp:
                 enabled=False
             ),
             pystray.MenuItem(
-                lambda item: f"快捷键: {'⌘⇧R' if IS_MACOS else 'Ctrl+Shift+R'}",
+                lambda item: f"快捷键: {hotkey_display}",
                 None,
                 enabled=False
             ),
@@ -147,6 +162,22 @@ class TrayApp:
             pystray.MenuItem("重连", self._reconnect),
             pystray.MenuItem("退出", self._quit)
         )
+
+    def _get_hotkey_display(self) -> str:
+        """Get current hotkey display string."""
+        # First try hotkey listener's config
+        if self.hotkey_listener and hasattr(self.hotkey_listener, '_hotkey_config'):
+            config = self.hotkey_listener._hotkey_config
+            if config:
+                return config.get('display', '未设置')
+
+        # Fallback to stored config
+        if self.hotkey_config:
+            return self.hotkey_config.get('display', '未设置')
+
+        # Final fallback to default
+        default = get_default_hotkey()
+        return default.get('display', '⌥⌘' if IS_MACOS else 'Alt+Ctrl')
 
     def _update_icon(self) -> None:
         """Update tray icon based on current state."""
@@ -192,6 +223,54 @@ class TrayApp:
         logger.info("WebSocket disconnected")
         self._update_icon()
 
+    def _on_hotkey_change(self, hotkey_config: dict) -> None:
+        """Handle hotkey configuration change from server."""
+        logger.info(f"Received hotkey update: {hotkey_config}")
+
+        # Store the config
+        self.hotkey_config = hotkey_config
+
+        # Update hotkey listener
+        if self.hotkey_listener and hasattr(self.hotkey_listener, 'set_hotkey'):
+            self.hotkey_listener.set_hotkey(hotkey_config)
+
+        # Update tray menu
+        self._update_icon()
+
+    def _on_web_recording(self, action: str) -> None:
+        """
+        Handle web recording notification.
+
+        Args:
+            action: "start" or "stop"
+        """
+        logger.info(f"Web recording notification: {action}, pause_audio_on_recording={self.pause_audio_on_recording}")
+
+        if not self.pause_audio_on_recording:
+            logger.info("Pause audio on recording is disabled, skipping")
+            return
+
+        if action == "start":
+            # Pause other audio playback
+            if not self.audio_controller.pause_all():
+                logger.warning("Failed to pause media playback")
+        elif action == "stop":
+            # Resume audio playback
+            if not self.audio_controller.resume_all():
+                logger.warning("Failed to resume media playback")
+
+    def _on_settings_change(self, settings: dict) -> None:
+        """
+        Handle settings change notification.
+
+        Args:
+            settings: Settings dict with updated values
+        """
+        pause_audio = settings.get("pause_audio_on_recording")
+        if pause_audio is not None:
+            self.pause_audio_on_recording = pause_audio
+            logger.info(f"Updated pause_audio_on_recording to: {pause_audio}")
+
     async def _on_hotkey_press(self) -> None:
         """Handle hotkey press - start recording."""
         if self.is_recording:
@@ -200,9 +279,10 @@ class TrayApp:
 
         logger.info("Hotkey pressed - starting recording")
 
-        # Pause other audio playback
-        if not self.audio_controller.pause_all():
-            logger.warning("Failed to pause media playback")
+        # Pause other audio playback (if setting is enabled)
+        if self.pause_audio_on_recording:
+            if not self.audio_controller.pause_all():
+                logger.warning("Failed to pause media playback")
 
         if self.ws_client and self.ws_client.is_connected:
             await self.ws_client.send_recording_command("start")
@@ -221,9 +301,10 @@ class TrayApp:
             self.is_recording = False
             self._update_icon()
 
-        # Resume audio playback
-        if not self.audio_controller.resume_all():
-            logger.warning("Failed to resume media playback")
+        # Resume audio playback (if setting is enabled)
+        if self.pause_audio_on_recording:
+            if not self.audio_controller.resume_all():
+                logger.warning("Failed to resume media playback")
 
     def _reconnect(self) -> None:
         """Manually reconnect WebSocket."""
@@ -250,12 +331,36 @@ class TrayApp:
         """Run async components."""
         logger.info("_run_async started")
 
+        # Load settings from server
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(self.server_url.replace('/ws/tray', '/settings').replace('ws://', 'http://')) as resp:
+                    if resp.status == 200:
+                        settings = await resp.json()
+
+                        # Load hotkey config
+                        self.hotkey_config = settings.get('hotkey')
+                        if self.hotkey_config and self.hotkey_listener:
+                            if hasattr(self.hotkey_listener, 'set_hotkey'):
+                                self.hotkey_listener.set_hotkey(self.hotkey_config)
+                                logger.info(f"Loaded hotkey config: {self.hotkey_config}")
+
+                        # Load pause_audio_on_recording setting
+                        self.pause_audio_on_recording = settings.get('pause_audio_on_recording', True)
+                        logger.info(f"Loaded pause_audio_on_recording: {self.pause_audio_on_recording}")
+        except Exception as e:
+            logger.warning(f"Failed to load settings from server: {e}")
+
         # Initialize WebSocket client
         self.ws_client = TrayWebSocketClient(
             url=self.server_url,
             on_status_update=self._on_status_update,
             on_connected=self._on_connected,
-            on_disconnected=self._on_disconnected
+            on_disconnected=self._on_disconnected,
+            on_hotkey_change=self._on_hotkey_change,
+            on_web_recording=self._on_web_recording,
+            on_settings_change=self._on_settings_change
         )
 
         # Connect to server
@@ -304,10 +409,14 @@ class TrayApp:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
 
-            # Now create and set the hotkey listener with the loop
+            # Get default hotkey config for initial setup
+            default_hotkey = get_default_hotkey()
+
+            # Now create and set the hotkey listener with the loop and initial config
             self.hotkey_listener = create_hotkey_listener(
                 on_press=self._on_hotkey_press,
-                on_release=self._on_hotkey_release
+                on_release=self._on_hotkey_release,
+                hotkey_config=default_hotkey
             )
             # Set the event loop for the hotkey listener
             if hasattr(self.hotkey_listener, 'set_loop'):

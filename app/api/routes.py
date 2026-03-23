@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime
 import uuid
 
-from app.config import settings, user_settings
+from app.config import settings, user_settings, get_default_hotkey
 from app.audio.processor import AudioProcessor
 from app.stt.transcriber import WhisperTranscriber
 from app.llm.optimizer import TextOptimizer
@@ -35,6 +35,46 @@ audio_processor: Optional[AudioProcessor] = None
 transcriber: Optional[WhisperTranscriber] = None
 optimizer: Optional[TextOptimizer] = None
 record_manager: Optional[RecordManager] = None
+
+
+def validate_hotkey(hotkey: dict) -> bool:
+    """
+    Validate hotkey configuration.
+
+    Args:
+        hotkey: Hotkey config dict with modifiers, key, display fields
+
+    Returns:
+        True if valid, False otherwise
+    """
+    if not isinstance(hotkey, dict):
+        return False
+
+    modifiers = hotkey.get("modifiers", [])
+    key = hotkey.get("key")
+
+    # Validate modifiers
+    valid_modifiers = {"cmd", "alt", "ctrl", "shift"}
+    if not isinstance(modifiers, list) or not all(m in valid_modifiers for m in modifiers):
+        return False
+
+    # Must have at least one modifier
+    if len(modifiers) < 1:
+        return False
+
+    # If key is present, validate it
+    if key is not None:
+        if not isinstance(key, str) or len(key) != 1:
+            return False
+        valid_keys = set("abcdefghijklmnopqrstuvwxyz0123456789")
+        if key.lower() not in valid_keys:
+            return False
+
+    # For modifier-only combinations: need at least 2 modifiers
+    if key is None and len(modifiers) < 2:
+        return False
+
+    return True
 
 
 def init_processors(
@@ -57,7 +97,9 @@ async def _transcribe_audio_background(
     record_id: str,
     audio_path: str,
     transcriber: WhisperTranscriber,
-    record_manager: RecordManager
+    record_manager: RecordManager,
+    optimizer: TextOptimizer,
+    user_settings
 ) -> None:
     """
     Background task for audio transcription.
@@ -67,6 +109,8 @@ async def _transcribe_audio_background(
         audio_path: Path to audio file
         transcriber: Transcriber instance (passed explicitly to avoid global issues)
         record_manager: Record manager instance
+        optimizer: Text optimizer instance for auto-optimization
+        user_settings: User settings instance
     """
     try:
         # Update status to transcribing
@@ -87,7 +131,8 @@ async def _transcribe_audio_background(
         await record_manager.update_record(
             record_id,
             raw_text=result.text,
-            status=RecordStatus.TRANSCRIBED
+            status=RecordStatus.TRANSCRIBED,
+            processing_time=result.processing_time
         )
 
         logger.info(
@@ -96,6 +141,25 @@ async def _transcribe_audio_background(
             duration=result.duration,
             processing_time=f"{result.processing_time:.2f}s"
         )
+
+        # Auto-optimization if enabled
+        if user_settings.get("auto_optimize", False):
+            try:
+                logger.info("Auto-optimizing text", record_id=record_id)
+                await record_manager.update_record(
+                    record_id,
+                    status=RecordStatus.OPTIMIZING
+                )
+                optimize_result = await optimizer.optimize(result.text, style="default")
+                await record_manager.update_record(
+                    record_id,
+                    optimized_text=optimize_result.optimized_text,
+                    status=RecordStatus.OPTIMIZED
+                )
+                logger.info("Auto-optimization complete", record_id=record_id)
+            except Exception as e:
+                logger.error("Auto-optimization failed", record_id=record_id, error=str(e))
+                # Keep TRANSCRIBED status on optimization failure
 
     except Exception as e:
         logger.error(
@@ -181,7 +245,9 @@ async def upload_audio(
             record.id,
             str(audio_path),
             transcriber,
-            record_manager
+            record_manager,
+            optimizer,
+            user_settings
         )
         response_data["transcription_status"] = RecordStatus.TRANSCRIBING.value
         logger.info("Scheduled background transcription", record_id=record.id)
@@ -225,11 +291,19 @@ async def get_record_status(record_id: str) -> dict:
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
 
+    # Return raw_text for completed states (transcribed, optimizing, optimized)
+    completed_statuses = [
+        RecordStatus.TRANSCRIBED,
+        RecordStatus.OPTIMIZING,
+        RecordStatus.OPTIMIZED
+    ]
+
     return {
         "record_id": record.id,
         "status": record.status.value,
-        "raw_text": record.raw_text if record.status == RecordStatus.TRANSCRIBED else None,
-        "duration": record.duration
+        "raw_text": record.raw_text if record.status in completed_statuses else None,
+        "duration": record.duration,
+        "processing_time": record.processing_time
     }
 
 
@@ -376,9 +450,14 @@ async def update_settings(updates: dict) -> dict:
     # Filter to only allowed keys
     allowed_keys = {
         "whisper_model", "whisper_device",
-        "pause_audio_on_recording", "auto_optimize"
+        "pause_audio_on_recording", "auto_optimize",
+        "hotkey"
     }
     filtered = {k: v for k, v in updates.items() if k in allowed_keys}
+
+    # Validate hotkey if provided
+    if "hotkey" in filtered and not validate_hotkey(filtered["hotkey"]):
+        raise HTTPException(status_code=400, detail="Invalid hotkey configuration")
 
     if not filtered:
         raise HTTPException(status_code=400, detail="No valid settings provided")
@@ -459,6 +538,69 @@ async def _handle_websocket_message(client_id: str, data: dict) -> None:
             record_id=data.get("record_id"),
             duration=data.get("duration", 0.0)
         )
+
+    elif message_type == "hotkey_update":
+        # 快捷键配置更新（来自 web 客户端）
+        hotkey_config = data.get("hotkey")
+        client_type = ws_manager.get_client_type(client_id)
+
+        logger.info(
+            "Received hotkey_update",
+            client_id=client_id,
+            client_type=client_type,
+            hotkey=hotkey_config
+        )
+
+        if validate_hotkey(hotkey_config):
+            # 保存设置
+            user_settings.set("hotkey", hotkey_config)
+
+            # 广播给 tray 客户端
+            tray_count = len(ws_manager.get_tray_clients())
+            logger.info(f"Broadcasting to {tray_count} tray clients")
+
+            await ws_manager.broadcast({
+                "type": "hotkey_changed",
+                "hotkey": hotkey_config,
+                "timestamp": int(datetime.now().timestamp() * 1000)
+            }, client_type_filter="tray")
+
+            logger.info("Hotkey updated and broadcast", hotkey=hotkey_config)
+        else:
+            logger.warning("Invalid hotkey update received", hotkey=hotkey_config)
+
+    elif message_type == "web_recording":
+        # 网页录音通知（来自 web 客户端）
+        action = data.get("action")  # "start" | "stop"
+        logger.info(
+            "Received web_recording notification",
+            client_id=client_id,
+            action=action
+        )
+
+        # 广播给托盘工具，让其执行暂停/恢复音频
+        await ws_manager.broadcast({
+            "type": "web_recording_command",
+            "action": action,
+            "source": client_id,
+            "timestamp": int(datetime.now().timestamp() * 1000)
+        }, client_type_filter="tray")
+
+    elif message_type == "settings_update":
+        # 设置更新通知（来自 web 客户端）
+        pause_audio = data.get("pause_audio_on_recording")
+        logger.info(
+            "Received settings_update",
+            client_id=client_id,
+            pause_audio_on_recording=pause_audio
+        )
+
+        # 广播给托盘工具，让其更新设置
+        await ws_manager.broadcast({
+            "type": "settings_changed",
+            "pause_audio_on_recording": pause_audio,
+            "timestamp": int(datetime.now().timestamp() * 1000)
+        }, client_type_filter="tray")
 
     elif message_type == "ping":
         # 心跳

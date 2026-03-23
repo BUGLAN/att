@@ -33,7 +33,10 @@ class TrayWebSocketClient:
         url: str = "ws://localhost:8000/api/ws/tray",
         on_status_update: Optional[Callable] = None,
         on_connected: Optional[Callable] = None,
-        on_disconnected: Optional[Callable] = None
+        on_disconnected: Optional[Callable] = None,
+        on_hotkey_change: Optional[Callable] = None,
+        on_web_recording: Optional[Callable] = None,
+        on_settings_change: Optional[Callable] = None
     ):
         """
         Initialize WebSocket client.
@@ -43,6 +46,9 @@ class TrayWebSocketClient:
             on_status_update: Callback for status updates
             on_connected: Callback when connected
             on_disconnected: Callback when disconnected
+            on_hotkey_change: Callback when hotkey configuration changes
+            on_web_recording: Callback when web recording starts/stops
+            on_settings_change: Callback when settings change
         """
         if websockets is None:
             raise ImportError("websockets package required: pip install websockets")
@@ -56,6 +62,9 @@ class TrayWebSocketClient:
         self.on_status_update = on_status_update
         self.on_connected = on_connected
         self.on_disconnected = on_disconnected
+        self.on_hotkey_change = on_hotkey_change
+        self.on_web_recording = on_web_recording
+        self.on_settings_change = on_settings_change
 
         # Reconnection settings
         self.reconnect_interval = 3.0
@@ -154,6 +163,27 @@ class TrayWebSocketClient:
         elif msg_type == "status":
             if self.on_status_update:
                 self.on_status_update(data)
+
+        elif msg_type == "hotkey_changed":
+            hotkey_config = data.get("hotkey")
+            logger.info(f"Received hotkey_changed message: {hotkey_config}")
+            if self.on_hotkey_change and hotkey_config:
+                logger.info("Calling on_hotkey_change callback")
+                self.on_hotkey_change(hotkey_config)
+            else:
+                logger.warning(f"Cannot process hotkey_changed: on_hotkey_change={self.on_hotkey_change}, hotkey_config={hotkey_config}")
+
+        elif msg_type == "web_recording_command":
+            action = data.get("action")
+            logger.info(f"Received web_recording_command: {action}")
+            if self.on_web_recording:
+                self.on_web_recording(action)
+
+        elif msg_type == "settings_changed":
+            pause_audio = data.get("pause_audio_on_recording")
+            logger.info(f"Received settings_changed message: pause_audio_on_recording={pause_audio}")
+            if self.on_settings_change:
+                self.on_settings_change(data)
 
         elif msg_type == "pong":
             # Heartbeat response

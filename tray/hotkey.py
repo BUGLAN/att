@@ -1,10 +1,10 @@
 """
 Global Hotkey Listener for Tray Tool
-Supports macOS (Cmd+Shift+R) and Windows (Ctrl+Shift+R)
+Supports dynamic hotkey configuration
 """
 import platform
 import asyncio
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,6 +12,26 @@ logger = logging.getLogger(__name__)
 # Platform detection
 IS_MACOS = platform.system() == "Darwin"
 IS_WINDOWS = platform.system() == "Windows"
+
+# Modifier key mapping: storage_code -> pynput_key_variants
+# This maps our internal modifier names to pynput key objects
+MODIFIER_KEY_MAP: Dict[str, List] = {}
+
+def _init_modifier_key_map():
+    """Initialize modifier key map with pynput keys."""
+    try:
+        from pynput import keyboard
+        global MODIFIER_KEY_MAP
+        MODIFIER_KEY_MAP = {
+            "cmd": [keyboard.Key.cmd, keyboard.Key.cmd_r],      # macOS Command
+            "ctrl": [keyboard.Key.ctrl, keyboard.Key.ctrl_r],
+            "alt": [keyboard.Key.alt, keyboard.Key.alt_r],      # Option on macOS
+            "shift": [keyboard.Key.shift, keyboard.Key.shift_r],
+        }
+    except ImportError:
+        pass
+
+_init_modifier_key_map()
 
 
 class HotkeyListener:
@@ -158,13 +178,16 @@ class PynputHotkeyListener:
     More reliable for global hotkeys on macOS.
 
     This is recommended for macOS due to keyboard library limitations.
+
+    Supports dynamic hotkey configuration via set_hotkey() method.
     """
 
     def __init__(
         self,
         on_press: Optional[Callable] = None,
         on_release: Optional[Callable] = None,
-        loop: Optional[asyncio.AbstractEventLoop] = None
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        hotkey_config: Optional[Dict] = None
     ):
         """
         Initialize pynput hotkey listener.
@@ -173,16 +196,32 @@ class PynputHotkeyListener:
             on_press: Callback when hotkey is pressed
             on_release: Callback when hotkey is released
             loop: Event loop for async callbacks
+            hotkey_config: Initial hotkey configuration {"modifiers": [...], "key": "...", "display": "..."}
         """
         self.on_press = on_press
         self.on_release = on_release
         self.loop = loop
+
+        # Hotkey configuration
+        self._hotkey_config: Optional[Dict] = hotkey_config
 
         # State
         self.is_pressed = False
         self.is_running = False
         self._listener = None
         self._key_states = {}
+
+    def set_hotkey(self, hotkey_config: Dict) -> None:
+        """
+        Update hotkey configuration dynamically.
+
+        Args:
+            hotkey_config: {"modifiers": [...], "key": "...", "display": "..."}
+        """
+        self._hotkey_config = hotkey_config
+        logger.info(f"Hotkey updated to: {hotkey_config.get('display', 'Unknown')}")
+        logger.info(f"Full config: {hotkey_config}")
+        logger.info(f"MODIFIER_KEY_MAP keys: {list(MODIFIER_KEY_MAP.keys())}")
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Set the event loop for async callbacks."""
@@ -224,7 +263,44 @@ class PynputHotkeyListener:
         logger.info("Pynput hotkey listener stopped")
 
     def _check_hotkey(self) -> bool:
-        """Check if the hotkey combination is pressed."""
+        """Check if the current hotkey combination is pressed."""
+        from pynput import keyboard
+
+        # If no config set, use default (fallback)
+        if not self._hotkey_config:
+            logger.debug("No hotkey config, using default")
+            return self._check_default_hotkey()
+
+        modifiers = self._hotkey_config.get("modifiers", [])
+        key = self._hotkey_config.get("key")
+
+        # Debug logging (only log occasionally to avoid spam)
+        if not self.is_pressed:
+            logger.debug(f"Checking hotkey: modifiers={modifiers}, key={key}")
+
+        # Check all modifiers are pressed
+        for mod in modifiers:
+            mod_keys = MODIFIER_KEY_MAP.get(mod, [])
+            if not mod_keys:
+                logger.warning(f"Unknown modifier: {mod}")
+                return False
+            if not any(self._key_states.get(k, False) for k in mod_keys):
+                return False
+
+        # If key is specified, check it
+        if key:
+            try:
+                key_code = keyboard.KeyCode.from_char(key.lower())
+                if not self._key_states.get(key_code, False):
+                    return False
+            except Exception:
+                return False
+
+        # All conditions met
+        return True
+
+    def _check_default_hotkey(self) -> bool:
+        """Fallback to default hard-coded hotkey when no config is set."""
         from pynput import keyboard
 
         if IS_MACOS:
@@ -299,7 +375,8 @@ class PynputHotkeyListener:
 def create_hotkey_listener(
     on_press: Optional[Callable] = None,
     on_release: Optional[Callable] = None,
-    prefer_pynput: bool = True
+    prefer_pynput: bool = True,
+    hotkey_config: Optional[Dict] = None
 ) -> HotkeyListener | PynputHotkeyListener:
     """
     Create appropriate hotkey listener for the platform.
@@ -308,13 +385,21 @@ def create_hotkey_listener(
         on_press: Callback when hotkey is pressed
         on_release: Callback when hotkey is released
         prefer_pynput: Prefer pynput for macOS (more reliable)
+        hotkey_config: Initial hotkey configuration {"modifiers": [...], "key": "...", "display": "..."}
 
     Returns:
         HotkeyListener or PynputHotkeyListener instance
     """
     if IS_MACOS and prefer_pynput:
         logger.info("Using pynput for macOS hotkey listener")
-        return PynputHotkeyListener(on_press=on_press, on_release=on_release)
+        listener = PynputHotkeyListener(
+            on_press=on_press,
+            on_release=on_release,
+            hotkey_config=hotkey_config
+        )
+        if hotkey_config:
+            logger.info(f"Hotkey configured: {hotkey_config.get('display')}")
+        return listener
     else:
         logger.info("Using keyboard library for hotkey listener")
         return HotkeyListener(on_press=on_press, on_release=on_release)

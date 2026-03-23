@@ -1241,6 +1241,13 @@ button:focus-visible {
     border-color: rgba(74, 222, 128, 0.2);
 }
 
+.btn-record-action.btn-optimized {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: rgba(201, 162, 39, 0.3);
+    cursor: default;
+}
+
 /* ============================================
    Sidebar Layout
    ============================================ */
@@ -1362,6 +1369,8 @@ button:focus-visible {
 .nav-icon {
     font-size: 1.25rem;
     flex-shrink: 0;
+    width: 1.5rem;
+    text-align: center;
 }
 
 .nav-text {
@@ -1715,4 +1724,72 @@ button:focus-visible {
         margin-top: var(--space-sm);
         align-self: flex-end;
     }
+}
+
+/* ============================================
+   Hotkey Input
+   ============================================ */
+.hotkey-input-wrapper {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.hotkey-input {
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    min-width: 120px;
+    text-align: center;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.hotkey-input:hover {
+    border-color: var(--border-light);
+}
+
+.hotkey-input:focus,
+.hotkey-input.listening {
+    border-color: var(--accent);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.hotkey-input.listening {
+    animation: pulse-border 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+    0%, 100% { border-color: var(--accent); }
+    50% { border-color: var(--accent-dim); }
+}
+
+.hotkey-input::placeholder {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.hotkey-reset-btn {
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-fast);
+}
+
+.hotkey-reset-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
 }

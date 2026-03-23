@@ -14,6 +14,7 @@ class App {
         this.recordingStartTime = null; // 录音开始时间
         this.pollingIntervals = new Map(); // 轮询管理
         this.processingTimes = new Map(); // 记录转录耗时
+        this.elapsedTimeInterval = null; // 转写耗时更新定时器
 
         // WebSocket 客户端
         this.wsClient = null;
@@ -315,6 +316,15 @@ class App {
 
         // 广播状态
         this.broadcastStatus({ recording: true });
+
+        // 通知托盘工具执行暂停音频（如果设置开启）
+        if (this.wsClient && this.wsClient.isConnected) {
+            this.wsClient.send({
+                type: 'web_recording',
+                action: 'start',
+                timestamp: Date.now()
+            });
+        }
     }
 
     /**
@@ -338,6 +348,15 @@ class App {
 
         // 广播状态
         this.broadcastStatus({ recording: false });
+
+        // 通知托盘工具恢复音频
+        if (this.wsClient && this.wsClient.isConnected) {
+            this.wsClient.send({
+                type: 'web_recording',
+                action: 'stop',
+                timestamp: Date.now()
+            });
+        }
     }
 
     /**
@@ -368,12 +387,14 @@ class App {
         // 刷新记录列表，显示"转写中"状态
         await this.fetchRecords();
 
-        // 如果转录还在进行中，开始轮询
-        if (result.transcription_status === 'transcribing' ||
-            result.transcription_status === 'pending') {
+        // 始终启动轮询以验证最终状态（处理服务器状态可能延迟的竞态条件）
+        // 即使服务器返回 'transcribed'，也要轮询确认 UI 状态正确
+        if (result.transcription_status !== 'failed') {
             this.startPolling(result.record_id);
-        } else if (result.transcription_status === 'transcribed' && result.raw_text) {
-            // 如果已经转录完成（快速返回），直接显示
+        }
+
+        // 如果已经转录完成（快速返回），直接显示
+        if (result.transcription_status === 'transcribed' && result.raw_text) {
             this.elements.textDisplay.value = result.raw_text || '';
             this.updateButtonStates();
         }
@@ -454,14 +475,25 @@ class App {
                 <div class="record-meta">
                     <div class="record-times">
                         <span class="record-duration" title="音频时长">${this.formatDuration(r.duration)}</span>
-                        ${this.processingTimes.has(r.id) ? `
-                            <span class="record-processing" title="转录耗时">⏱${this.processingTimes.get(r.id).toFixed(1)}s</span>
-                        ` : ''}
+                        ${(() => {
+                            // 优先使用内存中的耗时（最新），其次使用 API 返回的 processing_time
+                            const procTime = this.processingTimes.get(r.id) || r.processing_time;
+                            if (procTime && procTime > 0) {
+                                return `<span class="record-processing" title="转录耗时">⏱${procTime.toFixed(1)}s</span>`;
+                            } else if (isTranscribing) {
+                                return `<span class="record-processing" title="转录中" data-elapsed="${new Date(r.created_at).getTime()}">⏱${((Date.now() - new Date(r.created_at).getTime()) / 1000).toFixed(1)}s</span>`;
+                            }
+                            return '';
+                        })()}
                         <span class="record-time" title="生成时间">${this.formatDateTime(r.created_at)}</span>
                     </div>
                     ${isCompleted ? `
                         <div class="record-actions">
-                            <button class="btn-record-action btn-optimize" data-id="${r.id}" title="AI优化文本">✨优化</button>
+                            ${r.optimized_text ? `
+                                <button class="btn-record-action btn-optimized" disabled title="已优化">已优化</button>
+                            ` : `
+                                <button class="btn-record-action btn-optimize" data-id="${r.id}" title="AI优化文本">✨优化</button>
+                            `}
                             <button class="btn-record-action btn-copy" data-id="${r.id}" title="复制文本">复制</button>
                         </div>
                     ` : ''}
@@ -878,7 +910,22 @@ class App {
         this.isTranscribing = true;
         this.broadcastStatus({ transcribing: true, record_id: recordId });
 
+        // 启动转写耗时实时更新
+        this.startElapsedTimer();
+
+        // 轮询计数器，防止无限轮询
+        let pollCount = 0;
+        const maxPolls = 150; // 最大轮询 5 分钟 (150 * 2s)
+
         const pollInterval = setInterval(async () => {
+            pollCount++;
+            if (pollCount > maxPolls) {
+                console.log('Polling timeout for record:', recordId);
+                this.stopPolling(recordId);
+                this.isTranscribing = false;
+                return;
+            }
+
             try {
                 const response = await fetch(`/api/records/${recordId}/status`);
                 if (!response.ok) {
@@ -889,14 +936,18 @@ class App {
                 const data = await response.json();
                 console.log('Poll result:', data.status);
 
-                if (data.status === 'transcribed') {
+                // 检查转录完成状态（transcribed 或 optimized）
+                if (data.status === 'transcribed' || data.status === 'optimized') {
                     // 转录完成
                     this.stopPolling(recordId);
                     this.isTranscribing = false;
 
-                    // 计算并存储耗时
-                    if (this.recordingStartTime) {
-                        const elapsed = (Date.now() - this.recordingStartTime) / 1000;
+                    // 使用 API 返回的 processing_time，如果没有则计算
+                    let elapsed = data.processing_time;
+                    if (!elapsed && this.recordingStartTime) {
+                        elapsed = (Date.now() - this.recordingStartTime) / 1000;
+                    }
+                    if (elapsed) {
                         this.processingTimes.set(recordId, elapsed);
                     }
 
@@ -905,9 +956,9 @@ class App {
                         this.elements.textDisplay.value = data.raw_text || '';
 
                         // 显示耗时
-                        const elapsed = this.processingTimes.get(recordId);
-                        if (elapsed) {
-                            this.elements.transcriptionTime.textContent = `耗时: ${elapsed.toFixed(1)}s`;
+                        const displayElapsed = this.processingTimes.get(recordId);
+                        if (displayElapsed) {
+                            this.elements.transcriptionTime.textContent = `耗时: ${displayElapsed.toFixed(1)}s`;
                         }
 
                         this.updateButtonStates();
@@ -947,6 +998,11 @@ class App {
             clearInterval(this.pollingIntervals.get(recordId));
             this.pollingIntervals.delete(recordId);
         }
+
+        // 如果没有活动的轮询了，停止耗时更新定时器
+        if (this.pollingIntervals.size === 0) {
+            this.stopElapsedTimer();
+        }
     }
 
     /**
@@ -957,6 +1013,37 @@ class App {
             clearInterval(interval);
         }
         this.pollingIntervals.clear();
+        this.stopElapsedTimer();
+    }
+
+    /**
+     * 启动转写耗时更新定时器
+     */
+    startElapsedTimer() {
+        // 清除已有的定时器
+        this.stopElapsedTimer();
+
+        // 每秒更新一次转写中的耗时显示
+        this.elapsedTimeInterval = setInterval(() => {
+            const elapsedElements = document.querySelectorAll('.record-processing[data-elapsed]');
+            elapsedElements.forEach(el => {
+                const startTime = parseInt(el.dataset.elapsed, 10);
+                if (startTime) {
+                    const elapsed = (Date.now() - startTime) / 1000;
+                    el.textContent = `⏱${elapsed.toFixed(1)}s`;
+                }
+            });
+        }, 1000);
+    }
+
+    /**
+     * 停止转写耗时更新定时器
+     */
+    stopElapsedTimer() {
+        if (this.elapsedTimeInterval) {
+            clearInterval(this.elapsedTimeInterval);
+            this.elapsedTimeInterval = null;
+        }
     }
 
     /**
