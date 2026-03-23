@@ -21,6 +21,7 @@ except ImportError:
 
 from tray.websocket_client import TrayWebSocketClient
 from tray.hotkey import create_hotkey_listener
+from tray.audio_controller import get_audio_controller
 
 # Configure logging
 logging.basicConfig(
@@ -62,6 +63,9 @@ class TrayApp:
         self.is_transcribing = False
         self.is_connected = False
         self.connected_clients = 0
+
+        # Audio controller
+        self.audio_controller = get_audio_controller(enabled=True)
 
         # Event loop
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -195,6 +199,9 @@ class TrayApp:
 
         logger.info("Hotkey pressed - starting recording")
 
+        # Pause other audio playback
+        self.audio_controller.pause_all()
+
         if self.ws_client and self.ws_client.is_connected:
             await self.ws_client.send_recording_command("start")
             self.is_recording = True
@@ -211,6 +218,9 @@ class TrayApp:
             await self.ws_client.send_recording_command("stop")
             self.is_recording = False
             self._update_icon()
+
+        # Resume audio playback
+        self.audio_controller.resume_all()
 
     def _reconnect(self) -> None:
         """Manually reconnect WebSocket."""
