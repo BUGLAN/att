@@ -11,6 +11,7 @@ class SettingsManager {
             whisperDevice: document.getElementById('settingWhisperDevice'),
             pauseAudio: document.getElementById('settingPauseAudio'),
             autoOptimize: document.getElementById('settingAutoOptimize'),
+            autoCopyToClipboard: document.getElementById('settingAutoCopyToClipboard'),
             hotkeyInput: document.getElementById('settingHotkey'),
             hotkeyResetBtn: document.getElementById('resetHotkeyBtn'),
             saveBtn: document.getElementById('saveSettingsBtn'),
@@ -112,6 +113,9 @@ class SettingsManager {
         if (this.elements.autoOptimize) {
             this.elements.autoOptimize.checked = this.settings.auto_optimize === true;
         }
+        if (this.elements.autoCopyToClipboard) {
+            this.elements.autoCopyToClipboard.checked = this.settings.auto_copy_to_clipboard !== false;
+        }
 
         // New settings
         if (this.elements.recordingMode) {
@@ -140,6 +144,7 @@ class SettingsManager {
             whisper_device: this.elements.whisperDevice?.value,
             pause_audio_on_recording: this.elements.pauseAudio?.checked,
             auto_optimize: this.elements.autoOptimize?.checked,
+            auto_copy_to_clipboard: this.elements.autoCopyToClipboard?.checked,
             // New settings
             recording_mode: this.elements.recordingMode?.value,
             silence_threshold: parseFloat(this.elements.silenceThreshold?.value) || 1.5,

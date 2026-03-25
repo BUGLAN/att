@@ -127,6 +127,16 @@ class AsyncWorker(QThread):
                         pause_audio = settings.get('pause_audio_on_recording', True)
                         self.tray_app.pause_audio_on_recording = pause_audio
                         logger.info(f"Loaded pause_audio_on_recording: {pause_audio}")
+
+                        # Load auto_copy_to_clipboard setting
+                        auto_copy = settings.get('auto_copy_to_clipboard', True)
+                        self.tray_app.auto_copy_to_clipboard = auto_copy
+                        logger.info(f"Loaded auto_copy_to_clipboard: {auto_copy}")
+
+                        # Load auto_optimize setting
+                        auto_optimize = settings.get('auto_optimize', False)
+                        self.tray_app.auto_optimize = auto_optimize
+                        logger.info(f"Loaded auto_optimize: {auto_optimize}")
         except Exception as e:
             logger.warning(f"Failed to load settings from server: {e}")
 
@@ -284,6 +294,8 @@ class TrayApp(QSystemTrayIcon):
         self.is_connected = False
         self.hotkey_config: Optional[dict] = None
         self.pause_audio_on_recording = True
+        self.auto_copy_to_clipboard = True
+        self.auto_optimize = False
         self.records: List[dict] = []
         self.history_actions: List[QAction] = []  # Dynamic history menu actions
         self._recording_initiated_by_tray = False  # Track recording source for mute control
@@ -318,7 +330,7 @@ class TrayApp(QSystemTrayIcon):
         required_icons = ["idle.png", "recording.png", "transcribing.png", "disconnected.png"]
         all_icons_exist = all((icons_dir / name).exists() for name in required_icons)
 
-        # Check if we need to regenerate icons (old size was 22x22, new is 44x44)
+        # Check if we need to regenerate icons (old sizes: 22x22 or 44x44, new is 88x88)
         need_regenerate = False
         if all_icons_exist:
             # Check if existing icons are the old size
@@ -327,14 +339,14 @@ class TrayApp(QSystemTrayIcon):
                 if icon_path.exists():
                     from PIL import Image
                     img = Image.open(icon_path)
-                    if img.size[0] < 44:  # Old size, need to regenerate
+                    if img.size[0] < 88:  # Old size, need to regenerate
                         need_regenerate = True
                         break
 
         # Generate icons if needed
         if not all_icons_exist or need_regenerate:
             if need_regenerate:
-                logger.info("Regenerating icons for Retina display (44x44)")
+                logger.info("Regenerating icons for high-resolution display (88x88)")
             elif not all_icons_exist:
                 logger.info("Generating missing icon files")
             icons_dir.mkdir(parents=True, exist_ok=True)
@@ -364,8 +376,8 @@ class TrayApp(QSystemTrayIcon):
         """
         from PIL import Image, ImageDraw
 
-        # Use 44x44 for Retina display support (2x the typical 22x22)
-        size = 44
+        # Use 88x88 for high-resolution display support (4x the typical 22x22)
+        size = 88
 
         # Template images: black shapes with transparency
         # macOS will automatically adapt color to match the menu bar
@@ -373,7 +385,7 @@ class TrayApp(QSystemTrayIcon):
             image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
             draw = ImageDraw.Draw(image)
             center = size // 2
-            radius = size // 2 - 4  # Slightly smaller for better appearance
+            radius = size // 2 - 2  # Minimal margin for complete circle
 
             # Fill with solid black - macOS handles the color adaptation
             draw.ellipse(
@@ -387,7 +399,7 @@ class TrayApp(QSystemTrayIcon):
         image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         center = size // 2
-        radius = size // 2 - 4
+        radius = size // 2 - 2
         draw.ellipse(
             [center - radius, center - radius, center + radius, center + radius],
             fill=(220, 53, 69, 255),  # Red color (Bootstrap danger)
@@ -537,6 +549,12 @@ class TrayApp(QSystemTrayIcon):
         pause_audio = settings.get("pause_audio_on_recording")
         if pause_audio is not None:
             self.pause_audio_on_recording = pause_audio
+        auto_copy = settings.get("auto_copy_to_clipboard")
+        if auto_copy is not None:
+            self.auto_copy_to_clipboard = auto_copy
+        auto_optimize = settings.get("auto_optimize")
+        if auto_optimize is not None:
+            self.auto_optimize = auto_optimize
 
     @Slot(str)
     def _on_error(self, error: str):
@@ -545,15 +563,25 @@ class TrayApp(QSystemTrayIcon):
 
     @Slot(dict)
     def _on_transcription_completed(self, data: dict):
-        """Handle transcription completed - refresh history."""
+        """Handle transcription completed - refresh history and optionally copy to clipboard."""
         logger.info(f"Transcription completed, refreshing history: {data.get('record_id')}")
         self._refresh_history()
+        # Only copy if auto_optimize is disabled (otherwise wait for optimization)
+        if self.auto_copy_to_clipboard and not self.auto_optimize:
+            text = data.get('text', '')
+            if text:
+                self._copy_and_paste(text)
 
     @Slot(dict)
     def _on_optimization_completed(self, data: dict):
-        """Handle optimization completed - refresh history."""
+        """Handle optimization completed - refresh history and copy optimized text."""
         logger.info(f"Optimization completed, refreshing history: {data.get('record_id')}")
         self._refresh_history()
+        # Copy optimized text
+        if self.auto_copy_to_clipboard:
+            text = data.get('optimized_text', '')
+            if text:
+                self._copy_and_paste(text)
 
     def _update_icon(self):
         """Update tray icon based on current state."""
@@ -576,15 +604,46 @@ class TrayApp(QSystemTrayIcon):
         ws_text = "已连接" if self.is_connected else "未连接"
         self.ws_action.setText(f"WebSocket: {ws_text}")
 
-    def _copy_text(self, text: str):
+    def _copy_text(self, text: str, show_notification: bool = True):
         """Copy text to clipboard."""
         if not text:
             text = "(空)"
         clipboard = QApplication.clipboard()
         clipboard.setText(text)
+        if show_notification:
+            self.showMessage(
+                "已复制",
+                f"已复制到剪贴板: {text[:50]}{'...' if len(text) > 50 else ''}",
+                QSystemTrayIcon.Information,
+                2000
+            )
+
+    def _copy_and_paste(self, text: str):
+        """Copy text to clipboard and simulate paste."""
+        if not text:
+            text = "(空)"
+
+        # Copy to clipboard
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+
+        # Simulate Ctrl+V / Cmd+V paste
+        from pynput.keyboard import Controller, Key
+        keyboard = Controller()
+        if IS_MACOS:
+            keyboard.press(Key.cmd)
+            keyboard.press('v')
+            keyboard.release('v')
+            keyboard.release(Key.cmd)
+        else:
+            keyboard.press(Key.ctrl)
+            keyboard.press('v')
+            keyboard.release('v')
+            keyboard.release(Key.ctrl)
+
         self.showMessage(
-            "已复制",
-            f"已复制到剪贴板: {text[:50]}{'...' if len(text) > 50 else ''}",
+            "已复制并粘贴",
+            f"已粘贴: {text[:30]}{'...' if len(text) > 30 else ''}",
             QSystemTrayIcon.Information,
             2000
         )

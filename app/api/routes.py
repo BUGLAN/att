@@ -527,7 +527,7 @@ async def update_settings(updates: dict) -> dict:
     # Filter to only allowed keys
     allowed_keys = {
         "whisper_model", "whisper_device",
-        "pause_audio_on_recording", "auto_optimize",
+        "pause_audio_on_recording", "auto_optimize", "auto_copy_to_clipboard",
         "hotkey",
         # Recording mode settings
         "recording_mode", "silence_threshold", "silence_level",

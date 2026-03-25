@@ -39,6 +39,7 @@ class UserSettings:
         "whisper_device": "auto",
         "pause_audio_on_recording": True,
         "auto_optimize": False,
+        "auto_copy_to_clipboard": True,  # 自动复制转码文本到剪贴板
         "hotkey": None,  # Will be set dynamically based on platform
         # Recording mode settings
         "recording_mode": "single",     # single or multi
