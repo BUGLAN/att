@@ -311,13 +311,17 @@ class PresetManager {
 
         this.elements = {
             modal: document.getElementById('presetModal'),
+            editModal: document.getElementById('presetEditModal'),
             list: document.getElementById('presetList'),
-            editor: document.getElementById('presetEditor'),
             closeBtn: document.getElementById('closePresetModal'),
+            closeEditBtn: document.getElementById('closePresetEditModal'),
             newBtn: document.getElementById('newPresetBtn'),
             saveBtn: document.getElementById('savePresetBtn'),
             deleteBtn: document.getElementById('deletePresetBtn'),
+            cancelBtn: document.getElementById('cancelPresetEditBtn'),
             testBtn: document.getElementById('testPresetBtn'),
+            editTitle: document.getElementById('presetEditTitle'),
+            readonlyHint: document.getElementById('presetReadonlyHint'),
             nameInput: document.getElementById('presetName'),
             descInput: document.getElementById('presetDescription'),
             categorySelect: document.getElementById('presetCategory'),
@@ -331,6 +335,9 @@ class PresetManager {
         if (this.elements.closeBtn) {
             this.elements.closeBtn.addEventListener('click', () => this.close());
         }
+        if (this.elements.closeEditBtn) {
+            this.elements.closeEditBtn.addEventListener('click', () => this.closeEditModal());
+        }
         if (this.elements.newBtn) {
             this.elements.newBtn.addEventListener('click', () => this.newPreset());
         }
@@ -339,6 +346,9 @@ class PresetManager {
         }
         if (this.elements.deleteBtn) {
             this.elements.deleteBtn.addEventListener('click', () => this.deletePreset());
+        }
+        if (this.elements.cancelBtn) {
+            this.elements.cancelBtn.addEventListener('click', () => this.closeEditModal());
         }
         if (this.elements.testBtn) {
             this.elements.testBtn.addEventListener('click', () => this.testPreset());
@@ -349,6 +359,13 @@ class PresetManager {
             this.elements.modal.addEventListener('click', (e) => {
                 if (e.target === this.elements.modal) {
                     this.close();
+                }
+            });
+        }
+        if (this.elements.editModal) {
+            this.elements.editModal.addEventListener('click', (e) => {
+                if (e.target === this.elements.editModal) {
+                    this.closeEditModal();
                 }
             });
         }
@@ -365,7 +382,14 @@ class PresetManager {
         if (this.elements.modal) {
             this.elements.modal.style.display = 'none';
         }
-        this.hideEditor();
+    }
+
+    closeEditModal() {
+        if (this.elements.editModal) {
+            this.elements.editModal.style.display = 'none';
+        }
+        this.currentPreset = null;
+        this.isEditing = false;
     }
 
     async loadPresets() {
@@ -389,7 +413,7 @@ class PresetManager {
                     <span class="preset-category">${preset.category}</span>
                 </div>
                 <div class="preset-actions">
-                    <button class="btn-icon edit-btn" title="编辑">✏️</button>
+                    <button class="btn-icon edit-btn" title="${preset.is_builtin ? '查看' : '编辑'}">✏️</button>
                     ${!preset.is_builtin ? '<button class="btn-icon delete-btn" title="删除">🗑️</button>' : ''}
                 </div>
             </div>
@@ -403,65 +427,64 @@ class PresetManager {
                     this.confirmDelete(id);
                 } else if (e.target.classList.contains('edit-btn')) {
                     this.editPreset(id);
-                } else {
-                    this.selectPreset(id);
                 }
+                // Removed selectPreset - click on item does nothing now
             });
         });
     }
 
-    selectPreset(id) {
-        const preset = this.presets.find(p => p.id === id);
-        if (!preset) return;
+    openEditModal(preset = null) {
+        if (!this.elements.editModal) return;
 
-        this.currentPreset = preset;
-        this.showEditor(preset);
-    }
-
-    showEditor(preset = null) {
-        if (!this.elements.editor) return;
-
-        this.elements.editor.style.display = 'block';
         this.isEditing = !!preset;
 
         if (preset) {
+            this.elements.editTitle.textContent = preset.is_builtin ? '查看预设' : '编辑预设';
             this.elements.nameInput.value = preset.name || '';
             this.elements.descInput.value = preset.description || '';
             this.elements.categorySelect.value = preset.category || 'custom';
             this.elements.templateInput.value = preset.prompt_template || '';
 
-            // Show/hide buttons
-            this.elements.saveBtn.style.display = 'inline-block';
-            this.elements.deleteBtn.style.display = preset.is_builtin ? 'none' : 'inline-block';
+            // For built-in presets: read-only mode
+            const isReadonly = preset.is_builtin;
+            this.elements.nameInput.readOnly = isReadonly;
+            this.elements.descInput.readOnly = isReadonly;
+            this.elements.categorySelect.disabled = isReadonly;
+            this.elements.templateInput.readOnly = isReadonly;
+
+            this.elements.saveBtn.style.display = isReadonly ? 'none' : 'inline-block';
+            this.elements.deleteBtn.style.display = isReadonly ? 'none' : 'inline-block';
+            this.elements.readonlyHint.style.display = isReadonly ? 'inline' : 'none';
         } else {
+            this.elements.editTitle.textContent = '新建预设';
             this.elements.nameInput.value = '';
             this.elements.descInput.value = '';
             this.elements.categorySelect.value = 'custom';
             this.elements.templateInput.value = '';
 
+            this.elements.nameInput.readOnly = false;
+            this.elements.descInput.readOnly = false;
+            this.elements.categorySelect.disabled = false;
+            this.elements.templateInput.readOnly = false;
+
             this.elements.saveBtn.style.display = 'inline-block';
             this.elements.deleteBtn.style.display = 'none';
+            this.elements.readonlyHint.style.display = 'none';
         }
-    }
 
-    hideEditor() {
-        if (this.elements.editor) {
-            this.elements.editor.style.display = 'none';
-        }
-        this.currentPreset = null;
-        this.isEditing = false;
+        this.elements.editModal.style.display = 'flex';
     }
 
     newPreset() {
         this.currentPreset = null;
-        this.showEditor();
+        this.openEditModal();
     }
 
     editPreset(id) {
         const preset = this.presets.find(p => p.id === id);
         if (preset) {
             this.currentPreset = preset;
-            this.showEditor(preset);
+            this.openEditModal(preset);
         }
     }
 
@@ -474,7 +497,9 @@ class PresetManager {
         };
 
         if (!data.name || !data.prompt_template) {
-            alert('请填写名称和提示词模板');
+            if (window.app) {
+                window.app.showToast('请填写名称和提示词模板');
+            }
             return;
         }
 
@@ -495,20 +520,22 @@ class PresetManager {
             }
 
             await this.loadPresets();
-            this.hideEditor();
+            this.closeEditModal();
 
             if (window.app) {
                 window.app.showToast('预设已保存');
             }
         } catch (error) {
             console.error('Failed to save preset:', error);
-            alert('保存预设失败');
+            if (window.app) {
+                window.app.showToast('保存预设失败');
+            }
         }
     }
 
     async deletePreset() {
         if (!this.currentPreset || this.currentPreset.is_builtin) return;
-        this.confirmDelete(this.currentPreset.id);
+        await this.confirmDelete(this.currentPreset.id);
     }
 
     async confirmDelete(id) {
@@ -524,21 +551,25 @@ class PresetManager {
             }
 
             await this.loadPresets();
-            this.hideEditor();
+            this.closeEditModal();
 
             if (window.app) {
                 window.app.showToast('预设已删除');
             }
         } catch (error) {
             console.error('Failed to delete preset:', error);
-            alert('删除预设失败');
+            if (window.app) {
+                window.app.showToast('删除预设失败');
+            }
         }
     }
 
     async testPreset() {
         const template = this.elements.templateInput.value;
         if (!template) {
-            alert('请输入提示词模板');
+            if (window.app) {
+                window.app.showToast('请输入提示词模板');
+            }
             return;
         }
 
@@ -546,7 +577,43 @@ class PresetManager {
         const testText = '这是一段测试文本，用于预览提示词效果。';
         const rendered = template.replace('{text}', testText);
 
-        alert('预览结果:\n\n' + rendered);
+        // Show in preview modal instead of alert
+        this.showPreviewModal(rendered);
+    }
+
+    showPreviewModal(rendered) {
+        // Create or get preview modal
+        let previewModal = document.getElementById('presetPreviewModal');
+        if (!previewModal) {
+            previewModal = document.createElement('div');
+            previewModal.id = 'presetPreviewModal';
+            previewModal.className = 'modal';
+            previewModal.innerHTML = `
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2>提示词预览</h2>
+                        <button class="modal-close" onclick="this.closest('.modal').style.display='none'">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <pre class="preview-content" style="white-space: pre-wrap; word-break: break-word; background: var(--bg-elevated); padding: 16px; border-radius: 8px; max-height: 400px; overflow-y: auto;"></pre>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-primary" onclick="this.closest('.modal').style.display='none'">关闭</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(previewModal);
+
+            // Close on outside click
+            previewModal.addEventListener('click', (e) => {
+                if (e.target === previewModal) {
+                    previewModal.style.display = 'none';
+                }
+            });
+        }
+
+        previewModal.querySelector('.preview-content').textContent = rendered;
+        previewModal.style.display = 'flex';
     }
 }
 
@@ -610,7 +677,10 @@ class HotkeyInput {
 
         // Collect modifiers
         const modifiers = [];
-        if (e.metaKey) modifiers.push('cmd');
+        if (e.metaKey) {
+            // Windows: Win key, macOS: Cmd key
+            modifiers.push(this.isMac ? 'cmd' : 'win');
+        }
         if (e.ctrlKey) modifiers.push('ctrl');
         if (e.altKey) modifiers.push('alt');
         if (e.shiftKey) modifiers.push('shift');
@@ -659,7 +729,7 @@ class HotkeyInput {
             'ctrl': '⌃',
             'shift': '⇧'
         } : {
-            'cmd': 'Ctrl',
+            'win': 'Win',
             'alt': 'Alt',
             'ctrl': 'Ctrl',
             'shift': 'Shift'
@@ -704,9 +774,9 @@ class HotkeyInput {
             key: null,
             display: '⌥⌘'
         } : {
-            modifiers: ['alt', 'ctrl'],
+            modifiers: ['alt', 'win'],
             key: null,
-            display: 'Alt+Ctrl'
+            display: 'Alt+Win'
         };
 
         this.setValue(defaultHotkey);
@@ -728,14 +798,18 @@ class LLMConfigManager {
 
         this.elements = {
             modal: document.getElementById('llmModal'),
+            editModal: document.getElementById('llmEditModal'),
             list: document.getElementById('llmConfigList'),
-            editor: document.getElementById('llmConfigEditor'),
             closeBtn: document.getElementById('closeLLMModal'),
+            closeEditBtn: document.getElementById('closeLLMEditModal'),
             newBtn: document.getElementById('newLLMConfigBtn'),
             saveBtn: document.getElementById('saveLLMConfigBtn'),
             deleteBtn: document.getElementById('deleteLLMConfigBtn'),
+            cancelBtn: document.getElementById('cancelLLMEditBtn'),
             testBtn: document.getElementById('testLLMConfigBtn'),
             testResult: document.getElementById('llmTestResult'),
+            editTitle: document.getElementById('llmEditTitle'),
+            apiKeyHint: document.getElementById('llmApiKeyHint'),
             providerSelect: document.getElementById('llmProvider'),
             nameInput: document.getElementById('llmConfigName'),
             apiKeyInput: document.getElementById('llmApiKey'),
@@ -752,6 +826,9 @@ class LLMConfigManager {
         if (this.elements.closeBtn) {
             this.elements.closeBtn.addEventListener('click', () => this.close());
         }
+        if (this.elements.closeEditBtn) {
+            this.elements.closeEditBtn.addEventListener('click', () => this.closeEditModal());
+        }
         if (this.elements.newBtn) {
             this.elements.newBtn.addEventListener('click', () => this.newConfig());
         }
@@ -760,6 +837,9 @@ class LLMConfigManager {
         }
         if (this.elements.deleteBtn) {
             this.elements.deleteBtn.addEventListener('click', () => this.deleteConfig());
+        }
+        if (this.elements.cancelBtn) {
+            this.elements.cancelBtn.addEventListener('click', () => this.closeEditModal());
         }
         if (this.elements.testBtn) {
             this.elements.testBtn.addEventListener('click', () => this.testConnection());
@@ -772,6 +852,13 @@ class LLMConfigManager {
             this.elements.modal.addEventListener('click', (e) => {
                 if (e.target === this.elements.modal) {
                     this.close();
+                }
+            });
+        }
+        if (this.elements.editModal) {
+            this.elements.editModal.addEventListener('click', (e) => {
+                if (e.target === this.elements.editModal) {
+                    this.closeEditModal();
                 }
             });
         }
@@ -789,7 +876,14 @@ class LLMConfigManager {
         if (this.elements.modal) {
             this.elements.modal.style.display = 'none';
         }
-        this.hideEditor();
+    }
+
+    closeEditModal() {
+        if (this.elements.editModal) {
+            this.elements.editModal.style.display = 'none';
+        }
+        this.currentConfig = null;
+        this.isEditing = false;
     }
 
     async loadProviders() {
@@ -820,9 +914,10 @@ class LLMConfigManager {
         this.elements.list.innerHTML = this.configs.map(config => `
             <div class="llm-config-item ${config.is_default ? 'default' : ''}" data-id="${config.id}">
                 <div class="llm-config-info">
-                    <span class="llm-config-name">${config.name}</span>
-                    <span class="llm-config-provider">${config.provider} - ${config.model}</span>
-                    ${config.is_default ? '<span class="default-badge">默认</span>' : ''}
+                    <span class="llm-config-name">
+                        ${config.name}
+                        ${config.is_default ? '<span class="default-badge">默认</span>' : ''}
+                    </span>
                 </div>
                 <div class="llm-config-actions">
                     <button class="btn-icon set-default-btn" title="设为默认">⭐</button>
@@ -865,57 +960,53 @@ class LLMConfigManager {
         }
     }
 
-    showEditor(config = null) {
-        if (!this.elements.editor) return;
+    openEditModal(config = null) {
+        if (!this.elements.editModal) return;
 
-        this.elements.editor.style.display = 'block';
         this.isEditing = !!config;
 
         if (config) {
+            this.elements.editTitle.textContent = '编辑配置';
             this.elements.providerSelect.value = config.provider;
             this.elements.nameInput.value = config.name || '';
-            this.elements.apiKeyInput.value = ''; // Don't show existing key
+            this.elements.apiKeyInput.value = '';
+            this.elements.apiKeyInput.placeholder = '留空保持原有密钥';
+            this.elements.apiKeyHint.style.display = 'inline';
             this.elements.apiBaseInput.value = config.api_base || '';
             this.elements.modelSelect.innerHTML = `<option value="${config.model}">${config.model}</option>`;
             this.elements.temperatureInput.value = config.temperature || 0.7;
             this.elements.maxTokensInput.value = config.max_tokens || 4096;
 
-            this.elements.saveBtn.style.display = 'inline-block';
             this.elements.deleteBtn.style.display = 'inline-block';
         } else {
+            this.elements.editTitle.textContent = '新建配置';
             this.elements.providerSelect.value = 'deepseek';
             this.elements.nameInput.value = '';
             this.elements.apiKeyInput.value = '';
+            this.elements.apiKeyInput.placeholder = 'sk-...';
+            this.elements.apiKeyHint.style.display = 'none';
             this.elements.apiBaseInput.value = '';
             this.elements.temperatureInput.value = 0.7;
             this.elements.maxTokensInput.value = 4096;
             this.updateModels();
 
-            this.elements.saveBtn.style.display = 'inline-block';
             this.elements.deleteBtn.style.display = 'none';
         }
 
         this.elements.testResult.textContent = '';
-    }
-
-    hideEditor() {
-        if (this.elements.editor) {
-            this.elements.editor.style.display = 'none';
-        }
-        this.currentConfig = null;
-        this.isEditing = false;
+        this.elements.editModal.style.display = 'flex';
     }
 
     newConfig() {
         this.currentConfig = null;
-        this.showEditor();
+        this.openEditModal();
     }
 
     editConfig(id) {
         const config = this.configs.find(c => c.id === id);
         if (config) {
             this.currentConfig = config;
-            this.showEditor(config);
+            this.openEditModal(config);
         }
     }
 
@@ -923,7 +1014,7 @@ class LLMConfigManager {
         const data = {
             provider: this.elements.providerSelect.value,
             name: this.elements.nameInput.value,
-            api_key: this.elements.apiKeyInput.value,
+            api_key: this.elements.apiKeyInput.value || undefined,
             api_base: this.elements.apiBaseInput.value || null,
             model: this.elements.modelSelect.value,
             temperature: parseFloat(this.elements.temperatureInput.value) || 0.7,
@@ -931,12 +1022,16 @@ class LLMConfigManager {
         };
 
         if (!data.name) {
-            alert('请输入配置名称');
+            if (window.app) {
+                window.app.showToast('请输入配置名称');
+            }
             return;
         }
 
         if (!this.isEditing && !data.api_key) {
-            alert('请输入 API 密钥');
+            if (window.app) {
+                window.app.showToast('请输入 API 密钥');
+            }
             return;
         }
 
@@ -957,7 +1052,7 @@ class LLMConfigManager {
             }
 
             await this.loadConfigs();
-            this.hideEditor();
+            this.closeEditModal();
 
             // Update LLM config select in settings
             if (window.settingsManager) {
@@ -969,13 +1064,15 @@ class LLMConfigManager {
             }
         } catch (error) {
             console.error('Failed to save config:', error);
-            alert('保存配置失败');
+            if (window.app) {
+                window.app.showToast('保存配置失败');
+            }
         }
     }
 
     async deleteConfig() {
         if (!this.currentConfig) return;
-        this.confirmDelete(this.currentConfig.id);
+        await this.confirmDelete(this.currentConfig.id);
     }
 
     async confirmDelete(id) {
@@ -991,7 +1088,7 @@ class LLMConfigManager {
             }
 
             await this.loadConfigs();
-            this.hideEditor();
+            this.closeEditModal();
 
             if (window.settingsManager) {
                 window.settingsManager.loadLLMConfigs();
@@ -1002,7 +1099,9 @@ class LLMConfigManager {
             }
         } catch (error) {
             console.error('Failed to delete config:', error);
-            alert('删除配置失败');
+            if (window.app) {
+                window.app.showToast('删除配置失败');
+            }
         }
     }
 
@@ -1027,7 +1126,9 @@ class LLMConfigManager {
             }
         } catch (error) {
             console.error('Failed to set default:', error);
-            alert('设置默认失败');
+            if (window.app) {
+                window.app.showToast('设置默认失败');
+            }
         }
     }
 
@@ -1035,7 +1136,9 @@ class LLMConfigManager {
         if (!this.currentConfig) {
             // For new config, just validate inputs
             if (!this.elements.apiKeyInput.value) {
-                alert('请先输入 API 密钥');
+                if (window.app) {
+                    window.app.showToast('请先输入 API 密钥');
+                }
                 return;
             }
             this.elements.testResult.textContent = '请先保存配置后再测试';

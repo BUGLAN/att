@@ -175,6 +175,10 @@ class AudioRecorder {
         const durationEl = document.getElementById('duration');
         if (!durationEl) return;
 
+        // Show timer with animation
+        durationEl.classList.add('visible');
+        durationEl.textContent = '00:00';
+
         this.durationTimer = setInterval(() => {
             const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
             const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
@@ -187,6 +191,12 @@ class AudioRecorder {
         if (this.durationTimer) {
             clearInterval(this.durationTimer);
             this.durationTimer = null;
+        }
+
+        // Hide timer with animation
+        const durationEl = document.getElementById('duration');
+        if (durationEl) {
+            durationEl.classList.remove('visible');
         }
     }
 

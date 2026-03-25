@@ -23,10 +23,11 @@ def _init_modifier_key_map():
         from pynput import keyboard
         global MODIFIER_KEY_MAP
         MODIFIER_KEY_MAP = {
-            "cmd": [keyboard.Key.cmd, keyboard.Key.cmd_r],      # macOS Command
-            "ctrl": [keyboard.Key.ctrl, keyboard.Key.ctrl_r],
-            "alt": [keyboard.Key.alt, keyboard.Key.alt_r],      # Option on macOS
-            "shift": [keyboard.Key.shift, keyboard.Key.shift_r],
+            "cmd": [keyboard.Key.cmd, keyboard.Key.cmd_r],      # macOS Command / Windows Win
+            "ctrl": [keyboard.Key.ctrl_l, keyboard.Key.ctrl_r],
+            "alt": [keyboard.Key.alt_l, keyboard.Key.alt_r],    # Windows Alt / macOS Option
+            "shift": [keyboard.Key.shift_l, keyboard.Key.shift_r],
+            "win": [keyboard.Key.cmd, keyboard.Key.cmd_r],      # Windows 键别名
         }
     except ImportError:
         pass
@@ -327,6 +328,15 @@ class PynputHotkeyListener:
         """Handle key press."""
         self._key_states[key] = True
 
+        # Debug: log pressed key and current state
+        if not self.is_pressed:
+            logger.debug(f"Key pressed: {key}, type: {type(key)}")
+            logger.debug(f"Key states: {list(self._key_states.keys())}")
+            win_keys = MODIFIER_KEY_MAP.get('win', [])
+            logger.debug(f"Win keys in map: {win_keys}")
+            for wk in win_keys:
+                logger.debug(f"Win key {wk} in states: {self._key_states.get(wk)}")
+
         if self._check_hotkey() and not self.is_pressed:
             self.is_pressed = True
             logger.info("Hotkey pressed")
@@ -384,14 +394,16 @@ def create_hotkey_listener(
     Args:
         on_press: Callback when hotkey is pressed
         on_release: Callback when hotkey is released
-        prefer_pynput: Prefer pynput for macOS (more reliable)
+        prefer_pynput: Prefer pynput for macOS and Windows (more reliable)
         hotkey_config: Initial hotkey configuration {"modifiers": [...], "key": "...", "display": "..."}
 
     Returns:
         HotkeyListener or PynputHotkeyListener instance
     """
-    if IS_MACOS and prefer_pynput:
-        logger.info("Using pynput for macOS hotkey listener")
+    # Use pynput on both macOS and Windows for better reliability
+    if prefer_pynput and (IS_MACOS or IS_WINDOWS):
+        system_name = "macOS" if IS_MACOS else "Windows"
+        logger.info(f"Using pynput for {system_name} hotkey listener")
         listener = PynputHotkeyListener(
             on_press=on_press,
             on_release=on_release,
@@ -401,5 +413,6 @@ def create_hotkey_listener(
             logger.info(f"Hotkey configured: {hotkey_config.get('display')}")
         return listener
     else:
+        # Fallback to keyboard library (Linux or when pynput is disabled)
         logger.info("Using keyboard library for hotkey listener")
         return HotkeyListener(on_press=on_press, on_release=on_release)

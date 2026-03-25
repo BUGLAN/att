@@ -8,8 +8,7 @@ from app.prompts.models import (
     PromptPresetCreate,
     PromptPresetUpdate
 )
-from app.prompts.manager import PromptManager
-from app.prompts.builtin_presets import BUILTIN_PRESETS
+from app.prompts.manager import PromptManager, prompt_manager
 
 __all__ = [
     "PromptCategory",
@@ -17,5 +16,5 @@ __all__ = [
     "PromptPresetCreate",
     "PromptPresetUpdate",
     "PromptManager",
-    "BUILTIN_PRESETS"
+    "prompt_manager"
 ]

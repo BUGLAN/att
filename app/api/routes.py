@@ -12,6 +12,7 @@ from fastapi import (
     WebSocketDisconnect
 )
 from fastapi.responses import PlainTextResponse, FileResponse
+from pydantic import BaseModel
 from typing import Optional, List
 from pathlib import Path
 from datetime import datetime
@@ -42,6 +43,14 @@ record_manager: Optional[RecordManager] = None
 _prompt_manager: Optional[PromptManager] = None
 
 
+# Request models
+class RecordUpdateRequest(BaseModel):
+    """Request model for updating a record"""
+    raw_text: Optional[str] = None
+    optimized_text: Optional[str] = None
+    is_modified: Optional[bool] = None
+
+
 def get_prompt_manager() -> PromptManager:
     """Get or create prompt manager instance."""
     global _prompt_manager
@@ -67,7 +76,7 @@ def validate_hotkey(hotkey: dict) -> bool:
     key = hotkey.get("key")
 
     # Validate modifiers
-    valid_modifiers = {"cmd", "alt", "ctrl", "shift"}
+    valid_modifiers = {"cmd", "alt", "ctrl", "shift", "win"}
     if not isinstance(modifiers, list) or not all(m in valid_modifiers for m in modifiers):
         return False
 
@@ -378,14 +387,14 @@ async def get_record_status(record_id: str) -> dict:
 @router.put("/records/{record_id}", response_model=dict)
 async def update_record(
     record_id: str,
-    raw_text: Optional[str] = None,
-    optimized_text: Optional[str] = None
+    request: RecordUpdateRequest
 ) -> dict:
     """Update record text (for editable input)"""
     record = await record_manager.update_record(
         record_id,
-        raw_text=raw_text,
-        optimized_text=optimized_text
+        raw_text=request.raw_text,
+        optimized_text=request.optimized_text,
+        is_modified=request.is_modified
     )
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")

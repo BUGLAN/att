@@ -47,8 +47,13 @@ class MuteContext:
             logger.debug("MuteContext: Already entered, skipping nested entry")
             return self
 
-        if not self.controller.enabled or not self.controller.is_macos:
-            logger.debug("MuteContext: Audio control disabled or not macOS")
+        if not self.controller.enabled:
+            logger.debug("MuteContext: Audio control disabled")
+            self._entered = True
+            return self
+
+        if not (self.controller.is_macos or self.controller.is_windows):
+            logger.debug("MuteContext: Audio control not supported on this platform")
             self._entered = True
             return self
 
@@ -76,7 +81,7 @@ class MuteContext:
 
         # Always attempt restore, even on exception
         try:
-            if self.controller.enabled and self.controller.is_macos:
+            if self.controller.enabled and (self.controller.is_macos or self.controller.is_windows):
                 logger.info("MuteContext: Exiting - restoring mute state")
                 if self._original_muted is not None:
                     self.controller.set_mute(self._original_muted)
@@ -91,13 +96,12 @@ class MuteContext:
 
 class AudioController:
     """
-    Controls system output mute on macOS.
+    Controls system output mute on macOS and Windows.
 
-    Uses AppleScript to mute/unmute system output volume.
+    - macOS: Uses AppleScript to mute/unmute system output volume.
+    - Windows: Uses pycaw to access Core Audio API.
+
     This ensures no other audio interferes with recording.
-
-    Note: This only works on macOS. On other platforms, the controller
-    will be disabled and methods will return False.
     """
 
     def __init__(self, enabled: bool = True):
@@ -109,10 +113,31 @@ class AudioController:
         """
         self.enabled = enabled
         self.is_macos = platform.system() == "Darwin"
+        self.is_windows = platform.system() == "Windows"
         self._original_muted = False  # Track original mute state
+        self._windows_audio = None  # Windows: pycaw interface
 
-        if not self.is_macos:
-            logger.info("Audio control only supported on macOS")
+        if self.is_macos:
+            logger.info("Audio control using AppleScript (macOS)")
+        elif self.is_windows:
+            self._init_windows_audio()
+        else:
+            logger.info("Audio control only supported on macOS and Windows")
+
+    def _init_windows_audio(self):
+        """Initialize Windows audio interface using pycaw."""
+        try:
+            from pycaw.pycaw import AudioUtilities
+            devices = AudioUtilities.GetSpeakers()
+            self._windows_audio = devices.EndpointVolume
+            if self._windows_audio:
+                logger.info("Windows audio interface initialized (pycaw)")
+            else:
+                logger.warning("Windows EndpointVolume not available")
+        except ImportError:
+            logger.warning("pycaw not installed, Windows audio control disabled")
+        except Exception as e:
+            logger.warning(f"Failed to init Windows audio: {e}")
 
     def is_muted(self) -> bool:
         """
@@ -121,19 +146,27 @@ class AudioController:
         Returns:
             True if muted, False otherwise
         """
-        cmd = 'osascript -e "output muted of (get volume settings)"'
-        try:
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            return result.stdout.strip().lower() == "true"
-        except Exception as e:
-            logger.error(f"Failed to check mute status: {e}")
-            return False
+        if self.is_macos:
+            cmd = 'osascript -e "output muted of (get volume settings)"'
+            try:
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                return result.stdout.strip().lower() == "true"
+            except Exception as e:
+                logger.error(f"Failed to check mute status: {e}")
+                return False
+        elif self.is_windows and self._windows_audio:
+            try:
+                return self._windows_audio.GetMute() == 1
+            except Exception as e:
+                logger.error(f"Failed to check Windows mute status: {e}")
+                return False
+        return False
 
     def set_mute(self, mute: bool) -> bool:
         """
@@ -145,28 +178,38 @@ class AudioController:
         Returns:
             True if successful, False otherwise
         """
-        state = "true" if mute else "false"
-        cmd = f'osascript -e "set volume output muted {state}"'
-        try:
-            subprocess.run(
-                cmd,
-                shell=True,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            logger.debug(f"System {'muted' if mute else 'unmuted'}")
-            return True
-        except subprocess.TimeoutExpired:
-            logger.error("Timeout setting mute state")
-            return False
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to set mute state: {e.stderr}")
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected error setting mute state: {e}")
-            return False
+        if self.is_macos:
+            state = "true" if mute else "false"
+            cmd = f'osascript -e "set volume output muted {state}"'
+            try:
+                subprocess.run(
+                    cmd,
+                    shell=True,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                logger.debug(f"System {'muted' if mute else 'unmuted'}")
+                return True
+            except subprocess.TimeoutExpired:
+                logger.error("Timeout setting mute state")
+                return False
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to set mute state: {e.stderr}")
+                return False
+            except Exception as e:
+                logger.error(f"Unexpected error setting mute state: {e}")
+                return False
+        elif self.is_windows and self._windows_audio:
+            try:
+                self._windows_audio.SetMute(1 if mute else 0, None)
+                logger.debug(f"Windows system {'muted' if mute else 'unmuted'}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to set Windows mute state: {e}")
+                return False
+        return False
 
     def pause_all(self) -> bool:
         """
@@ -177,7 +220,10 @@ class AudioController:
         Returns:
             True if successful, False otherwise
         """
-        if not self.enabled or not self.is_macos:
+        if not self.enabled:
+            return False
+
+        if not (self.is_macos or self.is_windows):
             return False
 
         logger.info("Muting system output...")
@@ -204,7 +250,10 @@ class AudioController:
         Returns:
             True if successful, False otherwise
         """
-        if not self.enabled or not self.is_macos:
+        if not self.enabled:
+            return False
+
+        if not (self.is_macos or self.is_windows):
             return False
 
         logger.info("Restoring system mute state...")

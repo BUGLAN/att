@@ -33,6 +33,7 @@ pynput>=1.7.6
 Pillow>=10.0.0
 keyboard>=0.13.5
 pyobjc>=9.0; sys_platform == 'darwin'  # Required for macOS hotkey listener
+pycaw>=20181226; sys_platform == 'win32'  # Required for Windows audio control
 
 # Packaging
 pyinstaller>=6.0.0

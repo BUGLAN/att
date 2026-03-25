@@ -62,7 +62,8 @@
                     </button>
                     <div class="recording-status" id="recordingStatus">
                         <span class="status-dot"></span>
-                        <span class="status-text">准备就绪</span>
+                        <span class="status-text status-ready" id="statusReady">准备就绪</span>
+                        <span class="status-text status-recording" id="statusRecording" style="display: none;">正在录音</span>
                         <span class="duration" id="duration">00:00</span>
                     </div>
                 </div>
@@ -283,6 +284,34 @@
     <!-- Toast Notification -->
     <div class="toast" id="toast" style="display: none;"></div>
 
+    <!-- Record Edit Modal -->
+    <div class="modal" id="recordEditModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>编辑记录</h2>
+                <button class="modal-close" id="closeRecordEditModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>原始内容</label>
+                    <div id="recordEditRawText" class="record-edit-display"></div>
+                </div>
+                <div class="form-group">
+                    <label>已优化内容</label>
+                    <div id="recordEditOptimizedText" class="record-edit-display"></div>
+                </div>
+                <div class="form-group">
+                    <label>文本内容</label>
+                    <textarea id="recordEditText" class="form-textarea" rows="6" placeholder="编辑文本内容..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancelRecordEditBtn">取消</button>
+                <button class="btn btn-primary" id="saveRecordEditBtn">保存</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Preset Manager Modal -->
     <div class="modal" id="presetModal" style="display: none;">
         <div class="modal-content">
@@ -294,38 +323,52 @@
                 <div class="preset-list" id="presetList">
                     <!-- Presets will be loaded here -->
                 </div>
-                <div class="preset-editor" id="presetEditor" style="display: none;">
-                    <div class="form-group">
-                        <label>预设名称</label>
-                        <input type="text" id="presetName" class="form-input" placeholder="输入预设名称">
-                    </div>
-                    <div class="form-group">
-                        <label>描述</label>
-                        <input type="text" id="presetDescription" class="form-input" placeholder="简短描述">
-                    </div>
-                    <div class="form-group">
-                        <label>分类</label>
-                        <select id="presetCategory" class="form-select">
-                            <option value="general">通用</option>
-                            <option value="coding">程序员</option>
-                            <option value="novel">小说</option>
-                            <option value="meeting">会议</option>
-                            <option value="marketing">文案</option>
-                            <option value="custom">自定义</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>提示词模板</label>
-                        <textarea id="presetTemplate" class="form-textarea" rows="10" placeholder="输入提示词模板，使用 {text} 作为文本占位符"></textarea>
-                    </div>
-                    <div class="form-group">
-                        <button class="btn btn-secondary" id="testPresetBtn">测试预览</button>
-                    </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="newPresetBtn">新建预设</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Preset Edit Modal -->
+    <div class="modal" id="presetEditModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="presetEditTitle">编辑预设</h2>
+                <button class="modal-close" id="closePresetEditModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>预设名称</label>
+                    <input type="text" id="presetName" class="form-input" placeholder="输入预设名称">
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <input type="text" id="presetDescription" class="form-input" placeholder="简短描述">
+                </div>
+                <div class="form-group">
+                    <label>分类</label>
+                    <select id="presetCategory" class="form-select">
+                        <option value="general">通用</option>
+                        <option value="coding">程序员</option>
+                        <option value="novel">小说</option>
+                        <option value="meeting">会议</option>
+                        <option value="marketing">文案</option>
+                        <option value="custom">自定义</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>提示词模板</label>
+                    <textarea id="presetTemplate" class="form-textarea" rows="10" placeholder="输入提示词模板，使用 {text} 作为文本占位符"></textarea>
+                </div>
+                <div class="form-group">
+                    <button class="btn btn-secondary" id="testPresetBtn">测试预览</button>
+                    <span id="presetReadonlyHint" style="display: none; color: var(--text-muted); margin-left: 10px;">内置预设仅可查看</span>
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" id="newPresetBtn">新建预设</button>
-                <button class="btn btn-primary" id="savePresetBtn" style="display: none;">保存预设</button>
+                <button class="btn btn-secondary" id="cancelPresetEditBtn">取消</button>
+                <button class="btn btn-primary" id="savePresetBtn">保存</button>
                 <button class="btn btn-danger" id="deletePresetBtn" style="display: none;">删除预设</button>
             </div>
         </div>
@@ -342,55 +385,69 @@
                 <div class="llm-config-list" id="llmConfigList">
                     <!-- Configs will be loaded here -->
                 </div>
-                <div class="llm-config-editor" id="llmConfigEditor" style="display: none;">
-                    <div class="form-group">
-                        <label>服务商</label>
-                        <select id="llmProvider" class="form-select">
-                            <option value="deepseek">DeepSeek</option>
-                            <option value="claude">Claude (Anthropic)</option>
-                            <option value="openai">OpenAI</option>
-                            <option value="doubao">豆包 (字节跳动)</option>
-                            <option value="qwen">通义千问 (阿里云)</option>
-                            <option value="custom">自定义 (OpenAI兼容)</option>
-                        </select>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="newLLMConfigBtn">新建配置</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- LLM Config Edit Modal -->
+    <div class="modal" id="llmEditModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="llmEditTitle">编辑配置</h2>
+                <button class="modal-close" id="closeLLMEditModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>服务商</label>
+                    <select id="llmProvider" class="form-select">
+                        <option value="deepseek">DeepSeek</option>
+                        <option value="claude">Claude (Anthropic)</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="doubao">豆包 (字节跳动)</option>
+                        <option value="qwen">通义千问 (阿里云)</option>
+                        <option value="custom">自定义 (OpenAI兼容)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>配置名称</label>
+                    <input type="text" id="llmConfigName" class="form-input" placeholder="例如：我的 DeepSeek">
+                </div>
+                <div class="form-group">
+                    <label>API 密钥</label>
+                    <input type="password" id="llmApiKey" class="form-input" placeholder="sk-...">
+                    <small class="form-hint" id="llmApiKeyHint" style="display: none; color: var(--text-muted);">编辑时留空则保留原有密钥</small>
+                </div>
+                <div class="form-group">
+                    <label>API 端点 (可选)</label>
+                    <input type="text" id="llmApiBase" class="form-input" placeholder="留空使用默认">
+                </div>
+                <div class="form-group">
+                    <label>模型</label>
+                    <select id="llmModel" class="form-select">
+                        <!-- Models will be loaded based on provider -->
+                    </select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group half">
+                        <label>Temperature</label>
+                        <input type="number" id="llmTemperature" class="form-input" min="0" max="2" step="0.1" value="0.7">
                     </div>
-                    <div class="form-group">
-                        <label>配置名称</label>
-                        <input type="text" id="llmConfigName" class="form-input" placeholder="例如：我的 DeepSeek">
+                    <div class="form-group half">
+                        <label>Max Tokens</label>
+                        <input type="number" id="llmMaxTokens" class="form-input" min="100" max="32000" step="100" value="4096">
                     </div>
-                    <div class="form-group">
-                        <label>API 密钥</label>
-                        <input type="password" id="llmApiKey" class="form-input" placeholder="sk-...">
-                    </div>
-                    <div class="form-group">
-                        <label>API 端点 (可选)</label>
-                        <input type="text" id="llmApiBase" class="form-input" placeholder="留空使用默认">
-                    </div>
-                    <div class="form-group">
-                        <label>模型</label>
-                        <select id="llmModel" class="form-select">
-                            <!-- Models will be loaded based on provider -->
-                        </select>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group half">
-                            <label>Temperature</label>
-                            <input type="number" id="llmTemperature" class="form-input" min="0" max="2" step="0.1" value="0.7">
-                        </div>
-                        <div class="form-group half">
-                            <label>Max Tokens</label>
-                            <input type="number" id="llmMaxTokens" class="form-input" min="100" max="32000" step="100" value="4096">
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <button class="btn btn-secondary" id="testLLMConfigBtn">测试连接</button>
-                        <span id="llmTestResult" style="margin-left: 10px;"></span>
-                    </div>
+                </div>
+                <div class="form-group">
+                    <button class="btn btn-secondary" id="testLLMConfigBtn">测试连接</button>
+                    <span id="llmTestResult" style="margin-left: 10px;"></span>
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" id="newLLMConfigBtn">新建配置</button>
-                <button class="btn btn-primary" id="saveLLMConfigBtn" style="display: none;">保存配置</button>
+                <button class="btn btn-secondary" id="cancelLLMEditBtn">取消</button>
+                <button class="btn btn-primary" id="saveLLMConfigBtn">保存</button>
                 <button class="btn btn-danger" id="deleteLLMConfigBtn" style="display: none;">删除配置</button>
             </div>
         </div>

@@ -136,6 +136,11 @@ class App {
             // 加载设置
             if (window.settingsManager) {
                 window.settingsManager.load();
+                window.settingsManager.loadLLMConfigs();
+            }
+            // 加载 LLM 配置到管理弹窗
+            if (window.llmConfigManager) {
+                window.llmConfigManager.loadConfigs();
             }
         } else {
             // 显示首页
@@ -254,6 +259,9 @@ class App {
         this.elements.deleteSelectedBtn.addEventListener('click', () => this.deleteSelectedRecords());
         this.elements.cancelSelectBtn.addEventListener('click', () => this.exitSelectMode());
 
+        // 记录编辑模态框事件
+        this.initRecordEditModal();
+
         // 点击外部关闭设置弹窗
         document.addEventListener('click', (e) => {
             if (!e.target.closest('.settings-popup') && !e.target.closest('.settings-btn')) {
@@ -266,8 +274,36 @@ class App {
             if (e.key === 'Escape') {
                 this.hideSettingsPopup();
                 this.exitSelectMode();
+                this.closeRecordEditModal();
             }
         });
+    }
+
+    /**
+     * 初始化记录编辑模态框
+     */
+    initRecordEditModal() {
+        const modal = document.getElementById('recordEditModal');
+        const closeBtn = document.getElementById('closeRecordEditModal');
+        const cancelBtn = document.getElementById('cancelRecordEditBtn');
+        const saveBtn = document.getElementById('saveRecordEditBtn');
+
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => this.closeRecordEditModal());
+        }
+        if (cancelBtn) {
+            cancelBtn.addEventListener('click', () => this.closeRecordEditModal());
+        }
+        if (saveBtn) {
+            saveBtn.addEventListener('click', () => this.saveRecordEdit());
+        }
+        if (modal) {
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    this.closeRecordEditModal();
+                }
+            });
+        }
     }
 
     /**
@@ -310,13 +346,26 @@ class App {
         this.elements.recordBtn.classList.remove('recording');
         this.elements.recordBtn.querySelector('.btn-text').textContent = '开始录音';
         this.elements.recordingStatus.classList.remove('recording');
-        this.elements.recordingStatus.querySelector('.status-text').textContent = '上传中...';
+
+        // 切换状态文本
+        const statusReady = document.getElementById('statusReady');
+        const statusRecording = document.getElementById('statusRecording');
+        if (statusReady) {
+            statusReady.textContent = '上传中...';
+            statusReady.classList.remove('hidden');
+        }
+        if (statusRecording) {
+            statusRecording.classList.remove('visible');
+            statusRecording.style.display = 'none';
+        }
         // 不禁用按钮，允许立即开始新录音
 
         await this.recorder.stop();
 
         // 立即恢复状态，允许新录音
-        this.elements.recordingStatus.querySelector('.status-text').textContent = '准备就绪';
+        if (statusReady) {
+            statusReady.textContent = '准备就绪';
+        }
         this.updateButtonStates();
     }
 
@@ -330,7 +379,17 @@ class App {
         this.elements.recordBtn.classList.add('recording');
         this.elements.recordBtn.querySelector('.btn-text').textContent = '停止录音';
         this.elements.recordingStatus.classList.add('recording');
-        this.elements.recordingStatus.querySelector('.status-text').textContent = '正在录音...';
+
+        // 切换状态文本
+        const statusReady = document.getElementById('statusReady');
+        const statusRecording = document.getElementById('statusRecording');
+        if (statusReady) {
+            statusReady.classList.add('hidden');
+        }
+        if (statusRecording) {
+            statusRecording.style.display = '';
+            statusRecording.classList.add('visible');
+        }
 
         // 广播状态
         this.broadcastStatus({ recording: true });
@@ -483,8 +542,10 @@ class App {
             const isTranscribing = r.status === 'pending' || r.status === 'transcribing';
             const isCompleted = r.status === 'transcribed' || r.status === 'optimized';
             const isFailed = r.status === 'failed';
+            const isModified = r.is_modified === true;
+            const isOptimized = !!r.optimized_text;
 
-            // 状态显示
+            // 状态显示（在文本区域）- 仅显示转写中、转写失败
             let statusBadge = '';
             if (isTranscribing) {
                 statusBadge = '<span class="record-status-badge transcribing"><span class="spinner-small"></span>转写中</span>';
@@ -501,7 +562,7 @@ class App {
             }
 
             return `
-            <div class="record-item ${this.selectMode ? 'select-mode' : ''}" data-id="${r.id}">
+            <div class="record-item ${isModified ? 'modified' : ''} ${this.selectMode ? 'select-mode' : ''}" data-id="${r.id}">
                 <input type="checkbox"
                        class="record-checkbox"
                        data-id="${r.id}"
@@ -537,8 +598,10 @@ class App {
                     </div>
                     ${isCompleted ? `
                         <div class="record-actions">
-                            ${r.optimized_text ? `
-                                <button class="btn-record-action btn-optimized" disabled title="已优化">已优化</button>
+                            ${isModified ? `
+                                <span class="record-status-badge modified">已修改</span>
+                            ` : isOptimized ? `
+                                <span class="record-status-badge optimized">已优化</span>
                             ` : `
                                 <button class="btn-record-action btn-optimize" data-id="${r.id}" title="AI优化文本">✨优化</button>
                             `}
@@ -574,6 +637,18 @@ class App {
                 } else {
                     // 复制文本
                     this.copyRecordText(recordId);
+                }
+            });
+
+            // 右键菜单 - 编辑功能
+            item.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                const recordId = item.dataset.id;
+                const record = this.records.find(r => r.id === recordId) ||
+                               this.pendingRecords.find(r => r.id === recordId);
+
+                if (record && (record.status === 'transcribed' || record.status === 'optimized')) {
+                    this.openRecordEditModal(record);
                 }
             });
         });
@@ -613,6 +688,90 @@ class App {
                 await this.copyRecordText(recordId);
             });
         });
+    }
+
+    /**
+     * 打开记录编辑模态框
+     */
+    openRecordEditModal(record) {
+        this.editingRecord = record;
+        const modal = document.getElementById('recordEditModal');
+        const textArea = document.getElementById('recordEditText');
+        const rawDisplay = document.getElementById('recordEditRawText');
+        const optimizedDisplay = document.getElementById('recordEditOptimizedText');
+
+        if (modal && textArea) {
+            // 显示原始内容
+            if (rawDisplay) rawDisplay.textContent = record.raw_text || '';
+            // 显示已优化内容
+            if (optimizedDisplay) optimizedDisplay.textContent = record.optimized_text || '';
+            // 可编辑区域显示当前内容
+            textArea.value = record.optimized_text || record.raw_text || '';
+            modal.style.display = 'flex';
+        }
+    }
+
+    /**
+     * 关闭记录编辑模态框
+     */
+    closeRecordEditModal() {
+        const modal = document.getElementById('recordEditModal');
+        if (modal) {
+            modal.style.display = 'none';
+        }
+        this.editingRecord = null;
+    }
+
+    /**
+     * 保存记录编辑
+     */
+    async saveRecordEdit() {
+        if (!this.editingRecord) return;
+
+        const textArea = document.getElementById('recordEditText');
+        if (!textArea) return;
+
+        const newText = textArea.value.trim();
+        if (!newText) {
+            this.showToast('文本不能为空');
+            return;
+        }
+
+        try {
+            // 更新记录
+            const hasOptimizedText = !!this.editingRecord.optimized_text;
+            const response = await fetch(`/api/records/${this.editingRecord.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    [hasOptimizedText ? 'optimized_text' : 'raw_text']: newText,
+                    is_modified: true
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to update record');
+            }
+
+            // 更新本地记录
+            const record = this.records.find(r => r.id === this.editingRecord.id);
+            if (record) {
+                if (hasOptimizedText) {
+                    record.optimized_text = newText;
+                } else {
+                    record.raw_text = newText;
+                }
+                record.is_modified = true;
+            }
+
+            this.closeRecordEditModal();
+            this.renderRecords();
+            this.showToast('已保存修改');
+
+        } catch (error) {
+            console.error('Failed to save record edit:', error);
+            this.showToast('保存失败');
+        }
     }
 
     /**
@@ -949,7 +1108,19 @@ class App {
             this.elements.recordBtn.classList.remove('recording');
             this.elements.recordBtn.querySelector('.btn-text').textContent = '开始录音';
             this.elements.recordingStatus.classList.remove('recording');
-            this.elements.recordingStatus.querySelector('.status-text').textContent = '准备就绪';
+
+            // 切换状态文本
+            const statusReady = document.getElementById('statusReady');
+            const statusRecording = document.getElementById('statusRecording');
+            if (statusReady) {
+                statusReady.textContent = '准备就绪';
+                statusReady.classList.remove('hidden');
+            }
+            if (statusRecording) {
+                statusRecording.classList.remove('visible');
+                statusRecording.style.display = 'none';
+            }
+
             this.broadcastStatus({ recording: false });
 
             // 通知托盘工具恢复音频

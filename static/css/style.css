@@ -317,11 +317,14 @@ body::before {
 .recording-status {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: var(--space-md);
     padding: var(--space-sm) var(--space-lg);
     background: var(--bg-card);
     border-radius: var(--radius-full);
     border: 1px solid var(--border);
+    min-width: 120px;
+    position: relative;
 }
 
 .status-dot {
@@ -347,6 +350,32 @@ body::before {
     font-size: 0.8125rem;
     color: var(--text-secondary);
     font-weight: 500;
+    white-space: nowrap;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.status-ready {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    opacity: 1;
+}
+
+.status-ready.hidden {
+    opacity: 0;
+    transform: translateX(-100%);
+}
+
+.status-recording {
+    opacity: 0;
+    transform: translateX(20px);
+    position: absolute;
+}
+
+.status-recording.visible {
+    opacity: 1;
+    transform: translateX(0);
+    position: relative;
 }
 
 .duration {
@@ -355,6 +384,18 @@ body::before {
     font-weight: 700;
     color: var(--text-primary);
     min-width: 50px;
+    opacity: 0;
+    max-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    transition: opacity 0.3s ease, max-width 0.3s ease, margin 0.3s ease;
+    margin-left: 0;
+}
+
+.duration.visible {
+    opacity: 1;
+    max-width: 60px;
+    margin-left: var(--space-sm);
 }
 
 /* ============================================
@@ -1200,7 +1241,6 @@ button:focus-visible {
 .record-status-badge {
     display: inline-flex;
     align-items: center;
-    margin-top: var(--space-xs);
     padding: 2px var(--space-sm);
     font-size: 0.6875rem;
     font-weight: 500;
@@ -1898,7 +1938,7 @@ button:focus-visible {
     gap: var(--space-xs);
 }
 
-.btn-icon {
+.preset-actions .btn-icon {
     width: 28px;
     height: 28px;
     border: 1px solid var(--border);
@@ -1915,7 +1955,7 @@ button:focus-visible {
     appearance: none;
 }
 
-.btn-icon:hover {
+.preset-actions .btn-icon:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
 }
@@ -2051,4 +2091,171 @@ button:focus-visible {
 .btn-danger:hover:not(:disabled) {
     background: rgba(248, 113, 113, 0.2);
     border-color: rgba(248, 113, 113, 0.3);
+}
+
+/* ============================================
+   LLM Config Manager
+   ============================================ */
+.llm-config-list {
+    max-height: 300px;
+    overflow-y: auto;
+    margin-bottom: var(--space-md);
+}
+
+.llm-config-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-md);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-sm);
+    transition: all var(--transition-fast);
+}
+
+.llm-config-item:last-child {
+    margin-bottom: 0;
+}
+
+.llm-config-item:hover {
+    border-color: var(--border-light);
+    background: var(--bg-elevated);
+}
+
+.llm-config-item.default {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+}
+
+.llm-config-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+}
+
+.llm-config-name {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.llm-config-provider {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.default-badge {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    padding: 2px var(--space-sm);
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: white;
+}
+
+.llm-config-actions {
+    display: flex;
+    gap: var(--space-xs);
+}
+
+.llm-config-actions .btn-icon {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-fast);
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.llm-config-actions .btn-icon:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.form-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.form-row {
+    display: flex;
+    gap: var(--space-md);
+}
+
+.form-group.half {
+    flex: 1;
+}
+
+/* ============================================
+   Record Modified State
+   ============================================ */
+.record-item.modified {
+    background: rgba(224, 242, 254, 0.15);
+    border-color: rgba(56, 189, 248, 0.3);
+}
+
+.record-item.modified:hover {
+    background: rgba(224, 242, 254, 0.25);
+}
+
+.record-status-badge.modified {
+    background: rgba(56, 189, 248, 0.2);
+    color: #38bdf8;
+    padding: 2px var(--space-sm);
+    border-radius: var(--radius-sm);
+    font-size: 0.6875rem;
+    font-weight: 500;
+}
+
+.record-status-badge.optimized {
+    background: rgba(245, 158, 11, 0.2);
+    color: #f59e0b;
+    padding: 2px var(--space-sm);
+    border-radius: var(--radius-sm);
+    font-size: 0.6875rem;
+    font-weight: 500;
+}
+
+/* ============================================
+   Record Edit Modal
+   ============================================ */
+#recordEditModal .modal-content {
+    max-width: 600px;
+    width: 90%;
+}
+
+#recordEditText {
+    min-height: 120px;
+    resize: vertical;
+}
+
+.record-edit-display {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-sm);
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    max-height: 100px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+}
+
+.record-edit-display:empty::before {
+    content: "暂无内容";
+    color: var(--text-muted);
 }

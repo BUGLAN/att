@@ -89,6 +89,7 @@ class Record:
     optimized_text: str = ""
     status: RecordStatus = RecordStatus.PENDING
     processing_time: float = 0.0  # Transcription processing time in seconds
+    is_modified: bool = False  # Whether text has been manually edited
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON storage"""
@@ -101,7 +102,8 @@ class Record:
             "raw_text": self.raw_text,
             "optimized_text": self.optimized_text,
             "status": self.status.value,
-            "processing_time": self.processing_time
+            "processing_time": self.processing_time,
+            "is_modified": self.is_modified
         }
 
     @classmethod
@@ -116,7 +118,8 @@ class Record:
             raw_text=data.get("raw_text", ""),
             optimized_text=data.get("optimized_text", ""),
             status=RecordStatus(data.get("status", "pending")),
-            processing_time=data.get("processing_time", 0.0)
+            processing_time=data.get("processing_time", 0.0),
+            is_modified=data.get("is_modified", False)
         )
 
 

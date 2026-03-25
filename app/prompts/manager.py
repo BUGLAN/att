@@ -1,9 +1,8 @@
 """
 Prompt Preset Manager
-Manages prompt presets storage and CRUD operations
+Manages prompt presets - loads directly from prompts/ directory
 """
 import json
-import os
 from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
@@ -14,21 +13,23 @@ from app.prompts.models import (
     PromptPresetCreate,
     PromptPresetUpdate
 )
-from app.prompts.builtin_presets import BUILTIN_PRESETS
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Prompts directory in project root
+PROMPTS_DIR = Path(__file__).parent.parent.parent / "prompts"
+
 
 class PromptManager:
-    """Manages prompt presets with JSON file storage."""
+    """Manages prompt presets loaded from prompts/ directory."""
 
     def __init__(self, data_dir: str = "data/prompts"):
         self.data_dir = Path(data_dir)
         self.presets_file = self.data_dir / "presets.json"
         self._ensure_data_dir()
         self._presets: dict[str, PromptPreset] = {}
-        self._default_preset_id: str = "builtin-general"
+        self._default_preset_id: Optional[str] = None
         self._last_used_preset_id: Optional[str] = None
         self._load_presets()
 
@@ -37,44 +38,60 @@ class PromptManager:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def _load_presets(self) -> None:
-        """Load presets from file and merge with builtins."""
-        # Load built-in presets first
-        for preset_data in BUILTIN_PRESETS.values():
-            preset = PromptPreset(
-                **preset_data,
-                created_at=datetime.now()
-            )
-            self._presets[preset.id] = preset
+        """Load presets from prompts/ directory and custom presets from JSON."""
+        # Scan prompts/ directory for .txt files
+        if PROMPTS_DIR.exists():
+            for txt_file in sorted(PROMPTS_DIR.glob("*.txt")):
+                try:
+                    with open(txt_file, "r", encoding="utf-8") as f:
+                        content = f.read().strip()
 
-        # Load custom presets from file
+                    # Use filename (without .txt) as preset name
+                    name = txt_file.stem
+                    preset_id = f"preset-{name}"
+
+                    preset = PromptPreset(
+                        id=preset_id,
+                        name=name,
+                        description=f"从 {txt_file.name} 加载",
+                        category=PromptCategory.GENERAL,
+                        prompt_template=content,
+                        is_builtin=True,
+                        created_at=datetime.now()
+                    )
+                    self._presets[preset_id] = preset
+                    logger.info(f"Loaded preset from file: {txt_file.name}")
+
+                    # Set first preset as default
+                    if self._default_preset_id is None:
+                        self._default_preset_id = preset_id
+
+                except Exception as e:
+                    logger.error(f"Failed to load preset {txt_file}: {e}")
+
+        # Load custom presets from JSON file
         if self.presets_file.exists():
             try:
                 with open(self.presets_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
-                # Load custom presets
                 for preset_data in data.get("presets", []):
                     preset = PromptPreset(**preset_data)
                     self._presets[preset.id] = preset
 
                 # Load settings
-                self._default_preset_id = data.get(
-                    "default_preset_id",
-                    "builtin-general"
-                )
-                self._last_used_preset_id = data.get("last_used_preset_id")
+                if data.get("default_preset_id"):
+                    self._default_preset_id = data.get("default_preset_id")
+                if data.get("last_used_preset_id"):
+                    self._last_used_preset_id = data.get("last_used_preset_id")
 
-                logger.info(
-                    "Loaded presets from file",
-                    total=len(self._presets),
-                    custom=len(data.get("presets", []))
-                )
+                logger.info(f"Loaded custom presets", count=len(data.get("presets", [])))
             except Exception as e:
-                logger.error("Failed to load presets file", error=str(e))
+                logger.error(f"Failed to load presets file: {e}")
 
     def _save_presets(self) -> None:
         """Save custom presets to file."""
-        # Only save custom presets (not builtins)
+        # Only save custom presets (not file-based presets)
         custom_presets = [
             p.model_dump()
             for p in self._presets.values()
@@ -103,13 +120,14 @@ class PromptManager:
         """Get preset by ID."""
         return self._presets.get(preset_id)
 
-    def get_default(self) -> PromptPreset:
+    def get_default(self) -> Optional[PromptPreset]:
         """Get default preset."""
-        preset = self._presets.get(self._default_preset_id)
-        if not preset:
-            # Fallback to general preset
-            preset = self._presets.get("builtin-general")
-        return preset
+        if self._default_preset_id:
+            return self._presets.get(self._default_preset_id)
+        # Fallback to first preset
+        if self._presets:
+            return next(iter(self._presets.values()))
+        return None
 
     def get_last_used(self) -> Optional[PromptPreset]:
         """Get last used preset."""
@@ -213,6 +231,42 @@ class PromptManager:
         except KeyError:
             # Template doesn't have {text} placeholder
             return preset.prompt_template
+
+    def reload_from_files(self) -> None:
+        """Reload presets from prompts/ directory (for hot reload)."""
+        # Remove all file-based presets
+        self._presets = {
+            k: v for k, v in self._presets.items() if not v.is_builtin
+        }
+        self._default_preset_id = None
+
+        # Re-scan prompts directory
+        if PROMPTS_DIR.exists():
+            for txt_file in sorted(PROMPTS_DIR.glob("*.txt")):
+                try:
+                    with open(txt_file, "r", encoding="utf-8") as f:
+                        content = f.read().strip()
+
+                    name = txt_file.stem
+                    preset_id = f"preset-{name}"
+
+                    preset = PromptPreset(
+                        id=preset_id,
+                        name=name,
+                        description=f"从 {txt_file.name} 加载",
+                        category=PromptCategory.GENERAL,
+                        prompt_template=content,
+                        is_builtin=True,
+                        created_at=datetime.now()
+                    )
+                    self._presets[preset_id] = preset
+                    logger.info(f"Reloaded preset from file: {txt_file.name}")
+
+                    if self._default_preset_id is None:
+                        self._default_preset_id = preset_id
+
+                except Exception as e:
+                    logger.error(f"Failed to reload preset {txt_file}: {e}")
 
 
 # Global instance

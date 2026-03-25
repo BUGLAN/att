@@ -97,7 +97,8 @@ class RecordManager:
         raw_text: Optional[str] = None,
         optimized_text: Optional[str] = None,
         status: Optional[RecordStatus] = None,
-        processing_time: Optional[float] = None
+        processing_time: Optional[float] = None,
+        is_modified: Optional[bool] = None
     ) -> Optional[Record]:
         """Update a record"""
         record = await self.get_record(record_id)
@@ -112,7 +113,10 @@ class RecordManager:
             record.status = status
         if processing_time is not None:
             record.processing_time = processing_time
+        if is_modified is not None:
+            record.is_modified = is_modified
 
+        record.updated_at = datetime.now()
         await self._save_json(record)
         return record
 
