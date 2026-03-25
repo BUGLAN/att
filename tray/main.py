@@ -46,6 +46,8 @@ class AsyncWorker(QThread):
     web_recording = Signal(str)  # action: "start" or "stop"
     settings_changed = Signal(dict)
     error_occurred = Signal(str)
+    transcription_completed = Signal(dict)  # record data
+    optimization_completed = Signal(dict)  # record data
 
     def __init__(self, tray_app: 'TrayApp'):
         super().__init__()
@@ -83,7 +85,9 @@ class AsyncWorker(QThread):
             on_disconnected=self._on_disconnected,
             on_hotkey_change=self._on_hotkey_change,
             on_web_recording=self._on_web_recording,
-            on_settings_change=self._on_settings_change
+            on_settings_change=self._on_settings_change,
+            on_transcription_completed=self._on_transcription_completed,
+            on_optimization_completed=self._on_optimization_completed
         )
 
         # Connect to server
@@ -161,6 +165,16 @@ class AsyncWorker(QThread):
     def _on_settings_change(self, settings: dict):
         """Handle settings change notification."""
         self.settings_changed.emit(settings)
+
+    def _on_transcription_completed(self, data: dict):
+        """Handle transcription completed notification."""
+        logger.info(f"Transcription completed: {data.get('record_id')}")
+        self.transcription_completed.emit(data)
+
+    def _on_optimization_completed(self, data: dict):
+        """Handle optimization completed notification."""
+        logger.info(f"Optimization completed: {data.get('record_id')}")
+        self.optimization_completed.emit(data)
 
     async def on_hotkey_press(self):
         """Handle hotkey press - start recording."""
@@ -271,6 +285,7 @@ class TrayApp(QSystemTrayIcon):
         self.hotkey_config: Optional[dict] = None
         self.pause_audio_on_recording = True
         self.records: List[dict] = []
+        self.history_actions: List[QAction] = []  # Dynamic history menu actions
         self._recording_initiated_by_tray = False  # Track recording source for mute control
 
         # Components
@@ -299,9 +314,13 @@ class TrayApp(QSystemTrayIcon):
         icons_dir = Path(__file__).parent / "icons"
         logger.info(f"Loading icons from: {icons_dir}")
 
+        # Check if all required icon files exist
+        required_icons = ["idle.png", "recording.png", "transcribing.png", "disconnected.png"]
+        all_icons_exist = all((icons_dir / name).exists() for name in required_icons)
+
         # Check if we need to regenerate icons (old size was 22x22, new is 44x44)
         need_regenerate = False
-        if icons_dir.exists():
+        if all_icons_exist:
             # Check if existing icons are the old size
             for name in ["idle", "recording", "transcribing", "disconnected"]:
                 icon_path = icons_dir / f"{name}.png"
@@ -313,9 +332,11 @@ class TrayApp(QSystemTrayIcon):
                         break
 
         # Generate icons if needed
-        if not icons_dir.exists() or need_regenerate:
+        if not all_icons_exist or need_regenerate:
             if need_regenerate:
                 logger.info("Regenerating icons for Retina display (44x44)")
+            elif not all_icons_exist:
+                logger.info("Generating missing icon files")
             icons_dir.mkdir(parents=True, exist_ok=True)
             self._generate_icons(icons_dir)
 
@@ -325,6 +346,10 @@ class TrayApp(QSystemTrayIcon):
             icon_path = icons_dir / f"{name}.png"
             if icon_path.exists():
                 icon = QIcon(str(icon_path))
+                # Recording icon is NOT a template (shows red color)
+                # Other icons ARE templates (macOS adapts to theme)
+                if name != "recording":
+                    icon.setIsMask(True)  # Template image for macOS
                 logger.info(f"Loaded icon {name}: path={icon_path}, null={icon.isNull()}, sizes={icon.availableSizes()}")
                 self.icons[name] = icon
             else:
@@ -332,12 +357,10 @@ class TrayApp(QSystemTrayIcon):
                 self.icons[name] = QIcon()
 
     def _generate_icons(self, icons_dir: Path):
-        """Generate template icons for macOS status bar.
+        """Generate icons for system tray.
 
-        macOS status bar icons must be template images:
-        - Simple black shapes with transparency
-        - System automatically adapts to light/dark mode
-        - See: https://developer.apple.com/design/human-interface-guidelines/macos/system-capabilities/status-bars/
+        - idle/transcribing/disconnected: Black template images (macOS adapts to theme)
+        - recording: Red icon to indicate active recording
         """
         from PIL import Image, ImageDraw
 
@@ -346,7 +369,7 @@ class TrayApp(QSystemTrayIcon):
 
         # Template images: black shapes with transparency
         # macOS will automatically adapt color to match the menu bar
-        for name in ["idle", "recording", "transcribing", "disconnected"]:
+        for name in ["idle", "transcribing", "disconnected"]:
             image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
             draw = ImageDraw.Draw(image)
             center = size // 2
@@ -360,31 +383,44 @@ class TrayApp(QSystemTrayIcon):
             image.save(icons_dir / f"{name}.png")
             logger.info(f"Generated template icon: {name} ({size}x{size})")
 
+        # Recording icon: RED color to indicate active recording
+        image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        center = size // 2
+        radius = size // 2 - 4
+        draw.ellipse(
+            [center - radius, center - radius, center + radius, center + radius],
+            fill=(220, 53, 69, 255),  # Red color (Bootstrap danger)
+        )
+        image.save(icons_dir / "recording.png")
+        logger.info(f"Generated recording icon: red ({size}x{size})")
+
     def _build_menu(self):
-        """Build the context menu."""
+        """Build the context menu with history at top level."""
         self.menu = QMenu()
 
-        # Status items (disabled, for display only)
-        self.status_action = self.menu.addAction("状态: 空闲")
+        # History records will be inserted at top level dynamically
+        # Placeholder separator (history items will be inserted above this)
+        self._history_separator = self.menu.addSeparator()
+
+        # Settings submenu
+        self.settings_menu = self.menu.addMenu("设置")
+
+        self.status_action = self.settings_menu.addAction("状态: 空闲")
         self.status_action.setEnabled(False)
 
-        self.menu.addSeparator()
-
-        self.ws_action = self.menu.addAction("WebSocket: 未连接")
+        self.ws_action = self.settings_menu.addAction("WebSocket: 未连接")
         self.ws_action.setEnabled(False)
 
-        self.hotkey_action = self.menu.addAction("快捷键: ⌘⌥")
+        self.hotkey_action = self.settings_menu.addAction("快捷键: ⌘⌥")
         self.hotkey_action.setEnabled(False)
 
         self.menu.addSeparator()
 
-        # History submenu
-        self.history_menu = self.menu.addMenu("历史录音")
-        self._build_history_menu([])
-
-        self.menu.addSeparator()
-
         # Actions
+        refresh_action = self.menu.addAction("刷新历史")
+        refresh_action.triggered.connect(self._refresh_history)
+
         reconnect_action = self.menu.addAction("重连")
         reconnect_action.triggered.connect(self._reconnect)
 
@@ -393,15 +429,22 @@ class TrayApp(QSystemTrayIcon):
 
         self.setContextMenu(self.menu)
 
-    def _build_history_menu(self, records: List[dict]):
-        """Build history submenu with records."""
-        self.history_menu.clear()
+    def _build_history_items(self, records: List[dict]):
+        """Build history items at menu top level."""
         self.records = records
 
+        # Remove old history actions
+        for action in self.history_actions:
+            self.menu.removeAction(action)
+        self.history_actions.clear()
+
         if not records:
-            no_data = self.history_menu.addAction("暂无录音")
+            no_data = QAction("暂无录音", self.menu)
             no_data.setEnabled(False)
+            self.menu.insertAction(self._history_separator, no_data)
+            self.history_actions.append(no_data)
         else:
+            # Insert history items before the separator
             for record in records[:10]:
                 created_at = record.get('created_at', '')
                 text = record.get('optimized_text') or record.get('raw_text', '')
@@ -418,13 +461,13 @@ class TrayApp(QSystemTrayIcon):
                 except:
                     time_str = created_at[:10] if len(created_at) >= 10 else created_at
 
-                action = self.history_menu.addAction(f"{time_str} | {preview}")
-                # Bind click to copy
+                action_text = f"{time_str} | {preview}"
+                action = QAction(action_text, self.menu)
                 action.triggered.connect(lambda checked, t=text: self._copy_text(t))
 
-        self.history_menu.addSeparator()
-        refresh_action = self.history_menu.addAction("刷新")
-        refresh_action.triggered.connect(self._refresh_history)
+                # Insert before separator (at top of menu)
+                self.menu.insertAction(self._history_separator, action)
+                self.history_actions.append(action)
 
     def _connect_signals(self):
         """Connect signals to slots."""
@@ -440,6 +483,8 @@ class TrayApp(QSystemTrayIcon):
         worker.web_recording.connect(self._on_web_recording)
         worker.settings_changed.connect(self._on_settings_changed)
         worker.error_occurred.connect(self._on_error)
+        worker.transcription_completed.connect(self._on_transcription_completed)
+        worker.optimization_completed.connect(self._on_optimization_completed)
 
     @Slot(bool, bool, bool)
     def _on_status_updated(self, recording: bool, transcribing: bool, connected: bool):
@@ -498,6 +543,18 @@ class TrayApp(QSystemTrayIcon):
         """Handle error."""
         logger.error(f"Error: {error}")
 
+    @Slot(dict)
+    def _on_transcription_completed(self, data: dict):
+        """Handle transcription completed - refresh history."""
+        logger.info(f"Transcription completed, refreshing history: {data.get('record_id')}")
+        self._refresh_history()
+
+    @Slot(dict)
+    def _on_optimization_completed(self, data: dict):
+        """Handle optimization completed - refresh history."""
+        logger.info(f"Optimization completed, refreshing history: {data.get('record_id')}")
+        self._refresh_history()
+
     def _update_icon(self):
         """Update tray icon based on current state."""
         if not self.is_connected:
@@ -538,7 +595,7 @@ class TrayApp(QSystemTrayIcon):
             return
 
         self.history_fetcher = HistoryFetcher(self.server_url)
-        self.history_fetcher.history_fetched.connect(self._build_history_menu)
+        self.history_fetcher.history_fetched.connect(self._build_history_items)
         self.history_fetcher.start()
 
     def _reconnect(self):

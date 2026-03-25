@@ -36,7 +36,9 @@ class TrayWebSocketClient:
         on_disconnected: Optional[Callable] = None,
         on_hotkey_change: Optional[Callable] = None,
         on_web_recording: Optional[Callable] = None,
-        on_settings_change: Optional[Callable] = None
+        on_settings_change: Optional[Callable] = None,
+        on_transcription_completed: Optional[Callable] = None,
+        on_optimization_completed: Optional[Callable] = None
     ):
         """
         Initialize WebSocket client.
@@ -49,6 +51,8 @@ class TrayWebSocketClient:
             on_hotkey_change: Callback when hotkey configuration changes
             on_web_recording: Callback when web recording starts/stops
             on_settings_change: Callback when settings change
+            on_transcription_completed: Callback when transcription is completed
+            on_optimization_completed: Callback when optimization is completed
         """
         if websockets is None:
             raise ImportError("websockets package required: pip install websockets")
@@ -65,6 +69,8 @@ class TrayWebSocketClient:
         self.on_hotkey_change = on_hotkey_change
         self.on_web_recording = on_web_recording
         self.on_settings_change = on_settings_change
+        self.on_transcription_completed = on_transcription_completed
+        self.on_optimization_completed = on_optimization_completed
 
         # Reconnection settings
         self.reconnect_interval = 3.0
@@ -184,6 +190,18 @@ class TrayWebSocketClient:
             logger.info(f"Received settings_changed message: pause_audio_on_recording={pause_audio}")
             if self.on_settings_change:
                 self.on_settings_change(data)
+
+        elif msg_type == "transcription_completed":
+            record_data = data.get("data", {})
+            logger.info(f"Received transcription_completed: {record_data.get('record_id')}")
+            if self.on_transcription_completed:
+                self.on_transcription_completed(record_data)
+
+        elif msg_type == "optimization_completed":
+            record_data = data.get("data", {})
+            logger.info(f"Received optimization_completed: {record_data.get('record_id')}")
+            if self.on_optimization_completed:
+                self.on_optimization_completed(record_data)
 
         elif msg_type == "pong":
             # Heartbeat response
