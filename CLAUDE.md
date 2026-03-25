@@ -125,3 +125,7 @@ WS   /api/ws/{client_type}      # WebSocket (client_type: "web" or "tray")
    - Server sends `{"type": "hotkey_changed", "hotkey": {...}}` → Tray tool updates its hotkey listener
 
 8. **Tray tool threading** - pystray runs blocking in main thread, asyncio event loop runs in separate daemon thread. Hotkey callbacks must use `asyncio.run_coroutine_threadsafe()` to schedule async work
+
+## Code Style
+
+- **Comments in Chinese** - 代码注释必须使用中文编写
