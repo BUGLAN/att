@@ -1,0 +1,44 @@
+appId: com.att.audio-to-text
+productName: Audio to Text
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - dist/**/*
+  - electron/**/*
+  - app/**/*.py
+  - package.json
+
+extraResources:
+  - from: python-dist
+    to: python
+    filter:
+      - "**/*"
+  - from: app
+    to: app
+    filter:
+      - "**/*.py"
+  - from: data
+    to: data
+  - from: models
+    to: models
+
+mac:
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  target:
+    - dmg
+    - zip
+  hardenedRuntime: true
+  gatekeeperAssess: false
+
+win:
+  icon: build/icon.ico
+  target:
+    - nsis
+    - portable
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
