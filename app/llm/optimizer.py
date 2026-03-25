@@ -20,6 +20,12 @@ from app.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _get_prompt_manager():
+    """Lazy import to avoid circular dependency."""
+    from app.prompts import PromptManager
+    return PromptManager()
+
+
 @dataclass
 class OptimizationResult:
     """Result of text optimization"""
@@ -141,21 +147,22 @@ class TextOptimizer:
     async def optimize(
         self,
         text: str,
-        style: str = "default"
+        style: str = "default",
+        preset_id: Optional[str] = None,
+        llm_config_id: Optional[str] = None
     ) -> OptimizationResult:
         """
-        Optimize text using DeepSeek API
+        Optimize text using LLM API
 
         Args:
             text: Original text to optimize
-            style: Optimization style (all styles use the same prompt now)
+            style: Optimization style (deprecated, use preset_id)
+            preset_id: ID of the prompt preset to use
+            llm_config_id: ID of the LLM configuration to use
 
         Returns:
             OptimizationResult with optimized text
         """
-        if not self.api_key:
-            raise ValueError("DeepSeek API key not configured")
-
         if not text.strip():
             return OptimizationResult(
                 original_text=text,
@@ -163,14 +170,70 @@ class TextOptimizer:
                 processing_time=0
             )
 
-        prompt_template = self.PROMPTS.get(style, self.DEFAULT_PROMPT)
-        prompt = prompt_template.format(text=text)
+        # Get prompt template
+        prompt = None
+        if preset_id:
+            # Use preset if provided
+            try:
+                pm = _get_prompt_manager()
+                prompt = pm.render_prompt(preset_id, text)
+                # Update last used preset
+                pm.set_last_used(preset_id)
+            except Exception as e:
+                logger.warning(
+                    "Failed to load preset, using default",
+                    preset_id=preset_id,
+                    error=str(e)
+                )
+
+        if not prompt:
+            # Fallback to style-based or default prompt
+            prompt_template = self.PROMPTS.get(style, self.DEFAULT_PROMPT)
+            prompt = prompt_template.format(text=text)
 
         logger.debug(
             "Optimizing text",
             style=style,
+            preset_id=preset_id,
+            llm_config_id=llm_config_id,
             text_length=len(text)
         )
+
+        # Try to use LLM Gateway if config_id is provided or if multi-LLM is available
+        if llm_config_id:
+            try:
+                from app.llm.gateway import get_gateway
+                gateway = get_gateway()
+                provider = gateway.get_provider(llm_config_id)
+
+                if provider:
+                    start_time = time.time()
+                    optimized_text = await provider.optimize(text, prompt)
+                    processing_time = time.time() - start_time
+
+                    logger.info(
+                        "Text optimized via LLM Gateway",
+                        config_id=llm_config_id,
+                        original_length=len(text),
+                        optimized_length=len(optimized_text),
+                        processing_time=f"{processing_time:.2f}s"
+                    )
+
+                    return OptimizationResult(
+                        original_text=text,
+                        optimized_text=optimized_text,
+                        processing_time=processing_time,
+                        tokens_used=0
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Failed to use LLM Gateway, falling back to legacy",
+                    error=str(e)
+                )
+
+        # Fallback to legacy DeepSeek-only implementation
+        if not self.api_key:
+            raise ValueError("DeepSeek API key not configured")
 
         start_time = time.time()
 

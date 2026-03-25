@@ -1,6 +1,6 @@
 /**
  * WebSocket 客户端
- * 功能：连接管理、自动重连、消息处理
+ * 功能：连接管理、自动重连、消息处理、轮询降级
  */
 class WebSocketClient {
     constructor(options = {}) {
@@ -20,12 +20,49 @@ class WebSocketClient {
         this.onRecordingCommand = options.onRecordingCommand || (() => {});
         this.onStatusUpdate = options.onStatusUpdate || (() => {});
 
+        // 新增：转录/优化状态回调
+        this.onTranscriptionStarted = options.onTranscriptionStarted || (() => {});
+        this.onTranscriptionCompleted = options.onTranscriptionCompleted || (() => {});
+        this.onOptimizationStarted = options.onOptimizationStarted || (() => {});
+        this.onOptimizationCompleted = options.onOptimizationCompleted || (() => {});
+        this.onSegmentTranscribed = options.onSegmentTranscribed || (() => {});
+        this.onErrorMessage = options.onErrorMessage || (() => {});
+
         // 心跳
         this.heartbeatInterval = null;
         this.heartbeatTimeout = 30000;  // 30秒
 
         // 重连定时器
         this.reconnectTimer = null;
+
+        // 轮询降级
+        this.fallbackToPolling = false;
+        this.pollingInterval = null;
+        this.currentRecordId = null;
+
+        // 事件处理器映射
+        this._handlers = {};
+    }
+
+    /**
+     * 注册事件处理器
+     * @param {string} event - 事件类型
+     * @param {Function} handler - 处理函数
+     */
+    on(event, handler) {
+        this._handlers[event] = handler;
+    }
+
+    /**
+     * 触发事件
+     * @param {string} event - 事件类型
+     * @param {any} data - 事件数据
+     */
+    _emit(event, data) {
+        const handler = this._handlers[event];
+        if (handler) {
+            handler(data);
+        }
     }
 
     /**
@@ -67,6 +104,13 @@ class WebSocketClient {
                 this.clientId = null;
                 this._stopHeartbeat();
                 this.onDisconnect();
+
+                // 启动轮询降级
+                if (!this.fallbackToPolling) {
+                    this.fallbackToPolling = true;
+                    this._startPolling();
+                }
+
                 this._attemptReconnect();
             };
 
@@ -95,11 +139,15 @@ class WebSocketClient {
      */
     _handleMessage(data) {
         this.onMessage(data);
+        this._emit(data.type, data.data || data);
 
         switch (data.type) {
             case 'connected':
                 console.log('Client connected:', data.client_id);
                 this.clientId = data.client_id;
+                // 停止轮询降级
+                this._stopPolling();
+                this.fallbackToPolling = false;
                 break;
 
             case 'recording_command':
@@ -109,6 +157,37 @@ class WebSocketClient {
 
             case 'status':
                 this.onStatusUpdate(data);
+                break;
+
+            // 新增：转录状态通知
+            case 'transcription_started':
+                console.log('Transcription started:', data.data?.record_id);
+                this.onTranscriptionStarted(data.data);
+                break;
+
+            case 'transcription_completed':
+                console.log('Transcription completed:', data.data?.record_id);
+                this.onTranscriptionCompleted(data.data);
+                break;
+
+            case 'optimization_started':
+                console.log('Optimization started:', data.data?.record_id);
+                this.onOptimizationStarted(data.data);
+                break;
+
+            case 'optimization_completed':
+                console.log('Optimization completed:', data.data?.record_id);
+                this.onOptimizationCompleted(data.data);
+                break;
+
+            case 'segment_transcribed':
+                console.log('Segment transcribed:', data.data?.segment_id);
+                this.onSegmentTranscribed(data.data);
+                break;
+
+            case 'error':
+                console.error('Server error:', data.data);
+                this.onErrorMessage(data.data);
                 break;
 
             case 'pong':
@@ -243,6 +322,72 @@ class WebSocketClient {
      */
     resetReconnectAttempts() {
         this.reconnectAttempts = 0;
+    }
+
+    /**
+     * 设置当前监听的记录ID
+     * @param {string} recordId - 记录ID
+     */
+    setCurrentRecord(recordId) {
+        this.currentRecordId = recordId;
+    }
+
+    /**
+     * 启动轮询降级
+     * @private
+     */
+    _startPolling() {
+        if (this.pollingInterval) return;
+
+        console.log('Starting polling fallback...');
+        this.pollingInterval = setInterval(async () => {
+            if (!this.currentRecordId) return;
+
+            try {
+                const response = await fetch(`/api/records/${this.currentRecordId}/status`);
+                const status = await response.json();
+
+                // 模拟 WebSocket 消息
+                if (status.status === 'transcribing') {
+                    this.onTranscriptionStarted({ record_id: this.currentRecordId });
+                } else if (status.status === 'transcribed') {
+                    this.onTranscriptionCompleted({
+                        record_id: this.currentRecordId,
+                        text: status.raw_text,
+                        processing_time: status.processing_time
+                    });
+                } else if (status.status === 'optimizing') {
+                    this.onOptimizationStarted({ record_id: this.currentRecordId });
+                } else if (status.status === 'optimized') {
+                    // 获取完整记录
+                    const fullResponse = await fetch(`/api/records/${this.currentRecordId}`);
+                    const record = await fullResponse.json();
+                    this.onOptimizationCompleted({
+                        record_id: this.currentRecordId,
+                        optimized_text: record.optimized_text
+                    });
+                } else if (status.status === 'failed') {
+                    this.onErrorMessage({
+                        record_id: this.currentRecordId,
+                        error: 'Transcription failed'
+                    });
+                }
+            } catch (error) {
+                console.error('Polling error:', error);
+            }
+        }, 2000);
+    }
+
+    /**
+     * 停止轮询
+     * @private
+     */
+    _stopPolling() {
+        if (this.pollingInterval) {
+            clearInterval(this.pollingInterval);
+            this.pollingInterval = null;
+            console.log('Polling stopped');
+        }
     }
 }
 

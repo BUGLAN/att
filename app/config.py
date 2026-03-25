@@ -39,7 +39,14 @@ class UserSettings:
         "whisper_device": "auto",
         "pause_audio_on_recording": True,
         "auto_optimize": False,
-        "hotkey": None  # Will be set dynamically based on platform
+        "hotkey": None,  # Will be set dynamically based on platform
+        # Recording mode settings
+        "recording_mode": "single",     # single or multi
+        "silence_threshold": 1.5,       # 静音阈值（秒）
+        "silence_level": -40,           # 静音音量阈值（dB）
+        # Prompt preset settings
+        "default_preset_id": "builtin-general",
+        "last_used_preset_id": None
     }
 
     def __init__(self, settings_path: Path):

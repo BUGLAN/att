@@ -168,6 +168,25 @@
 
                     <div class="setting-item">
                         <div class="setting-info">
+                            <span class="setting-label">录音模式</span>
+                            <span class="setting-desc">单段模式录完整段再转写；多段模式自动检测静音分割</span>
+                        </div>
+                        <select class="setting-select" id="settingRecordingMode">
+                            <option value="single">单段录音</option>
+                            <option value="multi">多段录音（实时转写）</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-item" id="silenceThresholdSetting" style="display: none;">
+                        <div class="setting-info">
+                            <span class="setting-label">静音分割阈值</span>
+                            <span class="setting-desc">静音持续超过此时间自动分割（秒）</span>
+                        </div>
+                        <input type="number" class="setting-input" id="settingSilenceThreshold" min="0.5" max="5" step="0.5" value="1.5">
+                    </div>
+
+                    <div class="setting-item">
+                        <div class="setting-info">
                             <span class="setting-label">录音时暂停其他音频</span>
                             <span class="setting-desc">录音时自动暂停 Spotify、Music 等播放</span>
                         </div>
@@ -190,6 +209,20 @@
 
                     <div class="setting-item">
                         <div class="setting-info">
+                            <span class="setting-label">AI 优化预设</span>
+                            <span class="setting-desc">选择不同场景的优化模板</span>
+                        </div>
+                        <select class="setting-select" id="settingPreset">
+                            <option value="builtin-general">通用优化</option>
+                            <option value="builtin-coding">程序员模式</option>
+                            <option value="builtin-novel">小说创作</option>
+                            <option value="builtin-meeting">会议记录</option>
+                            <option value="builtin-marketing">文案优化</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-item">
+                        <div class="setting-info">
                             <span class="setting-label">录音快捷键</span>
                             <span class="setting-desc">点击输入框后按下组合键</span>
                         </div>
@@ -206,6 +239,40 @@
                     </div>
                 </div>
 
+                <div class="settings-group">
+                    <h3 class="settings-group-title">预设管理</h3>
+
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <span class="setting-label">自定义预设</span>
+                            <span class="setting-desc">创建和管理自定义优化预设</span>
+                        </div>
+                        <button class="btn btn-secondary" id="openPresetManagerBtn">管理预设</button>
+                    </div>
+                </div>
+
+                <div class="settings-group">
+                    <h3 class="settings-group-title">LLM 服务商</h3>
+
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <span class="setting-label">当前服务商</span>
+                            <span class="setting-desc">选择用于 AI 优化的语言模型</span>
+                        </div>
+                        <select class="setting-select" id="settingLLMConfig">
+                            <option value="">加载中...</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <span class="setting-label">服务商配置</span>
+                            <span class="setting-desc">管理 API 密钥和服务商设置</span>
+                        </div>
+                        <button class="btn btn-secondary" id="openLLMManagerBtn">管理服务商</button>
+                    </div>
+                </div>
+
                 <div class="settings-actions">
                     <button class="btn btn-primary" id="saveSettingsBtn">保存设置</button>
                 </div>
@@ -216,6 +283,121 @@
     <!-- Toast Notification -->
     <div class="toast" id="toast" style="display: none;"></div>
 
+    <!-- Preset Manager Modal -->
+    <div class="modal" id="presetModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>预设管理</h2>
+                <button class="modal-close" id="closePresetModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="preset-list" id="presetList">
+                    <!-- Presets will be loaded here -->
+                </div>
+                <div class="preset-editor" id="presetEditor" style="display: none;">
+                    <div class="form-group">
+                        <label>预设名称</label>
+                        <input type="text" id="presetName" class="form-input" placeholder="输入预设名称">
+                    </div>
+                    <div class="form-group">
+                        <label>描述</label>
+                        <input type="text" id="presetDescription" class="form-input" placeholder="简短描述">
+                    </div>
+                    <div class="form-group">
+                        <label>分类</label>
+                        <select id="presetCategory" class="form-select">
+                            <option value="general">通用</option>
+                            <option value="coding">程序员</option>
+                            <option value="novel">小说</option>
+                            <option value="meeting">会议</option>
+                            <option value="marketing">文案</option>
+                            <option value="custom">自定义</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>提示词模板</label>
+                        <textarea id="presetTemplate" class="form-textarea" rows="10" placeholder="输入提示词模板，使用 {text} 作为文本占位符"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <button class="btn btn-secondary" id="testPresetBtn">测试预览</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="newPresetBtn">新建预设</button>
+                <button class="btn btn-primary" id="savePresetBtn" style="display: none;">保存预设</button>
+                <button class="btn btn-danger" id="deletePresetBtn" style="display: none;">删除预设</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- LLM Config Manager Modal -->
+    <div class="modal" id="llmModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>LLM 服务商管理</h2>
+                <button class="modal-close" id="closeLLMModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="llm-config-list" id="llmConfigList">
+                    <!-- Configs will be loaded here -->
+                </div>
+                <div class="llm-config-editor" id="llmConfigEditor" style="display: none;">
+                    <div class="form-group">
+                        <label>服务商</label>
+                        <select id="llmProvider" class="form-select">
+                            <option value="deepseek">DeepSeek</option>
+                            <option value="claude">Claude (Anthropic)</option>
+                            <option value="openai">OpenAI</option>
+                            <option value="doubao">豆包 (字节跳动)</option>
+                            <option value="qwen">通义千问 (阿里云)</option>
+                            <option value="custom">自定义 (OpenAI兼容)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>配置名称</label>
+                        <input type="text" id="llmConfigName" class="form-input" placeholder="例如：我的 DeepSeek">
+                    </div>
+                    <div class="form-group">
+                        <label>API 密钥</label>
+                        <input type="password" id="llmApiKey" class="form-input" placeholder="sk-...">
+                    </div>
+                    <div class="form-group">
+                        <label>API 端点 (可选)</label>
+                        <input type="text" id="llmApiBase" class="form-input" placeholder="留空使用默认">
+                    </div>
+                    <div class="form-group">
+                        <label>模型</label>
+                        <select id="llmModel" class="form-select">
+                            <!-- Models will be loaded based on provider -->
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group half">
+                            <label>Temperature</label>
+                            <input type="number" id="llmTemperature" class="form-input" min="0" max="2" step="0.1" value="0.7">
+                        </div>
+                        <div class="form-group half">
+                            <label>Max Tokens</label>
+                            <input type="number" id="llmMaxTokens" class="form-input" min="100" max="32000" step="100" value="4096">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <button class="btn btn-secondary" id="testLLMConfigBtn">测试连接</button>
+                        <span id="llmTestResult" style="margin-left: 10px;"></span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="newLLMConfigBtn">新建配置</button>
+                <button class="btn btn-primary" id="saveLLMConfigBtn" style="display: none;">保存配置</button>
+                <button class="btn btn-danger" id="deleteLLMConfigBtn" style="display: none;">删除配置</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/silence_detector.js"></script>
+    <script src="/static/js/multi_segment_recorder.js"></script>
     <script src="/static/js/recorder.js"></script>
     <script src="/static/js/websocket.js"></script>
     <script src="/static/js/settings.js"></script>

@@ -5,12 +5,55 @@ Manages connections from tray tools and web frontend
 from fastapi import WebSocket
 from typing import Dict, Set, Optional, Any
 from datetime import datetime
+from enum import Enum
+from pydantic import BaseModel, Field
 import json
 import asyncio
 
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+class MessageType(str, Enum):
+    """WebSocket message types."""
+    # Existing types
+    CONNECTED = "connected"
+    STATUS = "status"
+    RECORDING = "recording"
+    RECORDING_COMMAND = "recording_command"
+    STATUS_UPDATE = "status_update"
+    HOTKEY_UPDATE = "hotkey_update"
+    HOTKEY_CHANGED = "hotkey_changed"
+    WEB_RECORDING = "web_recording"
+    SETTINGS_UPDATE = "settings_update"
+    SETTINGS_CHANGED = "settings_changed"
+    PING = "ping"
+    PONG = "pong"
+
+    # New types for transcription/optimization notifications
+    TRANSCRIPTION_STARTED = "transcription_started"
+    TRANSCRIPTION_PROGRESS = "transcription_progress"
+    TRANSCRIPTION_COMPLETED = "transcription_completed"
+    OPTIMIZATION_STARTED = "optimization_started"
+    OPTIMIZATION_COMPLETED = "optimization_completed"
+    ERROR = "error"
+    SEGMENT_TRANSCRIBED = "segment_transcribed"
+
+
+class WSMessage(BaseModel):
+    """WebSocket message structure."""
+    type: MessageType
+    data: Optional[Dict[str, Any]] = None
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "type": self.type.value,
+            "data": self.data,
+            "timestamp": self.timestamp.isoformat()
+        }
 
 
 class ConnectionManager:
