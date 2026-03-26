@@ -57,6 +57,7 @@
     --space-lg: 24px;
     --space-xl: 32px;
     --space-2xl: 48px;
+    --titlebar-height: 36px;
 
     /* Radii */
     --radius-sm: 6px;
@@ -96,6 +97,8 @@ html {
     font-size: 16px;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(201, 162, 39, 0.45) rgba(31, 31, 35, 0.8);
 }
 
 body {
@@ -106,6 +109,30 @@ body {
     min-height: 100vh;
     position: relative;
     display: flex;
+}
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(201, 162, 39, 0.42) rgba(31, 31, 35, 0.72);
+}
+
+*::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+    background: rgba(17, 17, 19, 0.72);
+}
+
+*::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgba(113, 113, 122, 0.95), rgba(201, 162, 39, 0.85));
+    border: 2px solid rgba(17, 17, 19, 0.9);
+    border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, rgba(161, 161, 170, 0.95), rgba(201, 162, 39, 1));
 }
 
 /* Noise Texture Overlay */
@@ -1567,6 +1594,11 @@ button:focus-visible {
     overflow-y: auto;
     min-height: 100vh;
     transition: margin-left var(--transition-base);
+    position: relative;
+}
+
+.main-content.has-title-bar {
+    padding-top: var(--titlebar-height);
 }
 
 .main-content.sidebar-collapsed {

@@ -54,6 +54,7 @@ export function useElectron() {
   const api = {
     uploadAudio: (blob, filename = 'recording.webm') => httpApi.uploadAudio(blob, filename),
     getRecords: () => httpApi.getRecords(),
+    searchRecords: (params) => httpApi.searchRecords(params),
     getRecord: (id) => httpApi.getRecord(id),
     getRecordStatus: (id) => httpApi.getRecordStatus(id),
     updateRecord: (id, data) => httpApi.updateRecord(id, data),

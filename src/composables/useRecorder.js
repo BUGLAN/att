@@ -16,6 +16,8 @@ let mountedInstances = 0
 let wsAttached = false
 let startPending = false
 let pendingStopAfterStart = false
+let pollingInFlight = false
+const completedPhases = new Set()
 
 function clearDurationTimer() {
   if (durationTimer.value) {
@@ -36,6 +38,7 @@ function stopPolling() {
     clearInterval(pollingTimer)
     pollingTimer = null
   }
+  pollingInFlight = false
 }
 
 async function maybeCopyText(text) {
@@ -58,6 +61,20 @@ async function maybeCopyText(text) {
     console.error('[Clipboard] Failed to copy/paste text:', error)
     return { attempted: true, copied: false, pasted: false }
   }
+}
+
+function markCompletion(recordId, phase) {
+  const key = `${recordId}:${phase}`
+  if (completedPhases.has(key)) {
+    return false
+  }
+  completedPhases.add(key)
+  return true
+}
+
+function clearCompletion(recordId) {
+  completedPhases.delete(`${recordId}:transcription`)
+  completedPhases.delete(`${recordId}:optimization`)
 }
 
 function handleRecordCompleted(recordId, patch, options = {}) {
@@ -102,6 +119,8 @@ async function handleWebSocketMessage(message) {
       return
     }
 
+    clearCompletion(recordId)
+
     appStore.setCurrentRecordId(recordId)
     appStore.setTranscribing(true)
     appStore.setRecordStatus({ record_id: recordId, status: 'transcribing' })
@@ -113,6 +132,9 @@ async function handleWebSocketMessage(message) {
   if (message.type === 'transcription_completed') {
     const recordId = message.data?.record_id
     if (!recordId) {
+      return
+    }
+    if (!markCompletion(recordId, 'transcription')) {
       return
     }
 
@@ -144,6 +166,7 @@ async function handleWebSocketMessage(message) {
     if (!recordId) {
       return
     }
+    completedPhases.delete(`${recordId}:optimization`)
 
     appStore.setTranscribing(true)
     appStore.setRecordStatus({ record_id: recordId, status: 'optimizing' })
@@ -155,6 +178,9 @@ async function handleWebSocketMessage(message) {
   if (message.type === 'optimization_completed') {
     const recordId = message.data?.record_id
     if (!recordId) {
+      return
+    }
+    if (!markCompletion(recordId, 'optimization')) {
       return
     }
 
@@ -205,6 +231,9 @@ async function pollRecordStatus(recordId) {
     appStore.setRecordStatus(status)
 
     if (status.status === 'optimized') {
+      if (!markCompletion(recordId, 'optimization')) {
+        return true
+      }
       stopPolling()
       handleRecordCompleted(recordId, status)
       const copyResult = await maybeCopyText(status.optimized_text)
@@ -220,6 +249,9 @@ async function pollRecordStatus(recordId) {
 
     if (status.status === 'transcribed') {
       if (!settingsStore.settings.auto_optimize) {
+        if (!markCompletion(recordId, 'transcription')) {
+          return true
+        }
         stopPolling()
         handleRecordCompleted(recordId, status)
         const copyResult = await maybeCopyText(status.raw_text)
@@ -256,7 +288,12 @@ async function pollRecordStatus(recordId) {
 function startPolling(recordId) {
   stopPolling()
   pollingTimer = setInterval(async () => {
+    if (pollingInFlight) {
+      return
+    }
+    pollingInFlight = true
     const completed = await pollRecordStatus(recordId)
+    pollingInFlight = false
     if (completed) {
       stopPolling()
     }
@@ -284,6 +321,7 @@ async function uploadRecording(blob) {
     }
 
     appStore.setCurrentRecordId(result.record_id)
+    clearCompletion(result.record_id)
     appStore.setRecordStatus({ record_id: result.record_id, status: result.transcription_status || 'transcribing' })
     recordsStore.addRecord({
       id: result.record_id,
@@ -293,7 +331,8 @@ async function uploadRecording(blob) {
       raw_text: '',
       optimized_text: '',
       processing_time: 0,
-      is_modified: false
+      is_modified: false,
+      is_favorite: false
     })
 
     const { sendRecordingStatus } = useGlobalWebSocket()

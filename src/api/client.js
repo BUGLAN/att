@@ -121,6 +121,29 @@ export const api = {
   // === 记录 ===
 
   getRecords: () => request('GET', '/records'),
+  async searchRecords(params = {}) {
+    const baseUrl = await getBaseUrl()
+    const searchParams = new URLSearchParams()
+
+    if (params.q) {
+      searchParams.set('q', params.q)
+    }
+    if (params.search_type) {
+      searchParams.set('search_type', params.search_type)
+    }
+    if (params.favorite_only) {
+      searchParams.set('favorite_only', 'true')
+    }
+    if (params.page) {
+      searchParams.set('page', String(params.page))
+    }
+    if (params.page_size) {
+      searchParams.set('page_size', String(params.page_size))
+    }
+
+    const query = searchParams.toString()
+    return request('GET', `/records/search${query ? `?${query}` : ''}`)
+  },
   getRecord: (id) => request('GET', `/records/${id}`),
   getRecordStatus: (id) => request('GET', `/records/${id}/status`),
   updateRecord: (id, data) => request('PUT', `/records/${id}`, { body: data }),
