@@ -22,7 +22,8 @@ export const useRecordsStore = defineStore('records', () => {
       created_at: record.created_at,
       raw_text: record.raw_text,
       optimized_text: record.optimized_text,
-      status: record.status
+      status: record.status,
+      is_favorite: record.is_favorite
     })))
   }
 
@@ -62,8 +63,10 @@ export const useRecordsStore = defineStore('records', () => {
       const index = records.value.findIndex((record) => record.id === id)
       if (index !== -1) {
         records.value[index] = { ...records.value[index], ...updated }
-        syncTrayMenu()
+      } else if (updated?.id) {
+        records.value.unshift(updated)
       }
+      syncTrayMenu()
       return updated
     } catch (e) {
       error.value = e.message

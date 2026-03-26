@@ -57,6 +57,17 @@
           type="button"
           @click.stop="$emit('copy')"
         >复制</button>
+
+        <button
+          v-if="!selectMode"
+          class="btn-favorite-inline"
+          :class="{ favorited: record.is_favorite }"
+          type="button"
+          :title="record.is_favorite ? '取消收藏' : '收藏记录'"
+          @click.stop="$emit('toggle-favorite')"
+        >
+          {{ record.is_favorite ? '★' : '☆' }}
+        </button>
       </div>
     </div>
   </div>
@@ -84,7 +95,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'edit', 'copy', 'toggle-audio', 'optimize'])
+const emit = defineEmits(['select', 'edit', 'copy', 'toggle-audio', 'optimize', 'toggle-favorite'])
 
 const displayText = computed(() => {
   return props.record.optimized_text || props.record.raw_text || '处理中...'

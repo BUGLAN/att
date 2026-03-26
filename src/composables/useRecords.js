@@ -68,6 +68,19 @@ export function useRecords() {
     appStore.showToast('文本已复制到剪贴板')
   }
 
+  async function toggleFavorite(record) {
+    try {
+      const updated = await recordsStore.updateRecord(record.id, {
+        is_favorite: !record.is_favorite
+      })
+      appStore.showToast(updated.is_favorite ? '已收藏记录' : '已取消收藏')
+      return updated
+    } catch (error) {
+      appStore.showToast('更新收藏状态失败')
+      throw error
+    }
+  }
+
   async function exportRecord(id, format = 'txt') {
     try {
       const url = await recordsStore.exportRecord(id, format)
@@ -170,6 +183,7 @@ export function useRecords() {
     deleteSelected,
     optimizeRecord,
     copyText,
+    toggleFavorite,
     exportRecord,
     toggleSelectMode,
     toggleSelection,

@@ -25,6 +25,7 @@
         @copy="copyText(record)"
         @toggle-audio="toggleAudio(record.id)"
         @optimize="optimizeRecord(record.id)"
+        @toggle-favorite="toggleFavorite(record)"
       />
 
       <div v-if="!records.length" class="empty-state">
@@ -60,6 +61,7 @@ const {
   selectedRecords,
   deleteSelected,
   copyText,
+  toggleFavorite,
   optimizeRecord,
   toggleSelectMode,
   toggleSelection,
