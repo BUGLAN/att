@@ -51,13 +51,23 @@ class RecordManager:
         self,
         audio_path: str,
         duration: float,
-        status: RecordStatus = RecordStatus.PENDING
+        status: RecordStatus = RecordStatus.PENDING,
+        raw_text: str = "",
+        optimized_text: str = "",
+        processing_time: float = 0.0,
+        is_modified: bool = False,
+        is_favorite: bool = False
     ) -> Record:
         """Create a new record"""
         record = Record(
             audio_path=audio_path,
             duration=duration,
-            status=status
+            raw_text=raw_text,
+            optimized_text=optimized_text,
+            status=status,
+            processing_time=processing_time,
+            is_modified=is_modified,
+            is_favorite=is_favorite
         )
         await self._save_json(record)
         logger.info(f"Created record: {record.id}")
@@ -98,7 +108,8 @@ class RecordManager:
         optimized_text: Optional[str] = None,
         status: Optional[RecordStatus] = None,
         processing_time: Optional[float] = None,
-        is_modified: Optional[bool] = None
+        is_modified: Optional[bool] = None,
+        is_favorite: Optional[bool] = None
     ) -> Optional[Record]:
         """Update a record"""
         record = await self.get_record(record_id)
@@ -115,10 +126,54 @@ class RecordManager:
             record.processing_time = processing_time
         if is_modified is not None:
             record.is_modified = is_modified
+        if is_favorite is not None:
+            record.is_favorite = is_favorite
 
         record.updated_at = datetime.now()
         await self._save_json(record)
         return record
+
+    async def search_records(
+        self,
+        q: Optional[str] = None,
+        search_type: str = "all",
+        favorite_only: bool = False,
+        limit: int = 100
+    ) -> List[Record]:
+        """Search records by text content and filters."""
+        records = []
+        for json_file in self.records_path.glob("*.json"):
+            try:
+                data = await self._load_json(json_file.stem)
+                if data:
+                    records.append(Record.from_dict(data))
+            except Exception as e:
+                logger.error(f"Error loading record {json_file}: {e}")
+
+        normalized_query = (q or "").strip().lower()
+        normalized_search_type = (search_type or "all").lower()
+        if normalized_search_type not in {"all", "raw", "optimized"}:
+            normalized_search_type = "all"
+
+        def matches(record: Record) -> bool:
+            if favorite_only and not record.is_favorite:
+                return False
+
+            if not normalized_query:
+                return True
+
+            raw_text = (record.raw_text or "").lower()
+            optimized_text = (record.optimized_text or "").lower()
+
+            if normalized_search_type == "raw":
+                return normalized_query in raw_text
+            if normalized_search_type == "optimized":
+                return normalized_query in optimized_text
+            return normalized_query in raw_text or normalized_query in optimized_text
+
+        filtered = [record for record in records if matches(record)]
+        filtered.sort(key=lambda r: r.created_at, reverse=True)
+        return filtered[:limit]
 
     async def delete_record(self, record_id: str) -> bool:
         """Delete a record and its associated audio file"""
