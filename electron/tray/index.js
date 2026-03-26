@@ -54,27 +54,38 @@ class TrayManager extends EventEmitter {
    * 创建默认图标（如果没有图标文件）
    */
   createDefaultIcon(iconType) {
-    // 创建一个简单的 22x22 像素图标
     const size = 22
     const canvas = Buffer.alloc(size * size * 4)
 
-    // 根据类型设置颜色
     const colors = {
-      idle: [128, 128, 128, 255],      // 灰色
-      recording: [248, 113, 113, 255], // 红色
-      transcribing: [201, 162, 39, 255], // 金色
-      disconnected: [113, 113, 122, 128] // 半透明灰色
+      idle: [30, 30, 30, 255],
+      recording: [248, 113, 113, 255],
+      transcribing: [30, 30, 30, 255],
+      disconnected: [30, 30, 30, 128]
     }
 
     const color = colors[iconType] || colors.idle
+    const center = (size - 1) / 2
+    const radius = 8
 
-    // 填充像素
-    for (let i = 0; i < size * size; i++) {
-      const idx = i * 4
-      canvas[idx] = color[0]     // R
-      canvas[idx + 1] = color[1] // G
-      canvas[idx + 2] = color[2] // B
-      canvas[idx + 3] = color[3] // A
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const idx = (y * size + x) * 4
+        const distance = Math.hypot(x - center, y - center)
+
+        if (distance > radius + 0.75) {
+          continue
+        }
+
+        const alphaScale = distance > radius
+          ? Math.max(0, 1 - (distance - radius) / 0.75)
+          : 1
+
+        canvas[idx] = color[0]
+        canvas[idx + 1] = color[1]
+        canvas[idx + 2] = color[2]
+        canvas[idx + 3] = Math.round(color[3] * alphaScale)
+      }
     }
 
     return nativeImage.createFromBuffer(canvas, { width: size, height: size })
@@ -121,77 +132,73 @@ class TrayManager extends EventEmitter {
    */
   updateMenu(records = []) {
     this.records = records
+    const menuItems = []
 
-    const contextMenu = Menu.buildFromTemplate([
-      {
-        label: '显示窗口',
-        click: () => {
-          if (this.mainWindow) {
-            this.mainWindow.show()
-            this.mainWindow.focus()
+    // 历史记录直接显示在主菜单（时间倒序）
+    const recentRecords = records.slice(0, 10)
+    if (recentRecords.length > 0) {
+      recentRecords.forEach((record) => {
+        menuItems.push({
+          label: this.formatRecordLabel(record),
+          click: () => {
+            const text = record.optimized_text || record.raw_text
+            if (text) {
+              this.emit('copy-and-paste', text)
+            }
           }
-        }
-      },
-      { type: 'separator' },
-      {
-        label: '最近记录',
-        enabled: records.length > 0,
-        submenu: this.buildRecordsMenu(records)
-      },
-      { type: 'separator' },
-      {
-        label: '开始录音',
-        accelerator: process.platform === 'darwin' ? 'Alt+Cmd' : 'Alt+Ctrl',
-        click: () => {
-          this.mainWindow?.webContents.send('hotkey:start')
-          this.setIcon('recording')
-        }
-      },
-      { type: 'separator' },
-      {
-        label: '设置',
-        click: () => {
-          if (this.mainWindow) {
-            this.mainWindow.show()
-            this.mainWindow.webContents.send('navigate:settings')
-          }
-        }
-      },
-      { type: 'separator' },
-      {
-        label: '退出',
-        click: () => {
-          this.emit('quit')
+        })
+      })
+      menuItems.push({ type: 'separator' })
+    }
+
+    // 设置
+    menuItems.push({
+      label: '设置',
+      click: () => {
+        if (this.mainWindow) {
+          this.mainWindow.show()
+          this.mainWindow.webContents.send('navigate:settings')
         }
       }
-    ])
+    })
 
-    this.tray.setContextMenu(contextMenu)
+    menuItems.push({ type: 'separator' })
+
+    // 退出
+    menuItems.push({
+      label: '退出',
+      click: () => {
+        this.emit('quit')
+      }
+    })
+
+    this.tray.setContextMenu(Menu.buildFromTemplate(menuItems))
   }
 
   /**
-   * 构建最近记录菜单
+   * 格式化记录标签
    */
-  buildRecordsMenu(records) {
-    if (records.length === 0) {
-      return Menu.buildFromTemplate([
-        { label: '暂无记录', enabled: false }
-      ])
+  formatRecordLabel(record) {
+    const text = record.optimized_text || record.raw_text || '空记录'
+    const time = this.formatTime(record.created_at)
+    return `${time} - ${this.truncateText(text, 40)}`
+  }
+
+  /**
+   * 格式化时间
+   */
+  formatTime(timestamp) {
+    if (!timestamp) return ''
+
+    const date = new Date(timestamp)
+    const now = new Date()
+    const isToday = date.toDateString() === now.toDateString()
+
+    if (isToday) {
+      return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
     }
 
-    // 只显示最近 5 条记录
-    const recentRecords = records.slice(0, 5)
-
-    return Menu.buildFromTemplate(recentRecords.map(record => ({
-      label: this.truncateText(record.raw_text || record.optimized_text || '空记录', 30),
-      click: () => {
-        // 复制文本并粘贴
-        const text = record.optimized_text || record.raw_text
-        if (text) {
-          this.emit('copy-and-paste', text)
-        }
-      }
-    })))
+    return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
   }
 
   /**
