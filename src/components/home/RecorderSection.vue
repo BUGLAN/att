@@ -1,29 +1,21 @@
-<template>
+﻿<template>
   <div class="recorder-section">
     <div class="recorder-controls">
-      <!-- 录音按钮 -->
       <button
         class="record-btn"
         :class="{ recording: isRecording }"
-        :disabled="isTranscribing"
+        type="button"
         @click="toggleRecording"
       >
         <span class="btn-icon">●</span>
         <span class="btn-text">{{ buttonText }}</span>
       </button>
 
-      <!-- 录音状态 -->
       <div class="recording-status" :class="{ recording: isRecording }">
         <span class="status-dot"></span>
-        <span class="status-text status-ready" :class="{ hidden: isRecording }">
-          准备就绪
-        </span>
-        <span class="status-text status-recording" :class="{ visible: isRecording }">
-          录音中
-        </span>
-        <span class="duration" :class="{ visible: isRecording }">
-          {{ formattedDuration }}
-        </span>
+        <span class="status-text status-ready" :class="{ hidden: isRecording }">准备就绪</span>
+        <span class="status-text status-recording" :class="{ visible: isRecording }">录音中</span>
+        <span class="duration" :class="{ visible: isRecording }">{{ formattedDuration }}</span>
       </div>
     </div>
   </div>
@@ -33,11 +25,10 @@
 import { computed } from 'vue'
 import { useRecorder } from '@/composables/useRecorder'
 
-const { isRecording, isTranscribing, duration, startRecording, stopRecording } = useRecorder()
+const { isRecording, duration, startRecording, stopRecording } = useRecorder()
 
 const buttonText = computed(() => {
-  if (isTranscribing.value) return '转写中'
-  if (isRecording.value) return '录音中'
+  if (isRecording.value) return '停止录音'
   return '开始录音'
 })
 
@@ -50,8 +41,9 @@ const formattedDuration = computed(() => {
 function toggleRecording() {
   if (isRecording.value) {
     stopRecording()
-  } else {
-    startRecording()
+    return
   }
+
+  startRecording()
 }
 </script>

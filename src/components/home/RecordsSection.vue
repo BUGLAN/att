@@ -1,17 +1,17 @@
-<template>
+﻿<template>
   <div class="records-section">
-    <!-- 标题栏 -->
     <div class="section-header">
-      <h2>历史记录</h2>
-      <div class="section-header-right">
+      <div class="section-header-left">
+        <h2>历史记录</h2>
         <span class="record-count">{{ records.length }} 条</span>
-        <button class="header-settings-btn" @click="toggleSelectMode">
-          {{ selectMode ? '取消' : '⋮' }}
+      </div>
+      <div class="section-header-right">
+        <button class="btn btn-secondary" type="button" @click="toggleSelectMode">
+          {{ selectMode ? '退出选择' : '选择模式' }}
         </button>
       </div>
     </div>
 
-    <!-- 记录列表 -->
     <div class="records-list">
       <RecordCard
         v-for="record in records"
@@ -19,34 +19,28 @@
         :record="record"
         :select-mode="selectMode"
         :selected="selectedRecords.has(record.id)"
+        :is-playing="isPlaying(record.id)"
         @select="toggleSelection(record.id)"
         @edit="openEditModal(record)"
-        @delete="deleteRecord(record.id)"
-        @optimize="optimizeRecord(record.id)"
         @copy="copyText(record)"
-        @play="playAudio(record.id)"
+        @toggle-audio="toggleAudio(record.id)"
+        @optimize="optimizeRecord(record.id)"
       />
 
-      <!-- 空状态 -->
-      <div v-if="records.length === 0" class="empty-state">
+      <div v-if="!records.length" class="empty-state">
         <p>暂无录音记录</p>
       </div>
     </div>
 
-    <!-- 选择工具栏 -->
     <div v-if="selectMode" class="select-toolbar">
       <label class="select-all-label">
-        <input
-          type="checkbox"
-          :checked="isAllSelected"
-          @change="toggleSelectAll"
-        />
+        <input :checked="isAllSelected" type="checkbox" @change="toggleSelectAll">
         全选
       </label>
-      <button class="btn-delete-selected" @click="deleteSelected">
+      <button class="btn-delete-selected" type="button" @click="deleteSelected">
         删除选中 ({{ selectedRecords.size }})
       </button>
-      <button class="btn-cancel-select" @click="toggleSelectMode">
+      <button class="btn-cancel-select" type="button" @click="toggleSelectMode">
         取消
       </button>
     </div>
@@ -64,15 +58,15 @@ const {
   records,
   selectMode,
   selectedRecords,
-  deleteRecord,
   deleteSelected,
-  optimizeRecord,
   copyText,
+  optimizeRecord,
   toggleSelectMode,
   toggleSelection,
   selectAll,
   clearSelection,
-  playAudio
+  toggleAudio,
+  isPlaying
 } = useRecords()
 
 const isAllSelected = computed(() => {
@@ -88,7 +82,7 @@ function toggleSelectAll() {
 }
 
 function openEditModal(record) {
-  appStore.currentRecord = record
+  appStore.setCurrentRecord(record)
   appStore.openModal('recordEdit')
 }
 </script>

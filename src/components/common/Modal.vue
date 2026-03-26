@@ -1,9 +1,9 @@
-<template>
-  <div class="modal" :class="{ active: true }" @click.self="close">
+﻿<template>
+  <div :id="modalId" class="modal active" @click.self="close">
     <div class="modal-content">
       <div class="modal-header">
         <h3>{{ title }}</h3>
-        <button class="modal-close" @click="close">×</button>
+        <button class="modal-close" type="button" @click="close">×</button>
       </div>
       <div class="modal-body">
         <slot></slot>
@@ -16,6 +16,7 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { useAppStore } from '@/stores/app'
 
 const props = defineProps({
@@ -30,6 +31,7 @@ const props = defineProps({
 })
 
 const appStore = useAppStore()
+const modalId = computed(() => `${props.modalName}Modal`)
 
 function close() {
   appStore.closeModal(props.modalName)

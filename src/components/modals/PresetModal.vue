@@ -1,15 +1,14 @@
-<template>
+﻿<template>
   <Modal title="预设管理" modal-name="preset">
     <PresetManager
-      :presets="presets"
-      @create="openEditModal"
-      @edit="openEditModal"
-      @delete="deletePreset"
-      @select="setDefaultPreset"
+      :presets="builtinPresets"
+      :default-preset-id="defaultPresetId"
+      @view="openViewModal"
+      @select="handleSelect"
     />
 
     <template #footer>
-      <button class="btn btn-secondary" @click="close">关闭</button>
+      <button class="btn btn-secondary" type="button" @click="close">关闭</button>
     </template>
   </Modal>
 </template>
@@ -24,7 +23,10 @@ import { usePresets } from '@/composables/useSettings'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
-const { presets, loadPresets, deletePreset, setDefaultPreset } = usePresets()
+const { presets, defaultPresetId: storeDefaultPresetId, loadPresets, setDefaultPreset } = usePresets()
+
+const defaultPresetId = computed(() => storeDefaultPresetId.value)
+const builtinPresets = computed(() => presets.value.filter((preset) => preset.is_builtin))
 
 onMounted(() => {
   loadPresets()
@@ -34,15 +36,13 @@ function close() {
   appStore.closeModal('preset')
 }
 
-function openEditModal(preset = null) {
+function openViewModal(preset) {
   settingsStore.currentPreset = preset
   appStore.closeModal('preset')
   appStore.openModal('presetEdit')
 }
 
-async function handleDelete(id) {
-  if (confirm('确定要删除这个预设吗？')) {
-    await deletePreset(id)
-  }
+async function handleSelect(id) {
+  await setDefaultPreset(id)
 }
 </script>

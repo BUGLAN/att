@@ -1,46 +1,40 @@
-<template>
+﻿<template>
   <div class="preset-manager">
-    <div class="preset-list">
+    <div v-if="presets.length" class="preset-list">
       <div
         v-for="preset in presets"
         :key="preset.id"
         class="preset-item"
-        :class="{ selected: preset.id === selectedId }"
-        @click="selectPreset(preset.id)"
+        :class="{ selected: preset.id === defaultPresetId }"
       >
-        <div class="preset-info">
-          <span class="preset-name">{{ preset.name }}</span>
-          <span class="preset-category">{{ preset.category || '自定义' }}</span>
+        <div class="preset-info" @click="$emit('select', preset.id)">
+          <div class="preset-row">
+            <span class="preset-name">{{ preset.name }}</span>
+            <span v-if="preset.id === defaultPresetId" class="preset-category">默认</span>
+          </div>
+          <p class="preset-description">{{ preset.description || '无描述' }}</p>
         </div>
         <div class="preset-actions">
-          <button class="btn-icon" @click.stop="$emit('edit', preset)">✏️</button>
-          <button v-if="!preset.is_builtin" class="btn-icon" @click.stop="$emit('delete', preset.id)">🗑️</button>
+          <button class="btn-icon" type="button" @click="$emit('view', preset)">查看</button>
         </div>
       </div>
     </div>
 
-    <button class="btn btn-primary" @click="$emit('create')">
-      + 新建预设
-    </button>
+    <div v-else class="manager-empty">未发现 prompts/*.txt</div>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
-
 defineProps({
   presets: {
     type: Array,
     default: () => []
+  },
+  defaultPresetId: {
+    type: String,
+    default: ''
   }
 })
 
-const emit = defineEmits(['create', 'edit', 'delete', 'select'])
-
-const selectedId = ref(null)
-
-function selectPreset(id) {
-  selectedId.value = id
-  emit('select', id)
-}
+defineEmits(['select', 'view'])
 </script>
