@@ -1,7 +1,10 @@
 <template>
-  <header class="title-bar" :class="{ collapsed: sidebarCollapsed }">
+  <header class="title-bar">
     <div class="title-bar-drag" @dblclick="windowControl.maximize()">
-      <span class="title-bar-mark">ATT</span>
+      <div class="title-bar-brand">
+        <span class="logo-icon">ATT</span>
+        <span class="logo-text">Audio To Text</span>
+      </div>
     </div>
 
     <div class="title-bar-buttons">
@@ -24,13 +27,6 @@
 
 <script setup>
 import { useElectron } from '@/composables/useElectron'
-
-defineProps({
-  sidebarCollapsed: {
-    type: Boolean,
-    default: false
-  }
-})
 
 const { windowControl } = useElectron()
 </script>

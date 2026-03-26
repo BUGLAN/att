@@ -1,7 +1,7 @@
 .title-bar {
   position: fixed;
   top: 0;
-  left: 220px;
+  left: 0;
   right: 0;
   height: var(--titlebar-height);
   display: flex;
@@ -11,6 +11,7 @@
   backdrop-filter: blur(16px);
   border-bottom: 1px solid rgba(63, 63, 70, 0.65);
   z-index: 60;
+  padding-left: max(20px, env(titlebar-area-x, 0px));
 }
 
 .title-bar-drag {
@@ -18,32 +19,26 @@
   height: 100%;
   display: flex;
   align-items: center;
-  padding: 0 var(--space-lg);
+  padding: 0 28px;
   -webkit-app-region: drag;
 }
 
-.title-bar.collapsed {
-  left: 60px;
+.title-bar-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .records-library-page {
   width: 100%;
 }
 
-.title-bar-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 34px;
-  height: 20px;
-  padding: 0 8px;
-  border-radius: var(--radius-full);
-  background: rgba(201, 162, 39, 0.12);
-  color: var(--accent);
-  font-size: 0.6875rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  border: 1px solid rgba(201, 162, 39, 0.16);
+.title-bar-brand .logo-text {
+  opacity: 1;
+  width: auto;
+  color: rgba(228, 228, 231, 0.9);
+  font-size: 1rem;
+  letter-spacing: 0.03em;
 }
 
 .title-bar-buttons {
@@ -54,7 +49,7 @@
 }
 
 .title-bar-btn {
-  width: 46px;
+  width: 50px;
   border: none;
   background: transparent;
   color: var(--text-secondary);

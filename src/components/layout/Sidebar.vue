@@ -1,15 +1,14 @@
 ﻿<template>
-  <aside class="sidebar" :class="{ collapsed }">
-    <div class="sidebar-header">
-      <button class="sidebar-toggle" type="button" @click="$emit('toggle')">
-        <span class="toggle-icon">▸</span>
-      </button>
-      <div class="sidebar-logo">
-        <span class="logo-icon">ATT</span>
-        <span v-if="!collapsed" class="logo-text">Audio To Text</span>
-      </div>
-    </div>
-
+  <aside
+    class="sidebar"
+    :class="{
+      collapsed,
+      resizing: isResizing,
+      'collapse-intent': resizeIntent === 'collapse',
+      'expand-intent': resizeIntent === 'expand'
+    }"
+    :style="{ width: `${width}px` }"
+  >
     <nav class="sidebar-nav">
       <button class="nav-item" :class="{ active: currentPage === 'home' }" type="button" @click="navigateTo('home')">
         <span class="nav-icon" aria-hidden="true">
@@ -60,29 +59,114 @@
         <span class="client-text">{{ connectedClients }} 个客户端在线</span>
       </div>
     </div>
+
+    <button
+      ref="resizeHandle"
+      class="sidebar-resizer"
+      type="button"
+      aria-label="调整侧边栏宽度"
+      @pointerdown="startResize"
+    >
+      <span class="sidebar-resizer-rail"></span>
+      <span class="sidebar-resizer-grip" aria-hidden="true">
+        <template v-if="resizeIntent === 'collapse'">
+          <svg viewBox="0 0 16 16" fill="none">
+            <path d="M10.5 3.5 6 8l4.5 4.5" />
+          </svg>
+        </template>
+        <template v-else-if="resizeIntent === 'expand'">
+          <svg viewBox="0 0 16 16" fill="none">
+            <path d="M5.5 3.5 10 8l-4.5 4.5" />
+          </svg>
+        </template>
+        <template v-else>
+          <svg viewBox="0 0 16 16" fill="none">
+            <path d="M6 3v10" />
+            <path d="M10 3v10" />
+          </svg>
+        </template>
+      </span>
+    </button>
   </aside>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 
-defineProps({
+const props = defineProps({
   collapsed: {
     type: Boolean,
     default: false
+  },
+  width: {
+    type: Number,
+    default: 220
   }
 })
 
-defineEmits(['toggle'])
-
 const appStore = useAppStore()
+const resizeHandle = ref(null)
+const isResizing = ref(false)
+const liveWidth = ref(props.width)
 
 const currentPage = computed(() => appStore.currentPage)
 const isConnected = computed(() => appStore.isConnected)
 const connectedClients = computed(() => appStore.connectedClients)
+const collapseThreshold = computed(() => appStore.sidebarCollapseThreshold)
+const minWidth = computed(() => appStore.sidebarMinWidth)
+const maxWidth = computed(() => appStore.sidebarMaxWidth)
+
+const resizeIntent = computed(() => {
+  if (props.collapsed) {
+    return 'expand'
+  }
+
+  if (isResizing.value && liveWidth.value <= collapseThreshold.value) {
+    return 'collapse'
+  }
+
+  return 'resize'
+})
 
 function navigateTo(page) {
   appStore.setCurrentPage(page)
 }
+
+function clampWidth(width) {
+  return Math.min(Math.max(width, minWidth.value), maxWidth.value)
+}
+
+function handlePointerMove(event) {
+  const nextWidth = clampWidth(event.clientX)
+  liveWidth.value = nextWidth
+  appStore.setSidebarWidth(nextWidth)
+}
+
+function stopResize() {
+  if (!isResizing.value) {
+    return
+  }
+
+  isResizing.value = false
+  appStore.stopSidebarResize()
+  window.removeEventListener('pointermove', handlePointerMove)
+  window.removeEventListener('pointerup', stopResize)
+  window.removeEventListener('pointercancel', stopResize)
+}
+
+function startResize(event) {
+  event.preventDefault()
+  liveWidth.value = props.width
+  isResizing.value = true
+  appStore.startSidebarResize()
+  resizeHandle.value?.setPointerCapture?.(event.pointerId)
+  window.addEventListener('pointermove', handlePointerMove)
+  window.addEventListener('pointerup', stopResize)
+  window.addEventListener('pointercancel', stopResize)
+}
+
+onBeforeUnmount(() => {
+  stopResize()
+})
 </script>

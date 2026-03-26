@@ -1,9 +1,74 @@
 ﻿import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+
+const SIDEBAR_LAYOUT_STORAGE_KEY = 'att.sidebar.layout'
+const SIDEBAR_DEFAULT_WIDTH = 220
+const SIDEBAR_COLLAPSED_WIDTH = 60
+const SIDEBAR_MIN_WIDTH = SIDEBAR_COLLAPSED_WIDTH
+const SIDEBAR_MAX_WIDTH = 280
+const SIDEBAR_COLLAPSE_THRESHOLD = 110
+
+function clampSidebarWidth(width) {
+  return Math.min(Math.max(width, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH)
+}
+
+function sanitizeExpandedWidth(width) {
+  return Math.min(
+    Math.max(width, SIDEBAR_COLLAPSE_THRESHOLD + 1),
+    SIDEBAR_MAX_WIDTH
+  )
+}
+
+function loadSidebarLayout() {
+  if (typeof window === 'undefined') {
+    return {
+      collapsed: false,
+      width: SIDEBAR_DEFAULT_WIDTH
+    }
+  }
+
+  try {
+    const rawLayout = window.localStorage.getItem(SIDEBAR_LAYOUT_STORAGE_KEY)
+
+    if (!rawLayout) {
+      return {
+        collapsed: false,
+        width: SIDEBAR_DEFAULT_WIDTH
+      }
+    }
+
+    const parsedLayout = JSON.parse(rawLayout)
+
+    return {
+      collapsed: Boolean(parsedLayout?.collapsed),
+      width: sanitizeExpandedWidth(parsedLayout?.width ?? SIDEBAR_DEFAULT_WIDTH)
+    }
+  } catch (error) {
+    console.warn('[AppStore] Failed to load sidebar layout:', error)
+    return {
+      collapsed: false,
+      width: SIDEBAR_DEFAULT_WIDTH
+    }
+  }
+}
 
 export const useAppStore = defineStore('app', () => {
   const currentPage = ref('home')
-  const sidebarCollapsed = ref(false)
+  const initialSidebarLayout = loadSidebarLayout()
+  const sidebarCollapsed = ref(initialSidebarLayout.collapsed)
+  const sidebarWidth = ref(initialSidebarLayout.width)
+  const isSidebarResizing = ref(false)
+  const sidebarDragWidth = ref(null)
+  const sidebarDisplayCollapsed = computed(() => (
+    isSidebarResizing.value && sidebarDragWidth.value != null
+      ? sidebarDragWidth.value <= SIDEBAR_COLLAPSE_THRESHOLD
+      : sidebarCollapsed.value
+  ))
+  const currentSidebarWidth = computed(() => (
+    isSidebarResizing.value && sidebarDragWidth.value != null
+      ? sidebarDragWidth.value
+      : (sidebarCollapsed.value ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth.value)
+  ))
 
   const isRecording = ref(false)
   const isTranscribing = ref(false)
@@ -29,12 +94,68 @@ export const useAppStore = defineStore('app', () => {
   const selectMode = ref(false)
   const selectedRecords = ref(new Set())
 
+  function persistSidebarLayout() {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    window.localStorage.setItem(SIDEBAR_LAYOUT_STORAGE_KEY, JSON.stringify({
+      collapsed: sidebarCollapsed.value,
+      width: sidebarWidth.value
+    }))
+  }
+
   function setCurrentPage(page) {
     currentPage.value = page
   }
 
+  function collapseSidebar() {
+    sidebarDragWidth.value = null
+    sidebarCollapsed.value = true
+    persistSidebarLayout()
+  }
+
+  function expandSidebar(width = sidebarWidth.value) {
+    sidebarDragWidth.value = null
+    sidebarWidth.value = sanitizeExpandedWidth(width)
+    sidebarCollapsed.value = false
+    persistSidebarLayout()
+  }
+
   function toggleSidebar() {
-    sidebarCollapsed.value = !sidebarCollapsed.value
+    if (sidebarCollapsed.value) {
+      expandSidebar()
+      return
+    }
+
+    collapseSidebar()
+  }
+
+  function setSidebarWidth(width) {
+    sidebarDragWidth.value = clampSidebarWidth(width)
+  }
+
+  function startSidebarResize() {
+    isSidebarResizing.value = true
+    sidebarDragWidth.value = currentSidebarWidth.value
+  }
+
+  function stopSidebarResize() {
+    const finalWidth = sidebarDragWidth.value
+
+    if (finalWidth != null) {
+      if (finalWidth <= SIDEBAR_COLLAPSE_THRESHOLD) {
+        sidebarCollapsed.value = true
+      } else {
+        sidebarWidth.value = sanitizeExpandedWidth(finalWidth)
+        sidebarCollapsed.value = false
+      }
+
+      persistSidebarLayout()
+    }
+
+    isSidebarResizing.value = false
+    sidebarDragWidth.value = null
   }
 
   function setRecording(value) {
@@ -141,6 +262,14 @@ export const useAppStore = defineStore('app', () => {
   return {
     currentPage,
     sidebarCollapsed,
+    sidebarDisplayCollapsed,
+    sidebarWidth,
+    currentSidebarWidth,
+    isSidebarResizing,
+    sidebarCollapseThreshold: SIDEBAR_COLLAPSE_THRESHOLD,
+    sidebarCollapsedWidth: SIDEBAR_COLLAPSED_WIDTH,
+    sidebarMinWidth: SIDEBAR_MIN_WIDTH,
+    sidebarMaxWidth: SIDEBAR_MAX_WIDTH,
     isRecording,
     isTranscribing,
     currentRecordId,
@@ -155,7 +284,12 @@ export const useAppStore = defineStore('app', () => {
     selectMode,
     selectedRecords,
     setCurrentPage,
+    collapseSidebar,
+    expandSidebar,
     toggleSidebar,
+    setSidebarWidth,
+    startSidebarResize,
+    stopSidebarResize,
     setRecording,
     startRecording,
     stopRecording,

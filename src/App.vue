@@ -1,19 +1,25 @@
 ﻿<template>
-  <div class="app-container">
+  <div
+    class="app-container"
+    :class="{
+      'has-title-bar': isElectron,
+      'is-sidebar-resizing': isSidebarResizing
+    }"
+    :style="shellStyles"
+  >
+    <TitleBar v-if="isElectron" />
+
     <Sidebar
-      :collapsed="sidebarCollapsed"
-      @toggle="toggleSidebar"
+      :collapsed="sidebarDisplayCollapsed"
+      :width="currentSidebarWidth"
     />
 
     <main
       class="main-content"
       :class="{
-        'sidebar-collapsed': sidebarCollapsed,
         'has-title-bar': isElectron
       }"
     >
-      <TitleBar v-if="isElectron" :sidebar-collapsed="sidebarCollapsed" />
-
       <div v-show="currentPage === 'home'" class="container page-view">
         <RecorderSection />
         <RecordsSection />
@@ -68,12 +74,13 @@ const { connect } = useGlobalWebSocket()
 const { isElectron, onPasteText, onNavigateSettings, removeAllListeners, syncDesktopSettings } = useElectron()
 
 const currentPage = computed(() => appStore.currentPage)
-const sidebarCollapsed = computed(() => appStore.sidebarCollapsed)
+const sidebarDisplayCollapsed = computed(() => appStore.sidebarDisplayCollapsed)
+const currentSidebarWidth = computed(() => appStore.currentSidebarWidth)
+const isSidebarResizing = computed(() => appStore.isSidebarResizing)
 const modals = computed(() => appStore.modals)
-
-function toggleSidebar() {
-  appStore.toggleSidebar()
-}
+const shellStyles = computed(() => ({
+  '--sidebar-width': `${currentSidebarWidth.value}px`
+}))
 
 onMounted(async () => {
   onPasteText(() => {
@@ -107,6 +114,13 @@ onUnmounted(() => {
 .app-container {
   display: flex;
   min-height: 100vh;
+  width: 100%;
+}
+
+.app-container.is-sidebar-resizing,
+.app-container.is-sidebar-resizing * {
+  cursor: col-resize !important;
+  user-select: none;
 }
 
 .page-view {
