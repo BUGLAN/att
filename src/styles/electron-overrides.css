@@ -30,13 +30,6 @@
   width: 100%;
 }
 
-.title-bar-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-sm);
-  min-width: 0;
-}
-
 .title-bar-mark {
   display: inline-flex;
   align-items: center;
@@ -45,18 +38,12 @@
   height: 20px;
   padding: 0 8px;
   border-radius: var(--radius-full);
-  background: var(--accent-dim);
+  background: rgba(201, 162, 39, 0.12);
   color: var(--accent);
   font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.12em;
-}
-
-.title-bar-name {
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  border: 1px solid rgba(201, 162, 39, 0.16);
 }
 
 .title-bar-buttons {
@@ -302,10 +289,6 @@
   .title-bar,
   .title-bar.collapsed {
     left: 0;
-  }
-
-  .title-bar-name {
-    display: none;
   }
 
   .settings-records-header {
