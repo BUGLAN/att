@@ -22,6 +22,16 @@
         </span>
         <span v-if="!collapsed" class="nav-text">首页</span>
       </button>
+      <button class="nav-item" :class="{ active: currentPage === 'records' }" type="button" @click="navigateTo('records')">
+        <span class="nav-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <rect x="4" y="5" width="16" height="4" rx="1.5" />
+            <rect x="4" y="10" width="16" height="4" rx="1.5" />
+            <rect x="4" y="15" width="16" height="4" rx="1.5" />
+          </svg>
+        </span>
+        <span v-if="!collapsed" class="nav-text">记录集</span>
+      </button>
       <button class="nav-item" :class="{ active: currentPage === 'settings' }" type="button" @click="navigateTo('settings')">
         <span class="nav-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">

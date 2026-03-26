@@ -5,10 +5,22 @@
       @toggle="toggleSidebar"
     />
 
-    <main class="main-content" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+    <main
+      class="main-content"
+      :class="{
+        'sidebar-collapsed': sidebarCollapsed,
+        'has-title-bar': isElectron
+      }"
+    >
+      <TitleBar v-if="isElectron" :sidebar-collapsed="sidebarCollapsed" />
+
       <div v-show="currentPage === 'home'" class="container page-view">
         <RecorderSection />
         <RecordsSection />
+      </div>
+
+      <div v-show="currentPage === 'records'" class="container page-view">
+        <RecordsLibraryPage />
       </div>
 
       <div v-show="currentPage === 'settings'" class="container page-view">
@@ -34,8 +46,10 @@ import { useRecorder } from '@/composables/useRecorder'
 import { useGlobalWebSocket } from '@/composables/useWebSocket'
 
 import Sidebar from '@/components/layout/Sidebar.vue'
+import TitleBar from '@/components/layout/TitleBar.vue'
 import RecorderSection from '@/components/home/RecorderSection.vue'
 import RecordsSection from '@/components/home/RecordsSection.vue'
+import RecordsLibraryPage from '@/components/records/RecordsLibraryPage.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
 
 import RecordEditModal from '@/components/modals/RecordEditModal.vue'
@@ -51,7 +65,7 @@ const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 useRecorder()
 const { connect } = useGlobalWebSocket()
-const { onPasteText, onNavigateSettings, removeAllListeners, syncDesktopSettings } = useElectron()
+const { isElectron, onPasteText, onNavigateSettings, removeAllListeners, syncDesktopSettings } = useElectron()
 
 const currentPage = computed(() => appStore.currentPage)
 const sidebarCollapsed = computed(() => appStore.sidebarCollapsed)
@@ -97,6 +111,6 @@ onUnmounted(() => {
 
 .page-view {
   width: 100%;
-  min-height: 100vh;
+  min-height: 100%;
 }
 </style>
