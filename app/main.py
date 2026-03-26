@@ -2,6 +2,7 @@
 FastAPI Application Entry Point
 Audio-to-Text API with AI-powered optimization
 """
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
@@ -15,6 +16,7 @@ from app.stt.transcriber import WhisperTranscriber
 from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
 from app.api.routes import init_processors
+from app.services.hotkey_listener import init_hotkey_service
 from app.utils.logging import setup_logging, get_logger
 
 logger = get_logger(__name__)
@@ -45,6 +47,10 @@ async def lifespan(app: FastAPI):
     # Pass to routes
     init_processors(audio_processor, transcriber, optimizer, record_manager)
 
+    # Start backend hotkey listener after runtime state is ready.
+    hotkey_service = init_hotkey_service(asyncio.get_running_loop())
+    hotkey_service.start()
+
     # Preload model to eliminate first-request latency
     logger.info("Preloading Whisper model...")
     transcriber._load_model()
@@ -55,6 +61,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down Audio-to-Text API")
+    hotkey_service.stop()
     transcriber.unload_model()
     await optimizer.close()
 
@@ -95,18 +102,32 @@ app.add_middleware(
 from app.api.routes import router as api_router
 app.include_router(api_router)
 
-# Mount static files
-static_dir = Path(__file__).parent.parent / "static"
+# Frontend directories
+project_root = Path(__file__).parent.parent
+static_dir = project_root / "static"
+dist_dir = project_root / "dist"
+dist_assets_dir = dist_dir / "assets"
+
+# Mount legacy static files for reference during migration
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+# Mount built Vue assets when available
+if dist_assets_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(dist_assets_dir)), name="assets")
 
 
 @app.get("/")
 async def root():
-    """Root endpoint - Serve index page"""
-    index_path = static_dir / "index.html"
-    if index_path.exists():
-        return FileResponse(str(index_path))
+    """Root endpoint - Serve the Vue frontend when available."""
+    dist_index = dist_dir / "index.html"
+    if dist_index.exists():
+        return FileResponse(str(dist_index))
+
+    static_index = static_dir / "index.html"
+    if static_index.exists():
+        return FileResponse(str(static_index))
+
     return {
         "name": settings.app_name,
         "version": "0.1.0",

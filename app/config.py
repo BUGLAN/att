@@ -9,6 +9,10 @@ import json
 import platform
 
 
+VALID_HOTKEY_MODIFIERS = {"cmd", "alt", "ctrl", "shift", "win"}
+VALID_HOTKEY_KEYS = set("abcdefghijklmnopqrstuvwxyz0123456789")
+
+
 def get_default_hotkey() -> dict:
     """
     Get default hotkey based on platform.
@@ -16,18 +20,49 @@ def get_default_hotkey() -> dict:
     Returns:
         Hotkey config dict with modifiers, key, and display fields
     """
-    if platform.system() == "Darwin":  # macOS
+    system_name = platform.system()
+
+    if system_name == "Darwin":  # macOS
         return {
-            "modifiers": ["alt", "cmd"],
-            "key": None,
-            "display": "⌥⌘"
+            "modifiers": ["cmd", "shift"],
+            "key": "r",
+            "display": "Cmd+Shift+R"
         }
-    else:  # Windows/Linux
+    if system_name == "Windows":
         return {
-            "modifiers": ["alt", "ctrl"],
+            "modifiers": ["win", "alt"],
             "key": None,
-            "display": "Alt+Ctrl"
+            "display": "Win+Alt"
         }
+
+    return {
+        "modifiers": ["ctrl", "shift"],
+        "key": "r",
+        "display": "Ctrl+Shift+R"
+    }
+
+
+def is_valid_hotkey(hotkey: dict) -> bool:
+    """Validate a persisted hotkey configuration."""
+    if not isinstance(hotkey, dict):
+        return False
+
+    modifiers = hotkey.get("modifiers", [])
+    key = hotkey.get("key")
+
+    if not isinstance(modifiers, list) or not modifiers:
+        return False
+
+    if not all(modifier in VALID_HOTKEY_MODIFIERS for modifier in modifiers):
+        return False
+
+    if key is None:
+        return len(modifiers) >= 2
+
+    if not isinstance(key, str) or len(key) != 1:
+        return False
+
+    return key.lower() in VALID_HOTKEY_KEYS
 
 
 class UserSettings:
@@ -46,7 +81,7 @@ class UserSettings:
         "silence_threshold": 1.5,       # 静音阈值（秒）
         "silence_level": -40,           # 静音音量阈值（dB）
         # Prompt preset settings
-        "default_preset_id": "builtin-general",
+        "default_preset_id": None,
         "last_used_preset_id": None
     }
 
@@ -62,8 +97,8 @@ class UserSettings:
                     loaded = json.load(f)
                     # Merge with defaults to ensure all keys exist
                     settings = {**self.DEFAULT_SETTINGS, **loaded}
-                    # Set platform-specific default hotkey if not set
-                    if settings.get("hotkey") is None:
+                    # Normalize to a registerable hotkey on load.
+                    if not is_valid_hotkey(settings.get("hotkey")):
                         settings["hotkey"] = get_default_hotkey()
                     return settings
             except (json.JSONDecodeError, IOError):
