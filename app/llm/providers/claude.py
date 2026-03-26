@@ -32,18 +32,17 @@ class ClaudeProvider(BaseLLMProvider):
 
         return response.content[0].text
 
-    async def test_connection(self) -> bool:
+    async def test_connection(self) -> dict:
         """Test Claude API connection."""
         try:
-            # Simple test: create a minimal message
             await self.client.messages.create(
                 model=self.config.model,
-                max_tokens=10,
+                max_tokens=5,
                 messages=[{"role": "user", "content": "Hi"}]
             )
-            return True
-        except Exception:
-            return False
+            return {"success": True, "error": None}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
 
     def get_available_models(self) -> List[str]:
         """Get available Claude models."""

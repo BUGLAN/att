@@ -32,18 +32,17 @@ class QwenProvider(BaseLLMProvider):
 
         return response.choices[0].message.content
 
-    async def test_connection(self) -> bool:
+    async def test_connection(self) -> dict:
         """Test Qwen API connection."""
         try:
-            # Try a minimal completion
             await self.client.chat.completions.create(
                 model=self.config.model,
                 messages=[{"role": "user", "content": "Hi"}],
-                max_tokens=10
+                max_tokens=5
             )
-            return True
-        except Exception:
-            return False
+            return {"success": True, "error": None}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
 
     def get_available_models(self) -> List[str]:
         """Get available Qwen models."""

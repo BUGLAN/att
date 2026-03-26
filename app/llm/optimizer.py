@@ -22,8 +22,27 @@ logger = get_logger(__name__)
 
 def _get_prompt_manager():
     """Lazy import to avoid circular dependency."""
-    from app.prompts import PromptManager
-    return PromptManager()
+    from app.prompts import prompt_manager
+    return prompt_manager
+
+
+def _resolve_prompt(text: str, preset_id: Optional[str], style: str) -> str:
+    """Resolve prompt text from presets with safe fallback."""
+    from app.config import user_settings
+
+    pm = _get_prompt_manager()
+    resolved_preset_id = preset_id or user_settings.get("default_preset_id")
+    preset = pm.get_by_id(resolved_preset_id) if resolved_preset_id else None
+    if preset is None:
+        preset = pm.get_default()
+
+    if preset:
+        rendered = pm.render_prompt(preset.id, text)
+        if rendered:
+            return rendered
+
+    prompt_template = TextOptimizer.PROMPTS.get(style, TextOptimizer.DEFAULT_PROMPT)
+    return prompt_template.format(text=text)
 
 
 @dataclass
@@ -170,24 +189,14 @@ class TextOptimizer:
                 processing_time=0
             )
 
-        # Get prompt template
-        prompt = None
-        if preset_id:
-            # Use preset if provided
-            try:
-                pm = _get_prompt_manager()
-                prompt = pm.render_prompt(preset_id, text)
-                # Update last used preset
-                pm.set_last_used(preset_id)
-            except Exception as e:
-                logger.warning(
-                    "Failed to load preset, using default",
-                    preset_id=preset_id,
-                    error=str(e)
-                )
-
-        if not prompt:
-            # Fallback to style-based or default prompt
+        try:
+            prompt = _resolve_prompt(text, preset_id, style)
+        except Exception as e:
+            logger.warning(
+                "Failed to load preset, using default",
+                preset_id=preset_id,
+                error=str(e)
+            )
             prompt_template = self.PROMPTS.get(style, self.DEFAULT_PROMPT)
             prompt = prompt_template.format(text=text)
 

@@ -8,7 +8,7 @@ from app.prompts.models import (
     PromptPresetCreate,
     PromptPresetUpdate
 )
-from app.prompts.manager import PromptManager, prompt_manager
+from app.prompts.file_manager import PromptManager, prompt_manager
 
 __all__ = [
     "PromptCategory",

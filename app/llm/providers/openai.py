@@ -32,13 +32,17 @@ class OpenAIProvider(BaseLLMProvider):
 
         return response.choices[0].message.content
 
-    async def test_connection(self) -> bool:
+    async def test_connection(self) -> dict:
         """Test OpenAI API connection."""
         try:
-            await self.client.models.list()
-            return True
-        except Exception:
-            return False
+            await self.client.chat.completions.create(
+                model=self.config.model,
+                messages=[{"role": "user", "content": "Hi"}],
+                max_tokens=5
+            )
+            return {"success": True, "error": None}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
 
     def get_available_models(self) -> List[str]:
         """Get available OpenAI models."""

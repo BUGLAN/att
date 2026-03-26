@@ -3,7 +3,7 @@ LLM Provider Base Class
 Abstract base class for LLM provider implementations
 """
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from app.llm.models import LLMConfig
 
@@ -42,12 +42,12 @@ class BaseLLMProvider(ABC):
         pass
 
     @abstractmethod
-    async def test_connection(self) -> bool:
+    async def test_connection(self) -> Dict[str, Optional[str]]:
         """
         Test the API connection.
 
         Returns:
-            True if connection successful, False otherwise
+            Result dict containing success state and optional error message
         """
         pass
 

@@ -18,15 +18,16 @@ from pathlib import Path
 from datetime import datetime
 import uuid
 
-from app.config import settings, user_settings, get_default_hotkey
+from app.config import settings, user_settings, get_default_hotkey, is_valid_hotkey
 from app.audio.processor import AudioProcessor
 from app.stt.transcriber import WhisperTranscriber
 from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
 from app.records.models import Record, RecordStatus, ExportFormat
 from app.records.session_manager import session_manager
+from app.services.hotkey_listener import get_hotkey_service
 from app.services.websocket import manager as ws_manager
-from app.prompts import PromptManager, PromptPresetCreate, PromptPresetUpdate
+from app.prompts import PromptManager, PromptPresetCreate, PromptPresetUpdate, prompt_manager
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -39,10 +40,6 @@ transcriber: Optional[WhisperTranscriber] = None
 optimizer: Optional[TextOptimizer] = None
 record_manager: Optional[RecordManager] = None
 
-# Prompt preset manager (lazy initialization)
-_prompt_manager: Optional[PromptManager] = None
-
-
 # Request models
 class RecordUpdateRequest(BaseModel):
     """Request model for updating a record"""
@@ -51,12 +48,52 @@ class RecordUpdateRequest(BaseModel):
     is_modified: Optional[bool] = None
 
 
+class PromptPreviewRequest(BaseModel):
+    """Request model for prompt preview."""
+    text: str
+
+
+class SetDefaultPromptRequest(BaseModel):
+    """Request model for updating the default prompt preset."""
+    preset_id: str
+
+
 def get_prompt_manager() -> PromptManager:
-    """Get or create prompt manager instance."""
-    global _prompt_manager
-    if _prompt_manager is None:
-        _prompt_manager = PromptManager()
-    return _prompt_manager
+    """Return the shared prompt manager."""
+    prompt_manager.reload_from_files()
+    return prompt_manager
+
+
+def normalize_preset_settings(payload: dict, persist: bool = False) -> dict:
+    """Normalize prompt settings against prompts/*.txt."""
+    pm = get_prompt_manager()
+    preset_ids = {preset.id for preset in pm.get_all()}
+    fallback_default_id = pm.get_default_id()
+
+    resolved_default_id = payload.get("default_preset_id")
+    if resolved_default_id not in preset_ids:
+        resolved_default_id = fallback_default_id
+
+    resolved_last_used_id = payload.get("last_used_preset_id")
+    if resolved_last_used_id not in preset_ids:
+        resolved_last_used_id = resolved_default_id
+
+    normalized = {
+        **payload,
+        "default_preset_id": resolved_default_id,
+        "last_used_preset_id": resolved_last_used_id
+    }
+
+    if persist:
+        updates = {}
+        if payload.get("default_preset_id") != resolved_default_id:
+            updates["default_preset_id"] = resolved_default_id
+        if payload.get("last_used_preset_id") != resolved_last_used_id:
+            updates["last_used_preset_id"] = resolved_last_used_id
+        if updates:
+            user_settings.update(updates)
+
+    return normalized
 
 
 def validate_hotkey(hotkey: dict) -> bool:
@@ -69,34 +106,7 @@ def validate_hotkey(hotkey: dict) -> bool:
     Returns:
         True if valid, False otherwise
     """
-    if not isinstance(hotkey, dict):
-        return False
-
-    modifiers = hotkey.get("modifiers", [])
-    key = hotkey.get("key")
-
-    # Validate modifiers
-    valid_modifiers = {"cmd", "alt", "ctrl", "shift", "win"}
-    if not isinstance(modifiers, list) or not all(m in valid_modifiers for m in modifiers):
-        return False
-
-    # Must have at least one modifier
-    if len(modifiers) < 1:
-        return False
-
-    # If key is present, validate it
-    if key is not None:
-        if not isinstance(key, str) or len(key) != 1:
-            return False
-        valid_keys = set("abcdefghijklmnopqrstuvwxyz0123456789")
-        if key.lower() not in valid_keys:
-            return False
-
-    # For modifier-only combinations: need at least 2 modifiers
-    if key is None and len(modifiers) < 2:
-        return False
-
-    return True
+    return is_valid_hotkey(hotkey)
 
 
 def init_processors(
@@ -200,8 +210,7 @@ async def _transcribe_audio_background(
                 })
 
                 # Get preset ID from settings
-                preset_id = user_settings.get("last_used_preset_id") or \
-                            user_settings.get("default_preset_id")
+                preset_id = user_settings.get("default_preset_id")
                 optimize_result = await optimizer.optimize(
                     result.text,
                     preset_id=preset_id
@@ -368,17 +377,18 @@ async def get_record_status(record_id: str) -> dict:
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
 
-    # Return raw_text for completed states (transcribed, optimizing, optimized)
-    completed_statuses = [
+    include_raw_text = record.status in {
         RecordStatus.TRANSCRIBED,
         RecordStatus.OPTIMIZING,
         RecordStatus.OPTIMIZED
-    ]
+    }
+    include_optimized_text = record.status == RecordStatus.OPTIMIZED
 
     return {
         "record_id": record.id,
         "status": record.status.value,
-        "raw_text": record.raw_text if record.status in completed_statuses else None,
+        "raw_text": record.raw_text if include_raw_text else None,
+        "optimized_text": record.optimized_text if include_optimized_text else None,
         "duration": record.duration,
         "processing_time": record.processing_time
     }
@@ -518,7 +528,7 @@ async def health_check() -> dict:
 @router.get("/settings")
 async def get_settings() -> dict:
     """Get user settings"""
-    return user_settings.get_all()
+    return normalize_preset_settings(user_settings.get_all(), persist=True)
 
 
 @router.put("/settings")
@@ -532,7 +542,9 @@ async def update_settings(updates: dict) -> dict:
         # Recording mode settings
         "recording_mode", "silence_threshold", "silence_level",
         # Prompt preset settings
-        "default_preset_id", "last_used_preset_id"
+        "default_preset_id", "last_used_preset_id",
+        # Audio input device
+        "audio_input_device"
     }
     filtered = {k: v for k, v in updates.items() if k in allowed_keys}
 
@@ -543,8 +555,17 @@ async def update_settings(updates: dict) -> dict:
     if not filtered:
         raise HTTPException(status_code=400, detail="No valid settings provided")
 
+    filtered = normalize_preset_settings(filtered)
     user_settings.update(filtered)
-    return user_settings.get_all()
+
+    if "hotkey" in filtered:
+        hotkey_service = get_hotkey_service()
+        if hotkey_service:
+            hotkey_result = hotkey_service.update_hotkey(filtered["hotkey"])
+            filtered["hotkey"] = hotkey_result["hotkey"]
+            user_settings.set("hotkey", filtered["hotkey"])
+
+    return normalize_preset_settings(user_settings.get_all())
 
 
 # ==================== WebSocket Endpoints ====================
@@ -636,6 +657,12 @@ async def _handle_websocket_message(client_id: str, data: dict) -> None:
             # 保存设置
             user_settings.set("hotkey", hotkey_config)
 
+            hotkey_service = get_hotkey_service()
+            if hotkey_service:
+                hotkey_result = hotkey_service.update_hotkey(hotkey_config)
+                hotkey_config = hotkey_result["hotkey"]
+                user_settings.set("hotkey", hotkey_config)
+
             # 广播给 tray 客户端
             tray_count = len(ws_manager.get_tray_clients())
             logger.info(f"Broadcasting to {tray_count} tray clients")
@@ -701,11 +728,30 @@ async def _handle_websocket_message(client_id: str, data: dict) -> None:
 async def list_prompts() -> dict:
     """Get all prompt presets."""
     pm = get_prompt_manager()
+    normalized_settings = normalize_preset_settings(user_settings.get_all(), persist=True)
     presets = pm.get_all()
     return {
         "presets": [p.model_dump() for p in presets],
-        "default_preset_id": pm._default_preset_id,
-        "last_used_preset_id": pm._last_used_preset_id
+        "default_preset_id": normalized_settings.get("default_preset_id"),
+        "last_used_preset_id": normalized_settings.get("default_preset_id")
+    }
+
+
+@router.put("/prompts/default")
+async def set_default_prompt(request: SetDefaultPromptRequest) -> dict:
+    """Set the default prompt preset."""
+    pm = get_prompt_manager()
+    if not pm.set_default(request.preset_id):
+        raise HTTPException(status_code=404, detail="Preset not found")
+
+    user_settings.update({
+        "default_preset_id": request.preset_id,
+        "last_used_preset_id": request.preset_id
+    })
+
+    return {
+        "status": "updated",
+        "default_preset_id": request.preset_id
     }
 
 
@@ -757,32 +803,15 @@ async def delete_prompt(preset_id: str) -> dict:
 
 
 @router.post("/prompts/{preset_id}/preview")
-async def preview_prompt(preset_id: str, text: str) -> dict:
+async def preview_prompt(preset_id: str, request: PromptPreviewRequest) -> dict:
     """Preview prompt effect with test text."""
     pm = get_prompt_manager()
-    rendered = pm.render_prompt(preset_id, text)
+    rendered = pm.render_prompt(preset_id, request.text)
     if rendered is None:
         raise HTTPException(status_code=404, detail="Preset not found")
     return {
         "preset_id": preset_id,
         "rendered_prompt": rendered
-    }
-
-
-@router.put("/prompts/default")
-async def set_default_prompt(preset_id: str) -> dict:
-    """Set the default prompt preset."""
-    pm = get_prompt_manager()
-    success = pm.set_default(preset_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Preset not found")
-
-    # Also update user settings
-    user_settings.set("default_preset_id", preset_id)
-
-    return {
-        "status": "updated",
-        "default_preset_id": preset_id
     }
 
 
@@ -1100,11 +1129,7 @@ async def test_llm_config(config_id: str) -> dict:
     if not provider:
         return {"success": False, "error": "Failed to create provider"}
 
-    try:
-        success = await provider.test_connection()
-        return {"success": success, "error": None if success else "Connection test failed"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return await provider.test_connection()
 
 
 @router.get("/llm/providers")
