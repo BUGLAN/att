@@ -242,6 +242,10 @@ class ConnectionManager:
             if ctype == "web"
         }
 
+    def get_active_web_client(self) -> Optional[str]:
+        """Return one active web client ID if a web client is connected."""
+        return next(iter(self.get_web_clients()), None)
+
     def get_client_type(self, client_id: str) -> Optional[str]:
         """Get client type by ID."""
         return self.client_types.get(client_id)

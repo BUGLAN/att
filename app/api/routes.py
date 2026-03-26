@@ -46,6 +46,7 @@ class RecordUpdateRequest(BaseModel):
     raw_text: Optional[str] = None
     optimized_text: Optional[str] = None
     is_modified: Optional[bool] = None
+    is_favorite: Optional[bool] = None
 
 
 class PromptPreviewRequest(BaseModel):
@@ -123,6 +124,14 @@ def init_processors(
     record_manager = records
 
 
+def build_completion_metadata(**data) -> dict:
+    """Attach Electron/web activity metadata to completion payloads."""
+    return {
+        **data,
+        "electron_active": ws_manager.get_active_web_client() is not None
+    }
+
+
 # ==================== Background Tasks ====================
 
 async def _transcribe_audio_background(
@@ -177,12 +186,12 @@ async def _transcribe_audio_background(
         # Notify: transcription completed
         await ws_manager.broadcast({
             "type": "transcription_completed",
-            "data": {
-                "record_id": record_id,
-                "text": result.text,
-                "duration": result.duration,
-                "processing_time": result.processing_time
-            },
+            "data": build_completion_metadata(
+                record_id=record_id,
+                text=result.text,
+                duration=result.duration,
+                processing_time=result.processing_time
+            ),
             "timestamp": datetime.now().isoformat()
         })
 
@@ -225,10 +234,10 @@ async def _transcribe_audio_background(
                 # Notify: optimization completed
                 await ws_manager.broadcast({
                     "type": "optimization_completed",
-                    "data": {
-                        "record_id": record_id,
-                        "optimized_text": optimize_result.optimized_text
-                    },
+                    "data": build_completion_metadata(
+                        record_id=record_id,
+                        optimized_text=optimize_result.optimized_text
+                    ),
                     "timestamp": datetime.now().isoformat()
                 })
 
@@ -357,6 +366,35 @@ async def list_records(
     return [r.to_dict() for r in records]
 
 
+@router.get("/records/search", response_model=dict)
+async def search_records(
+    q: Optional[str] = None,
+    search_type: str = Query(default="all", pattern="^(all|raw|optimized)$"),
+    favorite_only: bool = False,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=100)
+) -> dict:
+    """Search records by text content and favorite state."""
+    records = await record_manager.search_records(
+        q=q,
+        search_type=search_type,
+        favorite_only=favorite_only,
+        limit=5000
+    )
+    total = len(records)
+    offset = (page - 1) * page_size
+    items = records[offset:offset + page_size]
+    total_pages = max((total + page_size - 1) // page_size, 1)
+
+    return {
+        "items": [r.to_dict() for r in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages
+    }
+
+
 @router.get("/records/{record_id}", response_model=dict)
 async def get_record(record_id: str) -> dict:
     """Get record details"""
@@ -390,7 +428,8 @@ async def get_record_status(record_id: str) -> dict:
         "raw_text": record.raw_text if include_raw_text else None,
         "optimized_text": record.optimized_text if include_optimized_text else None,
         "duration": record.duration,
-        "processing_time": record.processing_time
+        "processing_time": record.processing_time,
+        "is_favorite": record.is_favorite
     }
 
 
@@ -404,7 +443,8 @@ async def update_record(
         record_id,
         raw_text=request.raw_text,
         optimized_text=request.optimized_text,
-        is_modified=request.is_modified
+        is_modified=request.is_modified,
+        is_favorite=request.is_favorite
     )
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
