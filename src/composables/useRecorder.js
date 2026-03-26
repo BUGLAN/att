@@ -1,207 +1,465 @@
-/**
- * 录音 Composable
- * 处理录音逻辑和状态管理
- */
-
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+﻿import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useRecordsStore } from '@/stores/records'
 import { useSettingsStore } from '@/stores/settings'
 import { useElectron } from './useElectron'
+import { useGlobalWebSocket } from './useWebSocket'
 
-export function useRecorder() {
+const duration = ref(0)
+const mediaRecorder = ref(null)
+const chunks = ref([])
+const durationTimer = ref(null)
+const stream = ref(null)
+
+let pollingTimer = null
+let mountedInstances = 0
+let wsAttached = false
+let startPending = false
+let pendingStopAfterStart = false
+
+function clearDurationTimer() {
+  if (durationTimer.value) {
+    clearInterval(durationTimer.value)
+    durationTimer.value = null
+  }
+}
+
+function stopMediaTracks() {
+  if (stream.value) {
+    stream.value.getTracks().forEach((track) => track.stop())
+    stream.value = null
+  }
+}
+
+function stopPolling() {
+  if (pollingTimer) {
+    clearInterval(pollingTimer)
+    pollingTimer = null
+  }
+}
+
+async function maybeCopyText(text) {
+  if (!text) {
+    return { attempted: false, copied: false, pasted: false }
+  }
+
+  const settingsStore = useSettingsStore()
+  const { clipboard } = useElectron()
+
+  if (!settingsStore.settings.auto_copy_to_clipboard) {
+    return { attempted: false, copied: false, pasted: false }
+  }
+
+  try {
+    await clipboard.writeText(text)
+    await clipboard.pasteActive()
+    return { attempted: true, copied: true, pasted: true }
+  } catch (error) {
+    console.error('[Clipboard] Failed to copy/paste text:', error)
+    return { attempted: true, copied: false, pasted: false }
+  }
+}
+
+function handleRecordCompleted(recordId, patch, options = {}) {
+  const appStore = useAppStore()
+  const recordsStore = useRecordsStore()
+  const { tray } = useElectron()
+
+  recordsStore.updateRecordStatus(recordId, patch)
+  appStore.setCurrentRecordId(recordId)
+  appStore.setRecordStatus({ record_id: recordId, ...patch })
+
+  const existingRecord = Array.isArray(recordsStore.records)
+    ? recordsStore.records.find((record) => record.id === recordId)
+    : null
+
+  appStore.setCurrentRecord(existingRecord ? { ...existingRecord, ...patch } : { id: recordId, ...patch })
+
+  if (!options.keepBusy) {
+    appStore.setTranscribing(false)
+    tray.setIcon('idle')
+  }
+}
+
+async function handleWebSocketMessage(message) {
+  const appStore = useAppStore()
+  const settingsStore = useSettingsStore()
+  const recordsStore = useRecordsStore()
+  const { tray } = useElectron()
+
+  if (message.type === 'recording_command') {
+    if (message.action === 'start') {
+      await startRecording()
+    } else if (message.action === 'stop') {
+      stopRecording()
+    }
+    return
+  }
+
+  if (message.type === 'transcription_started') {
+    const recordId = message.data?.record_id
+    if (!recordId) {
+      return
+    }
+
+    appStore.setCurrentRecordId(recordId)
+    appStore.setTranscribing(true)
+    appStore.setRecordStatus({ record_id: recordId, status: 'transcribing' })
+    tray.setIcon('transcribing')
+    recordsStore.updateRecordStatus(recordId, { status: 'transcribing' })
+    return
+  }
+
+  if (message.type === 'transcription_completed') {
+    const recordId = message.data?.record_id
+    if (!recordId) {
+      return
+    }
+
+    stopPolling()
+    handleRecordCompleted(recordId, {
+      status: 'transcribed',
+      raw_text: message.data?.text || '',
+      duration: message.data?.duration,
+      processing_time: message.data?.processing_time
+    })
+
+    if (!settingsStore.settings.auto_optimize) {
+      const copyResult = await maybeCopyText(message.data?.text)
+      appStore.showToast(
+        copyResult.pasted
+          ? '转写完成，已复制并粘贴'
+          : copyResult.attempted
+            ? '转写完成，复制并粘贴失败'
+            : '转写完成'
+      )
+    } else {
+      appStore.showToast('转写完成，正在优化')
+    }
+    return
+  }
+
+  if (message.type === 'optimization_started') {
+    const recordId = message.data?.record_id
+    if (!recordId) {
+      return
+    }
+
+    appStore.setTranscribing(true)
+    appStore.setRecordStatus({ record_id: recordId, status: 'optimizing' })
+    tray.setIcon('transcribing')
+    recordsStore.updateRecordStatus(recordId, { status: 'optimizing' })
+    return
+  }
+
+  if (message.type === 'optimization_completed') {
+    const recordId = message.data?.record_id
+    if (!recordId) {
+      return
+    }
+
+    stopPolling()
+    handleRecordCompleted(recordId, {
+      status: 'optimized',
+      optimized_text: message.data?.optimized_text || ''
+    })
+    const copyResult = await maybeCopyText(message.data?.optimized_text)
+    appStore.showToast(
+      copyResult.pasted
+        ? '优化完成，已复制并粘贴'
+        : copyResult.attempted
+          ? '优化完成，复制并粘贴失败'
+          : '优化完成'
+    )
+    return
+  }
+
+  if (message.type === 'error') {
+    const recordId = message.data?.record_id
+    if (recordId) {
+      stopPolling()
+      recordsStore.updateRecordStatus(recordId, { status: 'failed' })
+      appStore.setRecordStatus({ record_id: recordId, status: 'failed' })
+    }
+
+    appStore.setTranscribing(false)
+    tray.setIcon('idle')
+    appStore.showToast(message.data?.error || '处理失败')
+    return
+  }
+
+  if (message.type === 'segment_transcribed') {
+    appStore.showToast('收到新的分段转写结果')
+  }
+}
+
+async function pollRecordStatus(recordId) {
   const appStore = useAppStore()
   const recordsStore = useRecordsStore()
   const settingsStore = useSettingsStore()
-  const { api, startStatusPolling, stopStatusPolling, onRecordStatus, onRecordCompleted, tray } = useElectron()
+  const { api, tray } = useElectron()
 
-  const isRecording = computed(() => appStore.isRecording)
-  const isTranscribing = computed(() => appStore.isTranscribing)
-  const duration = ref(0)
-  const mediaRecorder = ref(null)
-  const chunks = ref([])
-  const durationTimer = ref(null)
-  const stream = ref(null)
+  try {
+    const status = await api.getRecordStatus(recordId)
+    recordsStore.updateRecordStatus(recordId, status)
+    appStore.setRecordStatus(status)
 
-  /**
-   * 开始录音
-   */
-  async function startRecording() {
-    try {
-      // 使用用户选择的麦克风设备
-      const deviceId = settingsStore.settings.audio_input_device || 'default'
-      console.log('[Recorder] Using audio device:', deviceId)
-
-      stream.value = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: deviceId === 'default' ? 'default' : { exact: deviceId }
-        }
-      })
-
-      // 打印当前使用的麦克风设备信息
-      const audioTrack = stream.value.getAudioTracks()[0]
-      console.log('[Recorder] Using microphone:', audioTrack?.label || 'Unknown device')
-      console.log('[Recorder] Audio track settings:', audioTrack?.getSettings())
-
-      mediaRecorder.value = new MediaRecorder(stream.value, {
-        mimeType: 'audio/webm;codecs=opus'
-      })
-
-      chunks.value = []
-
-      mediaRecorder.value.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          chunks.value.push(e.data)
-        }
-      }
-
-      mediaRecorder.value.onstop = async () => {
-        const blob = new Blob(chunks.value, { type: 'audio/webm' })
-        console.log('[Recorder] Recording stopped, blob size:', blob.size)
-        await uploadRecording(blob)
-        stream.value.getTracks().forEach(track => track.stop())
-      }
-
-      mediaRecorder.value.start(1000) // 每秒收集一次
-      appStore.setRecording(true)
-      tray.setIcon('recording')
-
-      // 开始计时
-      duration.value = 0
-      durationTimer.value = setInterval(() => {
-        duration.value++
-        appStore.incrementDuration()
-      }, 1000)
-
-    } catch (error) {
-      console.error('Failed to start recording:', error)
-      appStore.showToast('无法访问麦克风')
+    if (status.status === 'optimized') {
+      stopPolling()
+      handleRecordCompleted(recordId, status)
+      const copyResult = await maybeCopyText(status.optimized_text)
+      appStore.showToast(
+        copyResult.pasted
+          ? '优化完成，已复制并粘贴'
+        : copyResult.attempted
+            ? '优化完成，复制并粘贴失败'
+            : '优化完成'
+      )
+      return true
     }
-  }
 
-  /**
-   * 停止录音
-   */
-  function stopRecording() {
-    if (mediaRecorder.value && mediaRecorder.value.state !== 'inactive') {
-      mediaRecorder.value.stop()
-      appStore.setRecording(false)
-      tray.setIcon('transcribing')
-
-      if (durationTimer.value) {
-        clearInterval(durationTimer.value)
-        durationTimer.value = null
-      }
-    }
-  }
-
-  /**
-   * 上传录音
-   */
-  async function uploadRecording(blob) {
-    try {
-      // 检查最短时长
-      if (duration.value < 1) {
-        appStore.showToast('录音时间太短')
-        tray.setIcon('idle')
-        return
+    if (status.status === 'transcribed') {
+      if (!settingsStore.settings.auto_optimize) {
+        stopPolling()
+        handleRecordCompleted(recordId, status)
+        const copyResult = await maybeCopyText(status.raw_text)
+        appStore.showToast(
+          copyResult.pasted
+            ? '转写完成，已复制并粘贴'
+          : copyResult.attempted
+              ? '转写完成，复制并粘贴失败'
+              : '转写完成'
+        )
+        return true
       }
 
-      appStore.setTranscribing(true)
-      const result = await api.uploadAudio(blob, `recording_${Date.now()}.webm`)
-
-      if (result.record_id) {
-        appStore.setCurrentRecordId(result.record_id)
-
-        // 添加临时记录到列表
-        recordsStore.addRecord({
-          id: result.record_id,
-          created_at: new Date().toISOString(),
-          duration: result.duration || duration.value,
-          status: 'transcribing',
-          raw_text: '',
-          optimized_text: ''
-        })
-
-        // 开始轮询状态
-        startStatusPolling(result.record_id)
-      }
-    } catch (error) {
-      console.error('Upload failed:', error)
-      appStore.showToast('上传失败')
       appStore.setTranscribing(false)
       tray.setIcon('idle')
+      return false
     }
+
+    if (status.status === 'failed') {
+      stopPolling()
+      appStore.setTranscribing(false)
+      tray.setIcon('idle')
+      appStore.showToast('转写失败')
+      return true
+    }
+
+    return false
+  } catch (error) {
+    console.error('[Recorder] Failed to poll status:', error)
+    return false
+  }
+}
+
+function startPolling(recordId) {
+  stopPolling()
+  pollingTimer = setInterval(async () => {
+    const completed = await pollRecordStatus(recordId)
+    if (completed) {
+      stopPolling()
+    }
+  }, 1000)
+}
+
+async function uploadRecording(blob) {
+  const appStore = useAppStore()
+  const recordsStore = useRecordsStore()
+  const { api, tray } = useElectron()
+
+  try {
+    if (duration.value < 1) {
+      appStore.showToast('录音时间过短')
+      appStore.setTranscribing(false)
+      tray.setIcon('idle')
+      return
+    }
+
+    appStore.setTranscribing(true)
+    const result = await api.uploadAudio(blob, `recording_${Date.now()}.webm`)
+
+    if (!result.record_id) {
+      throw new Error('Missing record id from upload response')
+    }
+
+    appStore.setCurrentRecordId(result.record_id)
+    appStore.setRecordStatus({ record_id: result.record_id, status: result.transcription_status || 'transcribing' })
+    recordsStore.addRecord({
+      id: result.record_id,
+      created_at: new Date().toISOString(),
+      duration: result.duration || duration.value,
+      status: result.transcription_status || 'transcribing',
+      raw_text: '',
+      optimized_text: '',
+      processing_time: 0,
+      is_modified: false
+    })
+
+    const { sendRecordingStatus } = useGlobalWebSocket()
+    sendRecordingStatus({
+      recording: false,
+      transcribing: true,
+      record_id: result.record_id,
+      duration: duration.value
+    })
+
+    startPolling(result.record_id)
+  } catch (error) {
+    console.error('[Recorder] Upload failed:', error)
+    appStore.setTranscribing(false)
+    tray.setIcon('idle')
+    appStore.showToast('上传录音失败')
+  }
+}
+
+async function startRecording() {
+  const appStore = useAppStore()
+  const settingsStore = useSettingsStore()
+  const { tray, syncRecordingState } = useElectron()
+  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+
+  if (
+    startPending ||
+    appStore.isRecording ||
+    appStore.isTranscribing ||
+    mediaRecorder.value?.state === 'recording'
+  ) {
+    return
   }
 
-  // 监听状态更新
-  onMounted(() => {
-    onRecordStatus((status) => {
-      console.log('[Renderer] Received record:status:', status)
-      appStore.setRecordStatus(status)
-      recordsStore.updateRecordStatus(status.record_id, status)
+  startPending = true
+  pendingStopAfterStart = false
+
+  try {
+    const deviceId = settingsStore.settings.audio_input_device || 'default'
+    const constraints = {
+      audio: {
+        deviceId: deviceId === 'default' ? undefined : { exact: deviceId }
+      }
+    }
+
+    stream.value = await navigator.mediaDevices.getUserMedia(constraints)
+
+    const preferredMimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : undefined
+
+    mediaRecorder.value = preferredMimeType
+      ? new MediaRecorder(stream.value, { mimeType: preferredMimeType })
+      : new MediaRecorder(stream.value)
+
+    chunks.value = []
+
+    mediaRecorder.value.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        chunks.value.push(event.data)
+      }
+    }
+
+    mediaRecorder.value.onstop = async () => {
+      const blob = new Blob(chunks.value, { type: mediaRecorder.value?.mimeType || 'audio/webm' })
+      mediaRecorder.value = null
+      stopMediaTracks()
+      await uploadRecording(blob)
+    }
+
+    if (pendingStopAfterStart) {
+      mediaRecorder.value = null
+      stopMediaTracks()
+      return
+    }
+
+    duration.value = 0
+    clearDurationTimer()
+    mediaRecorder.value.start(1000)
+    appStore.setRecording(true)
+    tray.setIcon('recording')
+    await syncRecordingState({ recording: true })
+    sendWebRecording('start')
+    sendRecordingStatus({
+      recording: true,
+      transcribing: false,
+      duration: 0
     })
 
-    onRecordCompleted((data) => {
-      console.log('[Renderer] Received record:completed:', data)
-      appStore.setTranscribing(false)
-      stopStatusPolling()
-      tray.setIcon('idle')
+    durationTimer.value = setInterval(() => {
+      duration.value += 1
+      appStore.incrementDuration()
+    }, 1000)
+  } catch (error) {
+    console.error('[Recorder] Failed to start recording:', error)
+    await syncRecordingState({ recording: false }).catch(() => {})
+    stopMediaTracks()
+    mediaRecorder.value = null
+    appStore.setRecording(false)
+    appStore.showToast('无法访问麦克风')
+  } finally {
+    startPending = false
+  }
+}
 
-      // 更新记录
-      recordsStore.updateRecordStatus(data.record_id, data)
+function stopRecording() {
+  const appStore = useAppStore()
+  const { tray, syncRecordingState } = useElectron()
+  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
 
-      // 自动复制粘贴
-      if (settingsStore.settings.auto_copy_to_clipboard) {
-        const text = data.raw_text || data.optimized_text
-        if (text) {
-          // 复制到剪贴板（通过 Electron）
-          navigator.clipboard.writeText(text)
-          appStore.showToast('已复制到剪贴板')
-        }
-      }
+  if (startPending && (!mediaRecorder.value || mediaRecorder.value.state === 'inactive')) {
+    pendingStopAfterStart = true
+    return
+  }
 
-      // 自动优化
-      if (settingsStore.settings.auto_optimize && data.status === 'transcribed') {
-        optimizeRecord(data.record_id)
-      }
+  if (!mediaRecorder.value || mediaRecorder.value.state === 'inactive') {
+    return
+  }
 
-      appStore.showToast('转写完成')
-    })
+  pendingStopAfterStart = false
+  clearDurationTimer()
+  appStore.setRecording(false)
+  syncRecordingState({ recording: false }).catch(() => {})
+  // 停止录音后立即恢复空闲状态，不设置转写中状态
+  // 转写状态只在历史记录卡片中显示
+  tray.setIcon('idle')
+  sendWebRecording('stop')
+  sendRecordingStatus({
+    recording: false,
+    transcribing: false,
+    duration: duration.value
+  })
+  mediaRecorder.value.stop()
+}
+
+export function useRecorder() {
+  const appStore = useAppStore()
+  const { connect, addMessageHandler, removeMessageHandler } = useGlobalWebSocket()
+
+  onMounted(async () => {
+    mountedInstances += 1
+    await connect()
+
+    if (!wsAttached) {
+      addMessageHandler(handleWebSocketMessage)
+      wsAttached = true
+    }
   })
 
-  // 清理
   onUnmounted(() => {
-    if (durationTimer.value) {
-      clearInterval(durationTimer.value)
-    }
-    if (stream.value) {
-      stream.value.getTracks().forEach(track => track.stop())
+    mountedInstances -= 1
+
+    if (mountedInstances <= 0 && wsAttached) {
+      removeMessageHandler(handleWebSocketMessage)
+      wsAttached = false
+      mountedInstances = 0
     }
   })
-
-  /**
-   * 优化记录
-   */
-  async function optimizeRecord(id) {
-    try {
-      tray.setIcon('transcribing')
-      const result = await api.optimizeRecord(id)
-      recordsStore.updateRecordStatus(id, result)
-      appStore.showToast('优化完成')
-    } catch (error) {
-      console.error('Optimize failed:', error)
-      appStore.showToast('优化失败')
-    } finally {
-      tray.setIcon('idle')
-    }
-  }
 
   return {
-    isRecording,
-    isTranscribing,
+    isRecording: computed(() => appStore.isRecording),
+    isTranscribing: computed(() => appStore.isTranscribing),
     duration,
     startRecording,
-    stopRecording
+    stopRecording,
+    startPolling,
+    stopPolling
   }
 }

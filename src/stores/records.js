@@ -1,41 +1,44 @@
-/**
- * 记录状态管理
- * 管理录音记录列表
- */
-
-import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+﻿import { defineStore } from 'pinia'
+import { computed, ref } from 'vue'
 import { useElectron } from '@/composables/useElectron'
 
 export const useRecordsStore = defineStore('records', () => {
-  const { api } = useElectron()
+  const { api, tray } = useElectron()
 
-  // === 状态 ===
   const records = ref([])
   const currentRecord = ref(null)
   const isLoading = ref(false)
   const error = ref(null)
 
-  // === 计算属性 ===
   const sortedRecords = computed(() => {
-    return [...records.value].sort((a, b) => {
-      return new Date(b.created_at) - new Date(a.created_at)
-    })
+    return [...records.value].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
   })
 
   const recordCount = computed(() => records.value.length)
 
-  // === 操作 ===
+  function syncTrayMenu() {
+    tray.updateMenu(sortedRecords.value.map((record) => ({
+      id: record.id,
+      created_at: record.created_at,
+      raw_text: record.raw_text,
+      optimized_text: record.optimized_text,
+      status: record.status
+    })))
+  }
+
   async function loadRecords() {
     isLoading.value = true
     error.value = null
 
     try {
       const result = await api.getRecords()
-      records.value = Object.values(result)
+      records.value = Array.isArray(result) ? result : []
+      syncTrayMenu()
+      return records.value
     } catch (e) {
       error.value = e.message
       console.error('Failed to load records:', e)
+      throw e
     } finally {
       isLoading.value = false
     }
@@ -49,17 +52,17 @@ export const useRecordsStore = defineStore('records', () => {
     } catch (e) {
       error.value = e.message
       console.error('Failed to get record:', e)
-      return null
+      throw e
     }
   }
 
   async function updateRecord(id, data) {
     try {
       const updated = await api.updateRecord(id, data)
-      // 更新本地列表
-      const index = records.value.findIndex(r => r.id === id)
+      const index = records.value.findIndex((record) => record.id === id)
       if (index !== -1) {
         records.value[index] = { ...records.value[index], ...updated }
+        syncTrayMenu()
       }
       return updated
     } catch (e) {
@@ -72,8 +75,8 @@ export const useRecordsStore = defineStore('records', () => {
   async function deleteRecord(id) {
     try {
       await api.deleteRecord(id)
-      // 从本地列表移除
-      records.value = records.value.filter(r => r.id !== id)
+      records.value = records.value.filter((record) => record.id !== id)
+      syncTrayMenu()
     } catch (e) {
       error.value = e.message
       console.error('Failed to delete record:', e)
@@ -83,9 +86,9 @@ export const useRecordsStore = defineStore('records', () => {
 
   async function deleteRecords(ids) {
     try {
-      await Promise.all(ids.map(id => api.deleteRecord(id)))
-      // 从本地列表移除
-      records.value = records.value.filter(r => !ids.includes(r.id))
+      await Promise.all(ids.map((id) => api.deleteRecord(id)))
+      records.value = records.value.filter((record) => !ids.includes(record.id))
+      syncTrayMenu()
     } catch (e) {
       error.value = e.message
       console.error('Failed to delete records:', e)
@@ -96,10 +99,14 @@ export const useRecordsStore = defineStore('records', () => {
   async function optimizeRecord(id) {
     try {
       const result = await api.optimizeRecord(id)
-      // 更新本地记录
-      const index = records.value.findIndex(r => r.id === id)
+      const index = records.value.findIndex((record) => record.id === id)
       if (index !== -1) {
-        records.value[index] = { ...records.value[index], ...result }
+        records.value[index] = {
+          ...records.value[index],
+          ...result,
+          status: 'optimized'
+        }
+        syncTrayMenu()
       }
       return result
     } catch (e) {
@@ -111,8 +118,7 @@ export const useRecordsStore = defineStore('records', () => {
 
   async function exportRecord(id, format = 'txt') {
     try {
-      const result = await api.exportRecord(id, format)
-      return result
+      return await api.exportRecord(id, format)
     } catch (e) {
       error.value = e.message
       console.error('Failed to export record:', e)
@@ -120,29 +126,26 @@ export const useRecordsStore = defineStore('records', () => {
     }
   }
 
-  // 添加新记录（上传后）
   function addRecord(record) {
     records.value.unshift(record)
+    syncTrayMenu()
   }
 
-  // 更新记录状态（轮询时）
   function updateRecordStatus(id, status) {
-    const index = records.value.findIndex(r => r.id === id)
+    const index = records.value.findIndex((record) => record.id === id)
     if (index !== -1) {
       records.value[index] = { ...records.value[index], ...status }
+      syncTrayMenu()
     }
   }
 
   return {
-    // 状态
     records,
     currentRecord,
     isLoading,
     error,
     sortedRecords,
     recordCount,
-
-    // 操作
     loadRecords,
     getRecord,
     updateRecord,

@@ -1,43 +1,32 @@
-/**
- * 设置管理 Composable
- * 处理设置页面操作
- */
-
-import { computed, onMounted } from 'vue'
+﻿import { computed } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
-import { useElectron } from './useElectron'
 
 export function useSettings() {
   const settingsStore = useSettingsStore()
   const appStore = useAppStore()
-  const { api } = useElectron()
 
   const settings = computed(() => settingsStore.settings)
   const isLoading = computed(() => settingsStore.isLoading)
 
-  /**
-   * 加载设置
-   */
   async function loadSettings() {
     await settingsStore.loadSettings()
   }
 
-  /**
-   * 保存设置
-   */
-  async function saveSettings(newSettings) {
+  async function saveSettings(newSettings, options = {}) {
+    const { silent = false } = options
     try {
-      await settingsStore.saveSettings(newSettings)
-      appStore.showToast('设置已保存')
+      const settingsToSave = newSettings || settingsStore.settings
+      await settingsStore.saveSettings(settingsToSave)
+      if (!silent) {
+        appStore.showToast('设置已保存')
+      }
     } catch (error) {
-      appStore.showToast('保存失败')
+      appStore.showToast('保存设置失败')
+      throw error
     }
   }
 
-  /**
-   * 更新单个设置项
-   */
   async function updateSetting(key, value) {
     await saveSettings({ [key]: value })
   }
@@ -51,72 +40,68 @@ export function useSettings() {
   }
 }
 
-/**
- * 预设管理 Composable
- */
 export function usePresets() {
   const settingsStore = useSettingsStore()
   const appStore = useAppStore()
 
   const presets = computed(() => settingsStore.presets)
   const defaultPreset = computed(() => settingsStore.defaultPreset)
+  const defaultPresetId = computed(() => settingsStore.defaultPresetId)
 
-  /**
-   * 加载预设列表
-   */
   async function loadPresets() {
     await settingsStore.loadPresets()
   }
 
-  /**
-   * 保存预设
-   */
   async function savePreset(preset) {
     try {
-      await settingsStore.savePreset(preset)
+      const result = await settingsStore.savePreset(preset)
       appStore.showToast('预设已保存')
+      return result
     } catch (error) {
-      appStore.showToast('保存失败')
+      appStore.showToast('保存预设失败')
+      throw error
     }
   }
 
-  /**
-   * 删除预设
-   */
   async function deletePreset(id) {
     try {
       await settingsStore.deletePreset(id)
       appStore.showToast('预设已删除')
     } catch (error) {
-      appStore.showToast('删除失败')
+      appStore.showToast('删除预设失败')
+      throw error
     }
   }
 
-  /**
-   * 设置默认预设
-   */
-  async function setDefaultPreset(id) {
+  async function previewPreset(id, text) {
+    return settingsStore.previewPreset(id, text)
+  }
+
+  async function setDefaultPreset(id, options = {}) {
+    const { silent = false } = options
     try {
       await settingsStore.setDefaultPreset(id)
-      appStore.showToast('已设为默认')
+      if (!silent) {
+        appStore.showToast('已设为默认预设')
+      }
     } catch (error) {
-      appStore.showToast('设置失败')
+      appStore.showToast('设置默认预设失败')
+      throw error
     }
   }
 
   return {
     presets,
     defaultPreset,
+    defaultPresetId,
     loadPresets,
     savePreset,
     deletePreset,
+    previewPreset,
     setDefaultPreset
   }
 }
 
-/**
- * LLM 配置管理 Composable
- */
 export function useLLMConfig() {
   const settingsStore = useSettingsStore()
   const appStore = useAppStore()
@@ -124,72 +109,58 @@ export function useLLMConfig() {
   const llmConfigs = computed(() => settingsStore.llmConfigs)
   const llmProviders = computed(() => settingsStore.llmProviders)
   const defaultConfig = computed(() => settingsStore.defaultLLMConfig)
+  const defaultConfigId = computed(() => settingsStore.defaultLLMConfigId)
 
-  /**
-   * 加载 LLM 配置
-   */
   async function loadLLMConfigs() {
     await settingsStore.loadLLMConfigs()
   }
 
-  /**
-   * 加载提供商列表
-   */
   async function loadLLMProviders() {
     await settingsStore.loadLLMProviders()
   }
 
-  /**
-   * 保存 LLM 配置
-   */
   async function saveLLMConfig(config) {
     try {
-      await settingsStore.saveLLMConfig(config)
+      const result = await settingsStore.saveLLMConfig(config)
       appStore.showToast('配置已保存')
+      return result
     } catch (error) {
-      appStore.showToast('保存失败')
+      appStore.showToast('保存配置失败')
+      throw error
     }
   }
 
-  /**
-   * 删除 LLM 配置
-   */
   async function deleteLLMConfig(id) {
     try {
       await settingsStore.deleteLLMConfig(id)
       appStore.showToast('配置已删除')
     } catch (error) {
-      appStore.showToast('删除失败')
+      appStore.showToast('删除配置失败')
+      throw error
     }
   }
 
-  /**
-   * 测试 LLM 配置
-   */
   async function testLLMConfig(id) {
     try {
       const result = await settingsStore.testLLMConfig(id)
-      if (result.success) {
-        appStore.showToast('连接成功')
-      } else {
-        appStore.showToast('连接失败: ' + result.error)
-      }
+      appStore.showToast(result.success ? '连接测试成功' : `连接测试失败: ${result.error || '未知错误'}`)
       return result
     } catch (error) {
-      appStore.showToast('测试失败')
-      return { success: false, error: error.message }
+      appStore.showToast('连接测试失败')
+      throw error
     }
   }
 
-  /**
-   * 设置默认配置
-   */
-  async function setDefaultLLMConfig(id) {
+  async function setDefaultLLMConfig(id, options = {}) {
+    const { silent = false } = options
     try {
       await settingsStore.setDefaultLLMConfig(id)
-      appStore.showToast('已设为默认')
+      if (!silent) {
+        appStore.showToast('已设为默认 LLM 配置')
+      }
     } catch (error) {
-      appStore.showToast('设置失败')
+      appStore.showToast('设置默认配置失败')
+      throw error
     }
   }
 
@@ -197,6 +168,7 @@ export function useLLMConfig() {
     llmConfigs,
     llmProviders,
     defaultConfig,
+    defaultConfigId,
     loadLLMConfigs,
     loadLLMProviders,
     saveLLMConfig,

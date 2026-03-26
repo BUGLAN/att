@@ -1,75 +1,107 @@
-/**
- * 设置状态管理
- * 管理用户设置、预设、LLM 配置
- */
-
-import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+﻿import { defineStore } from 'pinia'
+import { computed, ref } from 'vue'
 import { useElectron } from '@/composables/useElectron'
+
+function getPlatform() {
+  if (typeof window !== 'undefined' && window.electronAPI?.platform) {
+    return window.electronAPI.platform
+  }
+
+  return 'win32'
+}
+
+function getDefaultHotkey() {
+  const platform = getPlatform()
+
+  if (platform === 'darwin') {
+    return {
+      modifiers: ['cmd', 'shift'],
+      key: 'r',
+      display: '⌘⇧R'
+    }
+  }
+
+  if (platform === 'win32') {
+    return {
+      modifiers: ['win', 'alt'],
+      key: null,
+      display: 'Win+Alt'
+    }
+  }
+
+  return {
+    modifiers: ['ctrl', 'shift'],
+    key: 'r',
+    display: 'Ctrl+Shift+R'
+  }
+}
+
+function isValidHotkey(hotkey) {
+  return Array.isArray(hotkey?.modifiers) &&
+    hotkey.modifiers.length > 0 &&
+    (
+      (hotkey.key == null && hotkey.modifiers.length >= 2) ||
+      (typeof hotkey?.key === 'string' && hotkey.key.length === 1)
+    )
+}
 
 export const useSettingsStore = defineStore('settings', () => {
   const { api } = useElectron()
 
-  // 获取平台信息（从 Electron preload 暴露的 API）
-  const getPlatform = () => {
-    if (typeof window !== 'undefined' && window.electronAPI?.platform) {
-      return window.electronAPI.platform
-    }
-    return 'win32'  // 默认 Windows
-  }
-
-  // === 设置状态 ===
   const settings = ref({
     whisper_model: 'large-v3',
     whisper_device: 'auto',
     pause_audio_on_recording: true,
     auto_optimize: false,
     auto_copy_to_clipboard: true,
-    audio_input_device: 'default',  // 麦克风设备 ID
-    hotkey: {
-      modifiers: getPlatform() === 'darwin' ? ['alt', 'cmd'] : ['alt', 'ctrl'],
-      key: null,
-      display: getPlatform() === 'darwin' ? '⌥⌘' : 'Alt+Ctrl'
-    },
+    audio_input_device: 'default',
+    hotkey: getDefaultHotkey(),
     recording_mode: 'single',
     silence_threshold: 1.5,
     silence_level: -40,
-    default_preset_id: 'builtin-general',
+    default_preset_id: null,
     last_used_preset_id: null
   })
 
   const isLoading = ref(false)
   const error = ref(null)
 
-  // === 预设状态 ===
   const presets = ref([])
   const currentPreset = ref(null)
+  const defaultPresetId = ref(null)
 
-  // === LLM 配置状态 ===
   const llmConfigs = ref([])
   const llmProviders = ref([])
   const currentLLMConfig = ref(null)
+  const defaultLLMConfigId = ref(null)
 
-  // === 计算属性 ===
   const defaultPreset = computed(() => {
-    return presets.value.find(p => p.id === settings.value.default_preset_id)
+    return presets.value.find((preset) => preset.id === defaultPresetId.value) || presets.value[0] || null
   })
 
   const defaultLLMConfig = computed(() => {
-    return llmConfigs.value.find(c => c.is_default)
+    return llmConfigs.value.find((config) => config.id === defaultLLMConfigId.value) ||
+      llmConfigs.value.find((config) => config.is_default) ||
+      null
   })
 
-  // === 设置操作 ===
   async function loadSettings() {
     isLoading.value = true
     error.value = null
 
     try {
       const result = await api.getSettings()
-      settings.value = { ...settings.value, ...result }
+      settings.value = {
+        ...settings.value,
+        ...result,
+        hotkey: isValidHotkey(result.hotkey) ? result.hotkey : getDefaultHotkey()
+      }
+      defaultPresetId.value = settings.value.default_preset_id || defaultPresetId.value || null
+      return settings.value
     } catch (e) {
       error.value = e.message
       console.error('Failed to load settings:', e)
+      throw e
     } finally {
       isLoading.value = false
     }
@@ -77,8 +109,17 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function saveSettings(newSettings) {
     try {
-      const result = await api.saveSettings(newSettings)
-      settings.value = { ...settings.value, ...result }
+      const payload = {
+        ...settings.value,
+        ...newSettings
+      }
+      const result = await api.saveSettings(payload)
+      settings.value = {
+        ...settings.value,
+        ...result,
+        hotkey: isValidHotkey(result.hotkey) ? result.hotkey : (isValidHotkey(payload.hotkey) ? payload.hotkey : getDefaultHotkey())
+      }
+      defaultPresetId.value = settings.value.default_preset_id || defaultPresetId.value || null
       return result
     } catch (e) {
       error.value = e.message
@@ -87,142 +128,113 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  // === 预设操作 ===
   async function loadPresets() {
     try {
       const result = await api.getPresets()
-      presets.value = Object.values(result)
+      presets.value = result.presets || []
+      const presetIds = new Set(presets.value.map((preset) => preset.id))
+      const resolvedDefaultPresetId = presetIds.has(result.default_preset_id)
+        ? result.default_preset_id
+        : presets.value[0]?.id || null
+
+      defaultPresetId.value = resolvedDefaultPresetId
+      settings.value.default_preset_id = defaultPresetId.value
+      settings.value.last_used_preset_id = defaultPresetId.value
+      return presets.value
     } catch (e) {
       console.error('Failed to load presets:', e)
+      throw e
     }
   }
 
   async function savePreset(preset) {
-    try {
-      const result = await api.savePreset(preset)
-      const index = presets.value.findIndex(p => p.id === result.id)
-      if (index !== -1) {
-        presets.value[index] = result
-      } else {
-        presets.value.push(result)
-      }
-      return result
-    } catch (e) {
-      console.error('Failed to save preset:', e)
-      throw e
-    }
+    const result = await api.savePreset(preset)
+    await loadPresets()
+    return result
   }
 
   async function deletePreset(id) {
-    try {
-      await api.deletePreset(id)
-      presets.value = presets.value.filter(p => p.id !== id)
-    } catch (e) {
-      console.error('Failed to delete preset:', e)
-      throw e
-    }
+    await api.deletePreset(id)
+    await loadPresets()
+  }
+
+  async function previewPreset(id, text) {
+    return api.previewPreset(id, text)
   }
 
   async function setDefaultPreset(id) {
-    try {
-      await api.setDefaultPreset(id)
-      settings.value.default_preset_id = id
-    } catch (e) {
-      console.error('Failed to set default preset:', e)
-      throw e
-    }
+    await api.setDefaultPreset(id)
+    defaultPresetId.value = id
+    settings.value.default_preset_id = id
+    settings.value.last_used_preset_id = id
   }
 
-  // === LLM 配置操作 ===
   async function loadLLMConfigs() {
     try {
       const result = await api.getLLMConfigs()
-      llmConfigs.value = Object.values(result)
+      llmConfigs.value = result.configs || []
+      defaultLLMConfigId.value = result.default_config_id || null
+      return llmConfigs.value
     } catch (e) {
       console.error('Failed to load LLM configs:', e)
+      throw e
     }
   }
 
   async function loadLLMProviders() {
     try {
       const result = await api.getLLMProviders()
-      llmProviders.value = result
+      llmProviders.value = result.providers || []
+      return llmProviders.value
     } catch (e) {
       console.error('Failed to load LLM providers:', e)
+      throw e
     }
   }
 
   async function saveLLMConfig(config) {
-    try {
-      const result = await api.saveLLMConfig(config)
-      const index = llmConfigs.value.findIndex(c => c.id === result.id)
-      if (index !== -1) {
-        llmConfigs.value[index] = result
-      } else {
-        llmConfigs.value.push(result)
-      }
-      return result
-    } catch (e) {
-      console.error('Failed to save LLM config:', e)
-      throw e
-    }
+    const result = await api.saveLLMConfig(config)
+    await loadLLMConfigs()
+    return result
   }
 
   async function deleteLLMConfig(id) {
-    try {
-      await api.deleteLLMConfig(id)
-      llmConfigs.value = llmConfigs.value.filter(c => c.id !== id)
-    } catch (e) {
-      console.error('Failed to delete LLM config:', e)
-      throw e
-    }
+    await api.deleteLLMConfig(id)
+    await loadLLMConfigs()
   }
 
   async function testLLMConfig(id) {
-    try {
-      const result = await api.testLLMConfig(id)
-      return result
-    } catch (e) {
-      console.error('Failed to test LLM config:', e)
-      throw e
-    }
+    return api.testLLMConfig(id)
   }
 
   async function setDefaultLLMConfig(id) {
-    try {
-      await api.setDefaultLLMConfig(id)
-      // 更新本地状态
-      llmConfigs.value = llmConfigs.value.map(c => ({
-        ...c,
-        is_default: c.id === id
-      }))
-    } catch (e) {
-      console.error('Failed to set default LLM config:', e)
-      throw e
-    }
+    await api.setDefaultLLMConfig(id)
+    defaultLLMConfigId.value = id
+    llmConfigs.value = llmConfigs.value.map((config) => ({
+      ...config,
+      is_default: config.id === id
+    }))
   }
 
   return {
-    // 状态
     settings,
     isLoading,
     error,
     presets,
     currentPreset,
+    defaultPresetId,
     llmConfigs,
     llmProviders,
     currentLLMConfig,
-
-    // 计算属性
+    defaultLLMConfigId,
     defaultPreset,
     defaultLLMConfig,
-
-    // 操作
     loadSettings,
     saveSettings,
     loadPresets,
     savePreset,
     deletePreset,
+    previewPreset,
     setDefaultPreset,
     loadLLMConfigs,
     loadLLMProviders,
