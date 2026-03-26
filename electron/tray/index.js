@@ -58,10 +58,10 @@ class TrayManager extends EventEmitter {
     const canvas = Buffer.alloc(size * size * 4)
 
     const colors = {
-      idle: [30, 30, 30, 255],
-      recording: [248, 113, 113, 255],
-      transcribing: [30, 30, 30, 255],
-      disconnected: [30, 30, 30, 128]
+      idle: [201, 162, 39, 255],
+      recording: [230, 126, 34, 255],
+      transcribing: [201, 162, 39, 255],
+      disconnected: [113, 113, 122, 180]
     }
 
     const color = colors[iconType] || colors.idle

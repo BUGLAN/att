@@ -26,7 +26,7 @@ extraResources:
 
 mac:
   category: public.app-category.productivity
-  icon: build/icon.icns
+  icon: electron/icons/icon.icns
   target:
     - dmg
     - zip
@@ -34,7 +34,7 @@ mac:
   gatekeeperAssess: false
 
 win:
-  icon: build/icon.ico
+  icon: electron/icons/icon.ico
   target:
     - nsis
     - portable

@@ -358,10 +358,6 @@ class TrayApp(QSystemTrayIcon):
             icon_path = icons_dir / f"{name}.png"
             if icon_path.exists():
                 icon = QIcon(str(icon_path))
-                # Recording icon is NOT a template (shows red color)
-                # Other icons ARE templates (macOS adapts to theme)
-                if name != "recording":
-                    icon.setIsMask(True)  # Template image for macOS
                 logger.info(f"Loaded icon {name}: path={icon_path}, null={icon.isNull()}, sizes={icon.availableSizes()}")
                 self.icons[name] = icon
             else:
@@ -371,41 +367,41 @@ class TrayApp(QSystemTrayIcon):
     def _generate_icons(self, icons_dir: Path):
         """Generate icons for system tray.
 
-        - idle/transcribing/disconnected: Black template images (macOS adapts to theme)
-        - recording: Red icon to indicate active recording
+        - idle/transcribing: ATT accent yellow
+        - disconnected: muted gray
+        - recording: warm orange-red to indicate active recording
         """
         from PIL import Image, ImageDraw
 
         # Use 88x88 for high-resolution display support (4x the typical 22x22)
         size = 88
+        accent_yellow = (201, 162, 39, 255)
+        disconnected_gray = (113, 113, 122, 200)
+        recording_color = (230, 126, 34, 255)
 
-        # Template images: black shapes with transparency
-        # macOS will automatically adapt color to match the menu bar
         for name in ["idle", "transcribing", "disconnected"]:
             image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
             draw = ImageDraw.Draw(image)
             center = size // 2
             radius = size // 2 - 2  # Minimal margin for complete circle
 
-            # Fill with solid black - macOS handles the color adaptation
             draw.ellipse(
                 [center - radius, center - radius, center + radius, center + radius],
-                fill=(0, 0, 0, 255),  # Black fill for template image
+                fill=accent_yellow if name != "disconnected" else disconnected_gray,
             )
             image.save(icons_dir / f"{name}.png")
-            logger.info(f"Generated template icon: {name} ({size}x{size})")
+            logger.info(f"Generated tray icon: {name} ({size}x{size})")
 
-        # Recording icon: RED color to indicate active recording
         image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         center = size // 2
         radius = size // 2 - 2
         draw.ellipse(
             [center - radius, center - radius, center + radius, center + radius],
-            fill=(220, 53, 69, 255),  # Red color (Bootstrap danger)
+            fill=recording_color,
         )
         image.save(icons_dir / "recording.png")
-        logger.info(f"Generated recording icon: red ({size}x{size})")
+        logger.info(f"Generated recording icon: warm orange-red ({size}x{size})")
 
     def _build_menu(self):
         """Build the context menu with history at top level."""
@@ -566,6 +562,9 @@ class TrayApp(QSystemTrayIcon):
         """Handle transcription completed - refresh history and optionally copy to clipboard."""
         logger.info(f"Transcription completed, refreshing history: {data.get('record_id')}")
         self._refresh_history()
+        if data.get('electron_active', False):
+            logger.info("Electron active, skipping tray copy/paste for transcription result")
+            return
         # Only copy if auto_optimize is disabled (otherwise wait for optimization)
         if self.auto_copy_to_clipboard and not self.auto_optimize:
             text = data.get('text', '')
@@ -577,6 +576,9 @@ class TrayApp(QSystemTrayIcon):
         """Handle optimization completed - refresh history and copy optimized text."""
         logger.info(f"Optimization completed, refreshing history: {data.get('record_id')}")
         self._refresh_history()
+        if data.get('electron_active', False):
+            logger.info("Electron active, skipping tray copy/paste for optimized result")
+            return
         # Copy optimized text
         if self.auto_copy_to_clipboard:
             text = data.get('optimized_text', '')
