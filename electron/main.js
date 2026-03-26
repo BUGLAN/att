@@ -19,6 +19,7 @@ async function createWindow() {
     height: 800,
     minWidth: 800,
     minHeight: 600,
+    icon: path.join(__dirname, 'icons', 'icon.png'),
     frame: false,
     titleBarStyle: 'hidden',
     backgroundColor: '#0a0a0b',
