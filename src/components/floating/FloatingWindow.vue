@@ -69,16 +69,16 @@ const showWaveform = computed(() => (
 ))
 
 const prefixText = computed(() => {
-  if (phase.value === 'recording') return '正在转录：'
-  if (phase.value === 'transcribing') return '正在转录：'
+  if (phase.value === 'recording') return text.value ? '实时记录：' : '正在录音：'
+  if (phase.value === 'transcribing') return '正在转写：'
   if (phase.value === 'optimizing') return '正在优化：'
   if (phase.value === 'complete') return '转写完成：'
   if (phase.value === 'error') return '处理失败：'
-  return '正在转录：'
+  return '正在录音：'
 })
 
 const contentText = computed(() => {
-  if (phase.value === 'recording') return '实时内容正在生成中...'
+  if (phase.value === 'recording') return text.value || '实时内容正在生成中...'
   if (phase.value === 'transcribing') return '实时内容正在生成中...'
   if (phase.value === 'optimizing') return 'AI 正在整理文本...'
   if (phase.value === 'complete') return text.value || '文本已生成'

@@ -969,6 +969,14 @@ async def _transcribe_segment_background(
 ) -> None:
     """Background task for segment transcription."""
     try:
+        session = await session_manager.get_session(session_id)
+        sequence = None
+        if session:
+            for segment in session.segments:
+                if segment.id == segment_id:
+                    sequence = segment.sequence
+                    break
+
         # Update segment status
         await session_manager.update_segment(
             session_id,
@@ -977,7 +985,7 @@ async def _transcribe_segment_background(
         )
 
         # Execute transcription
-        result = await transcriber.transcribe(audio_path)
+        result = await transcriber.transcribe(audio_path, vad_filter=False)
 
         # Update segment with result
         await session_manager.update_segment(
@@ -994,6 +1002,7 @@ async def _transcribe_segment_background(
             "data": {
                 "session_id": session_id,
                 "segment_id": segment_id,
+                "sequence": sequence,
                 "text": result.text,
                 "duration": result.duration
             },
@@ -1019,6 +1028,15 @@ async def _transcribe_segment_background(
             segment_id,
             status=RecordStatus.FAILED
         )
+        await ws_manager.broadcast({
+            "type": "segment_failed",
+            "data": {
+                "session_id": session_id,
+                "segment_id": segment_id,
+                "error": str(e)
+            },
+            "timestamp": datetime.now().isoformat()
+        })
 
 
 # ==================== LLM Configuration Endpoints ====================

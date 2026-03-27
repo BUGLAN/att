@@ -53,6 +53,10 @@ export function useElectron() {
 
   const api = {
     uploadAudio: (blob, filename = 'recording.webm') => httpApi.uploadAudio(blob, filename),
+    createSession: () => httpApi.createSession(),
+    uploadSessionSegment: (sessionId, blob, filename = 'segment.webm') => httpApi.uploadSessionSegment(sessionId, blob, filename),
+    mergeSession: (sessionId) => httpApi.mergeSession(sessionId),
+    deleteSession: (sessionId) => httpApi.deleteSession(sessionId),
     getRecords: () => httpApi.getRecords(),
     searchRecords: (params) => httpApi.searchRecords(params),
     getRecord: (id) => httpApi.getRecord(id),

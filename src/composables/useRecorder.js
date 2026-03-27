@@ -1,15 +1,26 @@
-﻿import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useRecordsStore } from '@/stores/records'
 import { useSettingsStore } from '@/stores/settings'
 import { useElectron } from './useElectron'
 import { useGlobalWebSocket } from './useWebSocket'
+import { createSilenceDetector } from './useSilenceDetector'
+
+const MIN_REALTIME_SEGMENT_DURATION = 2.2
+const MAX_REALTIME_SEGMENT_DURATION = 10
 
 const duration = ref(0)
 const mediaRecorder = ref(null)
-const chunks = ref([])
 const durationTimer = ref(null)
 const stream = ref(null)
+const audioLevel = ref(0)
+const liveTranscript = ref('')
+const liveSegments = ref([])
+const livePhase = ref('idle')
+const activeRecordingMode = ref('single')
+const currentSessionId = ref(null)
+const processedSegmentCount = ref(0)
+const sessionStatusText = ref('按住快捷键开始录音')
 
 let pollingTimer = null
 let mountedInstances = 0
@@ -19,6 +30,16 @@ let pendingStopAfterStart = false
 let pollingInFlight = false
 let floatingSessionActive = false
 let desktopRecordingSyncActive = false
+let silenceDetector = null
+let realtimeStopRequested = false
+let realtimeFinalizing = false
+let realtimePendingUploads = 0
+let realtimePendingSegmentIds = new Set()
+let realtimeCompletedSegmentIds = new Set()
+let realtimeHasCapturedSpeech = false
+let realtimeSegmentStartedAt = 0
+let realtimeMaxSegmentTimer = null
+let realtimeRestartAfterStop = false
 const completedPhases = new Set()
 
 function syncFloatingWindow(state, options = {}) {
@@ -42,10 +63,42 @@ function clearDurationTimer() {
   }
 }
 
+function startDurationClock() {
+  const appStore = useAppStore()
+
+  duration.value = 0
+  clearDurationTimer()
+  durationTimer.value = setInterval(() => {
+    duration.value += 1
+    appStore.incrementDuration()
+
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'recording',
+        duration: duration.value,
+        text: activeRecordingMode.value === 'multi' ? liveTranscript.value : ''
+      })
+    }
+  }, 1000)
+}
+
 function stopMediaTracks() {
   if (stream.value) {
     stream.value.getTracks().forEach((track) => track.stop())
     stream.value = null
+  }
+}
+
+function cleanupRealtimeDetector() {
+  silenceDetector?.stop?.()
+  silenceDetector = null
+  audioLevel.value = 0
+}
+
+function clearRealtimeMaxSegmentTimer() {
+  if (realtimeMaxSegmentTimer) {
+    clearTimeout(realtimeMaxSegmentTimer)
+    realtimeMaxSegmentTimer = null
   }
 }
 
@@ -55,6 +108,81 @@ function stopPolling() {
     pollingTimer = null
   }
   pollingInFlight = false
+}
+
+function resetRealtimeState() {
+  cleanupRealtimeDetector()
+  clearRealtimeMaxSegmentTimer()
+  realtimeStopRequested = false
+  realtimeFinalizing = false
+  realtimePendingUploads = 0
+  realtimePendingSegmentIds = new Set()
+  realtimeCompletedSegmentIds = new Set()
+  realtimeHasCapturedSpeech = false
+  realtimeSegmentStartedAt = 0
+  realtimeRestartAfterStop = false
+  currentSessionId.value = null
+  processedSegmentCount.value = 0
+  liveTranscript.value = ''
+  liveSegments.value = []
+  livePhase.value = 'idle'
+  sessionStatusText.value = '按住快捷键开始录音'
+}
+
+function updateLiveTranscriptPreview() {
+  const orderedSegments = [...liveSegments.value].sort((left, right) => {
+    const leftSequence = typeof left.sequence === 'number' ? left.sequence : Number.MAX_SAFE_INTEGER
+    const rightSequence = typeof right.sequence === 'number' ? right.sequence : Number.MAX_SAFE_INTEGER
+    return leftSequence - rightSequence
+  })
+
+  liveSegments.value = orderedSegments
+  liveTranscript.value = orderedSegments.map((segment) => segment.text).join('\n\n')
+
+  if (floatingSessionActive && activeRecordingMode.value === 'multi') {
+    syncFloatingWindow({
+      phase: 'recording',
+      duration: duration.value,
+      text: liveTranscript.value
+    })
+  }
+}
+
+function syncRecordIntoStore(record) {
+  const recordsStore = useRecordsStore()
+  const existing = recordsStore.records.find((item) => item.id === record.id)
+
+  if (existing) {
+    recordsStore.updateRecordStatus(record.id, record)
+    return
+  }
+
+  recordsStore.addRecord(record)
+}
+
+function setRealtimePhase(phase, text) {
+  livePhase.value = phase
+
+  if (text) {
+    sessionStatusText.value = text
+    return
+  }
+
+  if (phase === 'listening') {
+    sessionStatusText.value = '静音切段已启用，停顿后会自动出字'
+  } else if (phase === 'speaking') {
+    sessionStatusText.value = '正在监听语音片段...'
+  } else if (phase === 'segment-processing') {
+    sessionStatusText.value = '上一段正在转写，继续说话即可'
+  } else if (phase === 'finalizing') {
+    sessionStatusText.value = '正在合并整场录音结果'
+  } else if (phase === 'completed') {
+    sessionStatusText.value = '多段录音处理完成'
+  } else if (phase === 'error') {
+    sessionStatusText.value = '本次录音未形成有效结果'
+  } else {
+    sessionStatusText.value = '按住快捷键开始录音'
+  }
 }
 
 async function syncDesktopRecordingState(syncRecordingState, recording) {
@@ -79,30 +207,6 @@ async function syncDesktopRecordingState(syncRecordingState, recording) {
     console.error('[Desktop] Failed to sync recording state:', error)
     return { success: false, error: error.message }
   }
-}
-
-async function handleShortPressCancellation(syncRecordingState) {
-  const appStore = useAppStore()
-  const { tray } = useElectron()
-
-  pendingStopAfterStart = false
-  clearDurationTimer()
-  duration.value = 0
-  appStore.setRecording(false)
-  appStore.setTranscribing(false)
-  tray.setIcon('idle')
-  await syncDesktopRecordingState(syncRecordingState, false)
-
-  if (floatingSessionActive) {
-    syncFloatingWindow({
-      phase: 'error',
-      duration: 0,
-      text: '录音时间过短'
-    })
-  }
-
-  floatingSessionActive = false
-  appStore.showToast('录音时间过短')
 }
 
 async function maybeCopyText(text) {
@@ -162,6 +266,650 @@ function handleRecordCompleted(recordId, patch, options = {}) {
   }
 }
 
+async function prepareRecordingEnvironment() {
+  const settingsStore = useSettingsStore()
+  const appStore = useAppStore()
+  const { tray, syncRecordingState } = useElectron()
+
+  startPending = true
+  pendingStopAfterStart = false
+  floatingSessionActive = true
+  syncFloatingWindow({
+    phase: 'recording',
+    duration: 0,
+    text: ''
+  }, { show: true })
+
+  const desktopSyncResult = await syncDesktopRecordingState(syncRecordingState, true)
+  if (desktopSyncResult?.success === false) {
+    pendingStopAfterStart = false
+    duration.value = 0
+    appStore.setRecording(false)
+    appStore.setTranscribing(false)
+    tray.setIcon('idle')
+    floatingSessionActive = false
+    syncFloatingWindow({
+      phase: 'error',
+      duration: 0,
+      text: '静音失败'
+    })
+    appStore.showToast('静音失败')
+    startPending = false
+    return null
+  }
+
+  const deviceId = settingsStore.settings.audio_input_device || 'default'
+  const constraints = {
+    audio: {
+      deviceId: deviceId === 'default' ? undefined : { exact: deviceId }
+    }
+  }
+
+  stream.value = await navigator.mediaDevices.getUserMedia(constraints)
+
+  if (pendingStopAfterStart) {
+    stopMediaTracks()
+    await syncDesktopRecordingState(syncRecordingState, false)
+    floatingSessionActive = false
+    syncFloatingWindow({
+      phase: 'error',
+      duration: 0,
+      text: '录音时间过短'
+    })
+    appStore.showToast('录音时间过短')
+    startPending = false
+    pendingStopAfterStart = false
+    return null
+  }
+
+  return {
+    appStore,
+    settingsStore,
+    tray,
+    syncRecordingState
+  }
+}
+
+function createRecorder(targetStream, onStop) {
+  const preferredMimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus'
+    : undefined
+
+  const recorder = preferredMimeType
+    ? new MediaRecorder(targetStream, { mimeType: preferredMimeType })
+    : new MediaRecorder(targetStream)
+
+  const localChunks = []
+  recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) {
+      localChunks.push(event.data)
+    }
+  }
+
+  recorder.onstop = async () => {
+    const blob = new Blob(localChunks, { type: recorder.mimeType || 'audio/webm' })
+    await onStop(blob)
+  }
+
+  return recorder
+}
+
+async function handleShortPressCancellation(syncRecordingState) {
+  const appStore = useAppStore()
+  const { tray } = useElectron()
+
+  pendingStopAfterStart = false
+  clearDurationTimer()
+  duration.value = 0
+  appStore.setRecording(false)
+  appStore.setTranscribing(false)
+  tray.setIcon('idle')
+  await syncDesktopRecordingState(syncRecordingState, false)
+
+  if (floatingSessionActive) {
+    syncFloatingWindow({
+      phase: 'error',
+      duration: 0,
+      text: '录音时间过短'
+    })
+  }
+
+  floatingSessionActive = false
+  resetRealtimeState()
+  appStore.showToast('录音时间过短')
+}
+
+async function uploadSingleRecording(blob) {
+  const appStore = useAppStore()
+  const recordsStore = useRecordsStore()
+  const { api, tray } = useElectron()
+
+  try {
+    if (duration.value < 1) {
+      appStore.showToast('录音时间过短')
+      appStore.setTranscribing(false)
+      tray.setIcon('idle')
+      if (floatingSessionActive) {
+        syncFloatingWindow({
+          phase: 'error',
+          duration: 0,
+          text: '录音时间过短'
+        })
+        floatingSessionActive = false
+      }
+      return
+    }
+
+    appStore.setTranscribing(true)
+    const result = await api.uploadAudio(blob, `recording_${Date.now()}.webm`)
+
+    if (!result.record_id) {
+      throw new Error('Missing record id from upload response')
+    }
+
+    appStore.setCurrentRecordId(result.record_id)
+    clearCompletion(result.record_id)
+    appStore.setRecordStatus({ record_id: result.record_id, status: result.transcription_status || 'transcribing' })
+    recordsStore.addRecord({
+      id: result.record_id,
+      created_at: new Date().toISOString(),
+      duration: result.duration || duration.value,
+      status: result.transcription_status || 'transcribing',
+      raw_text: '',
+      optimized_text: '',
+      processing_time: 0,
+      is_modified: false,
+      is_favorite: false
+    })
+
+    const { sendRecordingStatus } = useGlobalWebSocket()
+    sendRecordingStatus({
+      recording: false,
+      transcribing: true,
+      record_id: result.record_id,
+      duration: duration.value
+    })
+
+    startPolling(result.record_id)
+  } catch (error) {
+    console.error('[Recorder] Upload failed:', error)
+    appStore.setTranscribing(false)
+    tray.setIcon('idle')
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'error',
+        duration: 0,
+        text: '上传录音失败'
+      })
+      floatingSessionActive = false
+    }
+    appStore.showToast('上传录音失败')
+  }
+}
+
+async function uploadRealtimeSegment(blob, segmentDuration, options = {}) {
+  const { api } = useElectron()
+  const { force = false } = options
+
+  if (!currentSessionId.value || !blob.size) {
+    return
+  }
+
+  if (!force && segmentDuration < MIN_REALTIME_SEGMENT_DURATION) {
+    return
+  }
+
+  if (force && segmentDuration < 0.8 && !realtimeHasCapturedSpeech) {
+    return
+  }
+
+  realtimePendingUploads += 1
+  setRealtimePhase(realtimeStopRequested ? 'finalizing' : 'segment-processing')
+
+  try {
+    const result = await api.uploadSessionSegment(
+      currentSessionId.value,
+      blob,
+      `segment_${Date.now()}.webm`
+    )
+
+    if (result?.segment_id) {
+      realtimePendingSegmentIds.add(result.segment_id)
+      processedSegmentCount.value += 1
+      realtimeHasCapturedSpeech = true
+    }
+  } finally {
+    realtimePendingUploads = Math.max(0, realtimePendingUploads - 1)
+  }
+}
+
+async function finalizeRealtimeSession() {
+  const appStore = useAppStore()
+  const settingsStore = useSettingsStore()
+  const { api, tray } = useElectron()
+
+  if (!currentSessionId.value || realtimeFinalizing) {
+    return
+  }
+
+  if (mediaRecorder.value || realtimePendingUploads > 0 || realtimePendingSegmentIds.size > 0) {
+    return
+  }
+
+  const sessionId = currentSessionId.value
+  realtimeFinalizing = true
+  appStore.setTranscribing(true)
+  tray.setIcon('transcribing')
+  setRealtimePhase('finalizing')
+
+  if (floatingSessionActive) {
+    syncFloatingWindow({
+      phase: 'transcribing',
+      duration: 0,
+      text: ''
+    })
+  }
+
+  try {
+    const noSpeechCaptured = !realtimeHasCapturedSpeech || processedSegmentCount.value === 0
+    if (noSpeechCaptured) {
+      await api.deleteSession(sessionId).catch(() => {})
+      throw new Error(duration.value >= 1 ? '未检测到有效语音' : '录音时间过短')
+    }
+
+    const merged = await api.mergeSession(sessionId)
+    liveTranscript.value = merged.merged_text || liveTranscript.value
+
+    let finalRecord = null
+    if (merged.record_id) {
+      finalRecord = await api.getRecord(merged.record_id).catch(() => null)
+    }
+
+    if (finalRecord) {
+      syncRecordIntoStore(finalRecord)
+      appStore.setCurrentRecordId(finalRecord.id)
+      appStore.setCurrentRecord(finalRecord)
+      appStore.setRecordStatus({ record_id: finalRecord.id, status: finalRecord.status })
+    }
+
+    if (settingsStore.settings.auto_optimize && merged.record_id) {
+      if (floatingSessionActive) {
+        syncFloatingWindow({
+          phase: 'optimizing',
+          duration: 0,
+          text: ''
+        })
+      }
+
+      await api.optimizeRecord(merged.record_id)
+      finalRecord = await api.getRecord(merged.record_id).catch(() => finalRecord)
+      if (finalRecord) {
+        syncRecordIntoStore(finalRecord)
+        appStore.setCurrentRecord(finalRecord)
+        appStore.setRecordStatus({ record_id: finalRecord.id, status: finalRecord.status })
+      }
+    }
+
+    const finalText = finalRecord?.optimized_text || finalRecord?.raw_text || merged.merged_text || liveTranscript.value
+    liveTranscript.value = finalText || liveTranscript.value
+    setRealtimePhase('completed')
+
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'complete',
+        duration: 0,
+        text: finalText || ''
+      })
+      floatingSessionActive = false
+    }
+
+    const copyResult = await maybeCopyText(finalText)
+    appStore.showToast(
+      copyResult.pasted
+        ? '多段录音完成，已复制并粘贴'
+        : copyResult.attempted
+          ? '多段录音完成，复制并粘贴失败'
+          : '多段录音完成'
+    )
+  } catch (error) {
+    console.error('[Recorder] Failed to finalize realtime session:', error)
+    setRealtimePhase('error', error.message || '多段录音处理失败')
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'error',
+        duration: 0,
+        text: error.message || '多段录音处理失败'
+      })
+      floatingSessionActive = false
+    }
+    appStore.showToast(error.message || '多段录音处理失败')
+  } finally {
+    appStore.setTranscribing(false)
+    tray.setIcon('idle')
+    stopMediaTracks()
+    clearRealtimeMaxSegmentTimer()
+    cleanupRealtimeDetector()
+    mediaRecorder.value = null
+    currentSessionId.value = null
+    realtimePendingSegmentIds.clear()
+    realtimeCompletedSegmentIds.clear()
+    realtimeFinalizing = false
+  }
+}
+
+async function maybeFinalizeRealtimeSession() {
+  if (!realtimeStopRequested) {
+    return
+  }
+
+  await finalizeRealtimeSession()
+}
+
+function startRealtimeSegment() {
+  if (!stream.value || mediaRecorder.value || realtimeFinalizing) {
+    return
+  }
+
+  realtimeSegmentStartedAt = performance.now()
+  realtimeRestartAfterStop = false
+  mediaRecorder.value = createRecorder(stream.value, async (blob) => {
+    const shouldRestart = realtimeRestartAfterStop
+    realtimeRestartAfterStop = false
+    clearRealtimeMaxSegmentTimer()
+    mediaRecorder.value = null
+    const segmentDuration = (performance.now() - realtimeSegmentStartedAt) / 1000
+    realtimeSegmentStartedAt = 0
+    const shouldContinueCapture = shouldRestart && !realtimeStopRequested && !realtimeFinalizing
+
+    if (shouldContinueCapture) {
+      startRealtimeSegment()
+    }
+
+    await uploadRealtimeSegment(blob, segmentDuration, { force: realtimeStopRequested || shouldRestart })
+
+    if (shouldContinueCapture) {
+      return
+    }
+
+    if (!realtimeStopRequested && !realtimeFinalizing) {
+      setRealtimePhase('listening')
+    }
+
+    await maybeFinalizeRealtimeSession()
+  })
+
+  mediaRecorder.value.start(250)
+  setRealtimePhase('speaking')
+  clearRealtimeMaxSegmentTimer()
+  realtimeMaxSegmentTimer = setTimeout(() => {
+    if (!mediaRecorder.value || mediaRecorder.value.state === 'inactive') {
+      return
+    }
+
+    realtimeRestartAfterStop = true
+    setRealtimePhase('segment-processing', '当前语句较长，正在拆分为较大的片段')
+    stopRealtimeSegment({ force: true })
+  }, MAX_REALTIME_SEGMENT_DURATION * 1000)
+}
+
+function stopRealtimeSegment(options = {}) {
+  const { force = false } = options
+
+  if (!mediaRecorder.value || mediaRecorder.value.state === 'inactive') {
+    return
+  }
+
+  const segmentDuration = realtimeSegmentStartedAt
+    ? (performance.now() - realtimeSegmentStartedAt) / 1000
+    : 0
+
+  if (!force && !realtimeStopRequested && segmentDuration < MIN_REALTIME_SEGMENT_DURATION) {
+    setRealtimePhase('speaking', '停顿过短，继续合并当前语句')
+    return
+  }
+
+  mediaRecorder.value.stop()
+}
+
+async function startSingleRecording() {
+  const context = await prepareRecordingEnvironment()
+  if (!context) {
+    return
+  }
+
+  const { appStore, tray } = context
+  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+
+  try {
+    activeRecordingMode.value = 'single'
+    mediaRecorder.value = createRecorder(stream.value, async (blob) => {
+      mediaRecorder.value = null
+      stopMediaTracks()
+      await uploadSingleRecording(blob)
+    })
+
+    if (pendingStopAfterStart) {
+      mediaRecorder.value = null
+      stopMediaTracks()
+      await handleShortPressCancellation(context.syncRecordingState)
+      return
+    }
+
+    mediaRecorder.value.start(1000)
+    appStore.setRecording(true)
+    tray.setIcon('recording')
+    sendWebRecording('start')
+    sendRecordingStatus({
+      recording: true,
+      transcribing: false,
+      duration: 0
+    })
+    startDurationClock()
+    resetRealtimeState()
+  } catch (error) {
+    console.error('[Recorder] Failed to start recording:', error)
+    await syncDesktopRecordingState(context.syncRecordingState, false)
+    stopMediaTracks()
+    mediaRecorder.value = null
+    appStore.setRecording(false)
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'error',
+        duration: 0,
+        text: '无法访问麦克风'
+      })
+      floatingSessionActive = false
+    }
+    appStore.showToast('无法访问麦克风')
+  } finally {
+    startPending = false
+  }
+}
+
+async function startMultiRecording() {
+  const context = await prepareRecordingEnvironment()
+  if (!context) {
+    return
+  }
+
+  const { appStore, tray } = context
+  const { api } = useElectron()
+  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+  const settingsStore = useSettingsStore()
+
+  try {
+    activeRecordingMode.value = 'multi'
+    resetRealtimeState()
+    const session = await api.createSession()
+    currentSessionId.value = session.session_id
+
+    if (pendingStopAfterStart) {
+      await api.deleteSession(currentSessionId.value).catch(() => {})
+      stopMediaTracks()
+      await handleShortPressCancellation(context.syncRecordingState)
+      return
+    }
+
+    setRealtimePhase('listening')
+
+    appStore.setRecording(true)
+    tray.setIcon('recording')
+    sendWebRecording('start')
+    sendRecordingStatus({
+      recording: true,
+      transcribing: false,
+      duration: 0
+    })
+    startDurationClock()
+
+    silenceDetector = createSilenceDetector({
+      stream: stream.value,
+      silenceLevel: settingsStore.settings.silence_level ?? -40,
+      silenceThreshold: Math.max((settingsStore.settings.silence_threshold ?? 1.5) * 1000, 400),
+      onLevelChange: ({ normalizedLevel }) => {
+        audioLevel.value = normalizedLevel
+      },
+      onSpeechStart: () => {
+        if (!realtimeStopRequested) {
+          startRealtimeSegment()
+        }
+      },
+      onSpeechEnd: () => {
+        stopRealtimeSegment()
+      }
+    })
+  } catch (error) {
+    console.error('[Recorder] Failed to start realtime recording:', error)
+    await syncDesktopRecordingState(context.syncRecordingState, false)
+    cleanupRealtimeDetector()
+    stopMediaTracks()
+    mediaRecorder.value = null
+    appStore.setRecording(false)
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'error',
+        duration: 0,
+        text: '无法启动多段录音'
+      })
+      floatingSessionActive = false
+    }
+    appStore.showToast('无法启动多段录音')
+    resetRealtimeState()
+  } finally {
+    startPending = false
+  }
+}
+
+async function startRecording() {
+  const appStore = useAppStore()
+  const settingsStore = useSettingsStore()
+
+  if (
+    startPending ||
+    appStore.isRecording ||
+    appStore.isTranscribing ||
+    mediaRecorder.value?.state === 'recording'
+  ) {
+    return
+  }
+
+  if (settingsStore.settings.recording_mode === 'multi') {
+    await startMultiRecording()
+    return
+  }
+
+  await startSingleRecording()
+}
+
+function stopSingleRecording() {
+  const appStore = useAppStore()
+  const { tray, syncRecordingState } = useElectron()
+  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+
+  if (startPending && (!mediaRecorder.value || mediaRecorder.value.state === 'inactive')) {
+    pendingStopAfterStart = true
+    return
+  }
+
+  if (!mediaRecorder.value || mediaRecorder.value.state === 'inactive') {
+    return
+  }
+
+  pendingStopAfterStart = false
+  clearDurationTimer()
+  appStore.setRecording(false)
+  syncDesktopRecordingState(syncRecordingState, false).catch(() => {})
+  tray.setIcon('idle')
+  sendWebRecording('stop')
+  sendRecordingStatus({
+    recording: false,
+    transcribing: false,
+    duration: duration.value
+  })
+  if (floatingSessionActive && duration.value >= 1) {
+    syncFloatingWindow({
+      phase: 'transcribing',
+      duration: 0,
+      text: ''
+    })
+  }
+  mediaRecorder.value.stop()
+}
+
+function stopMultiRecording() {
+  const appStore = useAppStore()
+  const { tray, syncRecordingState } = useElectron()
+  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+
+  if (startPending && !appStore.isRecording) {
+    pendingStopAfterStart = true
+    return
+  }
+
+  if (!appStore.isRecording && !currentSessionId.value) {
+    return
+  }
+
+  pendingStopAfterStart = false
+  realtimeStopRequested = true
+  clearDurationTimer()
+  appStore.setRecording(false)
+  syncDesktopRecordingState(syncRecordingState, false).catch(() => {})
+  cleanupRealtimeDetector()
+  tray.setIcon('idle')
+  sendWebRecording('stop')
+  sendRecordingStatus({
+    recording: false,
+    transcribing: false,
+    duration: duration.value
+  })
+
+  if (floatingSessionActive) {
+    syncFloatingWindow({
+      phase: 'transcribing',
+      duration: 0,
+      text: ''
+    })
+  }
+
+  if (mediaRecorder.value && mediaRecorder.value.state !== 'inactive') {
+    stopRealtimeSegment({ force: true })
+    return
+  }
+
+  stopMediaTracks()
+  void maybeFinalizeRealtimeSession()
+}
+
+function stopRecording() {
+  if (activeRecordingMode.value === 'multi') {
+    stopMultiRecording()
+    return
+  }
+
+  stopSingleRecording()
+}
+
 async function handleWebSocketMessage(message) {
   const appStore = useAppStore()
   const settingsStore = useSettingsStore()
@@ -174,6 +922,55 @@ async function handleWebSocketMessage(message) {
     } else if (message.action === 'stop') {
       stopRecording()
     }
+    return
+  }
+
+  if (message.type === 'segment_transcribed') {
+    const sessionId = message.data?.session_id
+    const segmentId = message.data?.segment_id
+    if (!sessionId || sessionId !== currentSessionId.value || !segmentId || realtimeCompletedSegmentIds.has(segmentId)) {
+      return
+    }
+
+    realtimeCompletedSegmentIds.add(segmentId)
+    realtimePendingSegmentIds.delete(segmentId)
+
+    const segmentText = message.data?.text?.trim()
+    if (segmentText) {
+      liveSegments.value = [
+        ...liveSegments.value,
+        {
+          id: segmentId,
+          sequence: message.data?.sequence,
+          text: segmentText,
+          duration: message.data?.duration || 0
+        }
+      ]
+      updateLiveTranscriptPreview()
+    }
+
+    if (!realtimeStopRequested && !realtimeFinalizing) {
+      setRealtimePhase('listening')
+    }
+
+    await maybeFinalizeRealtimeSession()
+    return
+  }
+
+  if (message.type === 'segment_failed') {
+    const sessionId = message.data?.session_id
+    const segmentId = message.data?.segment_id
+    if (!sessionId || sessionId !== currentSessionId.value || !segmentId) {
+      return
+    }
+
+    realtimePendingSegmentIds.delete(segmentId)
+
+    if (!realtimeStopRequested && !realtimeFinalizing) {
+      setRealtimePhase('listening', '有一个片段转写失败，已继续监听后续语音')
+    }
+
+    await maybeFinalizeRealtimeSession()
     return
   }
 
@@ -320,11 +1117,6 @@ async function handleWebSocketMessage(message) {
       floatingSessionActive = false
     }
     appStore.showToast(message.data?.error || '处理失败')
-    return
-  }
-
-  if (message.type === 'segment_transcribed') {
-    appStore.showToast('收到新的分段转写结果')
   }
 }
 
@@ -357,7 +1149,7 @@ async function pollRecordStatus(recordId) {
       appStore.showToast(
         copyResult.pasted
           ? '优化完成，已复制并粘贴'
-        : copyResult.attempted
+          : copyResult.attempted
             ? '优化完成，复制并粘贴失败'
             : '优化完成'
       )
@@ -383,7 +1175,7 @@ async function pollRecordStatus(recordId) {
         appStore.showToast(
           copyResult.pasted
             ? '转写完成，已复制并粘贴'
-          : copyResult.attempted
+            : copyResult.attempted
               ? '转写完成，复制并粘贴失败'
               : '转写完成'
         )
@@ -433,241 +1225,9 @@ function startPolling(recordId) {
   }, 1000)
 }
 
-async function uploadRecording(blob) {
-  const appStore = useAppStore()
-  const recordsStore = useRecordsStore()
-  const { api, tray } = useElectron()
-
-  try {
-    if (duration.value < 1) {
-      appStore.showToast('录音时间过短')
-      appStore.setTranscribing(false)
-      tray.setIcon('idle')
-      if (floatingSessionActive) {
-        syncFloatingWindow({
-          phase: 'error',
-          duration: 0,
-          text: '录音时间过短'
-        })
-        floatingSessionActive = false
-      }
-      return
-    }
-
-    appStore.setTranscribing(true)
-    const result = await api.uploadAudio(blob, `recording_${Date.now()}.webm`)
-
-    if (!result.record_id) {
-      throw new Error('Missing record id from upload response')
-    }
-
-    appStore.setCurrentRecordId(result.record_id)
-    clearCompletion(result.record_id)
-    appStore.setRecordStatus({ record_id: result.record_id, status: result.transcription_status || 'transcribing' })
-    recordsStore.addRecord({
-      id: result.record_id,
-      created_at: new Date().toISOString(),
-      duration: result.duration || duration.value,
-      status: result.transcription_status || 'transcribing',
-      raw_text: '',
-      optimized_text: '',
-      processing_time: 0,
-      is_modified: false,
-      is_favorite: false
-    })
-
-    const { sendRecordingStatus } = useGlobalWebSocket()
-    sendRecordingStatus({
-      recording: false,
-      transcribing: true,
-      record_id: result.record_id,
-      duration: duration.value
-    })
-
-    startPolling(result.record_id)
-  } catch (error) {
-    console.error('[Recorder] Upload failed:', error)
-    appStore.setTranscribing(false)
-    tray.setIcon('idle')
-    if (floatingSessionActive) {
-      syncFloatingWindow({
-        phase: 'error',
-        duration: 0,
-        text: '上传录音失败'
-      })
-      floatingSessionActive = false
-    }
-    appStore.showToast('上传录音失败')
-  }
-}
-
-async function startRecording() {
-  const appStore = useAppStore()
-  const settingsStore = useSettingsStore()
-  const { tray, syncRecordingState } = useElectron()
-  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
-
-  if (
-    startPending ||
-    appStore.isRecording ||
-    appStore.isTranscribing ||
-    mediaRecorder.value?.state === 'recording'
-  ) {
-    return
-  }
-
-  startPending = true
-  pendingStopAfterStart = false
-  floatingSessionActive = true
-  syncFloatingWindow({
-    phase: 'recording',
-    duration: 0,
-    text: ''
-  }, { show: true })
-
-  const desktopSyncResult = await syncDesktopRecordingState(syncRecordingState, true)
-  if (desktopSyncResult?.success === false) {
-    pendingStopAfterStart = false
-    duration.value = 0
-    appStore.setRecording(false)
-    appStore.setTranscribing(false)
-    tray.setIcon('idle')
-    floatingSessionActive = false
-    syncFloatingWindow({
-      phase: 'error',
-      duration: 0,
-      text: '静音失败'
-    })
-    appStore.showToast('静音失败')
-    startPending = false
-    return
-  }
-
-  try {
-    const deviceId = settingsStore.settings.audio_input_device || 'default'
-    const constraints = {
-      audio: {
-        deviceId: deviceId === 'default' ? undefined : { exact: deviceId }
-      }
-    }
-
-    stream.value = await navigator.mediaDevices.getUserMedia(constraints)
-
-    const preferredMimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : undefined
-
-    mediaRecorder.value = preferredMimeType
-      ? new MediaRecorder(stream.value, { mimeType: preferredMimeType })
-      : new MediaRecorder(stream.value)
-
-    chunks.value = []
-
-    mediaRecorder.value.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        chunks.value.push(event.data)
-      }
-    }
-
-    mediaRecorder.value.onstop = async () => {
-      const blob = new Blob(chunks.value, { type: mediaRecorder.value?.mimeType || 'audio/webm' })
-      mediaRecorder.value = null
-      stopMediaTracks()
-      await uploadRecording(blob)
-    }
-
-    if (pendingStopAfterStart) {
-      mediaRecorder.value = null
-      stopMediaTracks()
-      await handleShortPressCancellation(syncRecordingState)
-      return
-    }
-
-    duration.value = 0
-    clearDurationTimer()
-    mediaRecorder.value.start(1000)
-    appStore.setRecording(true)
-    tray.setIcon('recording')
-    sendWebRecording('start')
-    sendRecordingStatus({
-      recording: true,
-      transcribing: false,
-      duration: 0
-    })
-    syncFloatingWindow({
-      phase: 'recording',
-      duration: 0,
-      text: ''
-    }, { show: true })
-
-    durationTimer.value = setInterval(() => {
-      duration.value += 1
-      appStore.incrementDuration()
-      syncFloatingWindow({
-        phase: 'recording',
-        duration: duration.value,
-        text: ''
-      })
-    }, 1000)
-  } catch (error) {
-    console.error('[Recorder] Failed to start recording:', error)
-    await syncDesktopRecordingState(syncRecordingState, false)
-    stopMediaTracks()
-    mediaRecorder.value = null
-    appStore.setRecording(false)
-    if (floatingSessionActive) {
-      syncFloatingWindow({
-        phase: 'error',
-        duration: 0,
-        text: '无法访问麦克风'
-      })
-      floatingSessionActive = false
-    }
-    appStore.showToast('无法访问麦克风')
-  } finally {
-    startPending = false
-  }
-}
-
-function stopRecording() {
-  const appStore = useAppStore()
-  const { tray, syncRecordingState } = useElectron()
-  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
-
-  if (startPending && (!mediaRecorder.value || mediaRecorder.value.state === 'inactive')) {
-    pendingStopAfterStart = true
-    return
-  }
-
-  if (!mediaRecorder.value || mediaRecorder.value.state === 'inactive') {
-    return
-  }
-
-  pendingStopAfterStart = false
-  clearDurationTimer()
-  appStore.setRecording(false)
-  syncDesktopRecordingState(syncRecordingState, false).catch(() => {})
-  // 停止录音后立即恢复空闲状态，不设置转写中状态
-  // 转写状态只在历史记录卡片中显示
-  tray.setIcon('idle')
-  sendWebRecording('stop')
-  sendRecordingStatus({
-    recording: false,
-    transcribing: false,
-    duration: duration.value
-  })
-  if (floatingSessionActive && duration.value >= 1) {
-    syncFloatingWindow({
-      phase: 'transcribing',
-      duration: 0,
-      text: ''
-    })
-  }
-  mediaRecorder.value.stop()
-}
-
 export function useRecorder() {
   const appStore = useAppStore()
+  const settingsStore = useSettingsStore()
   const { connect, addMessageHandler, removeMessageHandler } = useGlobalWebSocket()
 
   onMounted(async () => {
@@ -694,6 +1254,15 @@ export function useRecorder() {
     isRecording: computed(() => appStore.isRecording),
     isTranscribing: computed(() => appStore.isTranscribing),
     duration,
+    audioLevel,
+    liveTranscript,
+    liveSegments,
+    livePhase,
+    activeRecordingMode,
+    processedSegmentCount,
+    sessionStatusText,
+    isMultiModeEnabled: computed(() => settingsStore.settings.recording_mode === 'multi'),
+    currentSessionId,
     startRecording,
     stopRecording,
     startPolling,
