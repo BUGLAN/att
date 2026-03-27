@@ -66,6 +66,12 @@ export function useElectron() {
     optimizeRecord: (id) => httpApi.optimizeRecord(id),
     exportRecord: (id, format) => httpApi.exportRecord(id, format),
     getRecordAudio: (id) => httpApi.getRecordAudio(id),
+    getClipboardItems: (params) => httpApi.getClipboardItems(params),
+    getClipboardStats: () => httpApi.getClipboardStats(),
+    createClipboardItem: (payload) => httpApi.createClipboardItem(payload),
+    getClipboardItem: (id) => httpApi.getClipboardItem(id),
+    updateClipboardItem: (id, data) => httpApi.updateClipboardItem(id, data),
+    deleteClipboardItem: (id) => httpApi.deleteClipboardItem(id),
     getSettings: () => httpApi.getSettings(),
     saveSettings: (settings) => httpApi.saveSettings(settings),
     getLLMConfigs: () => httpApi.getLLMConfigs(),
@@ -103,6 +109,24 @@ export function useElectron() {
   }
 
   const clipboard = {
+    readText: async () => {
+      if (globalThis.window?.electronAPI?.readClipboardText) {
+        try {
+          const result = await globalThis.window.electronAPI.readClipboardText()
+          if (typeof result === 'string') {
+            return result
+          }
+        } catch (error) {
+          console.error('[Clipboard] Electron clipboard read failed:', error)
+        }
+      }
+
+      if (globalThis.navigator?.clipboard?.readText) {
+        return globalThis.navigator.clipboard.readText()
+      }
+
+      throw new Error('Clipboard read API unavailable')
+    },
     writeText: async (text) => {
       if (globalThis.window?.electronAPI?.writeClipboard) {
         try {

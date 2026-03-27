@@ -29,6 +29,10 @@
         <RecordsLibraryPage />
       </div>
 
+      <div v-show="currentPage === 'clipboard'" class="container page-view">
+        <ClipboardPage />
+      </div>
+
       <div v-show="currentPage === 'settings'" class="container page-view">
         <SettingsPage />
       </div>
@@ -55,6 +59,7 @@ import Sidebar from '@/components/layout/Sidebar.vue'
 import TitleBar from '@/components/layout/TitleBar.vue'
 import RecorderSection from '@/components/home/RecorderSection.vue'
 import RecordsSection from '@/components/home/RecordsSection.vue'
+import ClipboardPage from '@/components/clipboard/ClipboardPage.vue'
 import RecordsLibraryPage from '@/components/records/RecordsLibraryPage.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
 

@@ -1,0 +1,3 @@
+"""
+Clipboard management package.
+"""

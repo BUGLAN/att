@@ -14,8 +14,10 @@ from app.config import settings
 from app.audio.processor import AudioProcessor
 from app.stt.transcriber import WhisperTranscriber
 from app.llm.optimizer import TextOptimizer
+from app.clipboard.manager import ClipboardManager
 from app.records.manager import RecordManager
 from app.api.routes import init_processors
+from app.clipboard.routes import init_clipboard_manager
 from app.services.hotkey_listener import init_hotkey_service
 from app.utils.logging import setup_logging, get_logger
 
@@ -40,12 +42,15 @@ async def lifespan(app: FastAPI):
     transcriber = WhisperTranscriber()
     optimizer = TextOptimizer()
     record_manager = RecordManager(settings.data_path)
+    clipboard_manager = ClipboardManager(settings.data_path)
 
     # Initialize directories
     await record_manager.initialize()
+    await clipboard_manager.initialize()
 
     # Pass to routes
     init_processors(audio_processor, transcriber, optimizer, record_manager)
+    init_clipboard_manager(clipboard_manager)
 
     # Start backend hotkey listener after runtime state is ready.
     hotkey_service = init_hotkey_service(asyncio.get_running_loop())
@@ -100,7 +105,9 @@ app.add_middleware(
 
 # Include routers
 from app.api.routes import router as api_router
+from app.clipboard.routes import router as clipboard_router
 app.include_router(api_router)
+app.include_router(clipboard_router)
 
 # Frontend directories
 project_root = Path(__file__).parent.parent
