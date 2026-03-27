@@ -209,7 +209,8 @@ onUnmounted(() => {
 
 <style scoped>
 .clipboard-page {
-  width: min(1280px, 100%);
+  width: 100%;
+  max-width: 1280px;
   padding: 36px 32px 48px;
 }
 
@@ -316,13 +317,19 @@ onUnmounted(() => {
   outline: 1px solid rgba(255, 197, 87, 0.35);
 }
 
-.clipboard-filters,
 .clipboard-actions,
 .clipboard-summary-row {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.clipboard-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
 }
 
 .filter-button,
@@ -395,7 +402,7 @@ onUnmounted(() => {
 
 .clipboard-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 18px;
 }
 
