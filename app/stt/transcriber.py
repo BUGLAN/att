@@ -47,8 +47,8 @@ class WhisperTranscriber:
         "beam_size": 5,             # Beam search for accuracy
         "best_of": 5,               # Keep best candidates
         "temperature": 0.0,         # Deterministic for Chinese
-        "initial_prompt": "以下是中文语音转文字内容，包括普通话和方言。",
-        "condition_on_previous_text": True,
+        # Short recordings can hallucinate prompt-like or subtitle-like boilerplate.
+        "condition_on_previous_text": False,
         "word_timestamps": True,    # Word-level timing
         "vad_filter": True,         # Voice activity detection
         "vad_parameters": {
