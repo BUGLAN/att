@@ -1,0 +1,295 @@
+<!DOCTYPE html><html class="dark" lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>琥珀黑曜石 - 剪切板详情</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;700;800&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary-container": "#e8a70f",
+                        "background": "#131313",
+                        "surface": "#131313",
+                        "surface-container-high": "#2a2a2a",
+                        "inverse-surface": "#e5e2e1",
+                        "surface-container-lowest": "#0e0e0e",
+                        "secondary-fixed-dim": "#c8c6c5",
+                        "primary-fixed": "#ffdea8",
+                        "on-tertiary-fixed-variant": "#5d4200",
+                        "on-tertiary": "#412d00",
+                        "on-primary-fixed-variant": "#5e4200",
+                        "primary-fixed-dim": "#febb2b",
+                        "on-secondary-container": "#b6b5b4",
+                        "surface-dim": "#131313",
+                        "secondary-fixed": "#e4e2e1",
+                        "on-background": "#e5e2e1",
+                        "tertiary-container": "#e1aa36",
+                        "error": "#ffb4ab",
+                        "on-surface": "#e5e2e1",
+                        "surface-tint": "#febb2b",
+                        "on-tertiary-container": "#5b4000",
+                        "on-surface-variant": "#d0c5af",
+                        "error-container": "#93000a",
+                        "outline-variant": "#4d4635",
+                        "on-primary-fixed": "#271900",
+                        "surface-container-highest": "#353534",
+                        "on-primary-container": "#5c4000",
+                        "inverse-on-surface": "#313030",
+                        "tertiary-fixed": "#ffdea6",
+                        "on-error-container": "#ffdad6",
+                        "surface-variant": "#353534",
+                        "on-secondary-fixed": "#1b1c1c",
+                        "surface-container-low": "#1c1b1b",
+                        "surface-container": "#201f1f",
+                        "secondary-container": "#474747",
+                        "primary": "#ffc557",
+                        "on-secondary": "#303030",
+                        "on-secondary-fixed-variant": "#474747",
+                        "on-primary": "#422d00",
+                        "on-error": "#690005",
+                        "inverse-primary": "#7c5800",
+                        "outline": "#99907c",
+                        "surface-bright": "#393939",
+                        "secondary": "#c8c6c5",
+                        "tertiary-fixed-dim": "#f7bd48",
+                        "on-tertiary-fixed": "#271900",
+                        "tertiary": "#ffc551"
+                    },
+                    fontFamily: {
+                        "headline": ["Manrope"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    },
+                    borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body {
+            background-color: #131313;
+            color: #e5e2e1;
+            font-family: 'Inter', sans-serif;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #131313;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #4d4635;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body class="flex h-screen overflow-hidden">
+<!-- SideNavBar (Execution from JSON) -->
+<aside class="flex flex-col h-screen fixed left-0 top-0 border-r border-[#4d4635]/20 bg-[#1c1b1b] w-64 z-20">
+<div class="p-6">
+<h1 class="font-manrope text-amber-400 uppercase tracking-widest text-lg font-bold" style="">Digital Obsidian</h1>
+<p class="text-on-surface-variant text-xs mt-1" style="">语音转文字 &amp; 剪切板</p>
+</div>
+<nav class="flex-1 px-2 space-y-1">
+<!-- Home -->
+<a class="flex items-center gap-3 text-[#d0c5af] px-4 py-3 hover:bg-[#2a2a2a] hover:text-[#e5e2e1] transition-all duration-300" href="#" style="">
+<span class="material-symbols-outlined" data-icon="home" style="">home</span>
+<span class="font-sans font-medium text-[0.9rem]" style="">首页</span>
+</a>
+<!-- Clipboard (Active) -->
+<div class="flex flex-col">
+<a class="flex items-center gap-3 bg-[#2a2a2a] text-[#ffc557] border-l-4 border-[#ffc557] px-4 py-3 transition-all duration-300" href="#" style="">
+<span class="material-symbols-outlined" data-icon="content_paste" style="">content_paste</span>
+<span class="font-sans font-medium text-[0.9rem]" style="">剪切板</span>
+</a>
+<!-- Sub-menu -->
+<div class="ml-12 mt-2 space-y-2 pb-4">
+<a class="block text-primary text-sm font-medium" href="#" style="">全部条目</a>
+<a class="block text-on-surface-variant hover:text-on-surface text-sm transition-colors" href="#" style="">文本记录</a>
+<a class="block text-on-surface-variant hover:text-on-surface text-sm transition-colors" href="#" style="">图像媒体</a>
+<a class="block text-on-surface-variant hover:text-on-surface text-sm transition-colors" href="#" style="">链接收藏</a>
+</div>
+</div>
+<!-- Records -->
+<a class="flex items-center gap-3 text-[#d0c5af] px-4 py-3 hover:bg-[#2a2a2a] hover:text-[#e5e2e1] transition-all duration-300" href="#" style="">
+<span class="material-symbols-outlined" data-icon="folder_open" style="">folder_open</span>
+<span class="font-sans font-medium text-[0.9rem]" style="">记录集</span>
+</a>
+<!-- Settings -->
+<a class="flex items-center gap-3 text-[#d0c5af] px-4 py-3 hover:bg-[#2a2a2a] hover:text-[#e5e2e1] transition-all duration-300" href="#" style="">
+<span class="material-symbols-outlined" data-icon="settings" style="">settings</span>
+<span class="font-sans font-medium text-[0.9rem]" style="">设置</span>
+</a>
+</nav>
+<footer class="p-4 border-t border-[#4d4635]/10">
+<a class="flex items-center gap-3 text-[#d0c5af] px-4 py-3 hover:bg-[#2a2a2a] hover:text-[#e5e2e1] transition-all duration-300" href="#" style="">
+<span class="material-symbols-outlined" data-icon="help" style="">help</span>
+<span class="font-sans font-medium text-[0.9rem]" style="">帮助</span>
+</a>
+</footer>
+</aside>
+<!-- Main Content Canvas -->
+<main class="flex-1 ml-64 flex flex-col h-full bg-[#131313]">
+<!-- TopAppBar (Execution from JSON) -->
+<header class="flex justify-between items-center w-full px-6 py-3 bg-[#131313] z-10">
+<div class="flex items-center gap-4">
+<div class="flex items-center bg-surface-container-low px-3 py-1.5 rounded-lg border border-outline-variant/10">
+<span class="material-symbols-outlined text-on-surface-variant text-lg" data-icon="search" style="">search</span>
+<input class="bg-transparent border-none focus:ring-0 text-sm text-on-surface ml-2 w-64 placeholder:text-on-surface-variant/50" placeholder="搜索剪切板..." type="text">
+</div>
+</div>
+<div class="flex items-center gap-2">
+<button class="p-2 text-on-surface-variant hover:bg-[#2a2a2a] transition-colors duration-200" style="">
+<span class="material-symbols-outlined" data-icon="remove" style="">remove</span>
+</button>
+<button class="p-2 text-on-surface-variant hover:bg-[#2a2a2a] transition-colors duration-200" style="">
+<span class="material-symbols-outlined" data-icon="check_box_outline_blank" style="">check_box_outline_blank</span>
+</button>
+<button class="p-2 text-on-surface-variant hover:bg-[#2a2a2a] transition-colors duration-200" style="">
+<span class="material-symbols-outlined" data-icon="close" style="">close</span>
+</button>
+</div>
+</header>
+<!-- Content Area -->
+<div class="flex-1 overflow-hidden flex">
+<!-- Left: Detail Preview -->
+<section class="flex-1 overflow-y-auto custom-scrollbar p-8">
+<div class="max-w-4xl mx-auto space-y-8">
+<!-- Title & Type Header -->
+<div class="flex items-end justify-between border-b border-outline-variant/10 pb-6">
+<div>
+<div class="flex items-center gap-3 mb-2">
+<span class="bg-primary-container/15 text-primary text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider" style="">文本代码</span>
+<span class="text-on-surface-variant text-xs" style="">ID: OBS-882910</span>
+</div>
+<h2 class="text-2xl font-headline font-bold text-on-surface tracking-tight" style="">Tailwind CSS 配置文件详情</h2>
+</div>
+</div>
+<!-- Main Content Rendering (Code Example) -->
+<div class="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/10 relative group">
+<div class="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="text-[10px] text-on-surface-variant bg-surface-container-high px-2 py-1 rounded" style="">JavaScript</span>
+</div>
+<pre class="font-mono text-sm leading-relaxed overflow-x-auto custom-scrollbar"><span class="text-primary" style="">module</span>.<span class="text-tertiary" style="">exports</span> = {
+  <span class="text-on-tertiary-fixed-variant" style="">content</span>: [<span class="text-primary-container" style="">'./src/**/*.{html,js}'</span>],
+  <span class="text-on-tertiary-fixed-variant" style="">theme</span>: {
+    <span class="text-on-tertiary-fixed-variant" style="">extend</span>: {
+      <span class="text-on-tertiary-fixed-variant" style="">colors</span>: {
+        <span class="text-primary-container" style="">'obsidian-void'</span>: <span class="text-primary" style="">'#131313'</span>,
+        <span class="text-primary-container" style="">'amber-glow'</span>: <span class="text-primary" style="">'#ffc557'</span>
+      },
+      <span class="text-on-tertiary-fixed-variant" style="">fontFamily</span>: {
+        <span class="text-primary-container" style="">'headline'</span>: [<span class="text-primary-container" style="">'Manrope'</span>, <span class="text-primary-container" style="">'sans-serif'</span>]
+      }
+    }
+  },
+  <span class="text-on-tertiary-fixed-variant" style="">plugins</span>: [],
+}</pre>
+</div>
+<!-- Image Preview Section (Asymmetric Bento Style) -->
+<div class="grid grid-cols-12 gap-4">
+<div class="col-span-8 bg-surface-container-low rounded-xl overflow-hidden aspect-video border border-outline-variant/10">
+<img class="w-full h-full object-cover grayscale opacity-80 hover:grayscale-0 hover:opacity-100 transition-all duration-700 cursor-zoom-in" data-alt="abstract artistic visualization of data flowing in a dark digital space with glowing amber and gold sparks and particles" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBy6FhSHvgRxQE7etjp4adAzLtMGvePVZm9-nOUPYavtXK0rJHNTTI4tVzGmuCya2kpbK61wnkNac3cpEpcMHqhh2odPbngT5ooVjXzaVh1xK6RGvN0rvZjZR4fOlnAqFe1J65y4ZcjnbN9KUZS7hPgQ3MD31QvH67jGHLSHHxLUy2hBhrEumPu2a1SaS3iUdMOpDG9GrkNgRUQV46ZKQz_Q88VWGnTAUQ6oHyBPZOG8Q50_vGzQIgbP06XG2I4O4uYJAT0eS6k1hk" style="">
+</div>
+<div class="col-span-4 space-y-4">
+<div class="h-1/2 bg-surface-container-high rounded-xl p-4 flex flex-col justify-center border border-outline-variant/5">
+<span class="text-on-surface-variant text-[10px] uppercase tracking-widest mb-1" style="">分辨率</span>
+<span class="text-primary font-headline font-bold text-lg" style="">3840 × 2160</span>
+</div>
+<div class="h-1/2 bg-surface-container-high rounded-xl p-4 flex flex-col justify-center border border-outline-variant/5">
+<span class="text-on-surface-variant text-[10px] uppercase tracking-widest mb-1" style="">文件大小</span>
+<span class="text-primary font-headline font-bold text-lg" style="">4.2 MB</span>
+</div>
+</div>
+</div>
+<!-- Link Metadata Section -->
+<div class="bg-surface-container-high/40 rounded-xl p-6 flex gap-6 items-start border border-outline-variant/10 backdrop-blur-md">
+<div class="w-16 h-16 bg-surface-container-lowest rounded-lg flex items-center justify-center flex-shrink-0">
+<span class="material-symbols-outlined text-primary text-3xl" data-icon="link" style="">link</span>
+</div>
+<div>
+<h4 class="text-on-surface font-bold mb-1" style="">https://tailwindcss.com/docs/configuration</h4>
+<p class="text-on-surface-variant text-sm leading-relaxed" style="">
+                                官方配置文档：了解如何通过 tailwind.config.js 文件自定义设计系统的每一个细节，包括颜色、间距、字体等。
+                            </p>
+</div>
+</div>
+<!-- Footer Info -->
+<div class="flex items-center justify-between py-8 border-t border-outline-variant/10">
+<div class="flex gap-8">
+<div class="flex flex-col">
+<span class="text-on-surface-variant text-[10px] uppercase tracking-tighter" style="">创建时间</span>
+<span class="text-on-surface text-sm font-medium" style="">2023年10月24日 14:30</span>
+</div>
+<div class="flex flex-col">
+<span class="text-on-surface-variant text-[10px] uppercase tracking-tighter" style="">来源应用</span>
+<span class="text-on-surface text-sm font-medium flex items-center gap-1" style="">
+<span class="material-symbols-outlined text-[14px]" data-icon="terminal" style="">terminal</span>
+                                    VS Code
+                                </span>
+</div>
+</div>
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+<span class="text-on-surface-variant text-[10px] uppercase tracking-widest" style=""><br></span>
+</div>
+</div>
+</div>
+</section>
+<!-- Right: Action Panel -->
+<aside class="w-72 bg-surface-container-low border-l border-[#4d4635]/20 p-6 flex flex-col gap-6">
+<div>
+<h3 class="text-on-surface-variant text-[10px] font-bold uppercase tracking-widest mb-4" style="">快速操作</h3>
+<div class="space-y-3">
+<button class="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-gradient-to-r from-primary to-primary-container text-on-primary font-bold text-sm shadow-lg shadow-primary/10 hover:opacity-90 active:scale-[0.98] transition-all" style="">
+<span class="" style="">复制到剪切板</span>
+<span class="material-symbols-outlined" data-icon="content_copy" style="">content_copy</span>
+</button>
+<button class="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-surface-container-high text-on-surface font-medium text-sm border border-outline-variant/10 hover:bg-surface-container-highest transition-colors" style="">
+<span class="" style="">编辑内容</span>
+<span class="material-symbols-outlined" data-icon="edit" style="">edit</span>
+</button>
+<button class="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-surface-container-high text-on-surface font-medium text-sm border border-outline-variant/10 hover:bg-surface-container-highest transition-colors" style="">
+<span class="" style="">置顶此条目</span>
+<span class="material-symbols-outlined" data-icon="keep" style="">keep</span>
+</button>
+<button class="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-surface-container-high text-error font-medium text-sm border border-error/10 hover:bg-error-container/20 transition-colors mt-8" style="">
+<span class="" style="">从库中删除</span>
+<span class="material-symbols-outlined" data-icon="delete" style="">delete</span>
+</button>
+</div>
+</div>
+<div class="mt-auto">
+<h3 class="text-on-surface-variant text-[10px] font-bold uppercase tracking-widest mb-4" style="">分类标记</h3>
+<div class="flex flex-wrap gap-2">
+<span class="bg-[#2a2a2a] text-[#d0c5af] text-[11px] px-3 py-1 rounded-full border border-outline-variant/10 hover:border-primary transition-colors cursor-pointer" style="">开发</span>
+<span class="bg-[#2a2a2a] text-[#d0c5af] text-[11px] px-3 py-1 rounded-full border border-outline-variant/10 hover:border-primary transition-colors cursor-pointer" style="">项目A</span>
+<span class="bg-[#2a2a2a] text-[#d0c5af] text-[11px] px-3 py-1 rounded-full border border-outline-variant/10 hover:border-primary transition-colors cursor-pointer" style="">配置脚本</span>
+<button class="text-primary p-1" style="">
+<span class="material-symbols-outlined text-sm" data-icon="add_circle" style="">add_circle</span>
+</button>
+</div>
+</div>
+<div class="bg-surface-container-lowest p-4 rounded-xl border border-outline-variant/5">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-primary text-sm" data-icon="security" style="font-variation-settings: &quot;FILL&quot; 1;">security</span>
+<span class="text-on-surface text-[10px] font-bold uppercase" style="">安全加密</span>
+</div>
+<p class="text-[10px] text-on-surface-variant leading-relaxed" style="">
+                        此条目已使用 256 位 AES 算法进行本地加密。只有您通过身份验证后才能访问内容。
+                    </p>
+</div>
+</aside>
+</div>
+</main>
+<!-- Contextual Floating Action Button (As per Rule - Suprressed on Details screen) -->
+<!-- Suppressed to prioritize the detail content canvas as per "Relevance Check" logic -->
+</body></html>
