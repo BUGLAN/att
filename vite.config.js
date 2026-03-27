@@ -17,6 +17,10 @@ export default defineConfig({
     emptyOutDir: true,
     assetsDir: 'assets',
     rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'src/index.html'),
+        floating: resolve(__dirname, 'src/floating.html')
+      },
       output: {
         manualChunks: {
           vue: ['vue', 'pinia']

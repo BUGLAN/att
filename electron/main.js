@@ -4,11 +4,14 @@ const { execFile } = require('child_process')
 const { PythonManager } = require('./python/manager')
 const { DesktopAudioController } = require('./audio/controller')
 const { TrayManager } = require('./tray/index')
+const { FloatingWindowManager } = require('./floatingWindow')
 
 let mainWindow = null
 let pythonManager = null
 let trayManager = null
 let audioController = null
+let floatingWindowManager = null
+let isQuitting = false
 const pasteHelperPath = path.join(__dirname, 'python', 'paste_helper.py')
 
 const isDev = process.env.NODE_ENV === 'development'
@@ -35,6 +38,16 @@ async function createWindow() {
     callback(permission === 'media')
   })
 
+  mainWindow.on('close', (event) => {
+    if (process.platform === 'darwin' || isQuitting) {
+      return
+    }
+
+    event.preventDefault()
+    isQuitting = true
+    app.quit()
+  })
+
   if (isDev) {
     await mainWindow.loadURL('http://localhost:5173')
     mainWindow.webContents.openDevTools()
@@ -45,6 +58,28 @@ async function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null
   })
+
+  if (trayManager) {
+    trayManager.mainWindow = mainWindow
+  }
+}
+
+async function showMainWindow({ navigateToSettings = false } = {}) {
+  if (!mainWindow) {
+    await createWindow()
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore()
+  }
+
+  mainWindow.show()
+
+  if (navigateToSettings) {
+    mainWindow.webContents.send('navigate:settings')
+  }
+
+  mainWindow.focus()
 }
 
 async function startBackend() {
@@ -160,7 +195,8 @@ function setupIPC() {
   })
 
   ipcMain.on('window:close', () => {
-    mainWindow?.close()
+    isQuitting = true
+    app.quit()
   })
 
   ipcMain.on('tray:set-icon', (event, iconType) => {
@@ -177,6 +213,26 @@ function setupIPC() {
       managedBy: 'backend'
     }
   })
+
+  ipcMain.on('floating:show', () => {
+    floatingWindowManager?.show()
+  })
+
+  ipcMain.on('floating:hide', () => {
+    floatingWindowManager?.hide()
+  })
+
+  ipcMain.on('floating:toggle', () => {
+    floatingWindowManager?.toggle()
+  })
+
+  ipcMain.on('floating:update-state', (event, payload = {}) => {
+    floatingWindowManager?.updateState(payload)
+  })
+
+  ipcMain.on('main:open-settings', async () => {
+    await showMainWindow({ navigateToSettings: true })
+  })
 }
 
 app.whenReady().then(async () => {
@@ -184,6 +240,7 @@ app.whenReady().then(async () => {
     const port = await startBackend()
     console.log('Backend started on port', port)
 
+    floatingWindowManager = new FloatingWindowManager()
     setupIPC()
     await createWindow()
     setupTray()
@@ -194,7 +251,15 @@ app.whenReady().then(async () => {
   }
 })
 
+app.on('before-quit', () => {
+  isQuitting = true
+  trayManager?.destroy()
+  floatingWindowManager?.destroy()
+})
+
 app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+  floatingWindowManager?.destroy()
   pythonManager?.stop()
 })
 
@@ -206,6 +271,13 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
   if (mainWindow === null) {
-    createWindow()
+    showMainWindow().catch((error) => {
+      console.error('Failed to reactivate main window:', error)
+    })
+    return
   }
+
+  showMainWindow().catch((error) => {
+    console.error('Failed to show main window:', error)
+  })
 })

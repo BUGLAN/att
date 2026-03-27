@@ -1,0 +1,135 @@
+<template>
+  <div class="floating-shell">
+    <section class="floating-pill" :data-phase="phase">
+      <div class="status-indicator">
+        <div class="status-icon" :class="{ pulsing: phase === 'recording' }" :data-phase="phase">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V7a3.5 3.5 0 1 0-7 0v5a3.5 3.5 0 0 0 3.5 3.5Z"
+              fill="currentColor"
+            />
+            <path
+              d="M7 11.75a.75.75 0 0 1 .75.75 4.25 4.25 0 0 0 8.5 0 .75.75 0 0 1 1.5 0 5.76 5.76 0 0 1-5 5.69V20h2a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5h3v-1.81a5.76 5.76 0 0 1-5-5.69.75.75 0 0 1 .75-.75Z"
+              fill="currentColor"
+            />
+          </svg>
+        </div>
+      </div>
+
+      <div
+        v-if="showWaveform"
+        class="waveform"
+        :class="{ active: phase === 'recording' }"
+        aria-hidden="true"
+      >
+        <span v-for="bar in 5" :key="bar" class="wave-bar"></span>
+      </div>
+
+      <div v-else class="spinner" aria-hidden="true"></div>
+
+      <div class="content">
+        <p class="primary-line">{{ prefixText }}<span class="highlight">{{ contentText }}</span></p>
+      </div>
+
+      <div class="actions">
+        <button class="action-button" type="button" title="打开设置" @click="openSettings">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="m19.14 12.94.04-.94-.04-.94 2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.4 7.4 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.49-.42h-3.84a.5.5 0 0 0-.49.42l-.36 2.54c-.58.23-1.13.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.84a.5.5 0 0 0 .12.64l2.03 1.58-.04.94.04.94-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.71 1.63.94l.36 2.54a.5.5 0 0 0 .49.42h3.84a.5.5 0 0 0 .49-.42l.36-2.54c.58-.23 1.13-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"
+              fill="currentColor"
+            />
+          </svg>
+        </button>
+        <button class="action-button close" type="button" title="关闭悬浮窗" @click="closeWindow">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M6.53 5.47a.75.75 0 0 1 1.06 0L12 9.88l4.41-4.41a.75.75 0 1 1 1.06 1.06L13.06 11l4.41 4.41a.75.75 0 0 1-1.06 1.06L12 12.06l-4.41 4.41a.75.75 0 1 1-1.06-1.06L10.94 11 6.53 6.59a.75.75 0 0 1 0-1.12Z"
+              fill="currentColor"
+            />
+          </svg>
+        </button>
+      </div>
+    </section>
+  </div>
+</template>
+
+<script setup>
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+
+const AUTO_HIDE_MS = 800
+
+const phase = ref('idle')
+const text = ref('')
+let hideTimer = null
+
+const showWaveform = computed(() => (
+  phase.value === 'recording'
+  || phase.value === 'idle'
+  || phase.value === 'complete'
+))
+
+const prefixText = computed(() => {
+  if (phase.value === 'recording') return '正在转录：'
+  if (phase.value === 'transcribing') return '正在转录：'
+  if (phase.value === 'optimizing') return '正在优化：'
+  if (phase.value === 'complete') return '转写完成：'
+  if (phase.value === 'error') return '处理失败：'
+  return '正在转录：'
+})
+
+const contentText = computed(() => {
+  if (phase.value === 'recording') return '实时内容正在生成中...'
+  if (phase.value === 'transcribing') return '实时内容正在生成中...'
+  if (phase.value === 'optimizing') return 'AI 正在整理文本...'
+  if (phase.value === 'complete') return text.value || '文本已生成'
+  if (phase.value === 'error') return text.value || '请稍后重试'
+  return '实时内容正在生成中...'
+})
+
+function clearHideTimer() {
+  if (!hideTimer) {
+    return
+  }
+
+  clearTimeout(hideTimer)
+  hideTimer = null
+}
+
+function scheduleHide() {
+  clearHideTimer()
+  hideTimer = setTimeout(() => {
+    window.floatingAPI?.close()
+  }, AUTO_HIDE_MS)
+}
+
+function applyState(payload = {}) {
+  phase.value = payload.phase || 'idle'
+  text.value = payload.text || ''
+
+  if (phase.value === 'complete' || phase.value === 'error') {
+    scheduleHide()
+    return
+  }
+
+  clearHideTimer()
+}
+
+function closeWindow() {
+  window.floatingAPI?.close()
+}
+
+function openSettings() {
+  window.floatingAPI?.openSettings()
+}
+
+onMounted(() => {
+  window.floatingAPI?.onStateChange((payload) => {
+    applyState(payload)
+  })
+})
+
+onUnmounted(() => {
+  clearHideTimer()
+  window.floatingAPI?.removeAllListeners('floating:state')
+})
+</script>

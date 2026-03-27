@@ -1,0 +1,277 @@
+:root {
+  color-scheme: dark;
+  --floating-surface: rgba(20, 19, 19, 0.75);
+  --floating-text: #e5e2e1;
+  --floating-muted: rgba(208, 197, 175, 0.5);
+  --floating-accent: #ffc557;
+  --floating-border: rgba(255, 255, 255, 0.05);
+  --floating-shadow: rgba(0, 0, 0, 0.14);
+  --floating-error: #ffb4ab;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+#app {
+  width: 100vw;
+  height: 100vh;
+}
+
+.floating-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.floating-pill {
+  width: 100%;
+  height: 40px;
+  display: grid;
+  grid-template-columns: 24px 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  border-radius: 10px;
+  border: 1px solid var(--floating-border);
+  background: var(--floating-surface);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 10px 28px -18px var(--floating-shadow);
+  animation: float-in 700ms ease-out;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-icon {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--floating-accent);
+  background: rgba(255, 197, 87, 0.1);
+}
+
+.status-icon::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+}
+
+.status-icon[data-phase="recording"] {
+  background: var(--floating-accent-soft);
+}
+
+.status-icon.pulsing::after {
+  background: var(--floating-accent);
+  animation: pulse-ring 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  opacity: 0.3;
+}
+
+.status-icon[data-phase="error"] {
+  color: var(--floating-error);
+  background: rgba(255, 180, 171, 0.14);
+}
+
+.status-icon svg {
+  width: 14px;
+  height: 14px;
+  position: relative;
+  z-index: 1;
+}
+
+.waveform {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 16px;
+  padding-inline: 4px;
+}
+
+.wave-bar {
+  width: 2px;
+  border-radius: 999px;
+  background: var(--floating-accent);
+}
+
+.wave-bar:nth-child(1) {
+  height: 6px;
+  opacity: 0.3;
+}
+
+.wave-bar:nth-child(2) {
+  height: 12px;
+  opacity: 0.6;
+}
+
+.wave-bar:nth-child(3) {
+  height: 16px;
+}
+
+.wave-bar:nth-child(4) {
+  height: 8px;
+  opacity: 0.8;
+}
+
+.wave-bar:nth-child(5) {
+  height: 14px;
+  opacity: 0.9;
+}
+
+.waveform.active .wave-bar {
+  animation: wave 0.6s ease-in-out infinite;
+}
+
+.waveform.active .wave-bar:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.waveform.active .wave-bar:nth-child(2) {
+  animation-delay: 0.1s;
+}
+
+.waveform.active .wave-bar:nth-child(3) {
+  animation-delay: 0.2s;
+}
+
+.waveform.active .wave-bar:nth-child(4) {
+  animation-delay: 0.3s;
+}
+
+.waveform.active .wave-bar:nth-child(5) {
+  animation-delay: 0.4s;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid rgba(77, 70, 53, 0.9);
+  border-top-color: var(--floating-accent);
+  border-radius: 999px;
+  animation: spin 1s linear infinite;
+}
+
+.content {
+  min-width: 0;
+}
+
+.primary-line {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(229, 226, 225, 0.9);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.highlight {
+  color: var(--floating-text);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.action-button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--floating-muted);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.action-button:hover {
+  color: rgba(255, 197, 87, 0.7);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.action-button.close:hover {
+  color: rgba(255, 180, 171, 0.7);
+}
+
+.action-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+@keyframes float-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-ring {
+  from {
+    transform: scale(0.8);
+    opacity: 0.3;
+  }
+
+  to {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes wave {
+  0%,
+  100% {
+    height: 6px;
+  }
+
+  50% {
+    height: 16px;
+  }
+}

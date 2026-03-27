@@ -13,6 +13,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateHotkey: (hotkey) => ipcRenderer.invoke('hotkey:update', hotkey),
   syncDesktopSettings: (settings) => ipcRenderer.invoke('desktop:sync-settings', settings),
   syncRecordingState: (payload) => ipcRenderer.invoke('desktop:recording-state', payload),
+  showFloatingWindow: () => ipcRenderer.send('floating:show'),
+  hideFloatingWindow: () => ipcRenderer.send('floating:hide'),
+  toggleFloatingWindow: () => ipcRenderer.send('floating:toggle'),
+  updateFloatingWindowState: (payload) => ipcRenderer.send('floating:update-state', payload),
   onHotkeyStart: (callback) => {
     ipcRenderer.on('hotkey:start', () => callback())
   },

@@ -19,6 +19,20 @@ let pendingStopAfterStart = false
 let pollingInFlight = false
 const completedPhases = new Set()
 
+function syncFloatingWindow(state, options = {}) {
+  const { floatingWindow } = useElectron()
+
+  floatingWindow.updateState(state)
+
+  if (options.show) {
+    floatingWindow.show()
+  }
+
+  if (options.hide) {
+    floatingWindow.hide()
+  }
+}
+
 function clearDurationTimer() {
   if (durationTimer.value) {
     clearInterval(durationTimer.value)
@@ -106,6 +120,11 @@ async function handleWebSocketMessage(message) {
 
   if (message.type === 'recording_command') {
     if (message.action === 'start') {
+      syncFloatingWindow({
+        phase: 'recording',
+        duration: 0,
+        text: ''
+      }, { show: true })
       await startRecording()
     } else if (message.action === 'stop') {
       stopRecording()
@@ -126,6 +145,11 @@ async function handleWebSocketMessage(message) {
     appStore.setRecordStatus({ record_id: recordId, status: 'transcribing' })
     tray.setIcon('transcribing')
     recordsStore.updateRecordStatus(recordId, { status: 'transcribing' })
+    syncFloatingWindow({
+      phase: 'transcribing',
+      duration: 0,
+      text: ''
+    })
     return
   }
 
@@ -147,6 +171,11 @@ async function handleWebSocketMessage(message) {
     })
 
     if (!settingsStore.settings.auto_optimize) {
+      syncFloatingWindow({
+        phase: 'complete',
+        duration: 0,
+        text: message.data?.text || ''
+      })
       const copyResult = await maybeCopyText(message.data?.text)
       appStore.showToast(
         copyResult.pasted
@@ -156,6 +185,11 @@ async function handleWebSocketMessage(message) {
             : '转写完成'
       )
     } else {
+      syncFloatingWindow({
+        phase: 'optimizing',
+        duration: 0,
+        text: ''
+      })
       appStore.showToast('转写完成，正在优化')
     }
     return
@@ -172,6 +206,11 @@ async function handleWebSocketMessage(message) {
     appStore.setRecordStatus({ record_id: recordId, status: 'optimizing' })
     tray.setIcon('transcribing')
     recordsStore.updateRecordStatus(recordId, { status: 'optimizing' })
+    syncFloatingWindow({
+      phase: 'optimizing',
+      duration: 0,
+      text: ''
+    })
     return
   }
 
@@ -188,6 +227,11 @@ async function handleWebSocketMessage(message) {
     handleRecordCompleted(recordId, {
       status: 'optimized',
       optimized_text: message.data?.optimized_text || ''
+    })
+    syncFloatingWindow({
+      phase: 'complete',
+      duration: 0,
+      text: message.data?.optimized_text || ''
     })
     const copyResult = await maybeCopyText(message.data?.optimized_text)
     appStore.showToast(
@@ -210,6 +254,11 @@ async function handleWebSocketMessage(message) {
 
     appStore.setTranscribing(false)
     tray.setIcon('idle')
+    syncFloatingWindow({
+      phase: 'error',
+      duration: 0,
+      text: message.data?.error || '处理失败'
+    })
     appStore.showToast(message.data?.error || '处理失败')
     return
   }
@@ -236,6 +285,11 @@ async function pollRecordStatus(recordId) {
       }
       stopPolling()
       handleRecordCompleted(recordId, status)
+      syncFloatingWindow({
+        phase: 'complete',
+        duration: 0,
+        text: status.optimized_text || ''
+      })
       const copyResult = await maybeCopyText(status.optimized_text)
       appStore.showToast(
         copyResult.pasted
@@ -254,6 +308,11 @@ async function pollRecordStatus(recordId) {
         }
         stopPolling()
         handleRecordCompleted(recordId, status)
+        syncFloatingWindow({
+          phase: 'complete',
+          duration: 0,
+          text: status.raw_text || ''
+        })
         const copyResult = await maybeCopyText(status.raw_text)
         appStore.showToast(
           copyResult.pasted
@@ -274,6 +333,11 @@ async function pollRecordStatus(recordId) {
       stopPolling()
       appStore.setTranscribing(false)
       tray.setIcon('idle')
+      syncFloatingWindow({
+        phase: 'error',
+        duration: 0,
+        text: '转写失败'
+      })
       appStore.showToast('转写失败')
       return true
     }
@@ -310,6 +374,11 @@ async function uploadRecording(blob) {
       appStore.showToast('录音时间过短')
       appStore.setTranscribing(false)
       tray.setIcon('idle')
+      syncFloatingWindow({
+        phase: 'error',
+        duration: 0,
+        text: '录音时间过短'
+      })
       return
     }
 
@@ -348,6 +417,11 @@ async function uploadRecording(blob) {
     console.error('[Recorder] Upload failed:', error)
     appStore.setTranscribing(false)
     tray.setIcon('idle')
+    syncFloatingWindow({
+      phase: 'error',
+      duration: 0,
+      text: '上传录音失败'
+    })
     appStore.showToast('上传录音失败')
   }
 }
@@ -406,6 +480,11 @@ async function startRecording() {
     if (pendingStopAfterStart) {
       mediaRecorder.value = null
       stopMediaTracks()
+      syncFloatingWindow({
+        phase: 'idle',
+        duration: 0,
+        text: ''
+      }, { hide: true })
       return
     }
 
@@ -421,10 +500,20 @@ async function startRecording() {
       transcribing: false,
       duration: 0
     })
+    syncFloatingWindow({
+      phase: 'recording',
+      duration: 0,
+      text: ''
+    }, { show: true })
 
     durationTimer.value = setInterval(() => {
       duration.value += 1
       appStore.incrementDuration()
+      syncFloatingWindow({
+        phase: 'recording',
+        duration: duration.value,
+        text: ''
+      })
     }, 1000)
   } catch (error) {
     console.error('[Recorder] Failed to start recording:', error)
@@ -432,6 +521,11 @@ async function startRecording() {
     stopMediaTracks()
     mediaRecorder.value = null
     appStore.setRecording(false)
+    syncFloatingWindow({
+      phase: 'error',
+      duration: 0,
+      text: '无法访问麦克风'
+    })
     appStore.showToast('无法访问麦克风')
   } finally {
     startPending = false
@@ -464,6 +558,11 @@ function stopRecording() {
     recording: false,
     transcribing: false,
     duration: duration.value
+  })
+  syncFloatingWindow({
+    phase: 'transcribing',
+    duration: 0,
+    text: ''
   })
   mediaRecorder.value.stop()
 }

@@ -91,6 +91,13 @@ export function useElectron() {
     updateMenu: (records = []) => globalThis.window?.electronAPI?.updateTrayMenu(records)
   }
 
+  const floatingWindow = {
+    show: () => globalThis.window?.electronAPI?.showFloatingWindow(),
+    hide: () => globalThis.window?.electronAPI?.hideFloatingWindow(),
+    toggle: () => globalThis.window?.electronAPI?.toggleFloatingWindow(),
+    updateState: (payload) => globalThis.window?.electronAPI?.updateFloatingWindowState(toPlainObject(payload))
+  }
+
   const clipboard = {
     writeText: async (text) => {
       if (globalThis.window?.electronAPI?.writeClipboard) {
@@ -188,6 +195,7 @@ export function useElectron() {
     api,
     windowControl,
     tray,
+    floatingWindow,
     clipboard,
     onRecordStatus,
     onRecordCompleted,
