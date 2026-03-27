@@ -17,6 +17,8 @@ let wsAttached = false
 let startPending = false
 let pendingStopAfterStart = false
 let pollingInFlight = false
+let floatingSessionActive = false
+let desktopRecordingSyncActive = false
 const completedPhases = new Set()
 
 function syncFloatingWindow(state, options = {}) {
@@ -53,6 +55,54 @@ function stopPolling() {
     pollingTimer = null
   }
   pollingInFlight = false
+}
+
+async function syncDesktopRecordingState(syncRecordingState, recording) {
+  if (recording && desktopRecordingSyncActive) {
+    return { success: true, skipped: true, reason: 'already-recording' }
+  }
+
+  if (!recording && !desktopRecordingSyncActive) {
+    return { success: true, skipped: true, reason: 'already-restored' }
+  }
+
+  try {
+    const result = await syncRecordingState({ recording })
+    if (result?.success === false) {
+      console.error('[Desktop] Failed to sync recording state:', result.error)
+      return result
+    }
+
+    desktopRecordingSyncActive = recording
+    return result || { success: true }
+  } catch (error) {
+    console.error('[Desktop] Failed to sync recording state:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+async function handleShortPressCancellation(syncRecordingState) {
+  const appStore = useAppStore()
+  const { tray } = useElectron()
+
+  pendingStopAfterStart = false
+  clearDurationTimer()
+  duration.value = 0
+  appStore.setRecording(false)
+  appStore.setTranscribing(false)
+  tray.setIcon('idle')
+  await syncDesktopRecordingState(syncRecordingState, false)
+
+  if (floatingSessionActive) {
+    syncFloatingWindow({
+      phase: 'error',
+      duration: 0,
+      text: '录音时间过短'
+    })
+  }
+
+  floatingSessionActive = false
+  appStore.showToast('录音时间过短')
 }
 
 async function maybeCopyText(text) {
@@ -120,11 +170,6 @@ async function handleWebSocketMessage(message) {
 
   if (message.type === 'recording_command') {
     if (message.action === 'start') {
-      syncFloatingWindow({
-        phase: 'recording',
-        duration: 0,
-        text: ''
-      }, { show: true })
       await startRecording()
     } else if (message.action === 'stop') {
       stopRecording()
@@ -145,11 +190,13 @@ async function handleWebSocketMessage(message) {
     appStore.setRecordStatus({ record_id: recordId, status: 'transcribing' })
     tray.setIcon('transcribing')
     recordsStore.updateRecordStatus(recordId, { status: 'transcribing' })
-    syncFloatingWindow({
-      phase: 'transcribing',
-      duration: 0,
-      text: ''
-    })
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'transcribing',
+        duration: 0,
+        text: ''
+      })
+    }
     return
   }
 
@@ -171,11 +218,14 @@ async function handleWebSocketMessage(message) {
     })
 
     if (!settingsStore.settings.auto_optimize) {
-      syncFloatingWindow({
-        phase: 'complete',
-        duration: 0,
-        text: message.data?.text || ''
-      })
+      if (floatingSessionActive) {
+        syncFloatingWindow({
+          phase: 'complete',
+          duration: 0,
+          text: message.data?.text || ''
+        })
+        floatingSessionActive = false
+      }
       const copyResult = await maybeCopyText(message.data?.text)
       appStore.showToast(
         copyResult.pasted
@@ -185,11 +235,13 @@ async function handleWebSocketMessage(message) {
             : '转写完成'
       )
     } else {
-      syncFloatingWindow({
-        phase: 'optimizing',
-        duration: 0,
-        text: ''
-      })
+      if (floatingSessionActive) {
+        syncFloatingWindow({
+          phase: 'optimizing',
+          duration: 0,
+          text: ''
+        })
+      }
       appStore.showToast('转写完成，正在优化')
     }
     return
@@ -206,11 +258,13 @@ async function handleWebSocketMessage(message) {
     appStore.setRecordStatus({ record_id: recordId, status: 'optimizing' })
     tray.setIcon('transcribing')
     recordsStore.updateRecordStatus(recordId, { status: 'optimizing' })
-    syncFloatingWindow({
-      phase: 'optimizing',
-      duration: 0,
-      text: ''
-    })
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'optimizing',
+        duration: 0,
+        text: ''
+      })
+    }
     return
   }
 
@@ -228,11 +282,14 @@ async function handleWebSocketMessage(message) {
       status: 'optimized',
       optimized_text: message.data?.optimized_text || ''
     })
-    syncFloatingWindow({
-      phase: 'complete',
-      duration: 0,
-      text: message.data?.optimized_text || ''
-    })
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'complete',
+        duration: 0,
+        text: message.data?.optimized_text || ''
+      })
+      floatingSessionActive = false
+    }
     const copyResult = await maybeCopyText(message.data?.optimized_text)
     appStore.showToast(
       copyResult.pasted
@@ -254,11 +311,14 @@ async function handleWebSocketMessage(message) {
 
     appStore.setTranscribing(false)
     tray.setIcon('idle')
-    syncFloatingWindow({
-      phase: 'error',
-      duration: 0,
-      text: message.data?.error || '处理失败'
-    })
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'error',
+        duration: 0,
+        text: message.data?.error || '处理失败'
+      })
+      floatingSessionActive = false
+    }
     appStore.showToast(message.data?.error || '处理失败')
     return
   }
@@ -285,11 +345,14 @@ async function pollRecordStatus(recordId) {
       }
       stopPolling()
       handleRecordCompleted(recordId, status)
-      syncFloatingWindow({
-        phase: 'complete',
-        duration: 0,
-        text: status.optimized_text || ''
-      })
+      if (floatingSessionActive) {
+        syncFloatingWindow({
+          phase: 'complete',
+          duration: 0,
+          text: status.optimized_text || ''
+        })
+        floatingSessionActive = false
+      }
       const copyResult = await maybeCopyText(status.optimized_text)
       appStore.showToast(
         copyResult.pasted
@@ -308,11 +371,14 @@ async function pollRecordStatus(recordId) {
         }
         stopPolling()
         handleRecordCompleted(recordId, status)
-        syncFloatingWindow({
-          phase: 'complete',
-          duration: 0,
-          text: status.raw_text || ''
-        })
+        if (floatingSessionActive) {
+          syncFloatingWindow({
+            phase: 'complete',
+            duration: 0,
+            text: status.raw_text || ''
+          })
+          floatingSessionActive = false
+        }
         const copyResult = await maybeCopyText(status.raw_text)
         appStore.showToast(
           copyResult.pasted
@@ -333,11 +399,14 @@ async function pollRecordStatus(recordId) {
       stopPolling()
       appStore.setTranscribing(false)
       tray.setIcon('idle')
-      syncFloatingWindow({
-        phase: 'error',
-        duration: 0,
-        text: '转写失败'
-      })
+      if (floatingSessionActive) {
+        syncFloatingWindow({
+          phase: 'error',
+          duration: 0,
+          text: '转写失败'
+        })
+        floatingSessionActive = false
+      }
       appStore.showToast('转写失败')
       return true
     }
@@ -374,11 +443,14 @@ async function uploadRecording(blob) {
       appStore.showToast('录音时间过短')
       appStore.setTranscribing(false)
       tray.setIcon('idle')
-      syncFloatingWindow({
-        phase: 'error',
-        duration: 0,
-        text: '录音时间过短'
-      })
+      if (floatingSessionActive) {
+        syncFloatingWindow({
+          phase: 'error',
+          duration: 0,
+          text: '录音时间过短'
+        })
+        floatingSessionActive = false
+      }
       return
     }
 
@@ -417,11 +489,14 @@ async function uploadRecording(blob) {
     console.error('[Recorder] Upload failed:', error)
     appStore.setTranscribing(false)
     tray.setIcon('idle')
-    syncFloatingWindow({
-      phase: 'error',
-      duration: 0,
-      text: '上传录音失败'
-    })
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'error',
+        duration: 0,
+        text: '上传录音失败'
+      })
+      floatingSessionActive = false
+    }
     appStore.showToast('上传录音失败')
   }
 }
@@ -443,6 +518,30 @@ async function startRecording() {
 
   startPending = true
   pendingStopAfterStart = false
+  floatingSessionActive = true
+  syncFloatingWindow({
+    phase: 'recording',
+    duration: 0,
+    text: ''
+  }, { show: true })
+
+  const desktopSyncResult = await syncDesktopRecordingState(syncRecordingState, true)
+  if (desktopSyncResult?.success === false) {
+    pendingStopAfterStart = false
+    duration.value = 0
+    appStore.setRecording(false)
+    appStore.setTranscribing(false)
+    tray.setIcon('idle')
+    floatingSessionActive = false
+    syncFloatingWindow({
+      phase: 'error',
+      duration: 0,
+      text: '静音失败'
+    })
+    appStore.showToast('静音失败')
+    startPending = false
+    return
+  }
 
   try {
     const deviceId = settingsStore.settings.audio_input_device || 'default'
@@ -480,11 +579,7 @@ async function startRecording() {
     if (pendingStopAfterStart) {
       mediaRecorder.value = null
       stopMediaTracks()
-      syncFloatingWindow({
-        phase: 'idle',
-        duration: 0,
-        text: ''
-      }, { hide: true })
+      await handleShortPressCancellation(syncRecordingState)
       return
     }
 
@@ -493,7 +588,6 @@ async function startRecording() {
     mediaRecorder.value.start(1000)
     appStore.setRecording(true)
     tray.setIcon('recording')
-    await syncRecordingState({ recording: true })
     sendWebRecording('start')
     sendRecordingStatus({
       recording: true,
@@ -517,15 +611,18 @@ async function startRecording() {
     }, 1000)
   } catch (error) {
     console.error('[Recorder] Failed to start recording:', error)
-    await syncRecordingState({ recording: false }).catch(() => {})
+    await syncDesktopRecordingState(syncRecordingState, false)
     stopMediaTracks()
     mediaRecorder.value = null
     appStore.setRecording(false)
-    syncFloatingWindow({
-      phase: 'error',
-      duration: 0,
-      text: '无法访问麦克风'
-    })
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'error',
+        duration: 0,
+        text: '无法访问麦克风'
+      })
+      floatingSessionActive = false
+    }
     appStore.showToast('无法访问麦克风')
   } finally {
     startPending = false
@@ -549,7 +646,7 @@ function stopRecording() {
   pendingStopAfterStart = false
   clearDurationTimer()
   appStore.setRecording(false)
-  syncRecordingState({ recording: false }).catch(() => {})
+  syncDesktopRecordingState(syncRecordingState, false).catch(() => {})
   // 停止录音后立即恢复空闲状态，不设置转写中状态
   // 转写状态只在历史记录卡片中显示
   tray.setIcon('idle')
@@ -559,11 +656,13 @@ function stopRecording() {
     transcribing: false,
     duration: duration.value
   })
-  syncFloatingWindow({
-    phase: 'transcribing',
-    duration: 0,
-    text: ''
-  })
+  if (floatingSessionActive && duration.value >= 1) {
+    syncFloatingWindow({
+      phase: 'transcribing',
+      duration: 0,
+      text: ''
+    })
+  }
   mediaRecorder.value.stop()
 }
 
