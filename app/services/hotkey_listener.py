@@ -1,23 +1,30 @@
 """
-Backend global hotkey listener service.
+Backend input listener service.
 
-Reuses the proven pynput-based press/hold semantics from the main branch:
-- hotkey press -> broadcast recording start
-- hotkey release -> broadcast recording stop
+Provides:
+- keyboard press/hold hotkey for recording start/stop
+- global mouse trigger for the clipboard overlay
 """
 import asyncio
 import platform
-from typing import Dict, List, Optional
+import time
+from typing import Dict, List, Optional, Set
 
-from app.config import get_default_hotkey, is_valid_hotkey, user_settings
+from app.config import (
+    VALID_CLIPBOARD_TRIGGER_MODES,
+    get_default_clipboard_overlay_settings,
+    get_default_hotkey,
+    is_valid_hotkey,
+    user_settings,
+)
 from app.services.websocket import manager as ws_manager
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 IS_MACOS = platform.system() == "Darwin"
-IS_WINDOWS = platform.system() == "Windows"
 MODIFIER_KEY_MAP: Dict[str, List] = {}
+LEFT_RIGHT_CHORD_WINDOW_SECONDS = 0.15
 
 
 def _init_modifier_key_map() -> None:
@@ -66,6 +73,32 @@ def _build_hotkey_display(modifiers: List[str], key: Optional[str]) -> str:
     return "+".join(parts)
 
 
+def _schedule_callback(loop: Optional[asyncio.AbstractEventLoop], callback, event_name: str) -> None:
+    if not callback:
+        return
+
+    try:
+        result = callback()
+        if asyncio.iscoroutine(result):
+            if loop:
+                future = asyncio.run_coroutine_threadsafe(result, loop)
+
+                def _raise_callback_error(done_future):
+                    try:
+                        done_future.result()
+                    except Exception as error:
+                        logger.error(
+                            f"Error in {event_name} callback coroutine",
+                            error=str(error),
+                        )
+
+                future.add_done_callback(_raise_callback_error)
+            else:
+                asyncio.create_task(result)
+    except Exception as error:
+        logger.error(f"Error in {event_name} callback", error=str(error))
+
+
 def normalize_hotkey(hotkey: Optional[dict]) -> dict:
     """Normalize hotkey payload for runtime usage."""
     if not is_valid_hotkey(hotkey):
@@ -80,6 +113,12 @@ def normalize_hotkey(hotkey: Optional[dict]) -> dict:
         "key": normalized_key,
         "display": hotkey.get("display") or _build_hotkey_display(modifiers, normalized_key),
     }
+
+
+def normalize_clipboard_trigger_mode(trigger_mode: Optional[str]) -> str:
+    """Normalize clipboard overlay trigger mode for runtime usage."""
+    default_mode = get_default_clipboard_overlay_settings()["clipboard_overlay_trigger"]
+    return trigger_mode if trigger_mode in VALID_CLIPBOARD_TRIGGER_MODES else default_mode
 
 
 class PynputHotkeyListener:
@@ -160,38 +199,13 @@ class PynputHotkeyListener:
 
         return bool(modifiers)
 
-    def _schedule_callback(self, callback, event_name: str) -> None:
-        if not callback:
-            return
-
-        try:
-            result = callback()
-            if asyncio.iscoroutine(result):
-                if self.loop:
-                    future = asyncio.run_coroutine_threadsafe(result, self.loop)
-
-                    def _raise_callback_error(done_future):
-                        try:
-                            done_future.result()
-                        except Exception as error:
-                            logger.error(
-                                f"Error in hotkey {event_name} callback coroutine",
-                                error=str(error),
-                            )
-
-                    future.add_done_callback(_raise_callback_error)
-                else:
-                    asyncio.create_task(result)
-        except Exception as error:
-            logger.error(f"Error in hotkey {event_name} callback", error=str(error))
-
     def _on_key_press(self, key) -> None:
         self._key_states[key] = True
 
         if self._check_hotkey() and not self.is_pressed:
             self.is_pressed = True
             logger.info("Hotkey pressed", hotkey=self._hotkey_config)
-            self._schedule_callback(self.on_press, "press")
+            _schedule_callback(self.loop, self.on_press, "hotkey press")
 
     def _on_key_release(self, key) -> None:
         self._key_states[key] = False
@@ -199,11 +213,117 @@ class PynputHotkeyListener:
         if self.is_pressed and not self._check_hotkey():
             self.is_pressed = False
             logger.info("Hotkey released", hotkey=self._hotkey_config)
-            self._schedule_callback(self.on_release, "release")
+            _schedule_callback(self.loop, self.on_release, "hotkey release")
+
+
+class ClipboardMouseTriggerListener:
+    """Global mouse trigger listener for the clipboard overlay."""
+
+    def __init__(self, on_trigger=None, loop: Optional[asyncio.AbstractEventLoop] = None, trigger_mode: Optional[str] = None):
+        self.on_trigger = on_trigger
+        self.loop = loop
+        self.trigger_mode = normalize_clipboard_trigger_mode(trigger_mode)
+        self.is_running = False
+        self._listener = None
+        self._pressed_buttons: Set[str] = set()
+        self._press_times: Dict[str, float] = {}
+        self._triggered = False
+
+    def set_trigger_mode(self, trigger_mode: Optional[str]) -> None:
+        self.trigger_mode = normalize_clipboard_trigger_mode(trigger_mode)
+        self._pressed_buttons.clear()
+        self._press_times.clear()
+        self._triggered = False
+        logger.info("Clipboard trigger mode updated", trigger_mode=self.trigger_mode)
+
+    def start(self) -> bool:
+        if self.is_running:
+            return True
+
+        try:
+            from pynput import mouse
+        except ImportError:
+            logger.error("pynput package required: pip install pynput")
+            return False
+
+        try:
+            self._listener = mouse.Listener(on_click=self._on_click)
+            self._listener.start()
+            self.is_running = True
+            logger.info("Clipboard mouse trigger listener started", trigger_mode=self.trigger_mode)
+            return True
+        except Exception as error:
+            logger.error("Failed to start clipboard mouse trigger listener", error=str(error))
+            return False
+
+    def stop(self) -> None:
+        if self._listener:
+            self._listener.stop()
+            self._listener = None
+
+        self.is_running = False
+        self._pressed_buttons.clear()
+        self._press_times.clear()
+        self._triggered = False
+        logger.info("Clipboard mouse trigger listener stopped")
+
+    def _button_name(self, button) -> Optional[str]:
+        try:
+            button_name = button.name
+        except Exception:
+            button_name = str(button).split(".")[-1]
+
+        if button_name in {"left", "right", "middle"}:
+            return button_name
+
+        return None
+
+    def _should_trigger_left_right_chord(self) -> bool:
+        if self.trigger_mode != "mouse_left_right_chord" or self._triggered:
+            return False
+
+        if not {"left", "right"}.issubset(self._pressed_buttons):
+            return False
+
+        left_time = self._press_times.get("left")
+        right_time = self._press_times.get("right")
+        if left_time is None or right_time is None:
+            return False
+
+        return abs(left_time - right_time) <= LEFT_RIGHT_CHORD_WINDOW_SECONDS
+
+    def _on_click(self, x, y, button, pressed) -> None:
+        button_name = self._button_name(button)
+        if not button_name:
+            return
+
+        if pressed:
+            self._pressed_buttons.add(button_name)
+            self._press_times[button_name] = time.monotonic()
+
+            if self.trigger_mode == "mouse_middle" and button_name == "middle" and not self._triggered:
+                self._triggered = True
+                logger.info("Clipboard overlay trigger fired", trigger_mode=self.trigger_mode)
+                _schedule_callback(self.loop, self.on_trigger, "clipboard trigger")
+                return
+
+            if self._should_trigger_left_right_chord():
+                self._triggered = True
+                logger.info("Clipboard overlay trigger fired", trigger_mode=self.trigger_mode)
+                _schedule_callback(self.loop, self.on_trigger, "clipboard trigger")
+            return
+
+        self._pressed_buttons.discard(button_name)
+
+        if self.trigger_mode == "mouse_middle" and button_name == "middle":
+            self._triggered = False
+        elif self.trigger_mode == "mouse_left_right_chord" and button_name in {"left", "right"}:
+            if not {"left", "right"}.issubset(self._pressed_buttons):
+                self._triggered = False
 
 
 class BackendHotkeyService:
-    """Coordinates backend hotkey listening and websocket broadcasts."""
+    """Coordinates backend keyboard and mouse listeners with websocket broadcasts."""
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
         self.loop = loop
@@ -212,6 +332,11 @@ class BackendHotkeyService:
             on_release=self._broadcast_stop,
             loop=loop,
             hotkey_config=user_settings.get("hotkey"),
+        )
+        self.clipboard_trigger_listener = ClipboardMouseTriggerListener(
+            on_trigger=self._broadcast_clipboard_overlay_trigger,
+            loop=loop,
+            trigger_mode=user_settings.get("clipboard_overlay_trigger"),
         )
 
     async def _broadcast_start(self) -> None:
@@ -228,11 +353,21 @@ class BackendHotkeyService:
             "source": "backend_hotkey",
         }, client_type_filter="web")
 
+    async def _broadcast_clipboard_overlay_trigger(self) -> None:
+        await ws_manager.broadcast({
+            "type": "clipboard_overlay_command",
+            "action": "trigger",
+            "source": "backend_mouse_trigger",
+        }, client_type_filter="web")
+
     def start(self) -> bool:
-        return self.listener.start()
+        hotkey_started = self.listener.start()
+        clipboard_trigger_started = self.clipboard_trigger_listener.start()
+        return hotkey_started or clipboard_trigger_started
 
     def stop(self) -> None:
         self.listener.stop()
+        self.clipboard_trigger_listener.stop()
 
     def update_hotkey(self, hotkey: Optional[dict]) -> dict:
         normalized = normalize_hotkey(hotkey)
@@ -240,6 +375,14 @@ class BackendHotkeyService:
         return {
             "success": True,
             "hotkey": normalized,
+        }
+
+    def update_clipboard_trigger_mode(self, trigger_mode: Optional[str]) -> dict:
+        normalized_mode = normalize_clipboard_trigger_mode(trigger_mode)
+        self.clipboard_trigger_listener.set_trigger_mode(normalized_mode)
+        return {
+            "success": True,
+            "trigger_mode": normalized_mode,
         }
 
 

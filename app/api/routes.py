@@ -18,7 +18,13 @@ from pathlib import Path
 from datetime import datetime
 import uuid
 
-from app.config import settings, user_settings, get_default_hotkey, is_valid_hotkey
+from app.config import (
+    settings,
+    user_settings,
+    get_default_hotkey,
+    is_valid_hotkey,
+    normalize_clipboard_overlay_settings,
+)
 from app.audio.processor import AudioProcessor
 from app.stt.transcriber import WhisperTranscriber
 from app.llm.optimizer import TextOptimizer
@@ -568,7 +574,25 @@ async def health_check() -> dict:
 @router.get("/settings")
 async def get_settings() -> dict:
     """Get user settings"""
-    return normalize_preset_settings(user_settings.get_all(), persist=True)
+    payload = normalize_preset_settings(user_settings.get_all(), persist=True)
+    normalized_payload = normalize_clipboard_overlay_settings(payload)
+
+    overlay_keys = {
+        "clipboard_overlay_trigger",
+        "clipboard_overlay_retrigger_action",
+        "clipboard_overlay_enter_behavior",
+        "clipboard_overlay_auto_focus_search",
+        "clipboard_overlay_close_on_click_copy",
+    }
+    overlay_updates = {
+        key: normalized_payload[key]
+        for key in overlay_keys
+        if payload.get(key) != normalized_payload.get(key)
+    }
+    if overlay_updates:
+        user_settings.update(overlay_updates)
+
+    return normalized_payload
 
 
 @router.put("/settings")
@@ -579,6 +603,9 @@ async def update_settings(updates: dict) -> dict:
         "whisper_model", "whisper_device",
         "pause_audio_on_recording", "auto_optimize", "auto_copy_to_clipboard",
         "hotkey",
+        "clipboard_overlay_trigger", "clipboard_overlay_retrigger_action",
+        "clipboard_overlay_enter_behavior", "clipboard_overlay_auto_focus_search",
+        "clipboard_overlay_close_on_click_copy",
         # Recording mode settings
         "recording_mode", "silence_threshold", "silence_level",
         # Prompt preset settings
@@ -595,7 +622,9 @@ async def update_settings(updates: dict) -> dict:
     if not filtered:
         raise HTTPException(status_code=400, detail="No valid settings provided")
 
-    filtered = normalize_preset_settings(filtered)
+    merged_settings = {**user_settings.get_all(), **filtered}
+    normalized_settings = normalize_clipboard_overlay_settings(normalize_preset_settings(merged_settings))
+    filtered = {key: normalized_settings[key] for key in filtered.keys()}
     user_settings.update(filtered)
 
     if "hotkey" in filtered:
@@ -605,7 +634,14 @@ async def update_settings(updates: dict) -> dict:
             filtered["hotkey"] = hotkey_result["hotkey"]
             user_settings.set("hotkey", filtered["hotkey"])
 
-    return normalize_preset_settings(user_settings.get_all())
+    if "clipboard_overlay_trigger" in filtered:
+        hotkey_service = get_hotkey_service()
+        if hotkey_service:
+            hotkey_service.update_clipboard_trigger_mode(filtered["clipboard_overlay_trigger"])
+            user_settings.set("clipboard_overlay_trigger", filtered["clipboard_overlay_trigger"])
+
+    payload = normalize_preset_settings(user_settings.get_all())
+    return normalize_clipboard_overlay_settings(payload)
 
 
 # ==================== WebSocket Endpoints ====================

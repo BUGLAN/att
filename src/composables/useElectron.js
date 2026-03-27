@@ -51,6 +51,10 @@ function buildAccelerator(hotkey) {
 export function useElectron() {
   const isReady = ref(false)
 
+  function debugLog(scope, message, details) {
+    globalThis.window?.electronAPI?.debugLog?.(scope, message, toPlainObject(details))
+  }
+
   const api = {
     uploadAudio: (blob, filename = 'recording.webm') => httpApi.uploadAudio(blob, filename),
     createSession: () => httpApi.createSession(),
@@ -106,6 +110,32 @@ export function useElectron() {
     hide: () => globalThis.window?.electronAPI?.hideFloatingWindow(),
     toggle: () => globalThis.window?.electronAPI?.toggleFloatingWindow(),
     updateState: (payload) => globalThis.window?.electronAPI?.updateFloatingWindowState(toPlainObject(payload))
+  }
+
+  const clipboardOverlay = {
+    show: (payload = {}) => {
+      const plainPayload = toPlainObject(payload)
+      debugLog('renderer.useElectron', 'Calling clipboardOverlay.show', plainPayload)
+      globalThis.window?.electronAPI?.showClipboardOverlay(plainPayload)
+    },
+    hide: () => {
+      debugLog('renderer.useElectron', 'Calling clipboardOverlay.hide')
+      globalThis.window?.electronAPI?.hideClipboardOverlay()
+    },
+    toggle: (payload = {}) => {
+      const plainPayload = toPlainObject(payload)
+      debugLog('renderer.useElectron', 'Calling clipboardOverlay.toggle', plainPayload)
+      globalThis.window?.electronAPI?.toggleClipboardOverlay(plainPayload)
+    },
+    togglePinned: () => {
+      debugLog('renderer.useElectron', 'Calling clipboardOverlay.togglePinned')
+      globalThis.window?.electronAPI?.toggleClipboardOverlayPinned?.()
+    },
+    startNativeDrag: (payload = {}) => {
+      const plainPayload = toPlainObject(payload)
+      debugLog('renderer.useElectron', 'Calling clipboardOverlay.startNativeDrag', plainPayload)
+      globalThis.window?.electronAPI?.startClipboardOverlayNativeDrag?.(plainPayload)
+    }
   }
 
   const clipboard = {
@@ -178,6 +208,26 @@ export function useElectron() {
     globalThis.window?.electronAPI?.onNavigateSettings(callback)
   }
 
+  function onClipboardOverlayActivate(callback) {
+    globalThis.window?.electronAPI?.onClipboardOverlayActivate(callback)
+  }
+
+  function onClipboardChanged(callback) {
+    globalThis.window?.electronAPI?.onClipboardChanged(callback)
+  }
+
+  function onClipboardOverlayPinnedChanged(callback) {
+    globalThis.window?.electronAPI?.onClipboardOverlayPinnedChanged?.(callback)
+  }
+
+  function notifyClipboardOverlayDrag(active) {
+    globalThis.window?.electronAPI?.notifyClipboardOverlayDrag?.(active)
+  }
+
+  function openSettingsPage() {
+    globalThis.window?.electronAPI?.openSettingsPage()
+  }
+
   function removeAllListeners(channel) {
     globalThis.window?.electronAPI?.removeAllListeners(channel)
   }
@@ -224,6 +274,7 @@ export function useElectron() {
     windowControl,
     tray,
     floatingWindow,
+    clipboardOverlay,
     clipboard,
     onRecordStatus,
     onRecordCompleted,
@@ -231,6 +282,12 @@ export function useElectron() {
     onHotkeyStop,
     onPasteText,
     onNavigateSettings,
+    onClipboardOverlayActivate,
+    onClipboardOverlayPinnedChanged,
+    onClipboardChanged,
+    notifyClipboardOverlayDrag,
+    openSettingsPage,
+    debugLog,
     removeAllListeners,
     updateHotkey,
     syncDesktopSettings,

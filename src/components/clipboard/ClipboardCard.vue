@@ -1,5 +1,10 @@
 <template>
-  <article class="clipboard-card" :class="[{ pinned: item.is_pinned }]">
+  <article
+    class="clipboard-card"
+    :class="[{ pinned: item.is_pinned }]"
+    draggable="true"
+    @dragstart="handleDragStart"
+  >
     <div class="clipboard-card-top">
       <div class="clipboard-card-meta">
         <span class="clipboard-chip">{{ typeLabel }}</span>
@@ -114,6 +119,21 @@ const relativeTime = computed(() => {
     minute: '2-digit'
   })
 })
+
+function handleDragStart(event) {
+  if (!props.item?.content) {
+    event.preventDefault()
+    return
+  }
+
+  event.dataTransfer.effectAllowed = 'copy'
+  event.dataTransfer.setData('text/plain', props.item.content)
+
+  if (props.item.item_type === 'link') {
+    event.dataTransfer.setData('text/uri-list', props.item.content)
+  }
+
+}
 </script>
 
 <style scoped>

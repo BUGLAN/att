@@ -88,12 +88,14 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useClipboard } from '@/composables/useClipboard'
+import { useElectron } from '@/composables/useElectron'
 import ClipboardCard from '@/components/clipboard/ClipboardCard.vue'
 
 const appStore = useAppStore()
+const { onClipboardChanged, removeAllListeners } = useElectron()
 const {
   items,
   stats,
@@ -193,7 +195,15 @@ watch([query, selectedType, favoriteOnly], () => {
 })
 
 onMounted(async () => {
+  onClipboardChanged(() => {
+    refreshCurrentView()
+  })
+
   await refreshCurrentView()
+})
+
+onUnmounted(() => {
+  removeAllListeners('clipboard:changed')
 })
 </script>
 

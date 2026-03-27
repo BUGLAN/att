@@ -1,6 +1,7 @@
 """
 Clipboard manager for JSON-based storage.
 """
+import hashlib
 import json
 import re
 from datetime import datetime
@@ -69,6 +70,12 @@ class ClipboardManager:
 
         return ClipboardItemType.TEXT
 
+    def _build_content_hash(self, content: str) -> str:
+        normalized = self._normalize_text(content)
+        if not normalized:
+            return ""
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
     def _build_title(self, item_type: ClipboardItemType, content: str) -> str:
         normalized = self._normalize_text(content)
         if not normalized:
@@ -99,6 +106,7 @@ class ClipboardManager:
     ) -> ClipboardItem:
         normalized = self._normalize_text(content)
         resolved_type = item_type or self._detect_item_type(normalized)
+        content_hash = self._build_content_hash(normalized)
         item = ClipboardItem(
             item_type=resolved_type,
             content=normalized,
@@ -106,10 +114,73 @@ class ClipboardManager:
             summary=(summary or self._build_summary(normalized)).strip(),
             source=source,
             content_size=len(normalized),
+            duplicate_count=1,
+            content_hash=content_hash,
             metadata=metadata or {}
         )
         await self._save_json(item)
         return item
+
+    async def _find_duplicate_item(self, content: str) -> Optional[ClipboardItem]:
+        normalized = self._normalize_text(content)
+        if not normalized:
+            return None
+
+        content_hash = self._build_content_hash(normalized)
+
+        for json_file in self.clipboard_path.glob("*.json"):
+            try:
+                data = await self._load_json(json_file.stem)
+                if not data:
+                    continue
+
+                item = ClipboardItem.from_dict(data)
+                if item.content_hash and item.content_hash != content_hash:
+                    continue
+
+                if self._normalize_text(item.content) == normalized:
+                    if not item.content_hash:
+                        item.content_hash = content_hash
+                    return item
+            except Exception:
+                continue
+
+        return None
+
+    async def capture_item(
+        self,
+        content: str,
+        source: str = "manual",
+        item_type: Optional[ClipboardItemType] = None,
+        title: Optional[str] = None,
+        summary: Optional[str] = None,
+        metadata: Optional[dict] = None
+    ) -> ClipboardItem:
+        normalized = self._normalize_text(content)
+        duplicate = await self._find_duplicate_item(normalized)
+
+        if duplicate:
+            duplicate.updated_at = datetime.now()
+            duplicate.source = source or duplicate.source
+            duplicate.content_size = len(normalized)
+            duplicate.content_hash = duplicate.content_hash or self._build_content_hash(normalized)
+            duplicate.duplicate_count = max(1, int(duplicate.duplicate_count or 1)) + 1
+            if metadata:
+                duplicate.metadata = {
+                    **(duplicate.metadata or {}),
+                    **metadata
+                }
+            await self._save_json(duplicate)
+            return duplicate
+
+        return await self.create_item(
+            content=normalized,
+            source=source,
+            item_type=item_type,
+            title=title,
+            summary=summary,
+            metadata=metadata
+        )
 
     async def get_item(self, item_id: str) -> Optional[ClipboardItem]:
         data = await self._load_json(item_id)
@@ -170,6 +241,7 @@ class ClipboardManager:
             item.content = self._normalize_text(content)
             item.item_type = self._detect_item_type(item.content)
             item.content_size = len(item.content)
+            item.content_hash = self._build_content_hash(item.content)
 
         if title is not None:
             item.title = title.strip()

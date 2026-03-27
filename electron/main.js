@@ -5,18 +5,52 @@ const { PythonManager } = require('./python/manager')
 const { DesktopAudioController } = require('./audio/controller')
 const { TrayManager } = require('./tray/index')
 const { FloatingWindowManager } = require('./floatingWindow')
+const { ClipboardOverlayManager } = require('./clipboardOverlay')
+const { ClipboardMonitor } = require('./clipboardMonitor')
+const { logElectronOverlay, electronOverlayLogFile } = require('./logger')
 
 let mainWindow = null
 let pythonManager = null
 let trayManager = null
 let audioController = null
 let floatingWindowManager = null
+let clipboardOverlayManager = null
+let clipboardMonitor = null
 let isQuitting = false
+let lastClipboardOverlayCommand = {
+  channel: null,
+  timestamp: 0
+}
 const pasteHelperPath = path.join(__dirname, 'python', 'paste_helper.py')
 
 const isDev = process.env.NODE_ENV === 'development'
+const CLIPBOARD_OVERLAY_COMMAND_DEDUP_MS = 180
+
+function shouldSuppressClipboardOverlayCommand(channel, payload = {}) {
+  const now = Date.now()
+  const sameChannel = lastClipboardOverlayCommand.channel === channel
+  const withinWindow = (now - lastClipboardOverlayCommand.timestamp) <= CLIPBOARD_OVERLAY_COMMAND_DEDUP_MS
+
+  if (sameChannel && withinWindow) {
+    logElectronOverlay('main', 'Suppressed duplicate clipboard overlay command', {
+      channel,
+      payload,
+      lastTimestamp: lastClipboardOverlayCommand.timestamp,
+      now,
+      dedupWindowMs: CLIPBOARD_OVERLAY_COMMAND_DEDUP_MS
+    })
+    return true
+  }
+
+  lastClipboardOverlayCommand = {
+    channel,
+    timestamp: now
+  }
+  return false
+}
 
 async function createWindow() {
+  logElectronOverlay('main', 'Creating main window')
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -55,6 +89,10 @@ async function createWindow() {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
+  logElectronOverlay('main', 'Main window loaded', {
+    isDev
+  })
+
   mainWindow.on('closed', () => {
     mainWindow = null
   })
@@ -65,6 +103,10 @@ async function createWindow() {
 }
 
 async function showMainWindow({ navigateToSettings = false } = {}) {
+  logElectronOverlay('main', 'Showing main window', {
+    navigateToSettings
+  })
+
   if (!mainWindow) {
     await createWindow()
   }
@@ -99,17 +141,28 @@ function setupTray() {
   })
 
   trayManager.on('copy-and-paste', async (text) => {
+    clipboardMonitor?.markInternalWrite(text, 'tray_copy_and_paste')
     clipboard.writeText(text)
     mainWindow?.webContents.send('paste-text')
   })
 }
 
+function notifyClipboardChanged(payload = {}) {
+  mainWindow?.webContents.send('clipboard:changed', payload)
+  clipboardOverlayManager?.notifyDataChanged(payload)
+}
+
 function setupIPC() {
+  logElectronOverlay('main', 'Setting up IPC handlers', {
+    logFile: electronOverlayLogFile
+  })
+
   ipcMain.handle('backend:port', () => {
     return pythonManager?.port || 8000
   })
 
   ipcMain.handle('clipboard:write', (event, text) => {
+    clipboardMonitor?.markInternalWrite(text, 'renderer_write')
     clipboard.writeText(text)
     return true
   })
@@ -234,6 +287,60 @@ function setupIPC() {
     floatingWindowManager?.updateState(payload)
   })
 
+  ipcMain.on('clipboard-overlay:show', (event, payload = {}) => {
+    if (shouldSuppressClipboardOverlayCommand('clipboard-overlay:show', payload)) {
+      return
+    }
+
+    logElectronOverlay('main', 'Received clipboard-overlay:show', payload)
+    clipboardOverlayManager?.show(payload)
+  })
+
+  ipcMain.on('clipboard-overlay:hide', () => {
+    logElectronOverlay('main', 'Received clipboard-overlay:hide')
+    clipboardOverlayManager?.hide()
+  })
+
+  ipcMain.on('clipboard-overlay:toggle', (event, payload = {}) => {
+    if (shouldSuppressClipboardOverlayCommand('clipboard-overlay:toggle', payload)) {
+      return
+    }
+
+    logElectronOverlay('main', 'Received clipboard-overlay:toggle', payload)
+    clipboardOverlayManager?.toggle(payload)
+  })
+
+  ipcMain.on('clipboard-overlay:toggle-pin', () => {
+    logElectronOverlay('main', 'Received clipboard-overlay:toggle-pin')
+    clipboardOverlayManager?.togglePinned()
+  })
+
+  ipcMain.on('clipboard-overlay:backdrop-pointer-down', (event, payload = {}) => {
+    logElectronOverlay('main', 'Received clipboard-overlay:backdrop-pointer-down', payload)
+    clipboardOverlayManager?.handleBackdropPointerDown(payload)
+  })
+
+  ipcMain.on('clipboard-overlay:drag-state', (event, payload = {}) => {
+    logElectronOverlay('main', 'Received clipboard-overlay:drag-state', payload)
+    clipboardOverlayManager?.setDragState(payload.active === true)
+  })
+
+  ipcMain.on('clipboard-overlay:start-native-drag', (event, payload = {}) => {
+    logElectronOverlay('main', 'Received clipboard-overlay:start-native-drag', {
+      itemId: payload.itemId || null,
+      itemType: payload.itemType || null
+    })
+    clipboardOverlayManager?.startNativeDrag(event.sender, payload)
+  })
+
+  ipcMain.on('debug:log', (event, payload = {}) => {
+    logElectronOverlay(
+      payload.scope || 'renderer',
+      payload.message || 'Renderer debug log',
+      payload.details
+    )
+  })
+
   ipcMain.on('main:open-settings', async () => {
     await showMainWindow({ navigateToSettings: true })
   })
@@ -241,29 +348,58 @@ function setupIPC() {
 
 app.whenReady().then(async () => {
   try {
+    logElectronOverlay('main', 'App whenReady start', {
+      isDev
+    })
     const port = await startBackend()
     console.log('Backend started on port', port)
+    logElectronOverlay('main', 'Backend started', {
+      port
+    })
 
     floatingWindowManager = new FloatingWindowManager()
+    clipboardOverlayManager = new ClipboardOverlayManager()
+    clipboardMonitor = new ClipboardMonitor({
+      getBackendPort: () => pythonManager?.port,
+      onCaptured: (payload) => {
+        notifyClipboardChanged({
+          reason: 'captured',
+          itemId: payload?.id || null
+        })
+      }
+    })
+    clipboardMonitor.start()
+    logElectronOverlay('main', 'Window managers initialized')
     setupIPC()
     await createWindow()
     setupTray()
     console.log('App ready')
+    logElectronOverlay('main', 'App ready complete')
   } catch (error) {
     console.error('Failed to start app:', error)
+    logElectronOverlay('main', 'Failed to start app', {
+      error: error.message,
+      stack: error.stack
+    })
     app.quit()
   }
 })
 
 app.on('before-quit', () => {
+  logElectronOverlay('main', 'before-quit received')
   isQuitting = true
   trayManager?.destroy()
   floatingWindowManager?.destroy()
+  clipboardOverlayManager?.destroy()
+  clipboardMonitor?.stop()
 })
 
 app.on('will-quit', () => {
+  logElectronOverlay('main', 'will-quit received')
   globalShortcut.unregisterAll()
   floatingWindowManager?.destroy()
+  clipboardOverlayManager?.destroy()
+  clipboardMonitor?.stop()
   pythonManager?.stop()
 })
 
@@ -274,14 +410,25 @@ app.on('window-all-closed', () => {
 })
 
 app.on('activate', () => {
+  logElectronOverlay('main', 'activate received', {
+    hasMainWindow: mainWindow !== null
+  })
   if (mainWindow === null) {
     showMainWindow().catch((error) => {
       console.error('Failed to reactivate main window:', error)
+      logElectronOverlay('main', 'Failed to reactivate main window', {
+        error: error.message,
+        stack: error.stack
+      })
     })
     return
   }
 
   showMainWindow().catch((error) => {
     console.error('Failed to show main window:', error)
+    logElectronOverlay('main', 'Failed to show main window', {
+      error: error.message,
+      stack: error.stack
+    })
   })
 })

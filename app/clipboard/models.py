@@ -31,6 +31,8 @@ class ClipboardItem:
     is_favorite: bool = False
     is_pinned: bool = False
     content_size: int = 0
+    duplicate_count: int = 1
+    content_hash: str = ""
     metadata: Optional[dict] = None
 
     def to_dict(self) -> dict:
@@ -47,6 +49,8 @@ class ClipboardItem:
             "is_favorite": self.is_favorite,
             "is_pinned": self.is_pinned,
             "content_size": self.content_size,
+            "duplicate_count": self.duplicate_count,
+            "content_hash": self.content_hash,
             "metadata": self.metadata or {}
         }
 
@@ -65,5 +69,7 @@ class ClipboardItem:
             is_favorite=data.get("is_favorite", False),
             is_pinned=data.get("is_pinned", False),
             content_size=data.get("content_size", 0),
+            duplicate_count=max(1, int(data.get("duplicate_count", 1) or 1)),
+            content_hash=data.get("content_hash", ""),
             metadata=data.get("metadata") or {}
         )

@@ -140,6 +140,65 @@
           </div>
         </div>
 
+        <div class="settings-group">
+          <h3 class="settings-group-title">剪切板悬浮窗</h3>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">鼠标触发方式</span>
+              <span class="setting-desc">二选一：鼠标中键，或鼠标左右键同时按下唤起剪切板悬浮窗。</span>
+            </div>
+            <select v-model="form.clipboard_overlay_trigger" class="setting-select">
+              <option value="mouse_middle">鼠标中键</option>
+              <option value="mouse_left_right_chord">左右键同时按</option>
+            </select>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">重复触发行为</span>
+              <span class="setting-desc">再次触发时，可选择直接切换开关，或只保持悬浮窗显示。</span>
+            </div>
+            <select v-model="form.clipboard_overlay_retrigger_action" class="setting-select">
+              <option value="toggle">再次触发关闭</option>
+              <option value="show_only">再次触发仅保持显示</option>
+            </select>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">回车行为</span>
+              <span class="setting-desc">选择条目后按 Enter，可仅复制，或复制后自动回填到当前焦点输入框。</span>
+            </div>
+            <select v-model="form.clipboard_overlay_enter_behavior" class="setting-select">
+              <option value="copy_and_paste">复制并回填</option>
+              <option value="copy_only">仅复制</option>
+            </select>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">打开时聚焦搜索框</span>
+              <span class="setting-desc">唤起悬浮窗后自动聚焦搜索框，便于立即筛选历史记录。</span>
+            </div>
+            <label class="toggle-switch">
+              <input v-model="form.clipboard_overlay_auto_focus_search" type="checkbox">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">点击复制后关闭悬浮窗</span>
+              <span class="setting-desc">鼠标单击剪贴板条目时先复制内容，再按该设置决定是否立即关闭悬浮窗。</span>
+            </div>
+            <label class="toggle-switch">
+              <input v-model="form.clipboard_overlay_close_on_click_copy" type="checkbox">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
       <div class="settings-group">
         <h3 class="settings-group-title">LLM 配置</h3>
 
@@ -248,6 +307,11 @@ function normalizeSettings(value = {}) {
     auto_copy_to_clipboard: value.auto_copy_to_clipboard ?? true,
     audio_input_device: value.audio_input_device || 'default',
     hotkey: normalizedHotkey,
+    clipboard_overlay_trigger: value.clipboard_overlay_trigger || 'mouse_middle',
+    clipboard_overlay_retrigger_action: value.clipboard_overlay_retrigger_action || 'toggle',
+    clipboard_overlay_enter_behavior: value.clipboard_overlay_enter_behavior || 'copy_and_paste',
+    clipboard_overlay_auto_focus_search: value.clipboard_overlay_auto_focus_search ?? true,
+    clipboard_overlay_close_on_click_copy: value.clipboard_overlay_close_on_click_copy ?? false,
     recording_mode: value.recording_mode || 'single',
     silence_threshold: value.silence_threshold ?? 1.5,
     silence_level: value.silence_level ?? -40
@@ -263,6 +327,11 @@ function buildSettingsPayload() {
     auto_copy_to_clipboard: form.value.auto_copy_to_clipboard,
     audio_input_device: form.value.audio_input_device,
     hotkey: form.value.hotkey || getDefaultHotkey(),
+    clipboard_overlay_trigger: form.value.clipboard_overlay_trigger,
+    clipboard_overlay_retrigger_action: form.value.clipboard_overlay_retrigger_action,
+    clipboard_overlay_enter_behavior: form.value.clipboard_overlay_enter_behavior,
+    clipboard_overlay_auto_focus_search: form.value.clipboard_overlay_auto_focus_search,
+    clipboard_overlay_close_on_click_copy: form.value.clipboard_overlay_close_on_click_copy,
     recording_mode: form.value.recording_mode,
     silence_threshold: form.value.silence_threshold,
     silence_level: form.value.silence_level

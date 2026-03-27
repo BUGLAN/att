@@ -75,8 +75,16 @@ import { useElectron } from '@/composables/useElectron'
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 useRecorder()
-const { connect } = useGlobalWebSocket()
-const { isElectron, onPasteText, onNavigateSettings, removeAllListeners, syncDesktopSettings } = useElectron()
+const { connect, addMessageHandler, removeMessageHandler } = useGlobalWebSocket()
+const {
+  isElectron,
+  clipboardOverlay,
+  onPasteText,
+  onNavigateSettings,
+  removeAllListeners,
+  syncDesktopSettings,
+  debugLog
+} = useElectron()
 
 const currentPage = computed(() => appStore.currentPage)
 const sidebarDisplayCollapsed = computed(() => appStore.sidebarDisplayCollapsed)
@@ -86,6 +94,33 @@ const modals = computed(() => appStore.modals)
 const shellStyles = computed(() => ({
   '--sidebar-width': `${currentSidebarWidth.value}px`
 }))
+
+function handleGlobalMessage(message) {
+  if (message.type !== 'clipboard_overlay_command' || message.action !== 'trigger') {
+    return
+  }
+
+  debugLog('renderer.app', 'Received clipboard overlay trigger message', {
+    message,
+    settings: {
+      clipboard_overlay_retrigger_action: settingsStore.settings.clipboard_overlay_retrigger_action,
+      clipboard_overlay_auto_focus_search: settingsStore.settings.clipboard_overlay_auto_focus_search
+    }
+  })
+
+  const payload = {
+    focusSearch: settingsStore.settings.clipboard_overlay_auto_focus_search ?? true
+  }
+
+  if (settingsStore.settings.clipboard_overlay_retrigger_action === 'show_only') {
+    debugLog('renderer.app', 'Using clipboard overlay show', payload)
+    clipboardOverlay.show(payload)
+    return
+  }
+
+  debugLog('renderer.app', 'Using clipboard overlay toggle', payload)
+  clipboardOverlay.toggle(payload)
+}
 
 onMounted(async () => {
   onPasteText(() => {
@@ -106,10 +141,12 @@ onMounted(async () => {
     console.error('[Desktop] Failed to sync settings on startup:', error)
   }
 
+  addMessageHandler(handleGlobalMessage)
   connect()
 })
 
 onUnmounted(() => {
+  removeMessageHandler(handleGlobalMessage)
   removeAllListeners('paste-text')
   removeAllListeners('navigate:settings')
 })

@@ -11,6 +11,9 @@ import platform
 
 VALID_HOTKEY_MODIFIERS = {"cmd", "alt", "ctrl", "shift", "win"}
 VALID_HOTKEY_KEYS = set("abcdefghijklmnopqrstuvwxyz0123456789")
+VALID_CLIPBOARD_TRIGGER_MODES = {"mouse_middle", "mouse_left_right_chord"}
+VALID_CLIPBOARD_RETRIGGER_ACTIONS = {"toggle", "show_only"}
+VALID_CLIPBOARD_ENTER_BEHAVIORS = {"copy_and_paste", "copy_only"}
 
 
 def get_default_hotkey() -> dict:
@@ -65,6 +68,58 @@ def is_valid_hotkey(hotkey: dict) -> bool:
     return key.lower() in VALID_HOTKEY_KEYS
 
 
+def get_default_clipboard_overlay_settings() -> dict:
+    """Return default clipboard overlay settings."""
+    return {
+        "clipboard_overlay_trigger": "mouse_middle",
+        "clipboard_overlay_retrigger_action": "toggle",
+        "clipboard_overlay_enter_behavior": "copy_and_paste",
+        "clipboard_overlay_auto_focus_search": True,
+        "clipboard_overlay_close_on_click_copy": False,
+    }
+
+
+def normalize_clipboard_overlay_settings(payload: Optional[dict]) -> dict:
+    """Normalize clipboard overlay settings against supported values."""
+    defaults = get_default_clipboard_overlay_settings()
+    source = payload or {}
+    normalized = dict(source)
+
+    trigger = source.get("clipboard_overlay_trigger")
+    normalized["clipboard_overlay_trigger"] = (
+        trigger if trigger in VALID_CLIPBOARD_TRIGGER_MODES
+        else defaults["clipboard_overlay_trigger"]
+    )
+
+    retrigger_action = source.get("clipboard_overlay_retrigger_action")
+    normalized["clipboard_overlay_retrigger_action"] = (
+        retrigger_action if retrigger_action in VALID_CLIPBOARD_RETRIGGER_ACTIONS
+        else defaults["clipboard_overlay_retrigger_action"]
+    )
+
+    enter_behavior = source.get("clipboard_overlay_enter_behavior")
+    normalized["clipboard_overlay_enter_behavior"] = (
+        enter_behavior if enter_behavior in VALID_CLIPBOARD_ENTER_BEHAVIORS
+        else defaults["clipboard_overlay_enter_behavior"]
+    )
+
+    auto_focus_search = source.get("clipboard_overlay_auto_focus_search")
+    normalized["clipboard_overlay_auto_focus_search"] = (
+        auto_focus_search
+        if isinstance(auto_focus_search, bool)
+        else defaults["clipboard_overlay_auto_focus_search"]
+    )
+
+    close_on_click_copy = source.get("clipboard_overlay_close_on_click_copy")
+    normalized["clipboard_overlay_close_on_click_copy"] = (
+        close_on_click_copy
+        if isinstance(close_on_click_copy, bool)
+        else defaults["clipboard_overlay_close_on_click_copy"]
+    )
+
+    return normalized
+
+
 class UserSettings:
     """
     User-configurable settings stored in data/settings.json
@@ -76,6 +131,11 @@ class UserSettings:
         "auto_optimize": False,
         "auto_copy_to_clipboard": True,  # 自动复制转码文本到剪贴板
         "hotkey": None,  # Will be set dynamically based on platform
+        "clipboard_overlay_trigger": "mouse_middle",
+        "clipboard_overlay_retrigger_action": "toggle",
+        "clipboard_overlay_enter_behavior": "copy_and_paste",
+        "clipboard_overlay_auto_focus_search": True,
+        "clipboard_overlay_close_on_click_copy": False,
         # Recording mode settings
         "recording_mode": "single",     # single or multi
         "silence_threshold": 1.5,       # 静音阈值（秒）
@@ -100,13 +160,16 @@ class UserSettings:
                     # Normalize to a registerable hotkey on load.
                     if not is_valid_hotkey(settings.get("hotkey")):
                         settings["hotkey"] = get_default_hotkey()
+                    settings = normalize_clipboard_overlay_settings(settings)
                     return settings
             except (json.JSONDecodeError, IOError):
                 settings = self.DEFAULT_SETTINGS.copy()
                 settings["hotkey"] = get_default_hotkey()
+                settings = normalize_clipboard_overlay_settings(settings)
                 return settings
         settings = self.DEFAULT_SETTINGS.copy()
         settings["hotkey"] = get_default_hotkey()
+        settings = normalize_clipboard_overlay_settings(settings)
         return settings
 
     def _save(self) -> None:

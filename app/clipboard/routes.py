@@ -18,6 +18,10 @@ class ClipboardCreateRequest(BaseModel):
     """Request model for creating a clipboard item."""
     content: str = Field(min_length=1)
     source: str = "manual"
+    item_type: Optional[ClipboardItemType] = None
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    metadata: Optional[dict] = None
 
 
 class ClipboardUpdateRequest(BaseModel):
@@ -62,9 +66,13 @@ async def get_clipboard_stats() -> dict:
 @router.post("/items", response_model=dict)
 async def create_clipboard_item(request: ClipboardCreateRequest) -> dict:
     """Create a clipboard item."""
-    item = await clipboard_manager.create_item(
+    item = await clipboard_manager.capture_item(
         content=request.content,
-        source=request.source
+        source=request.source,
+        item_type=request.item_type,
+        title=request.title,
+        summary=request.summary,
+        metadata=request.metadata
     )
     return item.to_dict()
 
