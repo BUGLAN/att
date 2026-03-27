@@ -150,6 +150,31 @@ export const api = {
   deleteRecord: (id) => request('DELETE', `/records/${id}`),
   optimizeRecord: (id) => request('POST', `/records/${id}/optimize`),
 
+  async getClipboardItems(params = {}) {
+    const searchParams = new URLSearchParams()
+
+    if (params.query) {
+      searchParams.set('query', params.query)
+    }
+    if (params.item_type) {
+      searchParams.set('item_type', params.item_type)
+    }
+    if (params.favorite_only) {
+      searchParams.set('favorite_only', 'true')
+    }
+    if (params.limit) {
+      searchParams.set('limit', String(params.limit))
+    }
+
+    const query = searchParams.toString()
+    return request('GET', `/clipboard/items${query ? `?${query}` : ''}`)
+  },
+  getClipboardStats: () => request('GET', '/clipboard/stats'),
+  createClipboardItem: (data) => request('POST', '/clipboard/items', { body: data }),
+  getClipboardItem: (id) => request('GET', `/clipboard/items/${id}`),
+  updateClipboardItem: (id, data) => request('PUT', `/clipboard/items/${id}`, { body: data }),
+  deleteClipboardItem: (id) => request('DELETE', `/clipboard/items/${id}`),
+
   async exportRecord(id, format = 'txt') {
     const baseUrl = await getBaseUrl()
     return `${baseUrl}/records/${id}/export?format=${format}`

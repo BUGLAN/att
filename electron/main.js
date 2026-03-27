@@ -79,6 +79,10 @@ function setupIPC() {
     return true
   })
 
+  ipcMain.handle('clipboard:read-text', () => {
+    return clipboard.readText()
+  })
+
   ipcMain.handle('clipboard:paste-active', async () => {
     return new Promise((resolve) => {
       const pythonPath = pythonManager?.getPythonPath?.()

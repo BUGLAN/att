@@ -3,6 +3,7 @@
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   getPort: () => ipcRenderer.invoke('backend:port'),
+  readClipboardText: () => ipcRenderer.invoke('clipboard:read-text'),
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   maximizeWindow: () => ipcRenderer.send('window:maximize'),
   closeWindow: () => ipcRenderer.send('window:close'),

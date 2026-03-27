@@ -31,6 +31,18 @@
         </span>
         <span v-if="!collapsed" class="nav-text">记录集</span>
       </button>
+      <button class="nav-item" :class="{ active: currentPage === 'clipboard' }" type="button" @click="navigateTo('clipboard')">
+        <span class="nav-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M9 4.75h6" />
+            <path d="M9 3.5h6a1.5 1.5 0 0 1 1.5 1.5v1.25H7.5V5A1.5 1.5 0 0 1 9 3.5Z" />
+            <path d="M7.25 6.25h9.5A2.25 2.25 0 0 1 19 8.5v9.25A2.25 2.25 0 0 1 16.75 20h-9.5A2.25 2.25 0 0 1 5 17.75V8.5a2.25 2.25 0 0 1 2.25-2.25Z" />
+            <path d="M8.5 11h7" />
+            <path d="M8.5 14.5h5.5" />
+          </svg>
+        </span>
+        <span v-if="!collapsed" class="nav-text">剪切板</span>
+      </button>
       <button class="nav-item" :class="{ active: currentPage === 'settings' }" type="button" @click="navigateTo('settings')">
         <span class="nav-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">
