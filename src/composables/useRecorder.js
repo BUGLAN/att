@@ -535,35 +535,18 @@ async function ensureStreamingRuntimeAvailable() {
       }
     }
 
-    if (
-      runtimeStatus.qwen_streaming_backend === 'remote_bridge' ||
-      settingsStore.settings.recording_mode === 'streaming'
-    ) {
-      const startedStatus = await settingsStore.startStreamingService(true)
-      if (startedStatus.qwen_streaming_available || startedStatus.qwen_streaming_service_ready) {
-        return {
-          available: true,
-          runtimeStatus: startedStatus
-        }
-      }
-
-      return {
-        available: false,
-        reason: startedStatus.qwen_streaming_service_error ||
-          startedStatus.qwen_streaming_error ||
-          '模型服务已启动，但尚未准备就绪'
-      }
-    }
-
     return {
       available: false,
-      reason: runtimeStatus.qwen_streaming_error ||
-        `当前后端环境 ${runtimeStatus.runtime_environment || 'unknown'} 不支持真流式`
+      reason: runtimeStatus.qwen_streaming_service_loading
+        ? '模型服务仍在加载，请稍候'
+        : runtimeStatus.qwen_streaming_service_error ||
+          runtimeStatus.qwen_streaming_error ||
+          '请先启动模型服务'
     }
   } catch (error) {
     return {
       available: false,
-      reason: error.message || '无法探测真流式运行时状态'
+      reason: error.message || '无法探测模型服务状态'
     }
   }
 }
@@ -1321,8 +1304,7 @@ async function startRecording() {
   if (settingsStore.settings.recording_mode === 'streaming') {
     const streamingRuntime = await ensureStreamingRuntimeAvailable()
     if (!streamingRuntime.available) {
-      appStore.showToast(`当前后端不支持真流式，已自动降级为单段录音：${streamingRuntime.reason}`)
-      await startSingleRecording()
+      appStore.showToast(streamingRuntime.reason || '请先启动模型服务')
       return
     }
 

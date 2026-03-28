@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import os
 import signal
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -39,7 +40,7 @@ class QwenStreamingServiceManager:
             response.raise_for_status()
             return response.json()
 
-    async def _wait_until_ready(self, timeout_seconds: float = 120.0) -> dict:
+    async def _wait_until_service_online(self, timeout_seconds: float = 30.0) -> dict:
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         last_error = None
 
@@ -49,7 +50,27 @@ class QwenStreamingServiceManager:
 
             try:
                 health = await self._probe_health()
-                if health.get("ready"):
+                if "ready" in health:
+                    return health
+                last_error = health.get("error")
+            except Exception as error:
+                last_error = str(error)
+
+            await asyncio.sleep(0.5)
+
+        raise RuntimeError(last_error or "等待 Qwen 流式模型服务上线超时")
+
+    async def _wait_until_ready(self, timeout_seconds: float = 300.0) -> dict:
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        last_error = None
+
+        while asyncio.get_running_loop().time() < deadline:
+            if self._process is not None and self._process.returncode is not None:
+                raise RuntimeError(self._last_error or "Qwen 流式模型服务启动失败")
+
+            try:
+                health = await self._probe_health()
+                if health.get("ready") and health.get("loaded"):
                     self._last_error = None
                     return health
                 last_error = health.get("error")
@@ -58,17 +79,39 @@ class QwenStreamingServiceManager:
 
             await asyncio.sleep(0.5)
 
-        raise RuntimeError(last_error or "等待 Qwen 流式模型服务启动超时")
+        raise RuntimeError(last_error or "等待 Qwen 流式模型服务预热超时")
+
+    async def _request_preload(self, timeout_seconds: float = 300.0) -> dict:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.post(f"{self.base_url}/api/preload")
+            response.raise_for_status()
+            return response.json()
 
     def _close_log_handle(self) -> None:
         if self._log_handle is not None:
             self._log_handle.close()
             self._log_handle = None
 
+    def _cleanup_stale_engine_processes(self) -> None:
+        patterns = [
+            "uvicorn scripts.qwen_streaming_service:app",
+            "VLLM::EngineCore",
+            "EngineCore_DP0",
+        ]
+
+        for pattern in patterns:
+            subprocess.run(
+                ["pkill", "-u", str(os.getuid()), "-f", pattern],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
     async def _spawn_process(self) -> None:
         if self._is_managed_process_alive():
             return
 
+        self._cleanup_stale_engine_processes()
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_handle = open(self._log_path, "a", encoding="utf-8")
         env = os.environ.copy()
@@ -100,6 +143,11 @@ class QwenStreamingServiceManager:
             log_path=str(self._log_path),
         )
 
+    async def _preload_existing_process(self) -> None:
+        await self._wait_until_service_online()
+        await self._request_preload()
+        await self._wait_until_ready()
+
     async def start(self, wait_until_ready: bool = False) -> dict:
         if self._start_task and not self._start_task.done():
             if wait_until_ready:
@@ -108,14 +156,17 @@ class QwenStreamingServiceManager:
 
         if self._is_managed_process_alive():
             if wait_until_ready:
-                await self._wait_until_ready()
+                await self._preload_existing_process()
             return await self.status()
 
         async def run_start() -> None:
             self._last_error = None
             try:
                 await self._spawn_process()
-                await self._wait_until_ready()
+                await self._wait_until_service_online()
+                if wait_until_ready:
+                    await self._request_preload()
+                    await self._wait_until_ready()
             except Exception as error:
                 self._last_error = str(error)
                 logger.error("启动 Qwen 流式模型服务失败", error=self._last_error)
@@ -155,6 +206,7 @@ class QwenStreamingServiceManager:
         self._process = None
         self._last_error = None
         self._close_log_handle()
+        self._cleanup_stale_engine_processes()
         return await self.status()
 
     async def status(self) -> dict:
@@ -166,7 +218,7 @@ class QwenStreamingServiceManager:
 
         try:
             health = await self._probe_health()
-            ready = bool(health.get("ready"))
+            ready = bool(health.get("ready") and health.get("loaded"))
             if ready:
                 last_error = None
         except Exception as error:

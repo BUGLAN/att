@@ -151,6 +151,8 @@ class QwenStreamingRuntime:
 
         self._model_class = None
         self._model = None
+        self._loading = False
+        self._effective_gpu_memory_utilization = self.gpu_memory_utilization
         self._sessions: dict[str, RemoteStreamingSession] = {}
 
     def _load_dependencies(self) -> None:
@@ -172,22 +174,64 @@ class QwenStreamingRuntime:
         if self._model is None:
             Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
             resolved_model_path = _resolve_model_name_or_path(self.model_name, self.cache_dir)
+            effective_gpu_memory_utilization = self._resolve_gpu_memory_utilization()
 
             logger.info(
                 "加载 Qwen 流式服务模型",
                 model=self.model_name,
                 resolved_model_path=resolved_model_path,
                 cache_dir=self.cache_dir,
+                gpu_memory_utilization=effective_gpu_memory_utilization,
             )
 
-            self._model = self._model_class.LLM(
-                model=resolved_model_path,
-                max_new_tokens=self.max_new_tokens,
-                max_model_len=self.max_model_len,
-                gpu_memory_utilization=self.gpu_memory_utilization,
-            )
+            self._loading = True
+            try:
+                self._model = self._model_class.LLM(
+                    model=resolved_model_path,
+                    max_new_tokens=self.max_new_tokens,
+                    max_model_len=self.max_model_len,
+                    gpu_memory_utilization=effective_gpu_memory_utilization,
+                )
+                self._effective_gpu_memory_utilization = effective_gpu_memory_utilization
+            finally:
+                self._loading = False
 
         return self._model
+
+    def preload(self) -> dict:
+        self.load_model()
+        return self.health()
+
+    def _resolve_gpu_memory_utilization(self) -> float:
+        configured = self.gpu_memory_utilization
+
+        try:
+            import torch
+
+            if not torch.cuda.is_available():
+                return configured
+
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            free_ratio = free_bytes / total_bytes if total_bytes else configured
+            adjusted = max(0.1, min(configured, free_ratio - 0.02))
+
+            if adjusted < configured:
+                logger.warning(
+                    "根据当前空闲显存下调 GPU memory utilization",
+                    configured=configured,
+                    adjusted=round(adjusted, 3),
+                    free_gib=round(free_bytes / (1024 ** 3), 2),
+                    total_gib=round(total_bytes / (1024 ** 3), 2),
+                )
+
+            return adjusted
+        except Exception as error:
+            logger.warning(
+                "检测空闲显存失败，继续使用原始 GPU memory utilization",
+                configured=configured,
+                error=str(error),
+            )
+            return configured
 
     def create_session(self, language: str, context: str) -> dict:
         model = self.load_model()
@@ -252,10 +296,12 @@ class QwenStreamingRuntime:
         self._load_dependencies()
         resolved_model_path = _resolve_model_name_or_path(self.model_name, self.cache_dir)
         return {
-            "ready": True,
+            "ready": self._model is not None,
             "model_name": self.model_name,
             "resolved_model_path": resolved_model_path,
             "loaded": self._model is not None,
+            "loading": self._loading,
+            "gpu_memory_utilization": self._effective_gpu_memory_utilization,
             "active_sessions": len(self._sessions),
             "sample_rate": DEFAULT_SAMPLE_RATE,
         }
@@ -286,6 +332,16 @@ async def start_session(request: StartSessionRequest) -> dict:
         return runtime.create_session(request.language, request.context)
     except Exception as error:
         logger.error("创建 Qwen 流式会话失败", error=str(error))
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.post("/api/preload")
+async def preload_model() -> dict:
+    """预加载流式模型。"""
+    try:
+        return runtime.preload()
+    except Exception as error:
+        logger.error("预加载 Qwen 流式模型失败", error=str(error))
         raise HTTPException(status_code=500, detail=str(error)) from error
 
 

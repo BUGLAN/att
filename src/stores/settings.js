@@ -2,6 +2,9 @@
 import { computed, ref } from 'vue'
 import { useElectron } from '@/composables/useElectron'
 
+const STREAMING_SERVICE_POLL_INTERVAL_MS = 1000
+const STREAMING_SERVICE_POLL_TIMEOUT_MS = 5 * 60 * 1000
+
 function getPlatform() {
   if (typeof window !== 'undefined' && window.electronAPI?.platform) {
     return window.electronAPI.platform
@@ -47,6 +50,7 @@ function isValidHotkey(hotkey) {
 
 export const useSettingsStore = defineStore('settings', () => {
   const { api } = useElectron()
+  let streamingServicePollPromise = null
 
   const settings = ref({
     asr_provider: 'whisper',
@@ -172,6 +176,74 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
+  function applyStreamingServiceStatus(result) {
+    const health = result?.health || {}
+    runtimeStatus.value = {
+      ...runtimeStatus.value,
+      qwen_streaming_service_managed: result?.managed ?? runtimeStatus.value.qwen_streaming_service_managed,
+      qwen_streaming_service_running: result?.running ?? runtimeStatus.value.qwen_streaming_service_running,
+      qwen_streaming_service_loading: result?.loading ?? runtimeStatus.value.qwen_streaming_service_loading,
+      qwen_streaming_service_ready: result?.ready ?? runtimeStatus.value.qwen_streaming_service_ready,
+      qwen_streaming_service_pid: result?.pid ?? runtimeStatus.value.qwen_streaming_service_pid,
+      qwen_streaming_service_url: result?.base_url ?? runtimeStatus.value.qwen_streaming_service_url,
+      qwen_streaming_service_error: result?.error ?? runtimeStatus.value.qwen_streaming_service_error,
+      qwen_streaming_available: health.loaded ?? runtimeStatus.value.qwen_streaming_available,
+      qwen_streaming_backend: health.backend ?? runtimeStatus.value.qwen_streaming_backend,
+      qwen_streaming_error: health.error ?? runtimeStatus.value.qwen_streaming_error
+    }
+  }
+
+  async function pollStreamingServiceUntilSettled() {
+    if (streamingServicePollPromise) {
+      return streamingServicePollPromise
+    }
+
+    streamingServicePollPromise = (async () => {
+      const startedAt = Date.now()
+
+      try {
+        while (Date.now() - startedAt < STREAMING_SERVICE_POLL_TIMEOUT_MS) {
+          const result = await api.getStreamingServiceStatus()
+          applyStreamingServiceStatus(result)
+
+          if (result.ready) {
+            await loadRuntimeStatus(true)
+            runtimeStatus.value = {
+              ...runtimeStatus.value,
+              qwen_streaming_service_loading: false,
+              qwen_streaming_service_error: null
+            }
+            return runtimeStatus.value
+          }
+
+          if (result.error && !result.loading) {
+            runtimeStatus.value = {
+              ...runtimeStatus.value,
+              qwen_streaming_service_loading: false,
+              qwen_streaming_service_error: result.error
+            }
+            throw new Error(result.error)
+          }
+
+          await new Promise((resolve) => {
+            window.setTimeout(resolve, STREAMING_SERVICE_POLL_INTERVAL_MS)
+          })
+        }
+
+        runtimeStatus.value = {
+          ...runtimeStatus.value,
+          qwen_streaming_service_loading: false,
+          qwen_streaming_service_error: '等待模型服务加载超时'
+        }
+        throw new Error('等待模型服务加载超时')
+      } finally {
+        streamingServicePollPromise = null
+      }
+    })()
+
+    return streamingServicePollPromise
+  }
+
   async function startStreamingService(waitUntilReady = true) {
     try {
       runtimeStatus.value = {
@@ -180,16 +252,28 @@ export const useSettingsStore = defineStore('settings', () => {
         qwen_streaming_service_error: null
       }
       const result = await api.startStreamingService(waitUntilReady)
-      await loadRuntimeStatus(true)
-      runtimeStatus.value = {
-        ...runtimeStatus.value,
-        qwen_streaming_service_loading: false,
-        qwen_streaming_service_running: result.running ?? runtimeStatus.value.qwen_streaming_service_running,
-        qwen_streaming_service_ready: result.ready ?? runtimeStatus.value.qwen_streaming_service_ready,
-        qwen_streaming_service_pid: result.pid ?? runtimeStatus.value.qwen_streaming_service_pid,
-        qwen_streaming_service_url: result.base_url ?? runtimeStatus.value.qwen_streaming_service_url,
-        qwen_streaming_service_error: result.error ?? runtimeStatus.value.qwen_streaming_service_error
+      applyStreamingServiceStatus(result)
+
+      if (waitUntilReady) {
+        await loadRuntimeStatus(true)
+        runtimeStatus.value = {
+          ...runtimeStatus.value,
+          qwen_streaming_service_loading: false,
+          qwen_streaming_service_error: result.error ?? null
+        }
+      } else if (result.ready) {
+        await loadRuntimeStatus(true)
+        runtimeStatus.value = {
+          ...runtimeStatus.value,
+          qwen_streaming_service_loading: false,
+          qwen_streaming_service_error: null
+        }
+      } else {
+        void pollStreamingServiceUntilSettled().catch((pollError) => {
+          console.error('Failed to wait for streaming service readiness:', pollError)
+        })
       }
+
       return runtimeStatus.value
     } catch (e) {
       runtimeStatus.value = {

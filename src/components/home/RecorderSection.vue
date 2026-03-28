@@ -43,6 +43,7 @@
               :class="{ active: isRecording }"
               type="button"
               :aria-label="buttonText"
+              :disabled="recordingButtonDisabled"
               @click="toggleRecording"
             >
               <span class="toggle-ring"></span>
@@ -124,7 +125,6 @@ const {
 const settingsStore = useSettingsStore()
 const serviceActionPending = ref(false)
 
-const buttonText = computed(() => (isRecording.value ? '结束录音' : '开始录音'))
 const showServiceButton = computed(() => settingsStore.settings.asr_provider === 'qwen_asr')
 const serviceLoading = computed(() => (
   serviceActionPending.value || settingsStore.runtimeStatus.qwen_streaming_service_loading
@@ -134,6 +134,16 @@ const serviceRunning = computed(() => settingsStore.runtimeStatus.qwen_streaming
 const serviceButtonDisabled = computed(() => (
   serviceLoading.value || isRecording.value || isTranscribing.value
 ))
+const recordingButtonDisabled = computed(() => (
+  !isRecording.value &&
+  isStreamingModeEnabled.value &&
+  !serviceReady.value
+))
+const buttonText = computed(() => {
+  if (isRecording.value) return '结束录音'
+  if (recordingButtonDisabled.value) return '请先启动模型服务'
+  return '开始录音'
+})
 const serviceButtonLabel = computed(() => {
   if (serviceLoading.value) return '模型服务加载中'
   if (serviceReady.value) return '关闭模型服务'
@@ -279,7 +289,7 @@ async function toggleStreamingService() {
       return
     }
 
-    await settingsStore.startStreamingService(true)
+    await settingsStore.startStreamingService(false)
   } catch (error) {
     console.error('[RecorderSection] Failed to toggle streaming service:', error)
   } finally {
@@ -288,6 +298,10 @@ async function toggleStreamingService() {
 }
 
 function toggleRecording() {
+  if (recordingButtonDisabled.value) {
+    return
+  }
+
   if (isRecording.value) {
     stopRecording()
     return
@@ -540,6 +554,21 @@ watch(
   transform: translateY(-2px) scale(1.01);
   border-color: rgba(201, 162, 39, 0.34);
   color: var(--accent);
+}
+
+.recorder-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.recorder-toggle:disabled:hover {
+  transform: none;
+  border-color: rgba(201, 162, 39, 0.2);
+  color: var(--text-primary);
 }
 
 .recorder-toggle:active {
