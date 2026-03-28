@@ -28,13 +28,10 @@
       <div v-else class="spinner" aria-hidden="true"></div>
 
       <div class="content">
-        <p v-if="showScrollingTranscript" class="primary-line primary-line-marquee">
+        <p v-if="showScrollingTranscript" class="primary-line primary-line-streaming">
           <span class="prefix-text">{{ prefixText }}</span>
-          <span class="marquee-viewport">
-            <span class="marquee-track">
-              <span class="highlight marquee-segment">{{ contentText }}</span>
-              <span class="highlight marquee-segment marquee-segment-duplicate">{{ contentText }}</span>
-            </span>
+          <span ref="streamingViewport" class="streaming-viewport">
+            <span class="highlight streaming-text">{{ contentText }}</span>
           </span>
         </p>
         <p v-else class="primary-line">
@@ -65,13 +62,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 const AUTO_HIDE_MS = 800
 
 const phase = ref('idle')
 const text = ref('')
 const mode = ref('single')
+const streamingViewport = ref(null)
 let hideTimer = null
 
 const showWaveform = computed(() => (
@@ -141,9 +139,31 @@ function openSettings() {
   window.floatingAPI?.openSettings()
 }
 
+function syncStreamingViewport() {
+  const viewport = streamingViewport.value
+  if (!viewport) {
+    return
+  }
+
+  viewport.scrollLeft = viewport.scrollWidth
+}
+
+watch([text, phase, mode], async () => {
+  if (!showScrollingTranscript.value) {
+    return
+  }
+
+  await nextTick()
+  syncStreamingViewport()
+})
+
 onMounted(() => {
   window.floatingAPI?.onStateChange((payload) => {
     applyState(payload)
+  })
+
+  nextTick(() => {
+    syncStreamingViewport()
   })
 })
 

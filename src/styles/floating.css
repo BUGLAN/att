@@ -197,7 +197,7 @@ textarea {
   text-overflow: ellipsis;
 }
 
-.primary-line-marquee {
+.primary-line-streaming {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -209,29 +209,25 @@ textarea {
   flex: 0 0 auto;
 }
 
-.marquee-viewport {
+.streaming-viewport {
   min-width: 0;
   flex: 1 1 auto;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   mask-image: linear-gradient(to right, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
   -webkit-mask-image: linear-gradient(to right, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
 }
 
-.marquee-track {
-  width: max-content;
-  display: inline-flex;
-  align-items: center;
-  animation: floating-marquee 10s linear infinite;
-  will-change: transform;
+.streaming-viewport::-webkit-scrollbar {
+  display: none;
 }
 
-.marquee-segment {
-  flex: 0 0 auto;
-  padding-right: 56px;
-}
-
-.marquee-segment-duplicate {
-  opacity: 0.9;
+.streaming-text {
+  display: inline-block;
+  min-width: 100%;
+  padding-right: 12px;
+  white-space: nowrap;
 }
 
 .highlight {
@@ -300,16 +296,6 @@ textarea {
 @keyframes spin {
   to {
     transform: rotate(360deg);
-  }
-}
-
-@keyframes floating-marquee {
-  from {
-    transform: translateX(0);
-  }
-
-  to {
-    transform: translateX(calc(-50% - 28px));
   }
 }
 
