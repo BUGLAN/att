@@ -11,6 +11,17 @@
 
           <div class="setting-item">
             <div class="setting-info">
+              <span class="setting-label">ASR Provider</span>
+              <span class="setting-desc">切换转写实现层。变更后需要重启后端才能真正生效。</span>
+            </div>
+            <select v-model="form.asr_provider" class="setting-select">
+              <option value="whisper">Whisper / faster-whisper</option>
+              <option value="qwen_asr">Qwen3-ASR</option>
+            </select>
+          </div>
+
+          <div v-if="showWhisperSettings" class="setting-item">
+            <div class="setting-info">
               <span class="setting-label">Whisper 模型</span>
               <span class="setting-desc">模型越大识别越准，但速度也会更慢。</span>
             </div>
@@ -23,16 +34,95 @@
             </select>
           </div>
 
-          <div class="setting-item">
+          <div v-if="showWhisperSettings" class="setting-item">
             <div class="setting-info">
-              <span class="setting-label">计算设备</span>
-              <span class="setting-desc">选择用于语音识别的推理设备。</span>
+              <span class="setting-label">Whisper 设备</span>
+              <span class="setting-desc">选择用于 Whisper 推理的设备。</span>
             </div>
             <select v-model="form.whisper_device" class="setting-select">
               <option value="auto">自动</option>
               <option value="cuda">CUDA</option>
               <option value="cpu">CPU</option>
             </select>
+          </div>
+
+          <div v-if="showQwenSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">Qwen3-ASR 模型</span>
+              <span class="setting-desc">支持 Hugging Face 模型名或本地模型目录。</span>
+            </div>
+            <input v-model.trim="form.qwen_asr_model" class="setting-input" type="text" placeholder="Qwen/Qwen3-ASR-1.7B">
+          </div>
+
+          <div v-if="showQwenSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">Qwen 推理设备</span>
+              <span class="setting-desc">`auto` 会优先尝试 CUDA，否则回退到 CPU。</span>
+            </div>
+            <select v-model="form.qwen_asr_device" class="setting-select">
+              <option value="auto">自动</option>
+              <option value="cuda:0">CUDA:0</option>
+              <option value="cpu">CPU</option>
+            </select>
+          </div>
+
+          <div v-if="showQwenSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">Qwen dtype</span>
+              <span class="setting-desc">默认自动推断；显存紧张时可手动调整。</span>
+            </div>
+            <select v-model="form.qwen_asr_dtype" class="setting-select">
+              <option value="auto">自动</option>
+              <option value="bfloat16">bfloat16</option>
+              <option value="float16">float16</option>
+              <option value="float32">float32</option>
+            </select>
+          </div>
+
+          <div v-if="showQwenSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">最大输出 token</span>
+              <span class="setting-desc">限制单次生成长度，避免极端长音频时输出失控。</span>
+            </div>
+            <input v-model.number="form.qwen_asr_max_new_tokens" class="setting-input" type="number" min="32" max="2048" step="32">
+          </div>
+
+          <div v-if="showQwenSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">返回时间戳</span>
+              <span class="setting-desc">开启后会尝试返回更细粒度的时间信息，代价是更重的推理链路。</span>
+            </div>
+            <label class="toggle-switch">
+              <input v-model="form.qwen_asr_return_timestamps" type="checkbox">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div v-if="showQwenSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">音频长度上限</span>
+              <span class="setting-desc">用于记录 Qwen3-ASR 的单次音频设计上限，当前先保留为配置项。</span>
+            </div>
+            <input v-model.number="form.qwen_asr_max_audio_seconds" class="setting-input" type="number" min="5" max="600" step="5">
+          </div>
+
+          <div v-if="showQwenSettings && form.qwen_asr_return_timestamps" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">启用强制对齐器</span>
+              <span class="setting-desc">进一步细化时间戳，但会显著增加显存和加载时间。</span>
+            </div>
+            <label class="toggle-switch">
+              <input v-model="form.qwen_asr_use_forced_aligner" type="checkbox">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div v-if="showQwenSettings && shouldShowForcedAlignerModel" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">强制对齐器模型</span>
+              <span class="setting-desc">默认使用 `Qwen/Qwen3-ForcedAligner-0.6B`，也可改为本地目录。</span>
+            </div>
+            <input v-model.trim="form.qwen_asr_forced_aligner_model" class="setting-input" type="text" placeholder="Qwen/Qwen3-ForcedAligner-0.6B">
           </div>
         </div>
 
@@ -42,11 +132,12 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">录音模式</span>
-              <span class="setting-desc">保留旧网页的单段 / 多段配置入口。</span>
+              <span class="setting-desc">支持单段、多段准实时，以及仅限 Qwen 的真流式模式。</span>
             </div>
             <select v-model="form.recording_mode" class="setting-select">
               <option value="single">单段录音</option>
               <option value="multi">多段录音</option>
+              <option value="streaming">Qwen 真流式</option>
             </select>
           </div>
 
@@ -253,6 +344,13 @@ const lastSavedPresetId = ref('')
 
 const builtinPresets = computed(() => presets.value.filter((preset) => preset.is_builtin))
 const isSyncing = computed(() => syncDepth.value > 0)
+const showWhisperSettings = computed(() => form.value.asr_provider !== 'qwen_asr')
+const showQwenSettings = computed(() => form.value.asr_provider === 'qwen_asr')
+const shouldShowForcedAlignerModel = computed(() => (
+  showQwenSettings.value &&
+  form.value.qwen_asr_return_timestamps &&
+  form.value.qwen_asr_use_forced_aligner
+))
 
 const hotkeyDisplay = computed(() => {
   return form.value.hotkey?.display || '点击录入快捷键'
@@ -300,8 +398,18 @@ function normalizeSettings(value = {}) {
     ? value.hotkey
     : getDefaultHotkey()
   form.value = {
+    asr_provider: value.asr_provider || 'whisper',
+    asr_language: value.asr_language || 'zh',
     whisper_model: value.whisper_model || 'large-v3',
     whisper_device: value.whisper_device || 'auto',
+    qwen_asr_model: value.qwen_asr_model || 'Qwen/Qwen3-ASR-1.7B',
+    qwen_asr_device: value.qwen_asr_device || 'auto',
+    qwen_asr_dtype: value.qwen_asr_dtype || 'auto',
+    qwen_asr_max_new_tokens: value.qwen_asr_max_new_tokens ?? 256,
+    qwen_asr_return_timestamps: value.qwen_asr_return_timestamps ?? false,
+    qwen_asr_use_forced_aligner: value.qwen_asr_use_forced_aligner ?? false,
+    qwen_asr_forced_aligner_model: value.qwen_asr_forced_aligner_model || 'Qwen/Qwen3-ForcedAligner-0.6B',
+    qwen_asr_max_audio_seconds: value.qwen_asr_max_audio_seconds ?? 30,
     pause_audio_on_recording: value.pause_audio_on_recording ?? true,
     auto_optimize: value.auto_optimize ?? false,
     auto_copy_to_clipboard: value.auto_copy_to_clipboard ?? true,
@@ -319,9 +427,20 @@ function normalizeSettings(value = {}) {
 }
 
 function buildSettingsPayload() {
+  const enableQwenTimestamps = !!form.value.qwen_asr_return_timestamps
   return {
+    asr_provider: form.value.asr_provider,
+    asr_language: form.value.asr_language,
     whisper_model: form.value.whisper_model,
     whisper_device: form.value.whisper_device,
+    qwen_asr_model: form.value.qwen_asr_model,
+    qwen_asr_device: form.value.qwen_asr_device,
+    qwen_asr_dtype: form.value.qwen_asr_dtype,
+    qwen_asr_max_new_tokens: form.value.qwen_asr_max_new_tokens,
+    qwen_asr_return_timestamps: enableQwenTimestamps,
+    qwen_asr_use_forced_aligner: enableQwenTimestamps && form.value.qwen_asr_use_forced_aligner,
+    qwen_asr_forced_aligner_model: form.value.qwen_asr_forced_aligner_model,
+    qwen_asr_max_audio_seconds: form.value.qwen_asr_max_audio_seconds,
     pause_audio_on_recording: form.value.pause_audio_on_recording,
     auto_optimize: form.value.auto_optimize,
     auto_copy_to_clipboard: form.value.auto_copy_to_clipboard,

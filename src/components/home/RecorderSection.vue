@@ -99,15 +99,24 @@ const {
   processedSegmentCount,
   sessionStatusText,
   isMultiModeEnabled,
+  isStreamingModeEnabled,
   startRecording,
   stopRecording
 } = useRecorder()
 
 const buttonText = computed(() => (isRecording.value ? '结束录音' : '开始录音'))
 
-const modeBadge = computed(() => (isMultiModeEnabled.value ? '多段准实时' : '单段录音'))
+const modeBadge = computed(() => {
+  if (isStreamingModeEnabled.value) return 'Qwen 真流式'
+  if (isMultiModeEnabled.value) return '多段准实时'
+  return '单段录音'
+})
 
-const liveModeText = computed(() => (isMultiModeEnabled.value ? '自动切段' : '完整录音'))
+const liveModeText = computed(() => {
+  if (isStreamingModeEnabled.value) return '连续流式'
+  if (isMultiModeEnabled.value) return '自动切段'
+  return '完整录音'
+})
 
 const statusBadge = computed(() => {
   if (isRecording.value) return '录音中'
@@ -122,6 +131,12 @@ const formattedDuration = computed(() => {
 })
 
 const panelStatus = computed(() => {
+  if (isRecording.value && isStreamingModeEnabled.value) {
+    if (livePhase.value === 'connecting') return '正在连接流式转写服务'
+    if (livePhase.value === 'finalizing') return '正在生成最终转写结果'
+    return '正在连续流式转写'
+  }
+
   if (isRecording.value && isMultiModeEnabled.value) {
     if (livePhase.value === 'speaking') return '正在捕获当前语音片段'
     if (livePhase.value === 'segment-processing') return '上一段已送去转写'
@@ -135,6 +150,10 @@ const panelStatus = computed(() => {
 })
 
 const panelHint = computed(() => {
+  if (isStreamingModeEnabled.value) {
+    return '真流式模式会持续发送 16k PCM 音频，并实时刷新 Qwen 转写结果。'
+  }
+
   if (isMultiModeEnabled.value) {
     return '说完一句停顿片刻，系统会自动切段并实时追加文本。'
   }
@@ -145,7 +164,7 @@ const panelHint = computed(() => {
 const waveformHeights = computed(() => {
   const base = [10, 22, 34, 48, 60, 46, 30, 20, 12]
   const amplitude = isRecording.value
-    ? (isMultiModeEnabled.value ? audioLevel.value : 0.72)
+    ? ((isMultiModeEnabled.value || isStreamingModeEnabled.value) ? audioLevel.value : 0.72)
     : 0.18
 
   return base.map((height, index) => {
@@ -159,6 +178,12 @@ const displayTranscript = computed(() => liveTranscript.value.trim())
 const sessionStatusShort = computed(() => sessionStatusText.value || '待开始')
 
 const segmentCountText = computed(() => {
+  if (isStreamingModeEnabled.value) {
+    if (isRecording.value) return '流式会话进行中'
+    if (isTranscribing.value) return '流式结果收尾中'
+    return '流式模式'
+  }
+
   if (!isMultiModeEnabled.value) {
     if (isRecording.value) return '整段采集中'
     if (isTranscribing.value) return '整段处理中'
@@ -169,6 +194,13 @@ const segmentCountText = computed(() => {
 })
 
 const transcriptPlaceholder = computed(() => {
+  if (isStreamingModeEnabled.value) {
+    if (isRecording.value) {
+      return 'Qwen 真流式模式已启用，这里会持续刷新当前转写文本。'
+    }
+    return '切换到 Qwen 真流式模式后，这里会显示连续更新的实时文本。'
+  }
+
   if (isMultiModeEnabled.value) {
     return '启用多段准实时模式后，这里会按静音自动切段，持续累积转写结果。'
   }
@@ -181,6 +213,7 @@ const transcriptPlaceholder = computed(() => {
 })
 
 const liveIndicatorText = computed(() => {
+  if (isRecording.value && isStreamingModeEnabled.value) return 'QWEN STREAM'
   if (isRecording.value && isMultiModeEnabled.value) return 'LIVE AI'
   if (isRecording.value) return 'RECORDING'
   if (isTranscribing.value) return 'PROCESSING'

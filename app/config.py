@@ -125,8 +125,18 @@ class UserSettings:
     User-configurable settings stored in data/settings.json
     """
     DEFAULT_SETTINGS = {
+        "asr_provider": "whisper",
+        "asr_language": "zh",
         "whisper_model": "large-v3",
         "whisper_device": "auto",
+        "qwen_asr_model": "Qwen/Qwen3-ASR-1.7B",
+        "qwen_asr_device": "auto",
+        "qwen_asr_dtype": "auto",
+        "qwen_asr_max_new_tokens": 256,
+        "qwen_asr_return_timestamps": False,
+        "qwen_asr_use_forced_aligner": False,
+        "qwen_asr_forced_aligner_model": "Qwen/Qwen3-ForcedAligner-0.6B",
+        "qwen_asr_max_audio_seconds": 30,
         "pause_audio_on_recording": True,
         "auto_optimize": False,
         "auto_copy_to_clipboard": True,  # 自动复制转码文本到剪贴板
@@ -137,7 +147,7 @@ class UserSettings:
         "clipboard_overlay_auto_focus_search": True,
         "clipboard_overlay_close_on_click_copy": False,
         # Recording mode settings
-        "recording_mode": "single",     # single or multi
+        "recording_mode": "single",     # single / multi / streaming
         "silence_threshold": 1.5,       # 静音阈值（秒）
         "silence_level": -40,           # 静音音量阈值（dB）
         # Prompt preset settings
@@ -208,10 +218,28 @@ class Settings(BaseSettings):
     data_dir: str = "data"
     models_dir: str = "models"
 
+    # ASR Configuration
+    asr_provider: str = "whisper"
+    asr_language: str = "zh"
+    asr_preload_on_startup: bool = False
+
     # Whisper Configuration
     whisper_model: str = "large-v3"
     whisper_device: str = "auto"  # auto, cuda, cpu, coreml
     whisper_compute_type: str = "int8"  # float16 (CUDA/CoreML), int8_float16, int8 (CPU)
+
+    # Qwen3-ASR Configuration
+    qwen_asr_model: str = "Qwen/Qwen3-ASR-1.7B"
+    qwen_asr_device: str = "auto"
+    qwen_asr_dtype: str = "auto"
+    qwen_asr_max_new_tokens: int = 256
+    qwen_asr_return_timestamps: bool = False
+    qwen_asr_use_forced_aligner: bool = False
+    qwen_asr_forced_aligner_model: str = "Qwen/Qwen3-ForcedAligner-0.6B"
+    qwen_asr_max_audio_seconds: int = 30
+    qwen_streaming_backend: str = "auto"
+    qwen_streaming_base_url: str = ""
+    qwen_streaming_timeout_seconds: float = 30.0
 
     # DeepSeek API
     deepseek_api_key: str = ""
@@ -238,6 +266,16 @@ class Settings(BaseSettings):
     @property
     def models_path(self) -> Path:
         return Path(self.models_dir)
+
+    @property
+    def faster_whisper_models_path(self) -> Path:
+        """faster-whisper 模型缓存目录"""
+        return self.models_path / "faster_whisper"
+
+    @property
+    def qwen_models_path(self) -> Path:
+        """Qwen 模型缓存目录"""
+        return self.models_path / "qwen"
 
     @property
     def audio_temp_path(self) -> Path:

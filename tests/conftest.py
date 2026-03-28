@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 import tempfile
 import shutil
+import uuid
 
 
 @pytest.fixture(scope="session")
@@ -19,7 +20,10 @@ def event_loop():
 @pytest.fixture
 def temp_dir():
     """Create a temporary directory for tests"""
-    dir_path = Path(tempfile.mkdtemp())
+    base_dir = Path(__file__).resolve().parent / ".tmp"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    dir_path = base_dir / str(uuid.uuid4())
+    dir_path.mkdir(parents=True, exist_ok=True)
     yield dir_path
     shutil.rmtree(dir_path, ignore_errors=True)
 

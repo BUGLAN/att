@@ -187,6 +187,11 @@ export const api = {
   async getWebSocketUrl(clientType = 'web') {
     const port = await getBackendPort()
     return `ws://127.0.0.1:${port}/api/ws/${clientType}`
+  },
+
+  async getStreamingWebSocketUrl() {
+    const port = await getBackendPort()
+    return `ws://127.0.0.1:${port}/api/asr/stream`
   }
 }
 

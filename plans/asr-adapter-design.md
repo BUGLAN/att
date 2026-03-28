@@ -626,3 +626,31 @@ class StreamingASRProvider(ASRProvider):
 4. 把业务调用改成依赖 provider 接口
 
 等这一步完成后，再接入 `Qwen3-ASR-1.7B`，成本会明显更低。
+## 17. 补充说明：Qwen 流式与 Windows / vllm-windows
+
+针对 `Qwen3-ASR-1.7B` 的流式模式，需要额外补充一个与当前设计强相关的现实约束：
+
+1. Qwen 官方当前将 streaming inference 绑定在 `vLLM backend`
+2. 因此，Qwen 的真流式能力不应与当前文件式 `ASRProvider.transcribe(...)` 视为同一种运行形态
+3. Windows 上如果使用 `SystemPanic/vllm-windows` 提供的 `vllm` 运行时，这条路线在架构上是成立的
+
+这意味着：
+
+- `QwenASRProvider` 可以继续承担文件式批量转写
+- 真流式应继续走独立的 `StreamingASRProvider`
+- 对 Windows，不应再假设“只能 Linux / WSL2 才能跑 vLLM”
+
+更具体地说，Windows 下推荐优先采用：
+
+- 主应用保留当前 FastAPI / Electron 架构
+- Qwen 真流式服务独立部署
+- 主应用通过 `remote_bridge` 方式桥接该服务
+- 独立服务使用 `uv` 管理 Python 3.12 环境，并固定安装 GPU 版 `torch` 与 `vllm-windows 0.17.0`
+
+如果后续验证 `vllm-windows` + `qwen-asr[vllm]` 在主应用同一 Python 环境内足够稳定，再考虑让 `local_vllm` 成为可选部署形态。
+
+换句话说，针对 Windows 平台，当前设计的重点不是修改适配器分层，而是：
+
+- 保持批处理 provider 与流式 provider 的边界
+- 允许流式 backend 独立部署
+- 将 `vllm-windows` 视为 Windows 平台的 vLLM 运行时实现，而不是视为另一套完全不同的架构

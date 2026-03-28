@@ -26,6 +26,7 @@ class ExportFormat(str, Enum):
 
 class RecordingMode(str, Enum):
     """Recording mode options"""
+    STREAMING = "streaming"
     SINGLE = "single"      # 单段录音
     MULTI = "multi"        # 多段录音（静音分割）
 

@@ -12,6 +12,7 @@ soundfile>=0.12.1
 
 # Speech-to-Text
 faster-whisper>=1.0.0
+qwen-asr>=0.0.6
 
 # LLM
 httpx>=0.26.0

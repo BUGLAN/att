@@ -4,9 +4,11 @@
   "description": "Audio to Text - Electron App",
   "main": "electron/main.js",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --strictPort",
     "build": "vite build",
     "preview": "vite preview",
+    "backend:dev:uv": "cross-env UV_PROJECT_ENVIRONMENT=.venv UV_CACHE_DIR=tmp/uv-cache uv run --no-sync python -m uvicorn app.main:app --reload",
+    "qwen:streaming:uv": "cross-env UV_PROJECT_ENVIRONMENT=.venv UV_CACHE_DIR=tmp/uv-cache uv run --no-sync python scripts/qwen_streaming_service.py",
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "electron:build": "vite build && electron-builder",
     "electron:build:win": "vite build && electron-builder --win",

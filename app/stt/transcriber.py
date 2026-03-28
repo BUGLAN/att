@@ -84,6 +84,7 @@ class WhisperTranscriber:
         self.model_size = model_size or settings.whisper_model
         self.device = device or settings.whisper_device
         self.compute_type = compute_type or settings.whisper_compute_type
+        self.download_root = str(settings.faster_whisper_models_path)
 
         # Auto-detect Core ML for Apple Silicon
         if self.device == "auto" and platform.processor() == "arm":
@@ -97,7 +98,8 @@ class WhisperTranscriber:
             "Initializing WhisperTranscriber",
             model=self.model_size,
             device=self.device,
-            compute_type=self.compute_type
+            compute_type=self.compute_type,
+            download_root=self.download_root
         )
 
     def _load_model(self) -> WhisperModel:
@@ -111,7 +113,8 @@ class WhisperTranscriber:
                 self._model = WhisperModel(
                     self.model_size,
                     device="cpu",
-                    compute_type="int8"
+                    compute_type="int8",
+                    download_root=self.download_root
                 )
                 logger.info("Model loaded for Apple Silicon (cpu/int8)")
             else:
@@ -119,7 +122,8 @@ class WhisperTranscriber:
                 self._model = WhisperModel(
                     self.model_size,
                     device=self.device,
-                    compute_type=self.compute_type
+                    compute_type=self.compute_type,
+                    download_root=self.download_root
                 )
 
             load_time = time.time() - start_time

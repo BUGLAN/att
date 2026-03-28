@@ -15,58 +15,57 @@ from app.records.manager import RecordManager
 from app.config import settings
 
 
-async def test_audio_processor():
+def test_audio_processor(temp_dir):
     """Test audio processor"""
-    print("\n=== Testing Audio Processor ===")
 
-    processor = AudioProcessor()
+    async def run_test():
+        print("\n=== Testing Audio Processor ===")
 
-    # Create a test audio file (silence)
-    from pydub import AudioSegment
-    silence = AudioSegment.silent(duration=5000)  # 5 seconds
-    test_path = Path("test_audio.wav")
-    silence.export(str(test_path), format="wav")
+        processor = AudioProcessor()
 
-    # Read and validate
-    with open(test_path, "rb") as f:
-        content = f.read()
+        from pydub import AudioSegment
+        silence = AudioSegment.silent(duration=5000)
+        test_path = temp_dir / "test_audio.wav"
+        silence.export(str(test_path), format="wav")
 
-    metadata = await processor.validate_audio(content, "test_audio.wav")
-    print(f"✓ Audio validated: {metadata.duration}s, {metadata.format}")
+        with open(test_path, "rb") as f:
+            content = f.read()
 
-    # Cleanup
-    test_path.unlink()
-    print("✓ Audio processor test passed")
+        metadata = await processor.validate_audio(content, "test_audio.wav")
+        print(f"✓ Audio validated: {metadata.duration}s, {metadata.format}")
+
+        print("✓ Audio processor test passed")
+
+    asyncio.run(run_test())
 
 
-async def test_record_manager():
+def test_record_manager(temp_dir):
     """Test record manager"""
-    print("\n=== Testing Record Manager ===")
 
-    manager = RecordManager(settings.data_path)
-    await manager.initialize()
+    async def run_test():
+        print("\n=== Testing Record Manager ===")
 
-    # Create record
-    record = await manager.create_record(
-        audio_path="test/path.wav",
-        duration=5.0
-    )
-    print(f"✓ Record created: {record.id}")
+        manager = RecordManager(temp_dir)
+        await manager.initialize()
 
-    # Update record
-    updated = await manager.update_record(
-        record.id,
-        raw_text="这是一个测试文本。"
-    )
-    print(f"✓ Record updated: {updated.raw_text}")
+        record = await manager.create_record(
+            audio_path="test/path.wav",
+            duration=5.0
+        )
+        print(f"✓ Record created: {record.id}")
 
-    # List records
-    records = await manager.list_records()
-    print(f"✓ Listed {len(records)} records")
+        updated = await manager.update_record(
+            record.id,
+            raw_text="这是一个测试文本。"
+        )
+        print(f"✓ Record updated: {updated.raw_text}")
 
-    # Cleanup
-    await manager.delete_record(record.id)
-    print("✓ Record manager test passed")
+        records = await manager.list_records()
+        print(f"✓ Listed {len(records)} records")
+
+        print("✓ Record manager test passed")
+
+    asyncio.run(run_test())
 
 
 async def main():

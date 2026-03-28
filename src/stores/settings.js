@@ -49,8 +49,18 @@ export const useSettingsStore = defineStore('settings', () => {
   const { api } = useElectron()
 
   const settings = ref({
+    asr_provider: 'whisper',
+    asr_language: 'zh',
     whisper_model: 'large-v3',
     whisper_device: 'auto',
+    qwen_asr_model: 'Qwen/Qwen3-ASR-1.7B',
+    qwen_asr_device: 'auto',
+    qwen_asr_dtype: 'auto',
+    qwen_asr_max_new_tokens: 256,
+    qwen_asr_return_timestamps: false,
+    qwen_asr_use_forced_aligner: false,
+    qwen_asr_forced_aligner_model: 'Qwen/Qwen3-ForcedAligner-0.6B',
+    qwen_asr_max_audio_seconds: 30,
     pause_audio_on_recording: true,
     auto_optimize: false,
     auto_copy_to_clipboard: true,

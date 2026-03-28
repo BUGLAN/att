@@ -10,9 +10,74 @@ class PythonManager {
     this.startTime = null
   }
 
+  getProjectVenvPython() {
+    const runtimeRoot = this.getRuntimeRoot()
+    return process.platform === 'win32'
+      ? path.join(runtimeRoot, '.venv', 'Scripts', 'python.exe')
+      : path.join(runtimeRoot, '.venv', 'bin', 'python3')
+  }
+
+  getBackendCommand() {
+    if (process.env.NODE_ENV === 'development') {
+      const projectPython = this.getProjectVenvPython()
+      if (require('fs').existsSync(projectPython)) {
+        return projectPython
+      }
+
+      return 'uv'
+    }
+
+    return process.platform === 'win32'
+      ? path.join(process.resourcesPath, 'python', 'python.exe')
+      : path.join(process.resourcesPath, 'python', 'bin', 'python3')
+  }
+
+  getBackendArgs(port) {
+    if (process.env.NODE_ENV === 'development') {
+      const projectPython = this.getProjectVenvPython()
+      if (require('fs').existsSync(projectPython)) {
+        return [
+          '-m',
+          'uvicorn',
+          'app.main:app',
+          '--host',
+          '127.0.0.1',
+          '--port',
+          port.toString()
+        ]
+      }
+
+      return [
+        'run',
+        '--no-sync',
+        'python',
+        '-m',
+        'uvicorn',
+        'app.main:app',
+        '--host',
+        '127.0.0.1',
+        '--port',
+        port.toString()
+      ]
+    }
+
+    return [
+      '-m',
+      'uvicorn',
+      'app.main:app',
+      '--host',
+      '127.0.0.1',
+      '--port',
+      port.toString()
+    ]
+  }
+
   getPythonPath() {
     if (process.env.NODE_ENV === 'development') {
-      return process.platform === 'win32' ? 'python' : 'python3'
+      const projectPython = this.getProjectVenvPython()
+      return process.platform === 'win32' && require('fs').existsSync(projectPython)
+        ? projectPython
+        : (process.platform === 'win32' ? 'python' : 'python3')
     }
 
     return process.platform === 'win32'
@@ -145,23 +210,21 @@ class PythonManager {
 
     this.port = await this.findAvailablePort()
 
-    const pythonPath = this.getPythonPath()
+    const backendCommand = this.getBackendCommand()
+    const backendArgs = this.getBackendArgs(this.port)
     const runtimeRoot = this.getRuntimeRoot()
     const env = {
       ...process.env,
       PYTHONUNBUFFERED: '1',
       PORT: this.port.toString(),
+      UV_CACHE_DIR: process.env.UV_CACHE_DIR || path.join(runtimeRoot, 'tmp', 'uv-cache'),
+      UV_PROJECT_ENVIRONMENT: process.env.UV_PROJECT_ENVIRONMENT || path.join(runtimeRoot, '.venv'),
       PYTHONPATH: process.env.PYTHONPATH
         ? `${runtimeRoot}${path.delimiter}${process.env.PYTHONPATH}`
         : runtimeRoot
     }
 
-    this.process = this.spawnBackendProcess(pythonPath, [
-      '-m', 'uvicorn',
-      'app.main:app',
-      '--host', '127.0.0.1',
-      '--port', this.port.toString()
-    ], {
+    this.process = this.spawnBackendProcess(backendCommand, backendArgs, {
       cwd: runtimeRoot,
       env,
       stdio: ['pipe', 'pipe', 'pipe']

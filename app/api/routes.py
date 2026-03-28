@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from pathlib import Path
 from datetime import datetime
+import json
 import uuid
 
 from app.config import (
@@ -26,12 +27,13 @@ from app.config import (
     normalize_clipboard_overlay_settings,
 )
 from app.audio.processor import AudioProcessor
-from app.stt.transcriber import WhisperTranscriber
+from app.stt.base import ASRProvider
 from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
 from app.records.models import Record, RecordStatus, ExportFormat
 from app.records.session_manager import session_manager
 from app.services.hotkey_listener import get_hotkey_service
+from app.services.streaming_session_manager import StreamingSessionManager
 from app.services.websocket import manager as ws_manager
 from app.prompts import PromptManager, PromptPresetCreate, PromptPresetUpdate, prompt_manager
 from app.utils.logging import get_logger
@@ -42,9 +44,10 @@ router = APIRouter(prefix="/api", tags=["api"])
 
 # Global instances (initialized in main.py)
 audio_processor: Optional[AudioProcessor] = None
-transcriber: Optional[WhisperTranscriber] = None
+asr_provider: Optional[ASRProvider] = None
 optimizer: Optional[TextOptimizer] = None
 record_manager: Optional[RecordManager] = None
+streaming_session_manager: Optional[StreamingSessionManager] = None
 
 # Request models
 class RecordUpdateRequest(BaseModel):
@@ -118,16 +121,37 @@ def validate_hotkey(hotkey: dict) -> bool:
 
 def init_processors(
     audio: AudioProcessor,
-    stt: WhisperTranscriber,
+    stt: ASRProvider,
     llm: TextOptimizer,
     records: RecordManager
 ) -> None:
     """Initialize global processor instances"""
-    global audio_processor, transcriber, optimizer, record_manager
+    global audio_processor, asr_provider, optimizer, record_manager
     audio_processor = audio
-    transcriber = stt
+    asr_provider = stt
     optimizer = llm
     record_manager = records
+
+
+def get_streaming_session_manager() -> StreamingSessionManager:
+    """懒加载流式会话管理器。"""
+    global streaming_session_manager
+
+    if streaming_session_manager is None:
+        if record_manager is None or optimizer is None:
+            raise RuntimeError("Streaming session manager is not ready")
+        streaming_session_manager = StreamingSessionManager(record_manager, optimizer)
+
+    return streaming_session_manager
+
+
+async def close_streaming_session_manager() -> None:
+    """关闭流式会话管理器。"""
+    global streaming_session_manager
+
+    if streaming_session_manager is not None:
+        await streaming_session_manager.close()
+        streaming_session_manager = None
 
 
 def build_completion_metadata(**data) -> dict:
@@ -143,7 +167,7 @@ def build_completion_metadata(**data) -> dict:
 async def _transcribe_audio_background(
     record_id: str,
     audio_path: str,
-    transcriber: WhisperTranscriber,
+    asr_provider: ASRProvider,
     record_manager: RecordManager,
     optimizer: TextOptimizer,
     user_settings
@@ -154,7 +178,7 @@ async def _transcribe_audio_background(
     Args:
         record_id: Record ID to update
         audio_path: Path to audio file
-        transcriber: Transcriber instance (passed explicitly to avoid global issues)
+        asr_provider: ASR provider 实例（显式传入以避免全局引用问题）
         record_manager: Record manager instance
         optimizer: Text optimizer instance for auto-optimization
         user_settings: User settings instance
@@ -179,7 +203,7 @@ async def _transcribe_audio_background(
         )
 
         # Execute transcription
-        result = await transcriber.transcribe(audio_path)
+        result = await asr_provider.transcribe(audio_path)
 
         # Update with result
         await record_manager.update_record(
@@ -345,7 +369,7 @@ async def upload_audio(
             _transcribe_audio_background,
             record.id,
             str(audio_path),
-            transcriber,
+            asr_provider,
             record_manager,
             optimizer,
             user_settings
@@ -559,13 +583,35 @@ async def export_record(
 # ==================== Health Check ====================
 
 @router.get("/health")
-async def health_check() -> dict:
+async def health_check(probe_runtime: bool = False) -> dict:
     """Health check endpoint"""
+    configured_provider = user_settings.get("asr_provider", settings.asr_provider)
+    configured_model = (
+        user_settings.get("qwen_asr_model", settings.qwen_asr_model)
+        if configured_provider == "qwen_asr"
+        else user_settings.get("whisper_model", settings.whisper_model)
+    )
+    streaming_available = False
+    streaming_error = None
+    streaming_backend = None
+    if probe_runtime and configured_provider == "qwen_asr":
+        try:
+            provider = get_streaming_session_manager()._get_provider()
+            streaming_status = await provider.check_availability()
+            streaming_available = bool(streaming_status.get("available", False))
+            streaming_backend = streaming_status.get("backend")
+        except Exception as error:
+            streaming_error = str(error)
+
     return {
         "status": "healthy",
-        "whisper_model": settings.whisper_model,
+        "asr_provider": asr_provider.provider_type if asr_provider else configured_provider,
+        "asr_model": asr_provider.model_name if asr_provider else configured_model,
         "deepseek_configured": bool(settings.deepseek_api_key),
-        "ws_clients": ws_manager.client_count
+        "ws_clients": ws_manager.client_count,
+        "qwen_streaming_backend": streaming_backend,
+        "qwen_streaming_available": streaming_available,
+        "qwen_streaming_error": streaming_error
     }
 
 
@@ -600,7 +646,12 @@ async def update_settings(updates: dict) -> dict:
     """Update user settings"""
     # Filter to only allowed keys
     allowed_keys = {
+        "asr_provider", "asr_language",
         "whisper_model", "whisper_device",
+        "qwen_asr_model", "qwen_asr_device", "qwen_asr_dtype",
+        "qwen_asr_max_new_tokens", "qwen_asr_return_timestamps",
+        "qwen_asr_use_forced_aligner", "qwen_asr_forced_aligner_model",
+        "qwen_asr_max_audio_seconds",
         "pause_audio_on_recording", "auto_optimize", "auto_copy_to_clipboard",
         "hotkey",
         "clipboard_overlay_trigger", "clipboard_overlay_retrigger_action",
@@ -618,6 +669,9 @@ async def update_settings(updates: dict) -> dict:
     # Validate hotkey if provided
     if "hotkey" in filtered and not validate_hotkey(filtered["hotkey"]):
         raise HTTPException(status_code=400, detail="Invalid hotkey configuration")
+
+    if "asr_provider" in filtered and filtered["asr_provider"] not in {"whisper", "qwen_asr"}:
+        raise HTTPException(status_code=400, detail="Invalid ASR provider")
 
     if not filtered:
         raise HTTPException(status_code=400, detail="No valid settings provided")
@@ -679,6 +733,93 @@ async def websocket_endpoint(websocket: WebSocket, client_type: str):
         )
         ws_manager.disconnect(client_id)
         await ws_manager.broadcast_status()
+
+
+@router.websocket("/asr/stream")
+async def streaming_asr_websocket(websocket: WebSocket):
+    """Qwen 真流式 ASR WebSocket。"""
+    await websocket.accept()
+    stream_session_id = None
+
+    try:
+        manager = get_streaming_session_manager()
+        while True:
+            message = await websocket.receive()
+            message_type = message.get("type")
+
+            if message_type == "websocket.disconnect":
+                break
+
+            if message.get("text") is not None:
+                data = json.loads(message["text"])
+                command = data.get("type")
+
+                if command == "stream_start":
+                    session = await manager.create_session(
+                        language=data.get("language", "zh"),
+                        context=data.get("context", "")
+                    )
+                    stream_session_id = session["session_id"]
+                    await websocket.send_json({
+                        "type": "stream_ready",
+                        "data": session,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    continue
+
+                if command == "stream_finish":
+                    if not stream_session_id:
+                        raise ValueError("流式会话尚未启动")
+
+                    result = await manager.finish_session(stream_session_id)
+                    stream_session_id = None
+                    await websocket.send_json({
+                        "type": "stream_finished",
+                        "data": result,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    continue
+
+                if command == "stream_cancel":
+                    if stream_session_id:
+                        await manager.cancel_session(stream_session_id)
+                        stream_session_id = None
+                    await websocket.send_json({
+                        "type": "stream_cancelled",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    continue
+
+                if command == "ping":
+                    await websocket.send_json({"type": "pong"})
+                    continue
+
+                raise ValueError(f"未知的流式命令: {command}")
+
+            if message.get("bytes") is not None:
+                if not stream_session_id:
+                    raise ValueError("流式会话尚未启动")
+
+                update = await manager.append_audio(stream_session_id, message["bytes"])
+                await websocket.send_json({
+                    "type": "stream_partial",
+                    "data": update,
+                    "timestamp": datetime.now().isoformat()
+                })
+
+    except WebSocketDisconnect:
+        if stream_session_id:
+            await manager.cancel_session(stream_session_id)
+    except Exception as error:
+        logger.error("Streaming ASR WebSocket error", error=str(error), session_id=stream_session_id)
+        if stream_session_id:
+            await manager.cancel_session(stream_session_id)
+        await websocket.send_json({
+            "type": "stream_error",
+            "data": {"error": str(error)},
+            "timestamp": datetime.now().isoformat()
+        })
+        await websocket.close()
 
 
 async def _handle_websocket_message(client_id: str, data: dict) -> None:
@@ -949,7 +1090,7 @@ async def upload_segment(
     )
 
     # Schedule background transcription
-    if background_tasks and transcriber:
+    if background_tasks and asr_provider:
         background_tasks.add_task(
             _transcribe_segment_background,
             session_id,
@@ -1021,7 +1162,7 @@ async def _transcribe_segment_background(
         )
 
         # Execute transcription
-        result = await transcriber.transcribe(audio_path, vad_filter=False)
+        result = await asr_provider.transcribe(audio_path, vad_filter=False)
 
         # Update segment with result
         await session_manager.update_segment(

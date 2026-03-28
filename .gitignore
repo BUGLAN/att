@@ -55,6 +55,10 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+tests/.tmp/
+test_audio.wav
+ffcache*
+pytest-cache-files-*/
 
 # OS
 .DS_Store
@@ -67,3 +71,8 @@ release/
 python-dist/
 
 *.pyc.*
+models/
+.claude/
+vllm-windwos/
+tmp/
+logs/

@@ -8,6 +8,8 @@ import { createSilenceDetector } from './useSilenceDetector'
 
 const MIN_REALTIME_SEGMENT_DURATION = 2.2
 const MAX_REALTIME_SEGMENT_DURATION = 10
+const STREAM_SAMPLE_RATE = 16000
+const STREAM_FLUSH_SAMPLES = 3200
 
 const duration = ref(0)
 const mediaRecorder = ref(null)
@@ -20,6 +22,7 @@ const livePhase = ref('idle')
 const activeRecordingMode = ref('single')
 const currentSessionId = ref(null)
 const processedSegmentCount = ref(0)
+const streamingConnectionState = ref('idle')
 const sessionStatusText = ref('按住快捷键开始录音')
 
 let pollingTimer = null
@@ -40,6 +43,13 @@ let realtimeHasCapturedSpeech = false
 let realtimeSegmentStartedAt = 0
 let realtimeMaxSegmentTimer = null
 let realtimeRestartAfterStop = false
+let streamingSocket = null
+let streamingAudioContext = null
+let streamingSourceNode = null
+let streamingWorkletNode = null
+let streamingPendingSamples = []
+let streamingPendingSampleCount = 0
+let streamingAwaitingFinish = false
 const completedPhases = new Set()
 
 function syncFloatingWindow(state, options = {}) {
@@ -89,6 +99,137 @@ function stopMediaTracks() {
   }
 }
 
+function resetStreamingBuffer() {
+  streamingPendingSamples = []
+  streamingPendingSampleCount = 0
+}
+
+function cleanupStreamingAudio() {
+  if (streamingWorkletNode) {
+    streamingWorkletNode.port.onmessage = null
+    streamingWorkletNode.disconnect()
+    streamingWorkletNode = null
+  }
+
+  if (streamingSourceNode) {
+    streamingSourceNode.disconnect()
+    streamingSourceNode = null
+  }
+
+  if (streamingAudioContext) {
+    streamingAudioContext.close().catch(() => {})
+    streamingAudioContext = null
+  }
+
+  resetStreamingBuffer()
+  audioLevel.value = 0
+}
+
+function cleanupStreamingSocket() {
+  if (streamingSocket) {
+    streamingSocket.onopen = null
+    streamingSocket.onmessage = null
+    streamingSocket.onerror = null
+    streamingSocket.onclose = null
+    if (streamingSocket.readyState === WebSocket.OPEN || streamingSocket.readyState === WebSocket.CONNECTING) {
+      streamingSocket.close()
+    }
+    streamingSocket = null
+  }
+
+  streamingConnectionState.value = 'idle'
+  streamingAwaitingFinish = false
+}
+
+function updateStreamingTranscript(text) {
+  liveTranscript.value = text || ''
+
+  if (floatingSessionActive && activeRecordingMode.value === 'streaming') {
+    syncFloatingWindow({
+      phase: 'recording',
+      duration: duration.value,
+      text: liveTranscript.value
+    })
+  }
+}
+
+function calculateAudioLevel(samples) {
+  if (!samples?.length) {
+    return 0
+  }
+
+  let sumSquares = 0
+  for (let index = 0; index < samples.length; index += 1) {
+    sumSquares += samples[index] * samples[index]
+  }
+
+  const rms = Math.sqrt(sumSquares / samples.length)
+  return Math.max(0, Math.min(1, rms * 6))
+}
+
+function takeStreamingSamples(count) {
+  const result = new Float32Array(count)
+  let offset = 0
+
+  while (offset < count && streamingPendingSamples.length > 0) {
+    const current = streamingPendingSamples[0]
+    const remaining = count - offset
+
+    if (current.length <= remaining) {
+      result.set(current, offset)
+      offset += current.length
+      streamingPendingSamples.shift()
+      continue
+    }
+
+    result.set(current.subarray(0, remaining), offset)
+    streamingPendingSamples[0] = current.subarray(remaining)
+    offset += remaining
+  }
+
+  streamingPendingSampleCount -= count
+  return result
+}
+
+function convertFloat32ToPcm16Buffer(samples) {
+  const pcm16 = new Int16Array(samples.length)
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[index]))
+    pcm16[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
+  }
+  return pcm16.buffer
+}
+
+function sendStreamingSamples(force = false) {
+  if (!streamingSocket || streamingSocket.readyState !== WebSocket.OPEN || !currentSessionId.value) {
+    return
+  }
+
+  if (!force) {
+    while (streamingPendingSampleCount >= STREAM_FLUSH_SAMPLES) {
+      const chunk = takeStreamingSamples(STREAM_FLUSH_SAMPLES)
+      streamingSocket.send(convertFloat32ToPcm16Buffer(chunk))
+    }
+    return
+  }
+
+  if (streamingPendingSampleCount > 0) {
+    const chunk = takeStreamingSamples(streamingPendingSampleCount)
+    streamingSocket.send(convertFloat32ToPcm16Buffer(chunk))
+  }
+}
+
+function queueStreamingSamples(samples) {
+  if (!samples?.length) {
+    return
+  }
+
+  audioLevel.value = calculateAudioLevel(samples)
+  streamingPendingSamples.push(samples)
+  streamingPendingSampleCount += samples.length
+  sendStreamingSamples(false)
+}
+
 function cleanupRealtimeDetector() {
   silenceDetector?.stop?.()
   silenceDetector = null
@@ -108,6 +249,14 @@ function stopPolling() {
     pollingTimer = null
   }
   pollingInFlight = false
+}
+
+function resetStreamingState() {
+  cleanupStreamingAudio()
+  cleanupStreamingSocket()
+  streamingConnectionState.value = 'idle'
+  currentSessionId.value = null
+  liveTranscript.value = ''
 }
 
 function resetRealtimeState() {
@@ -352,6 +501,177 @@ function createRecorder(targetStream, onStop) {
   }
 
   return recorder
+}
+
+async function connectStreamingSocket(language) {
+  const { api } = useElectron()
+
+  streamingConnectionState.value = 'connecting'
+  const url = await api.getStreamingWebSocketUrl()
+
+  await new Promise((resolve, reject) => {
+    let settled = false
+    streamingSocket = new WebSocket(url)
+    streamingSocket.binaryType = 'arraybuffer'
+
+    const fail = (error) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      reject(error instanceof Error ? error : new Error(String(error)))
+    }
+
+    streamingSocket.onopen = () => {
+      streamingSocket.send(JSON.stringify({
+        type: 'stream_start',
+        language: language || 'zh'
+      }))
+    }
+
+    streamingSocket.onerror = () => {
+      fail(new Error('流式连接建立失败'))
+    }
+
+    streamingSocket.onclose = () => {
+      if (!settled && streamingConnectionState.value === 'connecting') {
+        fail(new Error('流式连接已关闭'))
+      } else if (!streamingAwaitingFinish && streamingConnectionState.value !== 'idle') {
+        streamingConnectionState.value = 'error'
+      }
+    }
+
+    streamingSocket.onmessage = async (event) => {
+      try {
+        const message = JSON.parse(event.data)
+
+        if (message.type === 'stream_ready') {
+          currentSessionId.value = message.data?.session_id || null
+          streamingConnectionState.value = 'streaming'
+          if (!settled) {
+            settled = true
+            resolve(message)
+          }
+          return
+        }
+
+        if (message.type === 'stream_partial') {
+          updateStreamingTranscript(message.data?.text || '')
+          sessionStatusText.value = 'Qwen 真流式转写中'
+          livePhase.value = 'streaming'
+          return
+        }
+
+        if (message.type === 'stream_finished') {
+          const appStore = useAppStore()
+          const recordsStore = useRecordsStore()
+          const { tray } = useElectron()
+          const payload = message.data || {}
+          const record = payload.record || null
+
+          if (record) {
+            syncRecordIntoStore(record)
+            appStore.setCurrentRecordId(record.id)
+            appStore.setCurrentRecord(record)
+            appStore.setRecordStatus({ record_id: record.id, status: record.status })
+          }
+
+          const finalText = payload.optimized_text || payload.raw_text || record?.optimized_text || record?.raw_text || ''
+          updateStreamingTranscript(finalText)
+          livePhase.value = 'completed'
+          sessionStatusText.value = 'Qwen 真流式录音已完成'
+          appStore.setRecording(false)
+          appStore.setTranscribing(false)
+          tray.setIcon('idle')
+
+          if (floatingSessionActive) {
+            syncFloatingWindow({
+              phase: 'complete',
+              duration: 0,
+              text: finalText
+            })
+            floatingSessionActive = false
+          }
+
+          const copyResult = await maybeCopyText(finalText)
+          appStore.showToast(
+            copyResult.pasted
+              ? '真流式转写完成，已复制并粘贴'
+              : copyResult.attempted
+                ? '真流式转写完成，复制或粘贴失败'
+                : '真流式转写完成'
+          )
+
+          streamingAwaitingFinish = false
+          cleanupStreamingSocket()
+          currentSessionId.value = null
+          return
+        }
+
+        if (message.type === 'stream_cancelled') {
+          streamingAwaitingFinish = false
+          cleanupStreamingSocket()
+          currentSessionId.value = null
+          return
+        }
+
+        if (message.type === 'stream_error') {
+          throw new Error(message.data?.error || '流式转写失败')
+        }
+      } catch (error) {
+        if (!settled) {
+          fail(error)
+          return
+        }
+
+        const appStore = useAppStore()
+        const { tray } = useElectron()
+        cleanupStreamingAudio()
+        cleanupStreamingSocket()
+        stopMediaTracks()
+        clearDurationTimer()
+        appStore.setRecording(false)
+        appStore.setTranscribing(false)
+        tray.setIcon('idle')
+        livePhase.value = 'error'
+        sessionStatusText.value = error.message || '流式转写失败'
+        if (floatingSessionActive) {
+          syncFloatingWindow({
+            phase: 'error',
+            duration: 0,
+            text: error.message || '流式转写失败'
+          })
+          floatingSessionActive = false
+        }
+        appStore.showToast(error.message || '流式转写失败')
+      }
+    }
+  })
+}
+
+async function setupStreamingAudioCapture(targetStream) {
+  const workletUrl = new URL('../worklets/pcm-capture-worklet.js', import.meta.url)
+
+  streamingAudioContext = new AudioContext({ sampleRate: STREAM_SAMPLE_RATE })
+  if (streamingAudioContext.sampleRate !== STREAM_SAMPLE_RATE) {
+    throw new Error(`当前浏览器返回的采样率为 ${streamingAudioContext.sampleRate}Hz，无法启用真流式`)
+  }
+  await streamingAudioContext.audioWorklet.addModule(workletUrl.href)
+
+  streamingSourceNode = streamingAudioContext.createMediaStreamSource(targetStream)
+  streamingWorkletNode = new AudioWorkletNode(streamingAudioContext, 'pcm-capture-processor')
+  streamingWorkletNode.port.onmessage = (event) => {
+    if (!(event.data instanceof Float32Array)) {
+      return
+    }
+    queueStreamingSamples(event.data)
+  }
+
+  streamingSourceNode.connect(streamingWorkletNode)
+  const silentGainNode = streamingAudioContext.createGain()
+  silentGainNode.gain.value = 0
+  streamingWorkletNode.connect(silentGainNode)
+  silentGainNode.connect(streamingAudioContext.destination)
 }
 
 async function handleShortPressCancellation(syncRecordingState) {
@@ -671,6 +991,122 @@ function stopRealtimeSegment(options = {}) {
   mediaRecorder.value.stop()
 }
 
+async function startStreamingRecording() {
+  const context = await prepareRecordingEnvironment()
+  if (!context) {
+    return
+  }
+
+  const { appStore, tray } = context
+  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+
+  try {
+    activeRecordingMode.value = 'streaming'
+    resetRealtimeState()
+    resetStreamingState()
+    livePhase.value = 'connecting'
+    sessionStatusText.value = '正在连接 Qwen 真流式服务'
+
+    if (context.settingsStore.settings.asr_provider !== 'qwen_asr') {
+      throw new Error('真流式模式仅支持 Qwen3-ASR provider')
+    }
+
+    await connectStreamingSocket(context.settingsStore.settings.asr_language || 'zh')
+    await setupStreamingAudioCapture(stream.value)
+
+    if (pendingStopAfterStart) {
+      pendingStopAfterStart = false
+      await stopStreamingRecording()
+      return
+    }
+
+    appStore.setRecording(true)
+    tray.setIcon('recording')
+    sendWebRecording('start')
+    sendRecordingStatus({
+      recording: true,
+      transcribing: false,
+      duration: 0
+    })
+    startDurationClock()
+    livePhase.value = 'streaming'
+    sessionStatusText.value = 'Qwen 真流式转写中'
+  } catch (error) {
+    console.error('[Recorder] Failed to start streaming recording:', error)
+    await syncDesktopRecordingState(context.syncRecordingState, false)
+    cleanupStreamingAudio()
+    cleanupStreamingSocket()
+    stopMediaTracks()
+    mediaRecorder.value = null
+    appStore.setRecording(false)
+    if (floatingSessionActive) {
+      syncFloatingWindow({
+        phase: 'error',
+        duration: 0,
+        text: error.message || '无法启动真流式录音'
+      })
+      floatingSessionActive = false
+    }
+    appStore.showToast(error.message || '无法启动真流式录音')
+  } finally {
+    startPending = false
+  }
+}
+
+async function stopStreamingRecording() {
+  const appStore = useAppStore()
+  const { tray, syncRecordingState } = useElectron()
+  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+
+  if (startPending && !appStore.isRecording) {
+    pendingStopAfterStart = true
+    return
+  }
+
+  if (streamingAwaitingFinish || (!appStore.isRecording && !currentSessionId.value)) {
+    return
+  }
+
+  pendingStopAfterStart = false
+  streamingAwaitingFinish = true
+  clearDurationTimer()
+  appStore.setRecording(false)
+  appStore.setTranscribing(true)
+  syncDesktopRecordingState(syncRecordingState, false).catch(() => {})
+  tray.setIcon('transcribing')
+  sendWebRecording('stop')
+  sendRecordingStatus({
+    recording: false,
+    transcribing: true,
+    duration: duration.value
+  })
+
+  if (floatingSessionActive) {
+    syncFloatingWindow({
+      phase: 'transcribing',
+      duration: 0,
+      text: ''
+    })
+  }
+
+  livePhase.value = 'finalizing'
+  sessionStatusText.value = '正在完成 Qwen 真流式转写'
+  cleanupStreamingAudio()
+  stopMediaTracks()
+
+  if (streamingSocket && streamingSocket.readyState === WebSocket.OPEN) {
+    sendStreamingSamples(true)
+    streamingSocket.send(JSON.stringify({ type: 'stream_finish' }))
+    return
+  }
+
+  streamingAwaitingFinish = false
+  cleanupStreamingSocket()
+  appStore.setTranscribing(false)
+  tray.setIcon('idle')
+  appStore.showToast('流式连接已断开，无法完成转写')
+}
+
 async function startSingleRecording() {
   const context = await prepareRecordingEnvironment()
   if (!context) {
@@ -706,6 +1142,7 @@ async function startSingleRecording() {
     })
     startDurationClock()
     resetRealtimeState()
+    resetStreamingState()
   } catch (error) {
     console.error('[Recorder] Failed to start recording:', error)
     await syncDesktopRecordingState(context.syncRecordingState, false)
@@ -761,6 +1198,7 @@ async function startMultiRecording() {
       duration: 0
     })
     startDurationClock()
+    resetStreamingState()
 
     silenceDetector = createSilenceDetector({
       stream: stream.value,
@@ -815,6 +1253,11 @@ async function startRecording() {
 
   if (settingsStore.settings.recording_mode === 'multi') {
     await startMultiRecording()
+    return
+  }
+
+  if (settingsStore.settings.recording_mode === 'streaming') {
+    await startStreamingRecording()
     return
   }
 
@@ -902,6 +1345,11 @@ function stopMultiRecording() {
 }
 
 function stopRecording() {
+  if (activeRecordingMode.value === 'streaming') {
+    void stopStreamingRecording()
+    return
+  }
+
   if (activeRecordingMode.value === 'multi') {
     stopMultiRecording()
     return
@@ -1262,6 +1710,8 @@ export function useRecorder() {
     processedSegmentCount,
     sessionStatusText,
     isMultiModeEnabled: computed(() => settingsStore.settings.recording_mode === 'multi'),
+    isStreamingModeEnabled: computed(() => settingsStore.settings.recording_mode === 'streaming'),
+    streamingConnectionState,
     currentSessionId,
     startRecording,
     stopRecording,

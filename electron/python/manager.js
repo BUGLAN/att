@@ -16,35 +16,104 @@ class PythonManager {
     this.startTime = null
   }
 
+  getRuntimeRoot() {
+    const isDev = process.env.NODE_ENV === 'development'
+
+    if (isDev) {
+      return path.join(__dirname, '..', '..')
+    }
+
+    return process.resourcesPath
+  }
+
+  getProjectVenvPython() {
+    const runtimeRoot = this.getRuntimeRoot()
+    return process.platform === 'win32'
+      ? path.join(runtimeRoot, '.venv', 'Scripts', 'python.exe')
+      : path.join(runtimeRoot, '.venv', 'bin', 'python3')
+  }
+
   /**
-   * 获取 Python 可执行文件路径
+   * 获取后端启动命令
+   */
+  getBackendCommand() {
+    const isDev = process.env.NODE_ENV === 'development'
+
+    if (isDev) {
+      const projectPython = this.getProjectVenvPython()
+      if (fs.existsSync(projectPython)) {
+        return projectPython
+      }
+
+      return 'uv'
+    }
+
+    const pythonDir = process.platform === 'win32'
+      ? path.join(process.resourcesPath, 'python', 'Scripts', 'python.exe')
+      : path.join(process.resourcesPath, 'python', 'bin', 'python3')
+    return pythonDir
+  }
+
+  /**
+   * 获取后端启动参数
+   */
+  getBackendArgs(port) {
+    const isDev = process.env.NODE_ENV === 'development'
+
+    if (isDev) {
+      const projectPython = this.getProjectVenvPython()
+      if (fs.existsSync(projectPython)) {
+        return [
+          '-m',
+          'uvicorn',
+          'app.main:app',
+          '--host',
+          '127.0.0.1',
+          '--port',
+          port.toString()
+        ]
+      }
+
+      return [
+        'run',
+        '--no-sync',
+        'python',
+        '-m',
+        'uvicorn',
+        'app.main:app',
+        '--host',
+        '127.0.0.1',
+        '--port',
+        port.toString()
+      ]
+    }
+
+    return [
+      '-m', 'uvicorn',
+      'app.main:app',
+      '--host', '127.0.0.1',
+      '--port', port.toString()
+    ]
+  }
+
+  /**
+   * 获取用于执行辅助脚本的 Python 路径
    */
   getPythonPath() {
     const isDev = process.env.NODE_ENV === 'development'
 
     if (isDev) {
-      // 开发模式：使用系统 Python
+      const projectPython = this.getProjectVenvPython()
+      if (process.platform === 'win32' && fs.existsSync(projectPython)) {
+        return projectPython
+      }
+
       return process.platform === 'win32' ? 'python' : 'python3'
-    } else {
-      // 生产模式：使用嵌入的 Python 环境
-      const pythonDir = process.platform === 'win32'
-        ? path.join(process.resourcesPath, 'python', 'Scripts', 'python.exe')
-        : path.join(process.resourcesPath, 'python', 'bin', 'python3')
-      return pythonDir
     }
-  }
 
-  /**
-   * 获取后端入口文件路径
-   */
-  getBackendPath() {
-    const isDev = process.env.NODE_ENV === 'development'
-
-    if (isDev) {
-      return path.join(__dirname, '..', '..', 'app', 'main.py')
-    } else {
-      return path.join(process.resourcesPath, 'app', 'main.py')
-    }
+    return process.platform === 'win32'
+      ? path.join(process.resourcesPath, 'python', 'Scripts', 'python.exe')
+      : path.join(process.resourcesPath, 'python', 'bin', 'python3')
   }
 
   /**
@@ -135,23 +204,21 @@ class PythonManager {
     // 查找可用端口
     this.port = await this.findAvailablePort()
 
-    const pythonPath = this.getPythonPath()
-    const backendPath = this.getBackendPath()
+    const backendCommand = this.getBackendCommand()
+    const backendArgs = this.getBackendArgs(this.port)
 
     // 设置环境变量
     const env = {
       ...process.env,
       PYTHONUNBUFFERED: '1',
-      PORT: this.port.toString()
+      HF_HUB_DISABLE_SYMLINKS_WARNING: '1',
+      PORT: this.port.toString(),
+      UV_CACHE_DIR: process.env.UV_CACHE_DIR || path.join(__dirname, '..', '..', 'tmp', 'uv-cache'),
+      UV_PROJECT_ENVIRONMENT: process.env.UV_PROJECT_ENVIRONMENT || path.join(__dirname, '..', '..', '.venv')
     }
 
     // 启动进程 - cwd 必须是项目根目录，才能找到 app 模块
-    this.process = spawn(pythonPath, [
-      '-m', 'uvicorn',
-      'app.main:app',
-      '--host', '127.0.0.1',
-      '--port', this.port.toString()
-    ], {
+    this.process = spawn(backendCommand, backendArgs, {
       cwd: path.join(__dirname, '..', '..'),  // 项目根目录
       env: env,
       stdio: ['pipe', 'pipe', 'pipe']
