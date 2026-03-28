@@ -1,6 +1,12 @@
-const ioHookModule = require('@tkomde/iohook')
+let ioHook = null
+let ioHookLoadError = null
 
-const ioHook = ioHookModule.default || ioHookModule
+try {
+  const ioHookModule = require('@tkomde/iohook')
+  ioHook = ioHookModule.default || ioHookModule
+} catch (error) {
+  ioHookLoadError = error
+}
 
 const DEFAULT_HOTKEY = {
   modifiers: ['win', 'alt'],
@@ -106,6 +112,18 @@ class DesktopInputManager {
 
   start() {
     if (this.started) {
+      return
+    }
+
+    if (!ioHook) {
+      const error = new Error(
+        `无法加载 iohook 原生模块: ${ioHookLoadError?.message || '未知错误'}`
+      )
+      error.cause = ioHookLoadError
+      this.onError?.(error)
+      this.log('Desktop input manager unavailable because iohook failed to load', {
+        error: ioHookLoadError?.message || 'unknown'
+      })
       return
     }
 
@@ -292,5 +310,7 @@ module.exports = {
   DesktopInputManager,
   buildHotkeyDisplay,
   normalizeHotkey,
-  normalizeSettings
+  normalizeSettings,
+  isDesktopInputAvailable: () => Boolean(ioHook),
+  getDesktopInputLoadError: () => ioHookLoadError
 }
