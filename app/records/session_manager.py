@@ -161,12 +161,25 @@ class SessionManager:
 
         with wave.open(str(valid_segments[0]), "rb") as first_reader:
             params = first_reader.getparams()
+            format_signature = (
+                first_reader.getnchannels(),
+                first_reader.getsampwidth(),
+                first_reader.getframerate(),
+                first_reader.getcomptype(),
+                first_reader.getcompname()
+            )
             frames = [first_reader.readframes(first_reader.getnframes())]
 
         for audio_path in valid_segments[1:]:
             with wave.open(str(audio_path), "rb") as reader:
-                current_params = reader.getparams()
-                if current_params[:4] != params[:4]:
+                current_signature = (
+                    reader.getnchannels(),
+                    reader.getsampwidth(),
+                    reader.getframerate(),
+                    reader.getcomptype(),
+                    reader.getcompname()
+                )
+                if current_signature != format_signature:
                     raise ValueError(f"Segment format mismatch: {audio_path}")
                 frames.append(reader.readframes(reader.getnframes()))
 

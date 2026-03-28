@@ -11,7 +11,7 @@
   backdrop-filter: blur(16px);
   border-bottom: 1px solid rgba(63, 63, 70, 0.65);
   z-index: 60;
-  padding-left: max(20px, env(titlebar-area-x, 0px));
+  padding-left: max(12px, env(titlebar-area-x, 0px));
 }
 
 .title-bar-drag {
@@ -19,7 +19,7 @@
   height: 100%;
   display: flex;
   align-items: center;
-  padding: 0 28px;
+  padding: 0 20px 0 16px;
   -webkit-app-region: drag;
 }
 

@@ -80,7 +80,7 @@ const showWaveform = computed(() => (
 ))
 
 const prefixText = computed(() => {
-  if (phase.value === 'recording' && mode.value === 'streaming') return '实时记录：'
+  if (phase.value === 'recording' && ['multi', 'streaming'].includes(mode.value)) return '实时记录：'
   if (phase.value === 'recording') return text.value ? '实时记录：' : '正在录音：'
   if (phase.value === 'transcribing') return '正在转写：'
   if (phase.value === 'optimizing') return '正在优化：'
@@ -90,7 +90,7 @@ const prefixText = computed(() => {
 })
 
 const contentText = computed(() => {
-  if (phase.value === 'recording' && mode.value === 'streaming') return text.value || '正在聆听...'
+  if (phase.value === 'recording' && ['multi', 'streaming'].includes(mode.value)) return text.value || '正在聆听...'
   if (phase.value === 'recording') return text.value || '实时内容正在生成中...'
   if (phase.value === 'transcribing') return '实时内容正在生成中...'
   if (phase.value === 'optimizing') return 'AI 正在整理文本...'
@@ -100,7 +100,7 @@ const contentText = computed(() => {
 })
 
 const showScrollingTranscript = computed(() => (
-  phase.value === 'recording' && mode.value === 'streaming' && Boolean(text.value)
+  phase.value === 'recording' && ['multi', 'streaming'].includes(mode.value) && Boolean(text.value)
 ))
 
 function clearHideTimer() {
