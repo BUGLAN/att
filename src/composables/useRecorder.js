@@ -969,7 +969,7 @@ function startRealtimeSegment() {
     mediaRecorder.value = null
     const segmentDuration = (performance.now() - realtimeSegmentStartedAt) / 1000
     realtimeSegmentStartedAt = 0
-    const shouldContinueCapture = shouldRestart && !realtimeStopRequested && !realtimeFinalizing
+    const shouldContinueCapture = !realtimeStopRequested && !realtimeFinalizing
 
     if (shouldContinueCapture) {
       startRealtimeSegment()
