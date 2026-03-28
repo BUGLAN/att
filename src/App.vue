@@ -100,6 +100,13 @@ function handleGlobalMessage(message) {
     return
   }
 
+  if (isElectron) {
+    debugLog('renderer.app', 'Ignored websocket clipboard overlay trigger in Electron runtime', {
+      message
+    })
+    return
+  }
+
   debugLog('renderer.app', 'Received clipboard overlay trigger message', {
     message,
     settings: {

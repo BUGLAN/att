@@ -32,7 +32,7 @@ from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
 from app.records.models import Record, RecordStatus, ExportFormat
 from app.records.session_manager import session_manager
-from app.services.qwen_streaming_service_manager import qwen_streaming_service_manager
+from app.services.model_service_manager import model_service_manager
 from app.services.streaming_session_manager import StreamingSessionManager
 from app.services.websocket import manager as ws_manager
 from app.prompts import PromptManager, PromptPresetCreate, PromptPresetUpdate, prompt_manager
@@ -599,7 +599,7 @@ async def health_check(probe_runtime: bool = False) -> dict:
     streaming_available = False
     streaming_error = None
     streaming_backend = None
-    service_status = await qwen_streaming_service_manager.status()
+    service_status = await model_service_manager.status()
     if probe_runtime and configured_provider == "qwen_asr":
         try:
             provider = get_streaming_session_manager()._get_provider()
@@ -635,30 +635,48 @@ async def health_check(probe_runtime: bool = False) -> dict:
 
 # ==================== Streaming Service Endpoints ====================
 
-@router.get("/streaming/service")
-async def get_streaming_service_status() -> dict:
-    """Get the managed Qwen streaming service status."""
-    return await qwen_streaming_service_manager.status()
+@router.get("/model-service")
+async def get_model_service_status() -> dict:
+    """Get the managed model service status."""
+    return await model_service_manager.status()
 
 
-@router.post("/streaming/service/start")
-async def start_streaming_service(request: StreamingServiceRequest) -> dict:
-    """Start the managed Qwen streaming service."""
+@router.post("/model-service/start")
+async def start_model_service(request: StreamingServiceRequest) -> dict:
+    """Start the managed model service."""
     try:
-        return await qwen_streaming_service_manager.start(
+        return await model_service_manager.start(
             wait_until_ready=request.wait_until_ready
         )
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
 
 
-@router.post("/streaming/service/stop")
-async def stop_streaming_service() -> dict:
-    """Stop the managed Qwen streaming service."""
+@router.post("/model-service/stop")
+async def stop_model_service() -> dict:
+    """Stop the managed model service."""
     try:
-        return await qwen_streaming_service_manager.stop()
+        return await model_service_manager.stop()
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@router.get("/streaming/service")
+async def get_streaming_service_status() -> dict:
+    """Compatibility alias for the old streaming service status endpoint."""
+    return await get_model_service_status()
+
+
+@router.post("/streaming/service/start")
+async def start_streaming_service(request: StreamingServiceRequest) -> dict:
+    """Compatibility alias for the old streaming service start endpoint."""
+    return await start_model_service(request)
+
+
+@router.post("/streaming/service/stop")
+async def stop_streaming_service() -> dict:
+    """Compatibility alias for the old streaming service stop endpoint."""
+    return await stop_model_service()
 
 
 # ==================== Settings Endpoints ====================

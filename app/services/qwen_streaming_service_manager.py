@@ -28,6 +28,7 @@ class QwenStreamingServiceManager:
         self._start_task: Optional[asyncio.Task] = None
         self._last_error: Optional[str] = None
         self._log_handle = None
+        self._process_group_id: Optional[int] = None
         self._project_root = Path(__file__).resolve().parents[2]
         self._log_path = self._project_root / "logs" / "qwen_streaming_service.log"
 
@@ -135,7 +136,9 @@ class QwenStreamingServiceManager:
             env=env,
             stdout=self._log_handle,
             stderr=self._log_handle,
+            start_new_session=True,
         )
+        self._process_group_id = self._process.pid
         logger.info(
             "已启动 Qwen 流式桥接子进程",
             pid=self._process.pid,
@@ -164,16 +167,18 @@ class QwenStreamingServiceManager:
             try:
                 await self._spawn_process()
                 await self._wait_until_service_online()
-                if wait_until_ready:
-                    await self._request_preload()
-                    await self._wait_until_ready()
+                # 无论前端是否等待完成，都在后台主动触发预热。
+                # 否则服务只会在线，不会真正加载模型，前端会一直停在 loading。
+                await self._request_preload()
+                await self._wait_until_ready()
             except Exception as error:
                 self._last_error = str(error)
                 logger.error("启动 Qwen 流式模型服务失败", error=self._last_error)
                 if self._process and self._process.returncode is None:
-                    self._process.terminate()
+                    self._terminate_process_group()
                     await self._process.wait()
                 self._process = None
+                self._process_group_id = None
                 self._close_log_handle()
                 raise
 
@@ -195,15 +200,16 @@ class QwenStreamingServiceManager:
             return await self.status()
 
         if self._process.returncode is None:
-            self._process.send_signal(signal.SIGTERM)
+            self._terminate_process_group()
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=10.0)
             except asyncio.TimeoutError:
-                self._process.kill()
+                self._kill_process_group()
                 await self._process.wait()
 
         logger.info("已停止 Qwen 流式桥接子进程", pid=self._process.pid)
         self._process = None
+        self._process_group_id = None
         self._last_error = None
         self._close_log_handle()
         self._cleanup_stale_engine_processes()
@@ -238,6 +244,18 @@ class QwenStreamingServiceManager:
 
     async def shutdown(self) -> None:
         await self.stop()
+
+    def _terminate_process_group(self) -> None:
+        if self._process_group_id is None:
+            return
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(self._process_group_id, signal.SIGTERM)
+
+    def _kill_process_group(self) -> None:
+        if self._process_group_id is None:
+            return
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(self._process_group_id, signal.SIGKILL)
 
 
 qwen_streaming_service_manager = QwenStreamingServiceManager()
