@@ -1733,15 +1733,9 @@ button:focus-visible {
 .settings-page {
     width: 100%;
     max-width: 100%;
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
 }
 
 .settings-header {
-    flex-shrink: 0;
     margin-bottom: var(--space-lg);
 }
 
@@ -1749,10 +1743,7 @@ button:focus-visible {
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: var(--radius-xl);
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: hidden;
 }
 
 .settings-group {
