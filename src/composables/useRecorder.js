@@ -44,6 +44,8 @@ let realtimeHasCapturedSpeech = false
 let realtimeSegmentStartedAt = 0
 let realtimeMaxSegmentTimer = null
 let realtimeRestartAfterStop = false
+let realtimeSegmentHasSpeech = false
+let realtimeSpeechActive = false
 let streamingSocket = null
 let streamingAudioContext = null
 let streamingSourceNode = null
@@ -279,6 +281,8 @@ function resetRealtimeState() {
   realtimeHasCapturedSpeech = false
   realtimeSegmentStartedAt = 0
   realtimeRestartAfterStop = false
+  realtimeSegmentHasSpeech = false
+  realtimeSpeechActive = false
   currentSessionId.value = null
   processedSegmentCount.value = 0
   liveTranscript.value = ''
@@ -810,9 +814,9 @@ async function uploadSingleRecording(blob) {
 
 async function uploadRealtimeSegment(blob, segmentDuration, options = {}) {
   const { api } = useElectron()
-  const { force = false } = options
+  const { force = false, hadSpeech = false } = options
 
-  if (!currentSessionId.value || !blob.size) {
+  if (!currentSessionId.value || !blob.size || !hadSpeech) {
     return
   }
 
@@ -955,9 +959,12 @@ function startRealtimeSegment() {
 
   realtimeSegmentStartedAt = performance.now()
   realtimeRestartAfterStop = false
+  realtimeSegmentHasSpeech = realtimeSpeechActive
   mediaRecorder.value = createRecorder(stream.value, async (blob) => {
     const shouldRestart = realtimeRestartAfterStop
+    const hadSpeech = realtimeSegmentHasSpeech
     realtimeRestartAfterStop = false
+    realtimeSegmentHasSpeech = false
     clearRealtimeMaxSegmentTimer()
     mediaRecorder.value = null
     const segmentDuration = (performance.now() - realtimeSegmentStartedAt) / 1000
@@ -968,7 +975,10 @@ function startRealtimeSegment() {
       startRealtimeSegment()
     }
 
-    await uploadRealtimeSegment(blob, segmentDuration, { force: realtimeStopRequested || shouldRestart })
+    await uploadRealtimeSegment(blob, segmentDuration, {
+      force: realtimeStopRequested || shouldRestart,
+      hadSpeech
+    })
 
     if (shouldContinueCapture) {
       return
@@ -982,7 +992,7 @@ function startRealtimeSegment() {
   })
 
   mediaRecorder.value.start(250)
-  setRealtimePhase('speaking')
+  setRealtimePhase(realtimeSpeechActive ? 'speaking' : 'listening')
   clearRealtimeMaxSegmentTimer()
   realtimeMaxSegmentTimer = setTimeout(() => {
     if (!mediaRecorder.value || mediaRecorder.value.state === 'inactive') {
@@ -1006,7 +1016,7 @@ function stopRealtimeSegment(options = {}) {
     ? (performance.now() - realtimeSegmentStartedAt) / 1000
     : 0
 
-  if (!force && !realtimeStopRequested && segmentDuration < MIN_REALTIME_SEGMENT_DURATION) {
+  if (!force && realtimeSegmentHasSpeech && !realtimeStopRequested && segmentDuration < MIN_REALTIME_SEGMENT_DURATION) {
     setRealtimePhase('speaking', '停顿过短，继续合并当前语句')
     return
   }
@@ -1232,13 +1242,19 @@ async function startMultiRecording() {
       },
       onSpeechStart: () => {
         if (!realtimeStopRequested) {
-          startRealtimeSegment()
+          realtimeSpeechActive = true
+          realtimeSegmentHasSpeech = true
+          setRealtimePhase('speaking')
         }
       },
       onSpeechEnd: () => {
-        stopRealtimeSegment()
+        realtimeSpeechActive = false
+        if (realtimeSegmentHasSpeech) {
+          stopRealtimeSegment()
+        }
       }
     })
+    startRealtimeSegment()
   } catch (error) {
     console.error('[Recorder] Failed to start realtime recording:', error)
     await syncDesktopRecordingState(context.syncRecordingState, false)

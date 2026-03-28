@@ -3,6 +3,8 @@ Recording Session Manager
 Manages multi-segment recording sessions
 """
 import json
+import shutil
+import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
@@ -139,6 +141,42 @@ class SessionManager:
 
         return None
 
+    def _build_merged_audio(self, session: RecordingSession) -> str:
+        """将多段录音拼接成一份可播放的 WAV 文件。"""
+        valid_segments = []
+        for segment in sorted(session.segments, key=lambda item: item.sequence):
+            audio_path = Path(segment.audio_path)
+            if audio_path.exists():
+                valid_segments.append(audio_path)
+
+        if not valid_segments:
+            return ""
+
+        output_path = settings.audio_records_path / f"{session.id}.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if len(valid_segments) == 1:
+            shutil.copyfile(valid_segments[0], output_path)
+            return str(output_path)
+
+        with wave.open(str(valid_segments[0]), "rb") as first_reader:
+            params = first_reader.getparams()
+            frames = [first_reader.readframes(first_reader.getnframes())]
+
+        for audio_path in valid_segments[1:]:
+            with wave.open(str(audio_path), "rb") as reader:
+                current_params = reader.getparams()
+                if current_params[:4] != params[:4]:
+                    raise ValueError(f"Segment format mismatch: {audio_path}")
+                frames.append(reader.readframes(reader.getnframes()))
+
+        with wave.open(str(output_path), "wb") as writer:
+            writer.setparams(params)
+            for frame in frames:
+                writer.writeframes(frame)
+
+        return str(output_path)
+
     async def complete_session(self, session_id: str) -> Optional[RecordingSession]:
         """Mark session as completed."""
         session = await self.get_session(session_id)
@@ -152,6 +190,7 @@ class SessionManager:
         session.merged_text = "\n\n".join(
             seg.raw_text for seg in session.segments if seg.raw_text
         )
+        session.merged_audio_path = self._build_merged_audio(session)
 
         await self._save_session(session)
 
@@ -178,6 +217,10 @@ class SessionManager:
                     audio_path = Path(segment.audio_path)
                     if audio_path.exists():
                         audio_path.unlink()
+                if session.merged_audio_path:
+                    merged_audio_path = Path(session.merged_audio_path)
+                    if merged_audio_path.exists():
+                        merged_audio_path.unlink()
 
             # Delete session file
             file_path.unlink()

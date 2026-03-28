@@ -182,6 +182,7 @@ class RecordingSession:
     segments: List[AudioSegment] = field(default_factory=list)
     total_duration: float = 0.0
     merged_text: str = ""          # 合并后的完整文本
+    merged_audio_path: str = ""
     created_at: datetime = field(default_factory=datetime.now)
     completed_at: Optional[datetime] = None
 
@@ -194,6 +195,7 @@ class RecordingSession:
             "segments": [s.to_dict() for s in self.segments],
             "total_duration": self.total_duration,
             "merged_text": self.merged_text,
+            "merged_audio_path": self.merged_audio_path,
             "created_at": self.created_at.isoformat(),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None
         }
@@ -212,6 +214,7 @@ class RecordingSession:
             segments=segments,
             total_duration=data.get("total_duration", 0.0),
             merged_text=data.get("merged_text", ""),
+            merged_audio_path=data.get("merged_audio_path", ""),
             created_at=datetime.fromisoformat(data["created_at"]),
             completed_at=completed_at
         )

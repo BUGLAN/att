@@ -1064,23 +1064,42 @@ async def merge_session(session_id: str) -> dict:
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    merged_text = session.merged_text
+    processing_time = 0.0
+
+    if session.merged_audio_path and asr_provider:
+        try:
+            result = await asr_provider.transcribe(
+                session.merged_audio_path,
+                vad_filter=False
+            )
+            merged_text = result.text or merged_text
+            processing_time = result.processing_time
+        except Exception as error:
+            logger.warning(
+                "多段录音整段转写失败，回退到分段拼接文本",
+                session_id=session_id,
+                error=str(error)
+            )
+
     # Create a record from merged text
     record = await record_manager.create_record(
-        audio_path="",  # No single audio file for merged session
+        audio_path=session.merged_audio_path,
         duration=session.total_duration,
         status=RecordStatus.TRANSCRIBED,
-        raw_text=session.merged_text
+        raw_text=merged_text,
+        processing_time=processing_time
     )
 
     optimized_text = None
-    if user_settings.get("auto_optimize", False) and session.merged_text:
+    if user_settings.get("auto_optimize", False) and merged_text:
         try:
             await record_manager.update_record(
                 record.id,
                 status=RecordStatus.OPTIMIZING
             )
             optimize_result = await optimizer.optimize(
-                session.merged_text,
+                merged_text,
                 preset_id=user_settings.get("default_preset_id")
             )
             updated_record = await record_manager.update_record(
@@ -1106,7 +1125,7 @@ async def merge_session(session_id: str) -> dict:
     return {
         "session_id": session_id,
         "record_id": record.id,
-        "merged_text": session.merged_text,
+        "merged_text": merged_text,
         "optimized_text": optimized_text,
         "record": record.to_dict(),
         "total_duration": session.total_duration,
