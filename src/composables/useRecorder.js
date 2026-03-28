@@ -1245,6 +1245,9 @@ async function startMultiRecording() {
           realtimeSpeechActive = true
           realtimeSegmentHasSpeech = true
           setRealtimePhase('speaking')
+          if (!mediaRecorder.value || mediaRecorder.value.state === 'inactive') {
+            startRealtimeSegment()
+          }
         }
       },
       onSpeechEnd: () => {
