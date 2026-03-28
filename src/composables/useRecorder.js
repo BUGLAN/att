@@ -28,6 +28,7 @@ const sessionStatusText = ref('按住快捷键开始录音')
 let pollingTimer = null
 let mountedInstances = 0
 let wsAttached = false
+let desktopHotkeyAttached = false
 let startPending = false
 let pendingStopAfterStart = false
 let pollingInFlight = false
@@ -501,6 +502,38 @@ function createRecorder(targetStream, onStop) {
   }
 
   return recorder
+}
+
+async function ensureStreamingRuntimeAvailable() {
+  const settingsStore = useSettingsStore()
+
+  if (settingsStore.settings.asr_provider !== 'qwen_asr') {
+    return {
+      available: false,
+      reason: '真流式模式仅支持 Qwen3-ASR provider'
+    }
+  }
+
+  try {
+    const runtimeStatus = await settingsStore.loadRuntimeStatus(true)
+    if (runtimeStatus.qwen_streaming_available) {
+      return {
+        available: true,
+        runtimeStatus
+      }
+    }
+
+    return {
+      available: false,
+      reason: runtimeStatus.qwen_streaming_error ||
+        `当前后端环境 ${runtimeStatus.runtime_environment || 'unknown'} 不支持真流式`
+    }
+  } catch (error) {
+    return {
+      available: false,
+      reason: error.message || '无法探测真流式运行时状态'
+    }
+  }
 }
 
 async function connectStreamingSocket(language) {
@@ -1257,6 +1290,13 @@ async function startRecording() {
   }
 
   if (settingsStore.settings.recording_mode === 'streaming') {
+    const streamingRuntime = await ensureStreamingRuntimeAvailable()
+    if (!streamingRuntime.available) {
+      appStore.showToast(`当前后端不支持真流式，已自动降级为单段录音：${streamingRuntime.reason}`)
+      await startSingleRecording()
+      return
+    }
+
     await startStreamingRecording()
     return
   }
@@ -1677,6 +1717,7 @@ export function useRecorder() {
   const appStore = useAppStore()
   const settingsStore = useSettingsStore()
   const { connect, addMessageHandler, removeMessageHandler } = useGlobalWebSocket()
+  const { onHotkeyStart, onHotkeyStop, removeAllListeners } = useElectron()
 
   onMounted(async () => {
     mountedInstances += 1
@@ -1686,14 +1727,30 @@ export function useRecorder() {
       addMessageHandler(handleWebSocketMessage)
       wsAttached = true
     }
+
+    if (!desktopHotkeyAttached) {
+      onHotkeyStart(() => {
+        void startRecording()
+      })
+      onHotkeyStop(() => {
+        stopRecording()
+      })
+      desktopHotkeyAttached = true
+    }
   })
 
   onUnmounted(() => {
     mountedInstances -= 1
 
-    if (mountedInstances <= 0 && wsAttached) {
-      removeMessageHandler(handleWebSocketMessage)
-      wsAttached = false
+    if (mountedInstances <= 0) {
+      if (wsAttached) {
+        removeMessageHandler(handleWebSocketMessage)
+        wsAttached = false
+      }
+
+      removeAllListeners('hotkey:start')
+      removeAllListeners('hotkey:stop')
+      desktopHotkeyAttached = false
       mountedInstances = 0
     }
   })

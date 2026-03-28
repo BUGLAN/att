@@ -11,7 +11,8 @@ dependencies = [
   "websockets>=12.0",
   "pydub>=0.25.1",
   "faster-whisper>=1.0.0",
-  "qwen-asr>=0.0.6",
+  "qwen-asr>=0.0.6; sys_platform == 'win32'",
+  "qwen-asr[vllm]>=0.0.6; sys_platform != 'win32'",
   "torch==2.8.0+cu128; sys_platform == 'win32'",
   "httpx>=0.26.0",
   "tenacity>=8.2.3",
@@ -23,10 +24,10 @@ dependencies = [
   "python-dotenv>=1.0.0",
   "structlog>=24.1.0",
   "uuid6>=2024.1.12",
-  "pynput>=1.7.6",
   "pycaw>=20181226; sys_platform == 'win32'",
   "llguidance>=1.7.0; sys_platform == 'win32'",
   "xgrammar>=0.1.33; sys_platform == 'win32'",
+  "torch-c-dlpack-ext>=0.1.5",
 ]
 
 [dependency-groups]

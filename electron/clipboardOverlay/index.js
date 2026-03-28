@@ -2,6 +2,7 @@ const { BrowserWindow, nativeImage, screen } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const { logElectronOverlay } = require('../logger')
+const { isDevelopmentRuntime } = require('../utils/runtime')
 
 const WINDOW_WIDTH = 380
 const WINDOW_HEIGHT = 560
@@ -32,7 +33,7 @@ class ClipboardOverlayManager {
       return this.window
     }
 
-    const isDev = process.env.NODE_ENV === 'development'
+    const isDev = isDevelopmentRuntime()
 
     this.window = new BrowserWindow({
       width: WINDOW_WIDTH,

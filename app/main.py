@@ -2,7 +2,6 @@
 FastAPI Application Entry Point
 Audio-to-Text API with AI-powered optimization
 """
-import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,7 +17,6 @@ from app.clipboard.routes import init_clipboard_manager
 from app.config import settings
 from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
-from app.services.hotkey_listener import init_hotkey_service
 from app.stt.factory import create_asr_provider, get_asr_provider_config
 from app.utils.logging import get_logger, setup_logging
 
@@ -77,9 +75,6 @@ async def lifespan(app: FastAPI):
     init_processors(audio_processor, asr_provider, optimizer, record_manager)
     init_clipboard_manager(clipboard_manager)
 
-    hotkey_service = init_hotkey_service(asyncio.get_running_loop())
-    hotkey_service.start()
-
     await maybe_preload_asr_provider(asr_provider)
 
     logger.info("All processors initialized")
@@ -87,7 +82,6 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down Audio-to-Text API")
-    hotkey_service.stop()
     await close_streaming_session_manager()
     await asr_provider.close()
     await optimizer.close()

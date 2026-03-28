@@ -22,7 +22,7 @@ import uuid
 from app.config import (
     settings,
     user_settings,
-    get_default_hotkey,
+    get_runtime_environment,
     is_valid_hotkey,
     normalize_clipboard_overlay_settings,
 )
@@ -32,7 +32,6 @@ from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
 from app.records.models import Record, RecordStatus, ExportFormat
 from app.records.session_manager import session_manager
-from app.services.hotkey_listener import get_hotkey_service
 from app.services.streaming_session_manager import StreamingSessionManager
 from app.services.websocket import manager as ws_manager
 from app.prompts import PromptManager, PromptPresetCreate, PromptPresetUpdate, prompt_manager
@@ -605,6 +604,7 @@ async def health_check(probe_runtime: bool = False) -> dict:
 
     return {
         "status": "healthy",
+        "runtime_environment": get_runtime_environment(),
         "asr_provider": asr_provider.provider_type if asr_provider else configured_provider,
         "asr_model": asr_provider.model_name if asr_provider else configured_model,
         "deepseek_configured": bool(settings.deepseek_api_key),
@@ -680,19 +680,6 @@ async def update_settings(updates: dict) -> dict:
     normalized_settings = normalize_clipboard_overlay_settings(normalize_preset_settings(merged_settings))
     filtered = {key: normalized_settings[key] for key in filtered.keys()}
     user_settings.update(filtered)
-
-    if "hotkey" in filtered:
-        hotkey_service = get_hotkey_service()
-        if hotkey_service:
-            hotkey_result = hotkey_service.update_hotkey(filtered["hotkey"])
-            filtered["hotkey"] = hotkey_result["hotkey"]
-            user_settings.set("hotkey", filtered["hotkey"])
-
-    if "clipboard_overlay_trigger" in filtered:
-        hotkey_service = get_hotkey_service()
-        if hotkey_service:
-            hotkey_service.update_clipboard_trigger_mode(filtered["clipboard_overlay_trigger"])
-            user_settings.set("clipboard_overlay_trigger", filtered["clipboard_overlay_trigger"])
 
     payload = normalize_preset_settings(user_settings.get_all())
     return normalize_clipboard_overlay_settings(payload)
@@ -857,42 +844,6 @@ async def _handle_websocket_message(client_id: str, data: dict) -> None:
             record_id=data.get("record_id"),
             duration=data.get("duration", 0.0)
         )
-
-    elif message_type == "hotkey_update":
-        # 快捷键配置更新（来自 web 客户端）
-        hotkey_config = data.get("hotkey")
-        client_type = ws_manager.get_client_type(client_id)
-
-        logger.info(
-            "Received hotkey_update",
-            client_id=client_id,
-            client_type=client_type,
-            hotkey=hotkey_config
-        )
-
-        if validate_hotkey(hotkey_config):
-            # 保存设置
-            user_settings.set("hotkey", hotkey_config)
-
-            hotkey_service = get_hotkey_service()
-            if hotkey_service:
-                hotkey_result = hotkey_service.update_hotkey(hotkey_config)
-                hotkey_config = hotkey_result["hotkey"]
-                user_settings.set("hotkey", hotkey_config)
-
-            # 广播给 tray 客户端
-            tray_count = len(ws_manager.get_tray_clients())
-            logger.info(f"Broadcasting to {tray_count} tray clients")
-
-            await ws_manager.broadcast({
-                "type": "hotkey_changed",
-                "hotkey": hotkey_config,
-                "timestamp": int(datetime.now().timestamp() * 1000)
-            }, client_type_filter="tray")
-
-            logger.info("Hotkey updated and broadcast", hotkey=hotkey_config)
-        else:
-            logger.warning("Invalid hotkey update received", hotkey=hotkey_config)
 
     elif message_type == "web_recording":
         # 网页录音通知（来自 web 客户端）

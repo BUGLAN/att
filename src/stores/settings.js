@@ -80,6 +80,13 @@ export const useSettingsStore = defineStore('settings', () => {
 
   const isLoading = ref(false)
   const error = ref(null)
+  const runtimeStatus = ref({
+    status: 'unknown',
+    runtime_environment: 'unknown',
+    qwen_streaming_available: false,
+    qwen_streaming_backend: null,
+    qwen_streaming_error: null
+  })
 
   const presets = ref([])
   const currentPreset = ref(null)
@@ -139,6 +146,21 @@ export const useSettingsStore = defineStore('settings', () => {
     } catch (e) {
       error.value = e.message
       console.error('Failed to save settings:', e)
+      throw e
+    }
+  }
+
+  async function loadRuntimeStatus(probeRuntime = true) {
+    try {
+      const result = await api.getHealth(probeRuntime)
+      runtimeStatus.value = {
+        ...runtimeStatus.value,
+        ...result
+      }
+      return runtimeStatus.value
+    } catch (e) {
+      error.value = e.message
+      console.error('Failed to load runtime status:', e)
       throw e
     }
   }
@@ -235,6 +257,7 @@ export const useSettingsStore = defineStore('settings', () => {
     settings,
     isLoading,
     error,
+    runtimeStatus,
     presets,
     currentPreset,
     defaultPresetId,
@@ -245,6 +268,7 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultPreset,
     defaultLLMConfig,
     loadSettings,
+    loadRuntimeStatus,
     saveSettings,
     loadPresets,
     savePreset,

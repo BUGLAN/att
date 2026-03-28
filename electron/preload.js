@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pasteClipboard: () => ipcRenderer.invoke('clipboard:paste-active'),
   notifyClipboardOverlayDrag: (active) => ipcRenderer.send('clipboard-overlay:drag-state', { active }),
   updateHotkey: (hotkey) => ipcRenderer.invoke('hotkey:update', hotkey),
+  syncInputSettings: (settings) => ipcRenderer.invoke('desktop:sync-input-settings', settings),
   syncDesktopSettings: (settings) => ipcRenderer.invoke('desktop:sync-settings', settings),
   syncRecordingState: (payload) => ipcRenderer.invoke('desktop:recording-state', payload),
   showFloatingWindow: () => ipcRenderer.send('floating:show'),

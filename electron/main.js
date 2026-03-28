@@ -1,4 +1,4 @@
-﻿const { app, BrowserWindow, ipcMain, globalShortcut, clipboard } = require('electron')
+const { app, BrowserWindow, ipcMain, clipboard } = require('electron')
 const path = require('path')
 const { execFile } = require('child_process')
 const { PythonManager } = require('./python/manager')
@@ -8,6 +8,8 @@ const { FloatingWindowManager } = require('./floatingWindow')
 const { ClipboardOverlayManager } = require('./clipboardOverlay')
 const { ClipboardMonitor } = require('./clipboardMonitor')
 const { logElectronOverlay, electronOverlayLogFile } = require('./logger')
+const { DesktopInputManager, normalizeSettings } = require('./input/listener')
+const { isDevelopmentRuntime } = require('./utils/runtime')
 
 let mainWindow = null
 let pythonManager = null
@@ -16,6 +18,7 @@ let audioController = null
 let floatingWindowManager = null
 let clipboardOverlayManager = null
 let clipboardMonitor = null
+let inputManager = null
 let isQuitting = false
 let lastClipboardOverlayCommand = {
   channel: null,
@@ -23,7 +26,7 @@ let lastClipboardOverlayCommand = {
 }
 const pasteHelperPath = path.join(__dirname, 'python', 'paste_helper.py')
 
-const isDev = process.env.NODE_ENV === 'development'
+const isDev = isDevelopmentRuntime()
 const CLIPBOARD_OVERLAY_COMMAND_DEDUP_MS = 180
 
 function shouldSuppressClipboardOverlayCommand(channel, payload = {}) {
@@ -130,6 +133,78 @@ async function startBackend() {
   audioController = new DesktopAudioController(() => pythonManager.getPythonPath())
   console.log(`Python backend started on port ${port}`)
   return port
+}
+
+function getDefaultDesktopInputSettings() {
+  return normalizeSettings()
+}
+
+async function loadDesktopInputSettings(port) {
+  const fallback = getDefaultDesktopInputSettings()
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/settings`)
+    if (!response.ok) {
+      throw new Error(`Backend settings request failed with status ${response.status}`)
+    }
+
+    const payload = await response.json()
+    return normalizeSettings(payload)
+  } catch (error) {
+    logElectronOverlay('main', 'Failed to load desktop input settings from backend', {
+      error: error.message,
+      fallback
+    })
+    return fallback
+  }
+}
+
+function handleClipboardOverlayTrigger(payload = {}) {
+  if (shouldSuppressClipboardOverlayCommand('global-input:clipboard-overlay', payload)) {
+    return
+  }
+
+  if (payload.retriggerAction === 'show_only') {
+    clipboardOverlayManager?.show({
+      focusSearch: payload.focusSearch !== false
+    })
+    return
+  }
+
+  clipboardOverlayManager?.toggle({
+    focusSearch: payload.focusSearch !== false
+  })
+}
+
+async function initializeDesktopInput(port) {
+  const settings = await loadDesktopInputSettings(port)
+  inputManager = new DesktopInputManager({
+    onHotkeyStart: (payload) => {
+      logElectronOverlay('main', 'Desktop hotkey start', payload)
+      mainWindow?.webContents.send('hotkey:start', payload)
+    },
+    onHotkeyStop: (payload) => {
+      logElectronOverlay('main', 'Desktop hotkey stop', payload)
+      mainWindow?.webContents.send('hotkey:stop', payload)
+    },
+    onClipboardTrigger: (payload) => {
+      logElectronOverlay('main', 'Desktop clipboard trigger', payload)
+      handleClipboardOverlayTrigger(payload)
+    },
+    onError: (error) => {
+      logElectronOverlay('main', 'Desktop input error', {
+        error: error.message,
+        stack: error.stack
+      })
+    },
+    log: (message, details) => {
+      logElectronOverlay('desktop-input', message, details)
+    }
+  })
+
+  inputManager.updateSettings(settings)
+  inputManager.start()
+  logElectronOverlay('main', 'Desktop input initialized', settings)
 }
 
 function setupTray() {
@@ -264,10 +339,35 @@ function setupIPC() {
     trayManager?.updateMenu(records)
   })
 
-  ipcMain.handle('hotkey:update', async () => {
+  ipcMain.handle('hotkey:update', async (event, hotkey = null) => {
+    if (!inputManager) {
+      return {
+        success: false,
+        error: 'Desktop input manager unavailable'
+      }
+    }
+
+    const settings = inputManager.updateSettings({ hotkey })
     return {
       success: true,
-      managedBy: 'backend'
+      managedBy: 'electron',
+      hotkey: settings.hotkey
+    }
+  })
+
+  ipcMain.handle('desktop:sync-input-settings', async (event, payload = {}) => {
+    if (!inputManager) {
+      return {
+        success: false,
+        error: 'Desktop input manager unavailable'
+      }
+    }
+
+    const settings = inputManager.updateSettings(payload)
+    return {
+      success: true,
+      managedBy: 'electron',
+      settings
     }
   })
 
@@ -373,6 +473,7 @@ app.whenReady().then(async () => {
     setupIPC()
     await createWindow()
     setupTray()
+    await initializeDesktopInput(port)
     console.log('App ready')
     logElectronOverlay('main', 'App ready complete')
   } catch (error) {
@@ -396,7 +497,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   logElectronOverlay('main', 'will-quit received')
-  globalShortcut.unregisterAll()
+  inputManager?.stop()
   floatingWindowManager?.destroy()
   clipboardOverlayManager?.destroy()
   clipboardMonitor?.stop()

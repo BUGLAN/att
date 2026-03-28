@@ -159,6 +159,7 @@ export const api = {
 
   getSettings: () => request('GET', '/settings'),
   saveSettings: (settings) => request('PUT', '/settings', { body: settings }),
+  getHealth: (probeRuntime = false) => request('GET', `/health${probeRuntime ? '?probe_runtime=true' : ''}`),
 
   getLLMConfigs: () => request('GET', '/llm/configs'),
   getLLMConfig: (id) => request('GET', `/llm/configs/${id}`),

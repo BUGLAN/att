@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import numpy as np
 
+from app.config import get_runtime_environment, supports_local_vllm_streaming
 from app.stt.models import ASRProviderError
 from app.stt.streaming_base import (
     StreamingASRProvider,
@@ -119,6 +120,13 @@ class QwenLocalVLLMStreamingProvider(StreamingASRProvider):
 
     def _ensure_supported_device(self) -> None:
         self._load_dependencies()
+
+        if not supports_local_vllm_streaming():
+            runtime_environment = get_runtime_environment()
+            raise ASRProviderError(
+                f"当前运行环境为 {runtime_environment}，不支持在主 FastAPI 进程内启用本地 vLLM 真流式；"
+                "请在 WSL2/Linux 中启动 FastAPI，或改用 single/multi 模式"
+            )
 
         normalized_device = (self.device or "auto").lower()
         if normalized_device == "cpu":

@@ -14,10 +14,41 @@ class PythonManager {
     this.port = null
     this.isRunning = false
     this.startTime = null
+    this.externalBackend = false
+  }
+
+  isDevelopmentRuntime() {
+    const runtimeRoot = path.join(__dirname, '..', '..')
+    const markers = [
+      path.join(runtimeRoot, 'app', 'main.py'),
+      path.join(runtimeRoot, 'package.json'),
+      path.join(runtimeRoot, '.venv')
+    ]
+
+    return process.env.NODE_ENV === 'development' || markers.some((marker) => fs.existsSync(marker))
+  }
+
+  getPreferredBackendPort() {
+    const rawPort = process.env.ATT_BACKEND_PORT || process.env.PORT || '8000'
+    const parsedPort = Number.parseInt(rawPort, 10)
+    return Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 8000
+  }
+
+  shouldRequireExistingBackend() {
+    const explicitValue = process.env.ATT_REQUIRE_EXISTING_BACKEND
+    if (explicitValue === '1') {
+      return true
+    }
+
+    if (explicitValue === '0') {
+      return false
+    }
+
+    return process.platform === 'win32' && this.isDevelopmentRuntime()
   }
 
   getRuntimeRoot() {
-    const isDev = process.env.NODE_ENV === 'development'
+    const isDev = this.isDevelopmentRuntime()
 
     if (isDev) {
       return path.join(__dirname, '..', '..')
@@ -37,7 +68,7 @@ class PythonManager {
    * 获取后端启动命令
    */
   getBackendCommand() {
-    const isDev = process.env.NODE_ENV === 'development'
+    const isDev = this.isDevelopmentRuntime()
 
     if (isDev) {
       const projectPython = this.getProjectVenvPython()
@@ -58,7 +89,7 @@ class PythonManager {
    * 获取后端启动参数
    */
   getBackendArgs(port) {
-    const isDev = process.env.NODE_ENV === 'development'
+    const isDev = this.isDevelopmentRuntime()
 
     if (isDev) {
       const projectPython = this.getProjectVenvPython()
@@ -100,7 +131,7 @@ class PythonManager {
    * 获取用于执行辅助脚本的 Python 路径
    */
   getPythonPath() {
-    const isDev = process.env.NODE_ENV === 'development'
+    const isDev = this.isDevelopmentRuntime()
 
     if (isDev) {
       const projectPython = this.getProjectVenvPython()
@@ -201,8 +232,34 @@ class PythonManager {
       return this.port
     }
 
+    const preferredPort = this.getPreferredBackendPort()
+    this.port = preferredPort
+
+    try {
+      const isHealthy = await this.healthCheck()
+      if (isHealthy) {
+        this.isRunning = true
+        this.externalBackend = true
+        this.startTime = Date.now()
+        console.log(`Using existing backend on port ${this.port}`)
+        return this.port
+      }
+    } catch (error) {
+      console.log(`[PythonManager] No reusable backend detected on port ${preferredPort}: ${error.message}`)
+    }
+
+    if (this.shouldRequireExistingBackend()) {
+      this.port = null
+      throw new Error(
+        `WSL2 backend is required but not reachable on 127.0.0.1:${preferredPort}. ` +
+        'Please start FastAPI in WSL2 first, then run Electron again.'
+      )
+    }
+
+    this.externalBackend = false
+
     // 查找可用端口
-    this.port = await this.findAvailablePort()
+    this.port = await this.findAvailablePort(preferredPort)
 
     const backendCommand = this.getBackendCommand()
     const backendArgs = this.getBackendArgs(this.port)
@@ -237,12 +294,14 @@ class PythonManager {
     this.process.on('close', (code) => {
       console.log(`Python process exited with code ${code}`)
       this.isRunning = false
+      this.externalBackend = false
     })
 
     // 处理进程错误
     this.process.on('error', (error) => {
       console.error('Failed to start Python process:', error)
       this.isRunning = false
+      this.externalBackend = false
     })
 
     // 等待后端就绪
@@ -262,11 +321,18 @@ class PythonManager {
    * 停止 Python 后端
    */
   stop() {
+    if (this.externalBackend) {
+      this.isRunning = false
+      this.externalBackend = false
+      this.port = null
+      return
+    }
+
     if (this.process) {
       // Windows 使用 taskkill，其他平台使用 SIGTERM
-      if (process.platform === 'win32') {
+      if (process.platform === 'win32' && this.process.pid) {
         spawn('taskkill', ['/pid', this.process.pid.toString(), '/f', '/t'])
-      } else {
+      } else if (this.process.pid) {
         this.process.kill('SIGTERM')
       }
 
@@ -291,6 +357,7 @@ class PythonManager {
     return {
       isRunning: this.isRunning,
       port: this.port,
+      externalBackend: this.externalBackend,
       uptime: this.startTime ? Date.now() - this.startTime : 0
     }
   }

@@ -134,11 +134,16 @@
               <span class="setting-label">录音模式</span>
               <span class="setting-desc">支持单段、多段准实时，以及仅限 Qwen 的真流式模式。</span>
             </div>
-            <select v-model="form.recording_mode" class="setting-select">
+            <div class="setting-actions-inline setting-actions-block">
+              <select v-model="form.recording_mode" class="setting-select">
               <option value="single">单段录音</option>
               <option value="multi">多段录音</option>
               <option value="streaming">Qwen 真流式</option>
-            </select>
+              </select>
+              <span class="setting-runtime-note" :class="{ unavailable: !streamingRuntimeAvailable }">
+                {{ streamingRuntimeSummary }}
+              </span>
+            </div>
           </div>
 
           <div v-if="form.recording_mode === 'multi'" class="setting-item">
@@ -214,7 +219,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">录音快捷键</span>
-              <span class="setting-desc">点击输入框后按下组合键。现在由后端监听热键，按住开始录音，松开结束；支持 `Win+Alt` 这类无主键组合。</span>
+              <span class="setting-desc">点击输入框后按下组合键。现在由桌面端监听热键，按住开始录音，松开结束；支持 `Win+Alt` 这类无主键组合。</span>
             </div>
             <div class="hotkey-input-wrapper">
               <input
@@ -326,7 +331,7 @@ const settingsStore = useSettingsStore()
 const { settings, saveSettings } = useSettings()
 const { presets, defaultPresetId, loadPresets, setDefaultPreset } = usePresets()
 const { llmConfigs, loadLLMConfigs, loadLLMProviders, setDefaultLLMConfig, defaultConfigId } = useLLMConfig()
-const { syncDesktopSettings, platform } = useElectron()
+const { syncDesktopSettings, syncInputSettings, platform } = useElectron()
 
 const form = ref({})
 const audioInputDevices = ref([])
@@ -346,6 +351,24 @@ const builtinPresets = computed(() => presets.value.filter((preset) => preset.is
 const isSyncing = computed(() => syncDepth.value > 0)
 const showWhisperSettings = computed(() => form.value.asr_provider !== 'qwen_asr')
 const showQwenSettings = computed(() => form.value.asr_provider === 'qwen_asr')
+const streamingRuntimeAvailable = computed(() => settingsStore.runtimeStatus.qwen_streaming_available === true)
+const streamingRuntimeSummary = computed(() => {
+  const runtimeEnvironment = settingsStore.runtimeStatus.runtime_environment || 'unknown'
+  const backend = settingsStore.runtimeStatus.qwen_streaming_backend
+
+  if (streamingRuntimeAvailable.value) {
+    return backend
+      ? `当前后端环境：${runtimeEnvironment}，真流式可用（${backend}）`
+      : `当前后端环境：${runtimeEnvironment}，真流式可用`
+  }
+
+  const reason = settingsStore.runtimeStatus.qwen_streaming_error
+  if (reason) {
+    return `当前后端环境：${runtimeEnvironment}，真流式不可用：${reason}`
+  }
+
+  return `当前后端环境：${runtimeEnvironment}，若在 PowerShell 启动后端将自动降级为单段录音`
+})
 const shouldShowForcedAlignerModel = computed(() => (
   showQwenSettings.value &&
   form.value.qwen_asr_return_timestamps &&
@@ -578,6 +601,16 @@ async function handleSave() {
     await saveSettings(payload, { silent: true })
     lastSavedSettingsSnapshot.value = snapshot
 
+    const inputSyncResult = await syncInputSettings({
+      hotkey: payload.hotkey,
+      clipboard_overlay_trigger: payload.clipboard_overlay_trigger,
+      clipboard_overlay_retrigger_action: payload.clipboard_overlay_retrigger_action,
+      clipboard_overlay_auto_focus_search: payload.clipboard_overlay_auto_focus_search
+    })
+    if (inputSyncResult?.success === false) {
+      throw new Error(inputSyncResult.error || '桌面输入同步失败')
+    }
+
     await syncDesktopSettings({
       pause_audio_on_recording: payload.pause_audio_on_recording
     })
@@ -686,6 +719,7 @@ watch(selectedPresetId, () => {
 onMounted(async () => {
   await Promise.all([
     settingsStore.loadSettings(),
+    settingsStore.loadRuntimeStatus(true),
     loadPresets(),
     loadLLMConfigs(),
     loadLLMProviders(),

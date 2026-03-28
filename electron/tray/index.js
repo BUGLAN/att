@@ -6,6 +6,7 @@
 const { Tray, Menu, nativeImage, app } = require('electron')
 const path = require('path')
 const EventEmitter = require('events')
+const { isDevelopmentRuntime } = require('../utils/runtime')
 
 class TrayManager extends EventEmitter {
   constructor(mainWindow, apiProxy) {
@@ -28,7 +29,7 @@ class TrayManager extends EventEmitter {
       disconnected: 'disconnected.png'
     }[iconType] || 'idle.png'
 
-    const isDev = process.env.NODE_ENV === 'development'
+    const isDev = isDevelopmentRuntime()
     const basePath = isDev
       ? path.join(__dirname, 'icons')
       : path.join(process.resourcesPath, 'icons')

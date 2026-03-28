@@ -6,6 +6,7 @@ from pydantic import Field
 from typing import Optional
 from pathlib import Path
 import json
+import os
 import platform
 
 
@@ -14,6 +15,58 @@ VALID_HOTKEY_KEYS = set("abcdefghijklmnopqrstuvwxyz0123456789")
 VALID_CLIPBOARD_TRIGGER_MODES = {"mouse_middle", "mouse_left_right_chord"}
 VALID_CLIPBOARD_RETRIGGER_ACTIONS = {"toggle", "show_only"}
 VALID_CLIPBOARD_ENTER_BEHAVIORS = {"copy_and_paste", "copy_only"}
+
+
+def is_windows_host() -> bool:
+    """判断当前 Python 进程是否运行在 Windows。"""
+    return platform.system() == "Windows"
+
+
+def is_wsl_environment() -> bool:
+    """判断当前 Linux 进程是否运行在 WSL。"""
+    if platform.system() != "Linux":
+        return False
+
+    if os.getenv("WSL_INTEROP") or os.getenv("WSL_DISTRO_NAME"):
+        return True
+
+    probe_files = (
+        Path("/proc/sys/kernel/osrelease"),
+        Path("/proc/version"),
+    )
+    for probe_file in probe_files:
+        try:
+            content = probe_file.read_text(encoding="utf-8").lower()
+        except OSError:
+            continue
+
+        if "microsoft" in content or "wsl" in content:
+            return True
+
+    return False
+
+
+def get_runtime_environment() -> str:
+    """返回当前后端运行环境标识。"""
+    if is_wsl_environment():
+        return "wsl2"
+
+    system_name = platform.system()
+    if system_name == "Windows":
+        return "windows"
+
+    if system_name == "Darwin":
+        return "macos"
+
+    if system_name == "Linux":
+        return "linux"
+
+    return system_name.lower() or "unknown"
+
+
+def supports_local_vllm_streaming() -> bool:
+    """判断当前环境是否允许在主 FastAPI 进程内启用本地 vLLM 流式。"""
+    return not is_windows_host()
 
 
 def get_default_hotkey() -> dict:

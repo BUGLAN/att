@@ -1,5 +1,6 @@
 const { BrowserWindow, screen } = require('electron')
 const path = require('path')
+const { isDevelopmentRuntime } = require('../utils/runtime')
 
 const WINDOW_WIDTH = 512
 const WINDOW_HEIGHT = 40
@@ -26,7 +27,7 @@ class FloatingWindowManager {
       return this.floatingWindow
     }
 
-    const isDev = process.env.NODE_ENV === 'development'
+    const isDev = isDevelopmentRuntime()
 
     this.floatingWindow = new BrowserWindow({
       width: WINDOW_WIDTH,

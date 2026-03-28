@@ -19,35 +19,6 @@ function toPlainObject(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value))
 }
 
-function buildAccelerator(hotkey) {
-  if (!hotkey?.key) {
-    return ''
-  }
-
-  const modifiers = hotkey?.modifiers || []
-  const platform = globalThis.window?.electronAPI?.platform || 'web'
-  const sortWeight = platform === 'win32'
-    ? { alt: 1, ctrl: 2, shift: 3, win: 4, cmd: 5 }
-    : { cmd: 1, ctrl: 2, alt: 3, shift: 4, win: 5 }
-
-  const parts = [...modifiers]
-    .sort((left, right) => (sortWeight[left] || 99) - (sortWeight[right] || 99))
-    .map((modifier) => {
-    if (modifier === 'cmd') return 'CommandOrControl'
-    if (modifier === 'ctrl') return 'Control'
-    if (modifier === 'alt') return 'Alt'
-    if (modifier === 'shift') return 'Shift'
-    if (modifier === 'win') return 'Super'
-    return modifier
-  })
-
-  if (hotkey?.key) {
-    parts.push(String(hotkey.key).toUpperCase())
-  }
-
-  return parts.join('+')
-}
-
 export function useElectron() {
   const isReady = ref(false)
 
@@ -72,6 +43,7 @@ export function useElectron() {
     optimizeRecord: (id) => httpApi.optimizeRecord(id),
     exportRecord: (id, format) => httpApi.exportRecord(id, format),
     getRecordAudio: (id) => httpApi.getRecordAudio(id),
+    getHealth: (probeRuntime = false) => httpApi.getHealth(probeRuntime),
     getClipboardItems: (params) => httpApi.getClipboardItems(params),
     getClipboardStats: () => httpApi.getClipboardStats(),
     createClipboardItem: (payload) => httpApi.createClipboardItem(payload),
@@ -236,18 +208,18 @@ export function useElectron() {
 
   async function updateHotkey(hotkey) {
     const plainHotkey = toPlainHotkey(hotkey)
-    const accelerator = buildAccelerator(plainHotkey)
-    if (!accelerator) {
+    if (!Array.isArray(plainHotkey?.modifiers) || plainHotkey.modifiers.length === 0) {
       return {
         success: false,
-        error: '快捷键必须包含一个字母或数字键'
+        error: '快捷键至少需要一个修饰键'
       }
     }
 
-    return globalThis.window?.electronAPI?.updateHotkey({
-      ...plainHotkey,
-      accelerator
-    })
+    return globalThis.window?.electronAPI?.updateHotkey(plainHotkey)
+  }
+
+  async function syncInputSettings(settings) {
+    return globalThis.window?.electronAPI?.syncInputSettings(toPlainObject(settings))
   }
 
   async function syncDesktopSettings(settings) {
@@ -292,6 +264,7 @@ export function useElectron() {
     debugLog,
     removeAllListeners,
     updateHotkey,
+    syncInputSettings,
     syncDesktopSettings,
     syncRecordingState,
     startStatusPolling,
