@@ -15,7 +15,7 @@
             }"
             type="button"
             :disabled="serviceButtonDisabled"
-            @click="toggleStreamingService"
+            @click="toggleModelService"
           >
             <span class="service-toggle-dot"></span>
             <span>{{ serviceButtonLabel }}</span>
@@ -125,7 +125,7 @@ const {
 const settingsStore = useSettingsStore()
 const serviceActionPending = ref(false)
 
-const showServiceButton = computed(() => settingsStore.settings.asr_provider === 'qwen_asr')
+const showServiceButton = computed(() => true)
 const serviceLoading = computed(() => (
   serviceActionPending.value || settingsStore.runtimeStatus.qwen_streaming_service_loading
 ))
@@ -136,19 +136,19 @@ const serviceButtonDisabled = computed(() => (
 ))
 const recordingButtonDisabled = computed(() => (
   !isRecording.value &&
-  isStreamingModeEnabled.value &&
   !serviceReady.value
 ))
 const buttonText = computed(() => {
   if (isRecording.value) return '结束录音'
-  if (recordingButtonDisabled.value) return '请先启动模型服务'
+  if (serviceLoading.value) return '模型加载中'
+  if (recordingButtonDisabled.value) return '请先开启模型'
   return '开始录音'
 })
 const serviceButtonLabel = computed(() => {
-  if (serviceLoading.value) return '模型服务加载中'
-  if (serviceReady.value) return '关闭模型服务'
-  if (serviceRunning.value) return '模型服务预热中'
-  return '启动模型服务'
+  if (serviceLoading.value) return '模型加载中'
+  if (serviceReady.value) return '模型已开启'
+  if (serviceRunning.value) return '模型预热中'
+  return '开启模型'
 })
 
 const modeBadge = computed(() => {
@@ -265,19 +265,15 @@ const liveIndicatorText = computed(() => {
   return 'STANDBY'
 })
 
-async function refreshStreamingServiceStatus(probeRuntime = true) {
-  if (settingsStore.settings.asr_provider !== 'qwen_asr') {
-    return
-  }
-
+async function refreshModelServiceStatus(probeRuntime = true) {
   try {
     await settingsStore.loadRuntimeStatus(probeRuntime)
   } catch (error) {
-    console.error('[RecorderSection] Failed to refresh streaming service status:', error)
+    console.error('[RecorderSection] Failed to refresh model service status:', error)
   }
 }
 
-async function toggleStreamingService() {
+async function toggleModelService() {
   if (serviceButtonDisabled.value) {
     return
   }
@@ -311,17 +307,13 @@ function toggleRecording() {
 }
 
 onMounted(() => {
-  if (showServiceButton.value) {
-    void refreshStreamingServiceStatus(true)
-  }
+  void refreshModelServiceStatus(true)
 })
 
 watch(
   () => [settingsStore.settings.asr_provider, settingsStore.settings.recording_mode],
-  ([provider, mode]) => {
-    if (provider === 'qwen_asr') {
-      void refreshStreamingServiceStatus(true)
-    }
+  () => {
+    void refreshModelServiceStatus(true)
   },
   { immediate: false }
 )

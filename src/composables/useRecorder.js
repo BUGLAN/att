@@ -551,6 +551,34 @@ async function ensureStreamingRuntimeAvailable() {
   }
 }
 
+async function ensureModelServiceAvailable() {
+  const settingsStore = useSettingsStore()
+
+  try {
+    const runtimeStatus = await settingsStore.loadRuntimeStatus(true)
+    if (runtimeStatus.qwen_streaming_service_ready) {
+      return {
+        available: true,
+        runtimeStatus
+      }
+    }
+
+    return {
+      available: false,
+      reason: runtimeStatus.qwen_streaming_service_loading
+        ? '模型服务仍在加载，请稍候'
+        : runtimeStatus.qwen_streaming_service_error ||
+          runtimeStatus.qwen_streaming_error ||
+          '请先开启模型'
+    }
+  } catch (error) {
+    return {
+      available: false,
+      reason: error.message || '无法探测模型服务状态'
+    }
+  }
+}
+
 async function connectStreamingSocket(language) {
   const { api } = useElectron()
 
@@ -1293,6 +1321,12 @@ async function startRecording() {
     appStore.isTranscribing ||
     mediaRecorder.value?.state === 'recording'
   ) {
+    return
+  }
+
+  const modelService = await ensureModelServiceAvailable()
+  if (!modelService.available) {
+    appStore.showToast(modelService.reason || '请先开启模型')
     return
   }
 
