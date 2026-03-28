@@ -34,7 +34,7 @@ try {
     Write-Host "[qwen-start] Model: $Model"
     Write-Host "[qwen-start] Cache: $resolvedCacheDir"
 
-    & uv run --python $pythonExe python scripts/qwen_streaming_service.py
+    & uv run --python $pythonExe python -m uvicorn scripts.qwen_streaming_service:app --host 0.0.0.0 --port 9000
 }
 finally {
     Pop-Location

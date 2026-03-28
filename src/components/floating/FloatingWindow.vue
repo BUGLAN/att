@@ -28,7 +28,18 @@
       <div v-else class="spinner" aria-hidden="true"></div>
 
       <div class="content">
-        <p class="primary-line">{{ prefixText }}<span class="highlight">{{ contentText }}</span></p>
+        <p v-if="showScrollingTranscript" class="primary-line primary-line-marquee">
+          <span class="prefix-text">{{ prefixText }}</span>
+          <span class="marquee-viewport">
+            <span class="marquee-track">
+              <span class="highlight marquee-segment">{{ contentText }}</span>
+              <span class="highlight marquee-segment marquee-segment-duplicate">{{ contentText }}</span>
+            </span>
+          </span>
+        </p>
+        <p v-else class="primary-line">
+          {{ prefixText }}<span class="highlight">{{ contentText }}</span>
+        </p>
       </div>
 
       <div class="actions">
@@ -60,6 +71,7 @@ const AUTO_HIDE_MS = 800
 
 const phase = ref('idle')
 const text = ref('')
+const mode = ref('single')
 let hideTimer = null
 
 const showWaveform = computed(() => (
@@ -69,6 +81,7 @@ const showWaveform = computed(() => (
 ))
 
 const prefixText = computed(() => {
+  if (phase.value === 'recording' && mode.value === 'streaming') return '实时记录：'
   if (phase.value === 'recording') return text.value ? '实时记录：' : '正在录音：'
   if (phase.value === 'transcribing') return '正在转写：'
   if (phase.value === 'optimizing') return '正在优化：'
@@ -78,6 +91,7 @@ const prefixText = computed(() => {
 })
 
 const contentText = computed(() => {
+  if (phase.value === 'recording' && mode.value === 'streaming') return text.value || '正在聆听...'
   if (phase.value === 'recording') return text.value || '实时内容正在生成中...'
   if (phase.value === 'transcribing') return '实时内容正在生成中...'
   if (phase.value === 'optimizing') return 'AI 正在整理文本...'
@@ -85,6 +99,10 @@ const contentText = computed(() => {
   if (phase.value === 'error') return text.value || '请稍后重试'
   return '实时内容正在生成中...'
 })
+
+const showScrollingTranscript = computed(() => (
+  phase.value === 'recording' && mode.value === 'streaming' && Boolean(text.value)
+))
 
 function clearHideTimer() {
   if (!hideTimer) {
@@ -105,6 +123,7 @@ function scheduleHide() {
 function applyState(payload = {}) {
   phase.value = payload.phase || 'idle'
   text.value = payload.text || ''
+  mode.value = payload.mode || 'single'
 
   if (phase.value === 'complete' || phase.value === 'error') {
     scheduleHide()

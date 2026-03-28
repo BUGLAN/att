@@ -1,6 +1,5 @@
-"""
-Qwen3-ASR 流式 provider 运行时适配层
-"""
+﻿"""
+Qwen3-ASR 流式 provider 运行时适配层"""
 import asyncio
 from pathlib import Path
 from typing import Any
@@ -21,12 +20,12 @@ logger = get_logger(__name__)
 
 
 def _looks_like_local_model_dir(path: Path) -> bool:
-    """判断目录是否像一个可直接加载的本地模型目录"""
+    """判断目录是否像一个可直接加载的本地模型目录。"""
     return path.is_dir() and (path / "config.json").exists()
 
 
 def _resolve_local_model_path(model_name_or_path: str, cache_dir: str) -> str:
-    """优先解析项目内已下载的本地模型目录"""
+    """优先解析项目内已下载好的本地模型目录。"""
     if not model_name_or_path:
         return model_name_or_path
 
@@ -43,7 +42,7 @@ def _resolve_local_model_path(model_name_or_path: str, cache_dir: str) -> str:
 
 
 class QwenLocalStreamingSession(StreamingASRSession):
-    """本地 vLLM Qwen 流式会话"""
+    """本地 vLLM Qwen 流式会话。"""
 
     def __init__(self, model: Any, state: Any):
         self._model = model
@@ -67,7 +66,7 @@ class QwenLocalStreamingSession(StreamingASRSession):
 
 
 class QwenLocalVLLMStreamingProvider(StreamingASRProvider):
-    """本地 vLLM Qwen 流式 provider"""
+    """本地 vLLM Qwen 流式 provider。"""
 
     def __init__(
         self,
@@ -132,8 +131,8 @@ class QwenLocalVLLMStreamingProvider(StreamingASRProvider):
         if normalized_device == "cpu":
             raise ASRProviderError("Qwen 真流式当前仅支持 vLLM/GPU，不支持 CPU 模式")
 
-        if not self._torch.cuda.is_available():
-            raise ASRProviderError("当前环境未检测到 CUDA，无法启用本地 Qwen 真流式")
+        if normalized_device not in {"auto", "cuda"} and not normalized_device.startswith("cuda"):
+            raise ASRProviderError(f"不支持的 Qwen 真流式设备配置: {self.device}")
 
     async def check_availability(self) -> dict:
         await asyncio.to_thread(self._ensure_supported_device)
@@ -206,7 +205,7 @@ class QwenLocalVLLMStreamingProvider(StreamingASRProvider):
 
 
 class QwenRemoteStreamingSession(StreamingASRSession):
-    """远端桥接 Qwen 流式会话"""
+    """杩滅妗ユ帴 Qwen 娴佸紡浼氳瘽"""
 
     def __init__(
         self,
@@ -224,7 +223,7 @@ class QwenRemoteStreamingSession(StreamingASRSession):
             response = self._client.request(method, path, **kwargs)
             response.raise_for_status()
         except httpx.HTTPError as error:
-            raise ASRProviderError(f"远端 Qwen 流式服务请求失败: {error}") from error
+            raise ASRProviderError(f"杩滅 Qwen 娴佸紡鏈嶅姟璇锋眰澶辫触: {error}") from error
 
         try:
             return response.json()
@@ -263,7 +262,7 @@ class QwenRemoteStreamingSession(StreamingASRSession):
         try:
             self._request_json("DELETE", f"/api/session/{self._session_id}")
         except ASRProviderError:
-            logger.warning("取消远端 Qwen 流式会话失败", session_id=self._session_id)
+            logger.warning("鍙栨秷杩滅 Qwen 娴佸紡浼氳瘽澶辫触", session_id=self._session_id)
         finally:
             self.close()
 
@@ -276,7 +275,7 @@ class QwenRemoteStreamingSession(StreamingASRSession):
 
 
 class QwenRemoteBridgeStreamingProvider(StreamingASRProvider):
-    """远端桥接 Qwen 流式 provider"""
+    """杩滅妗ユ帴 Qwen 娴佸紡 provider"""
 
     def __init__(
         self,
@@ -310,9 +309,9 @@ class QwenRemoteBridgeStreamingProvider(StreamingASRProvider):
                 response.raise_for_status()
                 payload = response.json()
         except httpx.HTTPError as error:
-            raise ASRProviderError(f"无法连接远端 Qwen 流式服务: {error}") from error
+            raise ASRProviderError(f"鏃犳硶杩炴帴杩滅 Qwen 娴佸紡鏈嶅姟: {error}") from error
         except ValueError as error:
-            raise ASRProviderError("远端 Qwen 流式服务健康检查返回了无效 JSON") from error
+            raise ASRProviderError("杩滅 Qwen 娴佸紡鏈嶅姟鍋ュ悍妫€鏌ヨ繑鍥炰簡鏃犳晥 JSON") from error
 
         return {
             "available": bool(payload.get("ready", True)),
@@ -325,7 +324,7 @@ class QwenRemoteBridgeStreamingProvider(StreamingASRProvider):
     async def check_availability(self) -> dict:
         result = await asyncio.to_thread(self._health_check_sync)
         if not result["available"]:
-            raise ASRProviderError("远端 Qwen 流式服务尚未就绪")
+            raise ASRProviderError("杩滅 Qwen 娴佸紡鏈嶅姟灏氭湭灏辩华")
         return result
 
     def _create_session_sync(self, language: str, context: str) -> StreamingASRSession:
@@ -365,13 +364,13 @@ class QwenRemoteBridgeStreamingProvider(StreamingASRProvider):
         try:
             return await asyncio.to_thread(self._create_session_sync, language, context)
         except httpx.HTTPError as error:
-            raise ASRProviderError(f"创建远端 Qwen 流式会话失败: {error}") from error
+            raise ASRProviderError(f"鍒涘缓杩滅 Qwen 娴佸紡浼氳瘽澶辫触: {error}") from error
         except ValueError as error:
             raise ASRProviderError("远端 Qwen 流式服务返回了无效 JSON") from error
 
 
 class QwenStreamingProvider(StreamingASRProvider):
-    """Qwen 流式 provider 适配层"""
+    """Qwen 流式 provider 适配层。"""
 
     SUPPORTED_BACKENDS = {"auto", "local_vllm", "remote_bridge"}
 
@@ -415,7 +414,7 @@ class QwenStreamingProvider(StreamingASRProvider):
     def backend_type(self) -> str:
         backend = self.streaming_backend
         if backend not in self.SUPPORTED_BACKENDS:
-            raise ASRProviderError(f"不支持的 Qwen 流式 backend: {backend}")
+            raise ASRProviderError(f"涓嶆敮鎸佺殑 Qwen 娴佸紡 backend: {backend}")
 
         if backend == "auto":
             return "remote_bridge" if self.streaming_base_url else "local_vllm"

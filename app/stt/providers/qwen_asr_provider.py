@@ -1,5 +1,5 @@
-"""
-Qwen3-ASR provider 实现
+﻿"""
+Qwen3-ASR provider 瀹炵幇
 """
 import asyncio
 import time
@@ -104,7 +104,7 @@ class QwenASRProvider(ASRProvider):
             from qwen_asr import Qwen3ASRModel
         except ImportError as error:
             raise ASRProviderError(
-                "Qwen3-ASR 依赖未安装，请先执行 `pip install qwen-asr>=0.0.6`"
+                "Qwen3-ASR 渚濊禆鏈畨瑁咃紝璇峰厛鎵ц `pip install qwen-asr>=0.0.6`"
             ) from error
 
         self._torch = torch
@@ -153,22 +153,35 @@ class QwenASRProvider(ASRProvider):
         return model_kwargs
 
     def _looks_like_local_model_dir(self, path: Path) -> bool:
-        """判断目录是否像一个可直接加载的本地模型目录"""
+        """判断目录是否像一个可直接加载的本地模型目录。"""
         return path.is_dir() and (path / "config.json").exists()
+
+    def _iter_local_model_candidates(self, model_name_or_path: str):
+        direct_path = Path(model_name_or_path)
+        yield direct_path
+
+        short_name = model_name_or_path.replace("\\", "/").split("/")[-1]
+        safe_short_name = short_name.replace(".", "___")
+        cache_dir = Path(self.cache_dir)
+
+        yield cache_dir / short_name
+        yield cache_dir / safe_short_name
+        yield cache_dir / "Qwen" / short_name
+        yield cache_dir / "Qwen" / safe_short_name
+
+        snapshot_root = cache_dir / f"models--{model_name_or_path.replace('/', '--')}" / "snapshots"
+        if snapshot_root.is_dir():
+            for snapshot_dir in sorted(snapshot_root.iterdir(), reverse=True):
+                yield snapshot_dir
 
     def _resolve_local_model_path(self, model_name_or_path: str) -> str:
         """优先解析项目内已下载好的本地模型目录，避免重复联网下载。"""
         if not model_name_or_path:
             return model_name_or_path
 
-        direct_path = Path(model_name_or_path)
-        if self._looks_like_local_model_dir(direct_path):
-            return str(direct_path)
-
-        short_name = model_name_or_path.replace("\\", "/").split("/")[-1]
-        candidate = Path(self.cache_dir) / short_name
-        if self._looks_like_local_model_dir(candidate):
-            return str(candidate)
+        for candidate in self._iter_local_model_candidates(model_name_or_path):
+            if self._looks_like_local_model_dir(candidate):
+                return str(candidate)
 
         return model_name_or_path
 
@@ -181,7 +194,7 @@ class QwenASRProvider(ASRProvider):
             resolved_model_path = self._resolve_local_model_path(self._model_name)
             is_local_model = resolved_model_path != self._model_name
             logger.info(
-                "加载 Qwen3-ASR 模型",
+                "鍔犺浇 Qwen3-ASR 妯″瀷",
                 model=self._model_name,
                 resolved_model_path=resolved_model_path,
                 local_model=is_local_model,
@@ -196,7 +209,7 @@ class QwenASRProvider(ASRProvider):
                 **self._build_model_kwargs()
             )
             logger.info(
-                "Qwen3-ASR 模型加载完成",
+                "Qwen3-ASR 妯″瀷鍔犺浇瀹屾垚",
                 model=resolved_model_path,
                 load_time=f"{time.time() - start_time:.2f}s"
             )
@@ -356,7 +369,7 @@ class QwenASRProvider(ASRProvider):
         )
 
         logger.info(
-            "Qwen3-ASR 转写完成",
+            "Qwen3-ASR 杞啓瀹屾垚",
             audio_path=str(audio_path),
             duration=duration,
             processing_time=f"{processing_time:.2f}s",

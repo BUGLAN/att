@@ -183,6 +183,7 @@ textarea {
 
 .content {
   min-width: 0;
+  overflow: hidden;
 }
 
 .primary-line {
@@ -194,6 +195,43 @@ textarea {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.primary-line-marquee {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: clip;
+}
+
+.prefix-text {
+  flex: 0 0 auto;
+}
+
+.marquee-viewport {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  mask-image: linear-gradient(to right, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
+}
+
+.marquee-track {
+  width: max-content;
+  display: inline-flex;
+  align-items: center;
+  animation: floating-marquee 10s linear infinite;
+  will-change: transform;
+}
+
+.marquee-segment {
+  flex: 0 0 auto;
+  padding-right: 56px;
+}
+
+.marquee-segment-duplicate {
+  opacity: 0.9;
 }
 
 .highlight {
@@ -262,6 +300,16 @@ textarea {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes floating-marquee {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(calc(-50% - 28px));
   }
 }
 

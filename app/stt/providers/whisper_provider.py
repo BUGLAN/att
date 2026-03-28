@@ -1,5 +1,5 @@
-"""
-Whisper provider 实现
+﻿"""
+Whisper provider 瀹炵幇
 """
 import asyncio
 import platform
@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 
 
 class WhisperProvider(ASRProvider):
-    """faster-whisper 封装"""
+    """faster-whisper 灏佽"""
 
     CHINESE_CONFIG = {
         "language": "zh",
@@ -49,7 +49,7 @@ class WhisperProvider(ASRProvider):
 
         if self.device == "auto" and platform.processor() == "arm":
             self.device = "coreml"
-            logger.info("检测到 Apple Silicon，切换到 Core ML 兼容模式")
+            logger.info("妫€娴嬪埌 Apple Silicon锛屽垏鎹㈠埌 Core ML 鍏煎妯″紡")
 
         self._model: Optional[WhisperModel] = None
 
@@ -76,29 +76,67 @@ class WhisperProvider(ASRProvider):
             multi_language=True
         )
 
+    def _looks_like_local_model_dir(self, path: Path) -> bool:
+        return path.is_dir() and (path / "config.json").exists() and (path / "tokenizer.json").exists()
+
+    def _resolve_model_source(self) -> str:
+        direct_path = Path(self.model_size)
+        if self._looks_like_local_model_dir(direct_path):
+            return str(direct_path)
+
+        download_root = Path(self.download_root)
+        if self._looks_like_local_model_dir(download_root):
+            return str(download_root)
+
+        short_name = self.model_size.replace("\\", "/").split("/")[-1]
+        candidates = [
+            download_root / short_name,
+            download_root / f"faster-whisper-{short_name}",
+            download_root / f"Systran--faster-whisper-{short_name}",
+            download_root / f"models--Systran--faster-whisper-{short_name}"
+        ]
+        for candidate in candidates:
+            if self._looks_like_local_model_dir(candidate):
+                return str(candidate)
+
+        snapshot_root = download_root / f"models--Systran--faster-whisper-{short_name}" / "snapshots"
+        if snapshot_root.is_dir():
+            for snapshot_dir in sorted(snapshot_root.iterdir(), reverse=True):
+                if self._looks_like_local_model_dir(snapshot_dir):
+                    return str(snapshot_dir)
+
+        return self.model_size
+
     def _load_model(self) -> WhisperModel:
         if self._model is None:
-            logger.info("加载 Whisper 模型", model=self.model_size)
+            resolved_model_source = self._resolve_model_source()
+            is_local_model = resolved_model_source != self.model_size
+            logger.info(
+                "鍔犺浇 Whisper 妯″瀷",
+                model=self.model_size,
+                resolved_model_source=resolved_model_source,
+                local_model=is_local_model
+            )
             start_time = time.time()
 
             if self.device == "coreml":
                 self._model = WhisperModel(
-                    self.model_size,
+                    resolved_model_source,
                     device="cpu",
                     compute_type="int8",
-                    download_root=self.download_root
+                    download_root=self.download_root if not is_local_model else None
                 )
             else:
                 self._model = WhisperModel(
-                    self.model_size,
+                    resolved_model_source,
                     device=self.device,
                     compute_type=self.compute_type,
-                    download_root=self.download_root
+                    download_root=self.download_root if not is_local_model else None
                 )
 
             logger.info(
-                "Whisper 模型加载完成",
-                model=self.model_size,
+                "Whisper 妯″瀷鍔犺浇瀹屾垚",
+                model=resolved_model_source,
                 device=self.device,
                 load_time=f"{time.time() - start_time:.2f}s"
             )
@@ -158,7 +196,7 @@ class WhisperProvider(ASRProvider):
         )
 
         logger.info(
-            "Whisper 转写完成",
+            "Whisper 杞啓瀹屾垚",
             audio_path=str(audio_path),
             duration=duration,
             processing_time=f"{processing_time:.2f}s",

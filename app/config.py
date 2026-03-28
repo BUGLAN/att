@@ -293,6 +293,8 @@ class Settings(BaseSettings):
     qwen_streaming_backend: str = "auto"
     qwen_streaming_base_url: str = ""
     qwen_streaming_timeout_seconds: float = 30.0
+    qwen_streaming_gpu_memory_utilization: float = 0.85
+    qwen_streaming_max_model_len: int = 16384
 
     # DeepSeek API
     deepseek_api_key: str = ""

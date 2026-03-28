@@ -16,11 +16,14 @@ from typing import Any
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
+from dotenv import load_dotenv
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+load_dotenv(PROJECT_ROOT / ".env")
 
 from app.utils.logging import get_logger, setup_logging
 
@@ -33,12 +36,50 @@ DEFAULT_CACHE_DIR = os.getenv(
     str(PROJECT_ROOT / "models" / "qwen"),
 )
 DEFAULT_MAX_NEW_TOKENS = int(os.getenv("QWEN_STREAMING_MAX_NEW_TOKENS", "256"))
+DEFAULT_MAX_MODEL_LEN = int(os.getenv("QWEN_STREAMING_MAX_MODEL_LEN", "16384"))
 DEFAULT_GPU_MEMORY_UTILIZATION = float(
     os.getenv("QWEN_STREAMING_GPU_MEMORY_UTILIZATION", "0.85")
 )
 DEFAULT_CHUNK_SIZE_SEC = float(os.getenv("QWEN_STREAMING_CHUNK_SIZE_SEC", "2.0"))
 DEFAULT_UNFIXED_CHUNK_NUM = int(os.getenv("QWEN_STREAMING_UNFIXED_CHUNK_NUM", "2"))
 DEFAULT_UNFIXED_TOKEN_NUM = int(os.getenv("QWEN_STREAMING_UNFIXED_TOKEN_NUM", "5"))
+LANGUAGE_MAP = {
+    "auto": None,
+    "zh": "Chinese",
+    "zh-cn": "Chinese",
+    "zh-hans": "Chinese",
+    "zh-tw": "Chinese",
+    "zh-hk": "Chinese",
+    "yue": "Cantonese",
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "ar": "Arabic",
+    "th": "Thai",
+    "vi": "Vietnamese",
+    "tr": "Turkish",
+    "hi": "Hindi",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "sv": "Swedish",
+    "da": "Danish",
+    "fi": "Finnish",
+    "pl": "Polish",
+    "cs": "Czech",
+    "fil": "Filipino",
+    "fa": "Persian",
+    "el": "Greek",
+    "ro": "Romanian",
+    "hu": "Hungarian",
+    "mk": "Macedonian",
+}
 
 
 class StartSessionRequest(BaseModel):
@@ -79,6 +120,22 @@ def _resolve_model_name_or_path(model_name_or_path: str, cache_dir: str) -> str:
     return model_name_or_path
 
 
+def _normalize_language(language: str | None) -> str | None:
+    """将前端常见语言代码转换为 Qwen 流式运行时支持的语言名"""
+    if language is None:
+        return None
+
+    normalized = language.strip()
+    if not normalized:
+        return None
+
+    mapped = LANGUAGE_MAP.get(normalized.lower())
+    if normalized.lower() in LANGUAGE_MAP:
+        return mapped
+
+    return normalized
+
+
 class QwenStreamingRuntime:
     """Qwen 流式运行时"""
 
@@ -86,6 +143,7 @@ class QwenStreamingRuntime:
         self.model_name = DEFAULT_MODEL_NAME
         self.cache_dir = DEFAULT_CACHE_DIR
         self.max_new_tokens = DEFAULT_MAX_NEW_TOKENS
+        self.max_model_len = DEFAULT_MAX_MODEL_LEN
         self.gpu_memory_utilization = DEFAULT_GPU_MEMORY_UTILIZATION
         self.chunk_size_sec = DEFAULT_CHUNK_SIZE_SEC
         self.unfixed_chunk_num = DEFAULT_UNFIXED_CHUNK_NUM
@@ -125,6 +183,7 @@ class QwenStreamingRuntime:
             self._model = self._model_class.LLM(
                 model=resolved_model_path,
                 max_new_tokens=self.max_new_tokens,
+                max_model_len=self.max_model_len,
                 gpu_memory_utilization=self.gpu_memory_utilization,
             )
 
@@ -132,9 +191,10 @@ class QwenStreamingRuntime:
 
     def create_session(self, language: str, context: str) -> dict:
         model = self.load_model()
+        normalized_language = _normalize_language(language)
         state = model.init_streaming_state(
             context=context or "",
-            language=language or None,
+            language=normalized_language,
             unfixed_chunk_num=self.unfixed_chunk_num,
             unfixed_token_num=self.unfixed_token_num,
             chunk_size_sec=self.chunk_size_sec,
@@ -144,12 +204,12 @@ class QwenStreamingRuntime:
         self._sessions[session_id] = RemoteStreamingSession(
             session_id=session_id,
             state=state,
-            language=language or "zh",
+            language=normalized_language or "auto",
         )
 
         return {
             "session_id": session_id,
-            "language": language or "zh",
+            "language": normalized_language or "auto",
             "sample_rate": DEFAULT_SAMPLE_RATE,
         }
 
@@ -268,7 +328,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "scripts.qwen_streaming_service:app",
+        app,
         host=os.getenv("QWEN_STREAMING_HOST", "0.0.0.0"),
         port=int(os.getenv("QWEN_STREAMING_PORT", "9000")),
         reload=False,

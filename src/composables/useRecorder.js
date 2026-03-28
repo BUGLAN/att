@@ -55,8 +55,12 @@ const completedPhases = new Set()
 
 function syncFloatingWindow(state, options = {}) {
   const { floatingWindow } = useElectron()
+  const payload = {
+    mode: activeRecordingMode.value,
+    ...state
+  }
 
-  floatingWindow.updateState(state)
+  floatingWindow.updateState(payload)
 
   if (options.show) {
     floatingWindow.show()
@@ -87,7 +91,7 @@ function startDurationClock() {
       syncFloatingWindow({
         phase: 'recording',
         duration: duration.value,
-        text: activeRecordingMode.value === 'multi' ? liveTranscript.value : ''
+        text: ['multi', 'streaming'].includes(activeRecordingMode.value) ? liveTranscript.value : ''
       })
     }
   }, 1000)
@@ -143,6 +147,10 @@ function cleanupStreamingSocket() {
 }
 
 function updateStreamingTranscript(text) {
+  if (!text && liveTranscript.value) {
+    return
+  }
+
   liveTranscript.value = text || ''
 
   if (floatingSessionActive && activeRecordingMode.value === 'streaming') {
