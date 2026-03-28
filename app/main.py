@@ -17,6 +17,7 @@ from app.clipboard.routes import init_clipboard_manager
 from app.config import settings
 from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
+from app.services.qwen_streaming_service_manager import qwen_streaming_service_manager
 from app.stt.factory import create_asr_provider, get_asr_provider_config
 from app.utils.logging import get_logger, setup_logging
 
@@ -83,6 +84,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Shutting down Audio-to-Text API")
     await close_streaming_session_manager()
+    await qwen_streaming_service_manager.shutdown()
     await asr_provider.close()
     await optimizer.close()
 

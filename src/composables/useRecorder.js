@@ -535,6 +535,26 @@ async function ensureStreamingRuntimeAvailable() {
       }
     }
 
+    if (
+      runtimeStatus.qwen_streaming_backend === 'remote_bridge' ||
+      settingsStore.settings.recording_mode === 'streaming'
+    ) {
+      const startedStatus = await settingsStore.startStreamingService(true)
+      if (startedStatus.qwen_streaming_available || startedStatus.qwen_streaming_service_ready) {
+        return {
+          available: true,
+          runtimeStatus: startedStatus
+        }
+      }
+
+      return {
+        available: false,
+        reason: startedStatus.qwen_streaming_service_error ||
+          startedStatus.qwen_streaming_error ||
+          '模型服务已启动，但尚未准备就绪'
+      }
+    }
+
     return {
       available: false,
       reason: runtimeStatus.qwen_streaming_error ||

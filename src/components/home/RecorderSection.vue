@@ -5,9 +5,26 @@
         <div class="stage-heading">
           <h1 class="stage-title">录音</h1>
         </div>
-        <div class="stage-badges">
-          <span class="stage-badge primary">{{ modeBadge }}</span>
-          <span class="stage-badge">{{ statusBadge }}</span>
+        <div class="stage-actions">
+          <button
+            v-if="showServiceButton"
+            class="service-toggle"
+            :class="{
+              active: serviceReady,
+              loading: serviceLoading
+            }"
+            type="button"
+            :disabled="serviceButtonDisabled"
+            @click="toggleStreamingService"
+          >
+            <span class="service-toggle-dot"></span>
+            <span>{{ serviceButtonLabel }}</span>
+          </button>
+
+          <div class="stage-badges">
+            <span class="stage-badge primary">{{ modeBadge }}</span>
+            <span class="stage-badge">{{ statusBadge }}</span>
+          </div>
         </div>
       </div>
 
@@ -86,8 +103,9 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRecorder } from '@/composables/useRecorder'
+import { useSettingsStore } from '@/stores/settings'
 
 const {
   isRecording,
@@ -103,8 +121,25 @@ const {
   startRecording,
   stopRecording
 } = useRecorder()
+const settingsStore = useSettingsStore()
+const serviceActionPending = ref(false)
 
 const buttonText = computed(() => (isRecording.value ? '结束录音' : '开始录音'))
+const showServiceButton = computed(() => settingsStore.settings.asr_provider === 'qwen_asr')
+const serviceLoading = computed(() => (
+  serviceActionPending.value || settingsStore.runtimeStatus.qwen_streaming_service_loading
+))
+const serviceReady = computed(() => settingsStore.runtimeStatus.qwen_streaming_service_ready)
+const serviceRunning = computed(() => settingsStore.runtimeStatus.qwen_streaming_service_running)
+const serviceButtonDisabled = computed(() => (
+  serviceLoading.value || isRecording.value || isTranscribing.value
+))
+const serviceButtonLabel = computed(() => {
+  if (serviceLoading.value) return '模型服务加载中'
+  if (serviceReady.value) return '关闭模型服务'
+  if (serviceRunning.value) return '模型服务预热中'
+  return '启动模型服务'
+})
 
 const modeBadge = computed(() => {
   if (isStreamingModeEnabled.value) return 'Qwen 真流式'
@@ -220,6 +255,38 @@ const liveIndicatorText = computed(() => {
   return 'STANDBY'
 })
 
+async function refreshStreamingServiceStatus(probeRuntime = true) {
+  if (settingsStore.settings.asr_provider !== 'qwen_asr') {
+    return
+  }
+
+  try {
+    await settingsStore.loadRuntimeStatus(probeRuntime)
+  } catch (error) {
+    console.error('[RecorderSection] Failed to refresh streaming service status:', error)
+  }
+}
+
+async function toggleStreamingService() {
+  if (serviceButtonDisabled.value) {
+    return
+  }
+
+  serviceActionPending.value = true
+  try {
+    if (serviceReady.value || serviceRunning.value) {
+      await settingsStore.stopStreamingService()
+      return
+    }
+
+    await settingsStore.startStreamingService(true)
+  } catch (error) {
+    console.error('[RecorderSection] Failed to toggle streaming service:', error)
+  } finally {
+    serviceActionPending.value = false
+  }
+}
+
 function toggleRecording() {
   if (isRecording.value) {
     stopRecording()
@@ -228,6 +295,22 @@ function toggleRecording() {
 
   startRecording()
 }
+
+onMounted(() => {
+  if (showServiceButton.value) {
+    void refreshStreamingServiceStatus(true)
+  }
+})
+
+watch(
+  () => [settingsStore.settings.asr_provider, settingsStore.settings.recording_mode],
+  ([provider, mode]) => {
+    if (provider === 'qwen_asr') {
+      void refreshStreamingServiceStatus(true)
+    }
+  },
+  { immediate: false }
+)
 </script>
 
 <style scoped>
@@ -254,6 +337,14 @@ function toggleRecording() {
   margin-bottom: 14px;
 }
 
+.stage-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .stage-heading {
   min-width: 0;
 }
@@ -273,6 +364,60 @@ function toggleRecording() {
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.service-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color 180ms ease,
+    color 180ms ease,
+    background 180ms ease,
+    transform 180ms ease;
+}
+
+.service-toggle:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(201, 162, 39, 0.28);
+  color: var(--text-primary);
+}
+
+.service-toggle:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.service-toggle.active {
+  color: var(--accent);
+  border-color: rgba(201, 162, 39, 0.32);
+  background: rgba(201, 162, 39, 0.08);
+}
+
+.service-toggle-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(161, 161, 170, 0.85);
+  box-shadow: 0 0 0 4px rgba(113, 113, 122, 0.08);
+}
+
+.service-toggle.active .service-toggle-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(201, 162, 39, 0.12);
+}
+
+.service-toggle.loading .service-toggle-dot {
+  background: var(--accent);
+  animation: blinkDot 1.2s ease-in-out infinite;
 }
 
 .stage-badge {
@@ -601,6 +746,7 @@ function toggleRecording() {
   }
 
   .stage-header,
+  .stage-actions,
   .live-header {
     flex-direction: column;
     align-items: flex-start;

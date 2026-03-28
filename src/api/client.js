@@ -160,6 +160,13 @@ export const api = {
   getSettings: () => request('GET', '/settings'),
   saveSettings: (settings) => request('PUT', '/settings', { body: settings }),
   getHealth: (probeRuntime = false) => request('GET', `/health${probeRuntime ? '?probe_runtime=true' : ''}`),
+  getStreamingServiceStatus: () => request('GET', '/streaming/service'),
+  startStreamingService: (waitUntilReady = true) => request('POST', '/streaming/service/start', {
+    body: {
+      wait_until_ready: waitUntilReady
+    }
+  }),
+  stopStreamingService: () => request('POST', '/streaming/service/stop'),
 
   getLLMConfigs: () => request('GET', '/llm/configs'),
   getLLMConfig: (id) => request('GET', `/llm/configs/${id}`),

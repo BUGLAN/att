@@ -32,6 +32,7 @@ from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
 from app.records.models import Record, RecordStatus, ExportFormat
 from app.records.session_manager import session_manager
+from app.services.qwen_streaming_service_manager import qwen_streaming_service_manager
 from app.services.streaming_session_manager import StreamingSessionManager
 from app.services.websocket import manager as ws_manager
 from app.prompts import PromptManager, PromptPresetCreate, PromptPresetUpdate, prompt_manager
@@ -65,6 +66,11 @@ class PromptPreviewRequest(BaseModel):
 class SetDefaultPromptRequest(BaseModel):
     """Request model for updating the default prompt preset."""
     preset_id: str
+
+
+class StreamingServiceRequest(BaseModel):
+    """Request model for controlling the streaming model service."""
+    wait_until_ready: bool = True
 
 
 def get_prompt_manager() -> PromptManager:
@@ -593,6 +599,7 @@ async def health_check(probe_runtime: bool = False) -> dict:
     streaming_available = False
     streaming_error = None
     streaming_backend = None
+    service_status = await qwen_streaming_service_manager.status()
     if probe_runtime and configured_provider == "qwen_asr":
         try:
             provider = get_streaming_session_manager()._get_provider()
@@ -601,6 +608,10 @@ async def health_check(probe_runtime: bool = False) -> dict:
             streaming_backend = streaming_status.get("backend")
         except Exception as error:
             streaming_error = str(error)
+    elif configured_provider == "qwen_asr" and service_status.get("ready"):
+        streaming_available = True
+        streaming_backend = settings.qwen_streaming_backend
+        streaming_error = None
 
     return {
         "status": "healthy",
@@ -611,8 +622,43 @@ async def health_check(probe_runtime: bool = False) -> dict:
         "ws_clients": ws_manager.client_count,
         "qwen_streaming_backend": streaming_backend,
         "qwen_streaming_available": streaming_available,
-        "qwen_streaming_error": streaming_error
+        "qwen_streaming_error": streaming_error,
+        "qwen_streaming_service_managed": service_status.get("managed", False),
+        "qwen_streaming_service_running": service_status.get("running", False),
+        "qwen_streaming_service_loading": service_status.get("loading", False),
+        "qwen_streaming_service_ready": service_status.get("ready", False),
+        "qwen_streaming_service_pid": service_status.get("pid"),
+        "qwen_streaming_service_url": service_status.get("base_url"),
+        "qwen_streaming_service_error": service_status.get("error"),
     }
+
+
+# ==================== Streaming Service Endpoints ====================
+
+@router.get("/streaming/service")
+async def get_streaming_service_status() -> dict:
+    """Get the managed Qwen streaming service status."""
+    return await qwen_streaming_service_manager.status()
+
+
+@router.post("/streaming/service/start")
+async def start_streaming_service(request: StreamingServiceRequest) -> dict:
+    """Start the managed Qwen streaming service."""
+    try:
+        return await qwen_streaming_service_manager.start(
+            wait_until_ready=request.wait_until_ready
+        )
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@router.post("/streaming/service/stop")
+async def stop_streaming_service() -> dict:
+    """Stop the managed Qwen streaming service."""
+    try:
+        return await qwen_streaming_service_manager.stop()
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
 
 
 # ==================== Settings Endpoints ====================

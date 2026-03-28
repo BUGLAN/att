@@ -85,7 +85,14 @@ export const useSettingsStore = defineStore('settings', () => {
     runtime_environment: 'unknown',
     qwen_streaming_available: false,
     qwen_streaming_backend: null,
-    qwen_streaming_error: null
+    qwen_streaming_error: null,
+    qwen_streaming_service_managed: true,
+    qwen_streaming_service_running: false,
+    qwen_streaming_service_loading: false,
+    qwen_streaming_service_ready: false,
+    qwen_streaming_service_pid: null,
+    qwen_streaming_service_url: null,
+    qwen_streaming_service_error: null
   })
 
   const presets = ref([])
@@ -161,6 +168,57 @@ export const useSettingsStore = defineStore('settings', () => {
     } catch (e) {
       error.value = e.message
       console.error('Failed to load runtime status:', e)
+      throw e
+    }
+  }
+
+  async function startStreamingService(waitUntilReady = true) {
+    try {
+      runtimeStatus.value = {
+        ...runtimeStatus.value,
+        qwen_streaming_service_loading: true,
+        qwen_streaming_service_error: null
+      }
+      const result = await api.startStreamingService(waitUntilReady)
+      await loadRuntimeStatus(true)
+      runtimeStatus.value = {
+        ...runtimeStatus.value,
+        qwen_streaming_service_loading: false,
+        qwen_streaming_service_running: result.running ?? runtimeStatus.value.qwen_streaming_service_running,
+        qwen_streaming_service_ready: result.ready ?? runtimeStatus.value.qwen_streaming_service_ready,
+        qwen_streaming_service_pid: result.pid ?? runtimeStatus.value.qwen_streaming_service_pid,
+        qwen_streaming_service_url: result.base_url ?? runtimeStatus.value.qwen_streaming_service_url,
+        qwen_streaming_service_error: result.error ?? runtimeStatus.value.qwen_streaming_service_error
+      }
+      return runtimeStatus.value
+    } catch (e) {
+      runtimeStatus.value = {
+        ...runtimeStatus.value,
+        qwen_streaming_service_loading: false,
+        qwen_streaming_service_error: e.message
+      }
+      error.value = e.message
+      console.error('Failed to start streaming service:', e)
+      throw e
+    }
+  }
+
+  async function stopStreamingService() {
+    try {
+      const result = await api.stopStreamingService()
+      await loadRuntimeStatus(false)
+      runtimeStatus.value = {
+        ...runtimeStatus.value,
+        qwen_streaming_service_running: result.running ?? false,
+        qwen_streaming_service_loading: result.loading ?? false,
+        qwen_streaming_service_ready: result.ready ?? false,
+        qwen_streaming_service_pid: result.pid ?? null,
+        qwen_streaming_service_error: result.error ?? null
+      }
+      return runtimeStatus.value
+    } catch (e) {
+      error.value = e.message
+      console.error('Failed to stop streaming service:', e)
       throw e
     }
   }
@@ -269,6 +327,8 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultLLMConfig,
     loadSettings,
     loadRuntimeStatus,
+    startStreamingService,
+    stopStreamingService,
     saveSettings,
     loadPresets,
     savePreset,
