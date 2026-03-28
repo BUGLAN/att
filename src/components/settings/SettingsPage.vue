@@ -132,17 +132,25 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">录音模式</span>
-              <span class="setting-desc">支持单段、多段准实时，以及仅限 Qwen 的真流式模式。</span>
+              <span class="setting-desc">支持单段录音、多段录音与流式录音。</span>
             </div>
             <div class="setting-actions-inline setting-actions-block">
               <select v-model="form.recording_mode" class="setting-select">
               <option value="single">单段录音</option>
               <option value="multi">多段录音</option>
-              <option value="streaming">Qwen 真流式</option>
+              <option value="streaming">流式录音</option>
               </select>
-              <span class="setting-runtime-note" :class="{ unavailable: !streamingRuntimeAvailable }">
-                {{ streamingRuntimeSummary }}
-              </span>
+            </div>
+          </div>
+
+          <div class="setting-item setting-item-runtime">
+            <div class="setting-info">
+              <span class="setting-label">流式运行时状态</span>
+              <span class="setting-desc">仅在流式录音模式下生效，用来说明当前后端是否可直接进入流式识别。</span>
+            </div>
+            <div class="setting-runtime-card" :class="{ unavailable: !streamingRuntimeAvailable }">
+              <span class="setting-runtime-pill">{{ streamingRuntimeAvailable ? '可用' : '不可用' }}</span>
+              <span class="setting-runtime-text">{{ streamingRuntimeSummary }}</span>
             </div>
           </div>
 

@@ -71,6 +71,7 @@ const text = ref('')
 const mode = ref('single')
 const streamingViewport = ref(null)
 let hideTimer = null
+let scrollAnimationFrame = null
 
 const showWaveform = computed(() => (
   phase.value === 'recording'
@@ -111,6 +112,13 @@ function clearHideTimer() {
   hideTimer = null
 }
 
+function clearScrollAnimation() {
+  if (scrollAnimationFrame !== null) {
+    cancelAnimationFrame(scrollAnimationFrame)
+    scrollAnimationFrame = null
+  }
+}
+
 function scheduleHide() {
   clearHideTimer()
   hideTimer = setTimeout(() => {
@@ -145,7 +153,34 @@ function syncStreamingViewport() {
     return
   }
 
-  viewport.scrollLeft = viewport.scrollWidth
+  const targetScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth)
+  const startScrollLeft = viewport.scrollLeft
+
+  if (Math.abs(targetScrollLeft - startScrollLeft) < 1) {
+    viewport.scrollLeft = targetScrollLeft
+    return
+  }
+
+  clearScrollAnimation()
+
+  const startTime = performance.now()
+  const duration = 220
+
+  const step = (timestamp) => {
+    const elapsed = Math.min((timestamp - startTime) / duration, 1)
+    const eased = 1 - ((1 - elapsed) ** 3)
+
+    viewport.scrollLeft = startScrollLeft + ((targetScrollLeft - startScrollLeft) * eased)
+
+    if (elapsed < 1) {
+      scrollAnimationFrame = requestAnimationFrame(step)
+      return
+    }
+
+    scrollAnimationFrame = null
+  }
+
+  scrollAnimationFrame = requestAnimationFrame(step)
 }
 
 watch([text, phase, mode], async () => {
@@ -169,6 +204,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   clearHideTimer()
+  clearScrollAnimation()
   window.floatingAPI?.removeAllListeners('floating:state')
 })
 </script>

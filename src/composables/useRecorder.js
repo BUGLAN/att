@@ -865,7 +865,7 @@ async function finalizeRealtimeSession() {
 
   if (floatingSessionActive) {
     syncFloatingWindow({
-      phase: 'transcribing',
+      phase: settingsStore.settings.auto_optimize ? 'optimizing' : 'transcribing',
       duration: 0,
       text: ''
     })
@@ -881,8 +881,8 @@ async function finalizeRealtimeSession() {
     const merged = await api.mergeSession(sessionId)
     liveTranscript.value = merged.merged_text || liveTranscript.value
 
-    let finalRecord = null
-    if (merged.record_id) {
+    let finalRecord = merged.record || null
+    if (!finalRecord && merged.record_id) {
       finalRecord = await api.getRecord(merged.record_id).catch(() => null)
     }
 
@@ -893,25 +893,7 @@ async function finalizeRealtimeSession() {
       appStore.setRecordStatus({ record_id: finalRecord.id, status: finalRecord.status })
     }
 
-    if (settingsStore.settings.auto_optimize && merged.record_id) {
-      if (floatingSessionActive) {
-        syncFloatingWindow({
-          phase: 'optimizing',
-          duration: 0,
-          text: ''
-        })
-      }
-
-      await api.optimizeRecord(merged.record_id)
-      finalRecord = await api.getRecord(merged.record_id).catch(() => finalRecord)
-      if (finalRecord) {
-        syncRecordIntoStore(finalRecord)
-        appStore.setCurrentRecord(finalRecord)
-        appStore.setRecordStatus({ record_id: finalRecord.id, status: finalRecord.status })
-      }
-    }
-
-    const finalText = finalRecord?.optimized_text || finalRecord?.raw_text || merged.merged_text || liveTranscript.value
+    const finalText = merged.optimized_text || finalRecord?.optimized_text || finalRecord?.raw_text || merged.merged_text || liveTranscript.value
     liveTranscript.value = finalText || liveTranscript.value
     setRealtimePhase('completed')
 

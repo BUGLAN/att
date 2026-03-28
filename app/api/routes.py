@@ -1072,10 +1072,43 @@ async def merge_session(session_id: str) -> dict:
         raw_text=session.merged_text
     )
 
+    optimized_text = None
+    if user_settings.get("auto_optimize", False) and session.merged_text:
+        try:
+            await record_manager.update_record(
+                record.id,
+                status=RecordStatus.OPTIMIZING
+            )
+            optimize_result = await optimizer.optimize(
+                session.merged_text,
+                preset_id=user_settings.get("default_preset_id")
+            )
+            updated_record = await record_manager.update_record(
+                record.id,
+                optimized_text=optimize_result.optimized_text,
+                status=RecordStatus.OPTIMIZED
+            )
+            if updated_record:
+                record = updated_record
+                optimized_text = optimize_result.optimized_text
+        except Exception as error:
+            await record_manager.update_record(
+                record.id,
+                status=RecordStatus.TRANSCRIBED
+            )
+            logger.warning(
+                "多段录音自动优化失败",
+                session_id=session_id,
+                record_id=record.id,
+                error=str(error)
+            )
+
     return {
         "session_id": session_id,
         "record_id": record.id,
         "merged_text": session.merged_text,
+        "optimized_text": optimized_text,
+        "record": record.to_dict(),
         "total_duration": session.total_duration,
         "segment_count": len(session.segments)
     }
@@ -1344,4 +1377,3 @@ async def get_llm_provider_models(provider: str) -> dict:
         return {"provider": provider, "models": models}
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
-
