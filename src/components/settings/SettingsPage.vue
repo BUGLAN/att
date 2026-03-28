@@ -12,7 +12,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">ASR Provider</span>
-              <span class="setting-desc">切换转写实现层。变更后需要重启后端才能真正生效。</span>
+              <span class="setting-desc">切换转写实现层。切换后会自动卸载当前模型服务，需重新开启模型。</span>
             </div>
             <select v-model="form.asr_provider" class="setting-select">
               <option value="whisper">Whisper / faster-whisper</option>

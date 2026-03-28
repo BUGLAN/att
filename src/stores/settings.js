@@ -153,6 +153,7 @@ export const useSettingsStore = defineStore('settings', () => {
         hotkey: isValidHotkey(result.hotkey) ? result.hotkey : (isValidHotkey(payload.hotkey) ? payload.hotkey : getDefaultHotkey())
       }
       defaultPresetId.value = settings.value.default_preset_id || defaultPresetId.value || null
+      await loadRuntimeStatus(true)
       return result
     } catch (e) {
       error.value = e.message

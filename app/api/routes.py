@@ -34,6 +34,7 @@ from app.records.models import Record, RecordStatus, ExportFormat
 from app.records.session_manager import session_manager
 from app.services.model_service_manager import model_service_manager
 from app.services.streaming_session_manager import StreamingSessionManager
+from app.stt.factory import create_asr_provider, get_asr_provider_config
 from app.services.websocket import manager as ws_manager
 from app.prompts import PromptManager, PromptPresetCreate, PromptPresetUpdate, prompt_manager
 from app.utils.logging import get_logger
@@ -708,6 +709,8 @@ async def get_settings() -> dict:
 @router.put("/settings")
 async def update_settings(updates: dict) -> dict:
     """Update user settings"""
+    global asr_provider
+
     # Filter to only allowed keys
     allowed_keys = {
         "asr_provider", "asr_language",
@@ -743,7 +746,56 @@ async def update_settings(updates: dict) -> dict:
     merged_settings = {**user_settings.get_all(), **filtered}
     normalized_settings = normalize_clipboard_overlay_settings(normalize_preset_settings(merged_settings))
     filtered = {key: normalized_settings[key] for key in filtered.keys()}
+    previous_settings = user_settings.get_all()
     user_settings.update(filtered)
+
+    model_runtime_keys = {
+        "asr_provider",
+        "whisper_model",
+        "whisper_device",
+        "qwen_asr_model",
+        "qwen_asr_device",
+        "qwen_asr_dtype",
+        "qwen_asr_return_timestamps",
+        "qwen_asr_use_forced_aligner",
+        "qwen_asr_forced_aligner_model",
+        "recording_mode",
+    }
+    provider_rebuild_keys = model_runtime_keys - {"recording_mode"}
+
+    changed_keys = {
+        key for key, value in filtered.items()
+        if previous_settings.get(key) != value
+    }
+    should_reset_model_runtime = bool(changed_keys & model_runtime_keys)
+    should_rebuild_provider = bool(changed_keys & provider_rebuild_keys)
+
+    if should_reset_model_runtime:
+        logger.info(
+            "检测到模型运行时配置变更，准备卸载当前模型服务",
+            changed_keys=sorted(changed_keys & model_runtime_keys),
+        )
+        await model_service_manager.stop()
+        await close_streaming_session_manager()
+
+    if should_rebuild_provider:
+        if asr_provider is None:
+            raise HTTPException(status_code=500, detail="ASR provider is not initialized")
+
+        try:
+            await asr_provider.close()
+        except Exception as error:
+            logger.warning("关闭旧 ASR provider 失败", error=str(error), exc_info=True)
+
+        try:
+            asr_provider = create_asr_provider(get_asr_provider_config())
+            model_service_manager.configure(asr_provider)
+        except Exception as error:
+            logger.error("重建 ASR provider 失败", error=str(error), exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"重新加载 ASR provider 失败: {error}"
+            ) from error
 
     payload = normalize_preset_settings(user_settings.get_all())
     return normalize_clipboard_overlay_settings(payload)
