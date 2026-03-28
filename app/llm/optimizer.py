@@ -20,6 +20,18 @@ from app.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _get_default_llm_config_id() -> Optional[str]:
+    """延迟读取默认 LLM 配置，避免模块间循环依赖。"""
+    try:
+        from app.llm.config_manager import get_llm_config_manager
+
+        manager = get_llm_config_manager()
+        default_config = manager.get_default()
+        return default_config.id if default_config else None
+    except Exception:
+        return None
+
+
 def _get_prompt_manager():
     """Lazy import to avoid circular dependency."""
     from app.prompts import prompt_manager
@@ -140,7 +152,14 @@ class TextOptimizer:
         self.base_url = base_url or settings.deepseek_base_url
 
         if not self.api_key:
-            logger.warning("DeepSeek API key not configured")
+            default_llm_config_id = _get_default_llm_config_id()
+            if default_llm_config_id:
+                logger.info(
+                    "DeepSeek env API key not configured, defaulting to LLM config gateway",
+                    default_config_id=default_llm_config_id
+                )
+            else:
+                logger.warning("DeepSeek API key not configured")
 
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
@@ -209,11 +228,13 @@ class TextOptimizer:
         )
 
         # Try to use LLM Gateway if config_id is provided or if multi-LLM is available
-        if llm_config_id:
+        resolved_llm_config_id = llm_config_id or _get_default_llm_config_id()
+
+        if resolved_llm_config_id:
             try:
                 from app.llm.gateway import get_gateway
                 gateway = get_gateway()
-                provider = gateway.get_provider(llm_config_id)
+                provider = gateway.get_provider(resolved_llm_config_id)
 
                 if provider:
                     start_time = time.time()
@@ -222,7 +243,7 @@ class TextOptimizer:
 
                     logger.info(
                         "Text optimized via LLM Gateway",
-                        config_id=llm_config_id,
+                        config_id=resolved_llm_config_id,
                         original_length=len(text),
                         optimized_length=len(optimized_text),
                         processing_time=f"{processing_time:.2f}s"
@@ -237,6 +258,7 @@ class TextOptimizer:
             except Exception as e:
                 logger.warning(
                     "Failed to use LLM Gateway, falling back to legacy",
+                    config_id=resolved_llm_config_id,
                     error=str(e)
                 )
 

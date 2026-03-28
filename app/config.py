@@ -128,7 +128,7 @@ def get_default_clipboard_overlay_settings() -> dict:
         "clipboard_overlay_retrigger_action": "toggle",
         "clipboard_overlay_enter_behavior": "copy_and_paste",
         "clipboard_overlay_auto_focus_search": True,
-        "clipboard_overlay_close_on_click_copy": False,
+        "clipboard_overlay_close_on_click_copy": True,
     }
 
 
@@ -198,7 +198,7 @@ class UserSettings:
         "clipboard_overlay_retrigger_action": "toggle",
         "clipboard_overlay_enter_behavior": "copy_and_paste",
         "clipboard_overlay_auto_focus_search": True,
-        "clipboard_overlay_close_on_click_copy": False,
+        "clipboard_overlay_close_on_click_copy": True,
         # Recording mode settings
         "recording_mode": "single",     # single / multi / streaming
         "silence_threshold": 1.5,       # 静音阈值（秒）

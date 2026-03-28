@@ -1651,9 +1651,10 @@ button:focus-visible {
     display: flex;
     flex-direction: column;
     align-items: center;
-    overflow-y: auto;
+    overflow: hidden;
     overflow-x: hidden;
-    min-height: 100vh;
+    min-height: 0;
+    height: 100vh;
     min-width: 0;
     transition: margin-left var(--transition-base);
     position: relative;
@@ -1662,6 +1663,7 @@ button:focus-visible {
 
 .main-content.has-title-bar {
     padding-top: var(--titlebar-height);
+    height: 100vh;
 }
 
 

@@ -867,7 +867,7 @@ async function finalizeRealtimeSession() {
     syncFloatingWindow({
       phase: settingsStore.settings.auto_optimize ? 'optimizing' : 'transcribing',
       duration: 0,
-      text: ''
+      text: liveTranscript.value
     })
   }
 
@@ -1108,7 +1108,7 @@ async function stopStreamingRecording() {
     syncFloatingWindow({
       phase: 'transcribing',
       duration: 0,
-      text: ''
+      text: liveTranscript.value
     })
   }
 
@@ -1200,6 +1200,7 @@ async function startMultiRecording() {
   try {
     activeRecordingMode.value = 'multi'
     resetRealtimeState()
+    resetStreamingState()
     const session = await api.createSession()
     currentSessionId.value = session.session_id
 
@@ -1221,7 +1222,6 @@ async function startMultiRecording() {
       duration: 0
     })
     startDurationClock()
-    resetStreamingState()
 
     silenceDetector = createSilenceDetector({
       stream: stream.value,

@@ -70,7 +70,7 @@ export const useSettingsStore = defineStore('settings', () => {
     clipboard_overlay_retrigger_action: 'toggle',
     clipboard_overlay_enter_behavior: 'copy_and_paste',
     clipboard_overlay_auto_focus_search: true,
-    clipboard_overlay_close_on_click_copy: false,
+    clipboard_overlay_close_on_click_copy: true,
     recording_mode: 'single',
     silence_threshold: 1.5,
     silence_level: -40,
