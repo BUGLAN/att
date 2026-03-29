@@ -169,12 +169,8 @@ export function useElectron() {
   function onRecordStatus() {}
   function onRecordCompleted() {}
 
-  function onHotkeyStart(callback) {
-    globalThis.window?.electronAPI?.onHotkeyStart(callback)
-  }
-
-  function onHotkeyStop(callback) {
-    globalThis.window?.electronAPI?.onHotkeyStop(callback)
+  function onHotkeyToggle(callback) {
+    globalThis.window?.electronAPI?.onHotkeyToggle(callback)
   }
 
   function onPasteText(callback) {
@@ -255,8 +251,7 @@ export function useElectron() {
     clipboard,
     onRecordStatus,
     onRecordCompleted,
-    onHotkeyStart,
-    onHotkeyStop,
+    onHotkeyToggle,
     onPasteText,
     onNavigateSettings,
     onClipboardOverlayActivate,

@@ -179,13 +179,9 @@ function handleClipboardOverlayTrigger(payload = {}) {
 async function initializeDesktopInput(port) {
   const settings = await loadDesktopInputSettings(port)
   inputManager = new DesktopInputManager({
-    onHotkeyStart: (payload) => {
-      logElectronOverlay('main', 'Desktop hotkey start', payload)
-      mainWindow?.webContents.send('hotkey:start', payload)
-    },
-    onHotkeyStop: (payload) => {
-      logElectronOverlay('main', 'Desktop hotkey stop', payload)
-      mainWindow?.webContents.send('hotkey:stop', payload)
+    onHotkeyToggle: (payload) => {
+      logElectronOverlay('main', 'Desktop hotkey toggle', payload)
+      mainWindow?.webContents.send('hotkey:toggle', payload)
     },
     onClipboardTrigger: (payload) => {
       logElectronOverlay('main', 'Desktop clipboard trigger', payload)

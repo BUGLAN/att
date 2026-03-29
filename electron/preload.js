@@ -27,11 +27,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startClipboardOverlayNativeDrag: (payload) => ipcRenderer.send('clipboard-overlay:start-native-drag', payload),
   debugLog: (scope, message, details) => ipcRenderer.send('debug:log', { scope, message, details }),
   openSettingsPage: () => ipcRenderer.send('main:open-settings'),
-  onHotkeyStart: (callback) => {
-    ipcRenderer.on('hotkey:start', () => callback())
-  },
-  onHotkeyStop: (callback) => {
-    ipcRenderer.on('hotkey:stop', () => callback())
+  onHotkeyToggle: (callback) => {
+    ipcRenderer.on('hotkey:toggle', () => callback())
   },
   onPasteText: (callback) => {
     ipcRenderer.on('paste-text', () => callback())

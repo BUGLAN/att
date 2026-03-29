@@ -8,8 +8,6 @@ const DEFAULT_HOTKEY = {
   display: 'Win+Alt'
 }
 
-const DEFAULT_HOTKEY_HOLD_THRESHOLD_MS = 150
-
 const DEFAULT_SETTINGS = {
   hotkey: DEFAULT_HOTKEY,
   clipboard_overlay_trigger: 'mouse_middle',
@@ -113,24 +111,18 @@ function normalizeSettings(settings = {}) {
 
 class DesktopInputManager {
   constructor(options = {}) {
-    this.onHotkeyStart = options.onHotkeyStart
-    this.onHotkeyStop = options.onHotkeyStop
+    this.onHotkeyToggle = options.onHotkeyToggle
     this.onClipboardTrigger = options.onClipboardTrigger
     this.onError = options.onError
     this.log = options.log || (() => {})
 
     this.settings = normalizeSettings()
     this.started = false
-    this.hotkeyPressed = false
-    this.pendingHotkeyActivation = false
+    this.hotkeyLatched = false
     this.clipboardChordTriggered = false
     this.activeModifiers = new Set()
     this.activeKeys = new Set()
     this.activeMouseButtons = new Set()
-    this.hotkeyActivationTimer = null
-    this.hotkeyHoldThresholdMs = Number.isFinite(options.hotkeyHoldThresholdMs)
-      ? Math.max(0, options.hotkeyHoldThresholdMs)
-      : DEFAULT_HOTKEY_HOLD_THRESHOLD_MS
 
     this.boundKeydown = this.handleKeydown.bind(this)
     this.boundKeyup = this.handleKeyup.bind(this)
@@ -195,10 +187,8 @@ class DesktopInputManager {
 
     ioHook.stop()
     this.started = false
-    this.hotkeyPressed = false
-    this.pendingHotkeyActivation = false
+    this.hotkeyLatched = false
     this.clipboardChordTriggered = false
-    this.clearPendingHotkeyActivation()
     this.activeModifiers.clear()
     this.activeKeys.clear()
     this.activeMouseButtons.clear()
@@ -327,61 +317,16 @@ class DesktopInputManager {
 
   refreshHotkeyState() {
     if (this.matchesHotkey()) {
-      if (!this.hotkeyPressed && !this.pendingHotkeyActivation) {
-        this.scheduleHotkeyActivation()
+      if (!this.hotkeyLatched) {
+        this.hotkeyLatched = true
+        this.onHotkeyToggle?.({
+          hotkey: this.settings.hotkey
+        })
       }
       return
     }
 
-    this.clearPendingHotkeyActivation()
-
-    if (this.hotkeyPressed) {
-      this.hotkeyPressed = false
-      this.onHotkeyStop?.({
-        hotkey: this.settings.hotkey
-      })
-    }
-  }
-
-  scheduleHotkeyActivation() {
-    if (this.hotkeyPressed || this.pendingHotkeyActivation) {
-      return
-    }
-
-    this.pendingHotkeyActivation = true
-
-    if (this.hotkeyHoldThresholdMs === 0) {
-      this.activateHotkey()
-      return
-    }
-
-    this.hotkeyActivationTimer = setTimeout(() => {
-      this.hotkeyActivationTimer = null
-      this.activateHotkey()
-    }, this.hotkeyHoldThresholdMs)
-  }
-
-  clearPendingHotkeyActivation() {
-    if (this.hotkeyActivationTimer) {
-      clearTimeout(this.hotkeyActivationTimer)
-      this.hotkeyActivationTimer = null
-    }
-
-    this.pendingHotkeyActivation = false
-  }
-
-  activateHotkey() {
-    if (!this.pendingHotkeyActivation || this.hotkeyPressed || !this.matchesHotkey()) {
-      this.clearPendingHotkeyActivation()
-      return
-    }
-
-    this.pendingHotkeyActivation = false
-    this.hotkeyPressed = true
-    this.onHotkeyStart?.({
-      hotkey: this.settings.hotkey,
-      holdThresholdMs: this.hotkeyHoldThresholdMs
-    })
+    this.hotkeyLatched = false
   }
 
   resolveModifier(event = {}) {
@@ -420,7 +365,6 @@ class DesktopInputManager {
 
 module.exports = {
   DesktopInputManager,
-  DEFAULT_HOTKEY_HOLD_THRESHOLD_MS,
   buildHotkeyDisplay,
   normalizeHotkey,
   normalizeSettings,

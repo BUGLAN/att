@@ -1786,7 +1786,7 @@ export function useRecorder() {
   const appStore = useAppStore()
   const settingsStore = useSettingsStore()
   const { connect, addMessageHandler, removeMessageHandler } = useGlobalWebSocket()
-  const { onHotkeyStart, onHotkeyStop, removeAllListeners } = useElectron()
+  const { onHotkeyToggle, removeAllListeners } = useElectron()
 
   onMounted(async () => {
     mountedInstances += 1
@@ -1798,11 +1798,13 @@ export function useRecorder() {
     }
 
     if (!desktopHotkeyAttached) {
-      onHotkeyStart(() => {
+      onHotkeyToggle(() => {
+        if (appStore.isRecording) {
+          stopRecording()
+          return
+        }
+
         void startRecording()
-      })
-      onHotkeyStop(() => {
-        stopRecording()
       })
       desktopHotkeyAttached = true
     }
@@ -1817,8 +1819,7 @@ export function useRecorder() {
         wsAttached = false
       }
 
-      removeAllListeners('hotkey:start')
-      removeAllListeners('hotkey:stop')
+      removeAllListeners('hotkey:toggle')
       desktopHotkeyAttached = false
       mountedInstances = 0
     }
