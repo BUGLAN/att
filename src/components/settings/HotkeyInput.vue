@@ -45,12 +45,32 @@ const displayValue = computed(() => {
   return ''
 })
 
+const platform = window.electronAPI?.platform || 'win32'
 const modifierMap = {
   'Control': 'ctrl',
   'Alt': 'alt',
   'Shift': 'shift',
-  'Meta': 'cmd',
+  'Meta': platform === 'darwin' ? 'cmd' : 'win',
   'Command': 'cmd'
+}
+
+function sortModifiers(modifiers = []) {
+  const priority = {
+    cmd: 0,
+    win: 0,
+    ctrl: 1,
+    alt: 2,
+    shift: 3
+  }
+
+  return [...modifiers].sort((left, right) => {
+    const leftPriority = priority[left] ?? Number.MAX_SAFE_INTEGER
+    const rightPriority = priority[right] ?? Number.MAX_SAFE_INTEGER
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority
+    }
+    return left.localeCompare(right)
+  })
 }
 
 function startListening() {
@@ -83,12 +103,13 @@ function handleKeyDown(e) {
 
   // 至少需要一个修饰键
   if (modifiers.length > 0) {
-    const display = formatDisplay(modifiers, key)
+    const normalizedModifiers = sortModifiers(modifiers)
+    const display = formatDisplay(normalizedModifiers, key)
     emit('update:modelValue', {
-      modifiers,
+      modifiers: normalizedModifiers,
       key,
       display,
-      accelerator: formatAccelerator(modifiers, key)
+      accelerator: formatAccelerator(normalizedModifiers, key)
     })
 
     isListening.value = false
@@ -129,7 +150,7 @@ function reset() {
   const platform = window.electronAPI?.platform || 'win32'
   const defaultHotkey = platform === 'darwin'
     ? { modifiers: ['alt', 'cmd'], key: null, display: '⌥⌘' }
-    : { modifiers: ['alt', 'ctrl'], key: null, display: 'Alt+Ctrl' }
+    : { modifiers: ['win', 'alt'], key: null, display: 'Win+Alt' }
   emit('update:modelValue', defaultHotkey)
 }
 </script>

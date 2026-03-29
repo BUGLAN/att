@@ -227,7 +227,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">录音快捷键</span>
-              <span class="setting-desc">点击输入框后按下组合键。现在由桌面端监听热键，按住开始录音，松开结束；支持 `Win+Alt` 这类无主键组合。</span>
+              <span class="setting-desc">点击输入框后按下组合键。现在由桌面端监听热键，长按后开始录音，松开结束；支持 `Win+Alt` 这类无主键组合。</span>
             </div>
             <div class="hotkey-input-wrapper">
               <input
@@ -420,14 +420,57 @@ function buildHotkeyDisplay(modifiers, key) {
     win: 'Win'
   }
 
-  const modifierText = modifiers.map((modifier) => map[modifier] || modifier)
+  const modifierText = sortHotkeyModifiers(modifiers).map((modifier) => map[modifier] || modifier)
   return [...modifierText, key ? String(key).toUpperCase() : null].filter(Boolean).join(platform === 'darwin' ? '' : '+')
 }
 
+function sortHotkeyModifiers(modifiers = []) {
+  const priority = {
+    cmd: 0,
+    win: 0,
+    ctrl: 1,
+    alt: 2,
+    shift: 3
+  }
+
+  return [...modifiers].sort((left, right) => {
+    const leftPriority = priority[left] ?? Number.MAX_SAFE_INTEGER
+    const rightPriority = priority[right] ?? Number.MAX_SAFE_INTEGER
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority
+    }
+    return left.localeCompare(right)
+  })
+}
+
+function normalizeHotkeyConfig(hotkey) {
+  const fallback = getDefaultHotkey()
+  if (!Array.isArray(hotkey?.modifiers) || hotkey.modifiers.length === 0) {
+    return fallback
+  }
+
+  const modifiers = sortHotkeyModifiers(
+    hotkey.modifiers
+      .map((modifier) => String(modifier || '').toLowerCase())
+      .filter((modifier, index, array) => modifier && array.indexOf(modifier) === index)
+  )
+  const key = typeof hotkey?.key === 'string' && hotkey.key.length === 1
+    ? hotkey.key.toLowerCase()
+    : null
+
+  if (!key && modifiers.length < 2) {
+    return fallback
+  }
+
+  return {
+    modifiers,
+    key,
+    display: buildHotkeyDisplay(modifiers, key)
+  }
+}
+
 function normalizeSettings(value = {}) {
-  const normalizedHotkey = Array.isArray(value.hotkey?.modifiers) && value.hotkey.modifiers.length > 0
-    ? value.hotkey
-    : getDefaultHotkey()
+  const normalizedHotkey = normalizeHotkeyConfig(value.hotkey)
   form.value = {
     asr_provider: value.asr_provider || 'whisper',
     asr_language: value.asr_language || 'zh',
@@ -476,7 +519,7 @@ function buildSettingsPayload() {
     auto_optimize: form.value.auto_optimize,
     auto_copy_to_clipboard: form.value.auto_copy_to_clipboard,
     audio_input_device: form.value.audio_input_device,
-    hotkey: form.value.hotkey || getDefaultHotkey(),
+    hotkey: normalizeHotkeyConfig(form.value.hotkey),
     clipboard_overlay_trigger: form.value.clipboard_overlay_trigger,
     clipboard_overlay_retrigger_action: form.value.clipboard_overlay_retrigger_action,
     clipboard_overlay_enter_behavior: form.value.clipboard_overlay_enter_behavior,
@@ -583,11 +626,10 @@ function handleHotkeyKeydown(event) {
     return
   }
 
-  form.value.hotkey = {
+  form.value.hotkey = normalizeHotkeyConfig({
     modifiers,
-    key: key && key.length === 1 ? key : null,
-    display: buildHotkeyDisplay(modifiers, key && key.length === 1 ? key : null)
-  }
+    key: key && key.length === 1 ? key : null
+  })
   stopHotkeyCapture()
 }
 

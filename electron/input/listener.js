@@ -1,18 +1,14 @@
 let ioHook = null
 let ioHookLoadError = null
-
-try {
-  const ioHookModule = require('@tkomde/iohook')
-  ioHook = ioHookModule.default || ioHookModule
-} catch (error) {
-  ioHookLoadError = error
-}
+let ioHookLoadAttempted = false
 
 const DEFAULT_HOTKEY = {
   modifiers: ['win', 'alt'],
   key: null,
   display: 'Win+Alt'
 }
+
+const DEFAULT_HOTKEY_HOLD_THRESHOLD_MS = 150
 
 const DEFAULT_SETTINGS = {
   hotkey: DEFAULT_HOTKEY,
@@ -29,6 +25,14 @@ const MODIFIER_LABELS = {
   cmd: 'Cmd'
 }
 
+const MODIFIER_PRIORITY = {
+  cmd: 0,
+  win: 0,
+  ctrl: 1,
+  alt: 2,
+  shift: 3
+}
+
 const MODIFIER_RAWCODES = {
   alt: [18, 164, 165],
   ctrl: [17, 162, 163],
@@ -41,24 +45,52 @@ const LEFT_MOUSE_BUTTON = 1
 const RIGHT_MOUSE_BUTTON = 2
 const MIDDLE_MOUSE_BUTTON = 3
 
+function ensureIoHookLoaded() {
+  if (ioHookLoadAttempted) {
+    return ioHook
+  }
+
+  ioHookLoadAttempted = true
+
+  try {
+    const ioHookModule = require('@tkomde/iohook')
+    ioHook = ioHookModule.default || ioHookModule
+  } catch (error) {
+    ioHookLoadError = error
+  }
+
+  return ioHook
+}
+
+function sortModifiers(modifiers = []) {
+  return [...modifiers].sort((left, right) => {
+    const leftPriority = MODIFIER_PRIORITY[left] ?? Number.MAX_SAFE_INTEGER
+    const rightPriority = MODIFIER_PRIORITY[right] ?? Number.MAX_SAFE_INTEGER
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority
+    }
+    return left.localeCompare(right)
+  })
+}
+
 function normalizeHotkey(hotkey = {}) {
-  const modifiers = Array.isArray(hotkey.modifiers)
+  const modifiers = sortModifiers(Array.isArray(hotkey.modifiers)
     ? hotkey.modifiers
       .map((modifier) => String(modifier || '').toLowerCase())
       .filter((modifier, index, array) => modifier && array.indexOf(modifier) === index)
-    : []
+    : [])
 
   const rawKey = typeof hotkey.key === 'string' ? hotkey.key.trim().toLowerCase() : null
   const key = rawKey && /^[a-z0-9]$/.test(rawKey) ? rawKey : null
 
-  if (modifiers.length === 0) {
+  if (modifiers.length === 0 || (!key && modifiers.length < 2)) {
     return { ...DEFAULT_HOTKEY }
   }
 
   return {
     modifiers,
     key,
-    display: hotkey.display || buildHotkeyDisplay(modifiers, key)
+    display: buildHotkeyDisplay(modifiers, key)
   }
 }
 
@@ -90,10 +122,15 @@ class DesktopInputManager {
     this.settings = normalizeSettings()
     this.started = false
     this.hotkeyPressed = false
+    this.pendingHotkeyActivation = false
     this.clipboardChordTriggered = false
     this.activeModifiers = new Set()
     this.activeKeys = new Set()
     this.activeMouseButtons = new Set()
+    this.hotkeyActivationTimer = null
+    this.hotkeyHoldThresholdMs = Number.isFinite(options.hotkeyHoldThresholdMs)
+      ? Math.max(0, options.hotkeyHoldThresholdMs)
+      : DEFAULT_HOTKEY_HOLD_THRESHOLD_MS
 
     this.boundKeydown = this.handleKeydown.bind(this)
     this.boundKeyup = this.handleKeyup.bind(this)
@@ -115,9 +152,11 @@ class DesktopInputManager {
       return
     }
 
+    ensureIoHookLoaded()
+
     if (!ioHook) {
       const error = new Error(
-        `无法加载 iohook 原生模块: ${ioHookLoadError?.message || '未知错误'}`
+        `鏃犳硶鍔犺浇 iohook 鍘熺敓妯″潡: ${ioHookLoadError?.message || '鏈煡閿欒'}`
       )
       error.cause = ioHookLoadError
       this.onError?.(error)
@@ -157,7 +196,9 @@ class DesktopInputManager {
     ioHook.stop()
     this.started = false
     this.hotkeyPressed = false
+    this.pendingHotkeyActivation = false
     this.clipboardChordTriggered = false
+    this.clearPendingHotkeyActivation()
     this.activeModifiers.clear()
     this.activeKeys.clear()
     this.activeMouseButtons.clear()
@@ -166,22 +207,14 @@ class DesktopInputManager {
 
   handleKeydown(event = {}) {
     try {
-      const modifier = this.resolveModifier(event)
-      if (modifier) {
-        this.activeModifiers.add(modifier)
-      }
+      this.syncModifierState(event, true)
 
       const key = this.resolveKey(event)
       if (key) {
         this.activeKeys.add(key)
       }
 
-      if (this.matchesHotkey() && !this.hotkeyPressed) {
-        this.hotkeyPressed = true
-        this.onHotkeyStart?.({
-          hotkey: this.settings.hotkey
-        })
-      }
+      this.refreshHotkeyState()
     } catch (error) {
       this.onError?.(error)
     }
@@ -189,22 +222,14 @@ class DesktopInputManager {
 
   handleKeyup(event = {}) {
     try {
-      const modifier = this.resolveModifier(event)
-      if (modifier) {
-        this.activeModifiers.delete(modifier)
-      }
+      this.syncModifierState(event, false)
 
       const key = this.resolveKey(event)
       if (key) {
         this.activeKeys.delete(key)
       }
 
-      if (this.hotkeyPressed && !this.matchesHotkey()) {
-        this.hotkeyPressed = false
-        this.onHotkeyStop?.({
-          hotkey: this.settings.hotkey
-        })
-      }
+      this.refreshHotkeyState()
     } catch (error) {
       this.onError?.(error)
     }
@@ -272,6 +297,93 @@ class DesktopInputManager {
     return this.activeKeys.has(hotkey.key)
   }
 
+  syncModifierState(event = {}, isKeydown) {
+    const nextModifiers = new Set()
+
+    if (event.ctrlKey) {
+      nextModifiers.add('ctrl')
+    }
+    if (event.altKey) {
+      nextModifiers.add('alt')
+    }
+    if (event.shiftKey) {
+      nextModifiers.add('shift')
+    }
+    if (event.metaKey) {
+      nextModifiers.add('win')
+    }
+
+    const modifier = this.resolveModifier(event)
+    if (modifier) {
+      if (isKeydown) {
+        nextModifiers.add(modifier)
+      } else {
+        nextModifiers.delete(modifier)
+      }
+    }
+
+    this.activeModifiers = nextModifiers
+  }
+
+  refreshHotkeyState() {
+    if (this.matchesHotkey()) {
+      if (!this.hotkeyPressed && !this.pendingHotkeyActivation) {
+        this.scheduleHotkeyActivation()
+      }
+      return
+    }
+
+    this.clearPendingHotkeyActivation()
+
+    if (this.hotkeyPressed) {
+      this.hotkeyPressed = false
+      this.onHotkeyStop?.({
+        hotkey: this.settings.hotkey
+      })
+    }
+  }
+
+  scheduleHotkeyActivation() {
+    if (this.hotkeyPressed || this.pendingHotkeyActivation) {
+      return
+    }
+
+    this.pendingHotkeyActivation = true
+
+    if (this.hotkeyHoldThresholdMs === 0) {
+      this.activateHotkey()
+      return
+    }
+
+    this.hotkeyActivationTimer = setTimeout(() => {
+      this.hotkeyActivationTimer = null
+      this.activateHotkey()
+    }, this.hotkeyHoldThresholdMs)
+  }
+
+  clearPendingHotkeyActivation() {
+    if (this.hotkeyActivationTimer) {
+      clearTimeout(this.hotkeyActivationTimer)
+      this.hotkeyActivationTimer = null
+    }
+
+    this.pendingHotkeyActivation = false
+  }
+
+  activateHotkey() {
+    if (!this.pendingHotkeyActivation || this.hotkeyPressed || !this.matchesHotkey()) {
+      this.clearPendingHotkeyActivation()
+      return
+    }
+
+    this.pendingHotkeyActivation = false
+    this.hotkeyPressed = true
+    this.onHotkeyStart?.({
+      hotkey: this.settings.hotkey,
+      holdThresholdMs: this.hotkeyHoldThresholdMs
+    })
+  }
+
   resolveModifier(event = {}) {
     const rawcode = Number(event.rawcode)
     const keycode = Number(event.keycode)
@@ -308,9 +420,15 @@ class DesktopInputManager {
 
 module.exports = {
   DesktopInputManager,
+  DEFAULT_HOTKEY_HOLD_THRESHOLD_MS,
   buildHotkeyDisplay,
   normalizeHotkey,
   normalizeSettings,
-  isDesktopInputAvailable: () => Boolean(ioHook),
-  getDesktopInputLoadError: () => ioHookLoadError
+  sortModifiers,
+  isDesktopInputAvailable: () => Boolean(ensureIoHookLoaded()),
+  getDesktopInputLoadError: () => {
+    ensureIoHookLoaded()
+    return ioHookLoadError
+  }
 }
+

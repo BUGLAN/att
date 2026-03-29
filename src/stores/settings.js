@@ -39,6 +39,39 @@ function getDefaultHotkey() {
   }
 }
 
+function sortHotkeyModifiers(modifiers = []) {
+  const priority = {
+    cmd: 0,
+    win: 0,
+    ctrl: 1,
+    alt: 2,
+    shift: 3
+  }
+
+  return [...modifiers].sort((left, right) => {
+    const leftPriority = priority[left] ?? Number.MAX_SAFE_INTEGER
+    const rightPriority = priority[right] ?? Number.MAX_SAFE_INTEGER
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority
+    }
+    return left.localeCompare(right)
+  })
+}
+
+function buildHotkeyDisplay(modifiers, key) {
+  const platform = getPlatform()
+  const map = {
+    alt: platform === 'darwin' ? '⌥' : 'Alt',
+    ctrl: platform === 'darwin' ? '⌃' : 'Ctrl',
+    cmd: platform === 'darwin' ? '⌘' : 'Cmd',
+    shift: platform === 'darwin' ? '⇧' : 'Shift',
+    win: 'Win'
+  }
+
+  const modifierText = sortHotkeyModifiers(modifiers).map((modifier) => map[modifier] || modifier)
+  return [...modifierText, key ? String(key).toUpperCase() : null].filter(Boolean).join(platform === 'darwin' ? '' : '+')
+}
+
 function isValidHotkey(hotkey) {
   return Array.isArray(hotkey?.modifiers) &&
     hotkey.modifiers.length > 0 &&
@@ -46,6 +79,27 @@ function isValidHotkey(hotkey) {
       (hotkey.key == null && hotkey.modifiers.length >= 2) ||
       (typeof hotkey?.key === 'string' && hotkey.key.length === 1)
     )
+}
+
+function normalizeHotkey(hotkey) {
+  if (!isValidHotkey(hotkey)) {
+    return getDefaultHotkey()
+  }
+
+  const modifiers = sortHotkeyModifiers(
+    hotkey.modifiers
+      .map((modifier) => String(modifier || '').toLowerCase())
+      .filter((modifier, index, array) => modifier && array.indexOf(modifier) === index)
+  )
+  const key = typeof hotkey.key === 'string' && hotkey.key.length === 1
+    ? hotkey.key.toLowerCase()
+    : null
+
+  return {
+    modifiers,
+    key,
+    display: buildHotkeyDisplay(modifiers, key)
+  }
 }
 
 export const useSettingsStore = defineStore('settings', () => {
@@ -138,7 +192,7 @@ export const useSettingsStore = defineStore('settings', () => {
       settings.value = {
         ...settings.value,
         ...result,
-        hotkey: isValidHotkey(result.hotkey) ? result.hotkey : getDefaultHotkey()
+        hotkey: normalizeHotkey(result.hotkey)
       }
       defaultPresetId.value = settings.value.default_preset_id || defaultPresetId.value || null
       return settings.value
@@ -161,7 +215,7 @@ export const useSettingsStore = defineStore('settings', () => {
       settings.value = {
         ...settings.value,
         ...result,
-        hotkey: isValidHotkey(result.hotkey) ? result.hotkey : (isValidHotkey(payload.hotkey) ? payload.hotkey : getDefaultHotkey())
+        hotkey: normalizeHotkey(isValidHotkey(result.hotkey) ? result.hotkey : payload.hotkey)
       }
       defaultPresetId.value = settings.value.default_preset_id || defaultPresetId.value || null
       await loadRuntimeStatus(true)
