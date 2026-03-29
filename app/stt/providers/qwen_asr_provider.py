@@ -10,9 +10,11 @@ import os
 import numpy as np
 import soundfile as sf
 
+from app.config import get_runtime_environment
 from app.records.models import TranscriptionResult, TranscriptionSegment
 from app.stt.base import ASRProvider
-from app.stt.models import ASRCapabilities, ASRProviderError
+from app.stt.models import ASRCapabilities, ASRProviderError, ASRRuntimeCapabilities
+from app.stt.providers.qwen_streaming_runtime_provider import QwenStreamingProvider
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -93,6 +95,65 @@ class QwenASRProvider(ASRProvider):
         return ASRCapabilities(
             word_timestamps=self.return_timestamps,
             multi_language=True
+        )
+
+    async def get_runtime_capabilities(
+        self,
+        recording_mode: str = "single"
+    ) -> ASRRuntimeCapabilities:
+        if recording_mode != "streaming":
+            return ASRRuntimeCapabilities(
+                model_service_supported=True,
+                model_service_mode="provider",
+                streaming_supported=False,
+                streaming_available=False,
+                streaming_reason="当前录音模式不是流式",
+            )
+
+        if get_runtime_environment() == "windows":
+            reason = "Windows 本地后端当前不支持流式服务，请切换为单段或多段录音。"
+            return ASRRuntimeCapabilities(
+                model_service_supported=False,
+                model_service_mode="managed_streaming_bridge",
+                model_service_reason=reason,
+                streaming_supported=False,
+                streaming_available=False,
+                streaming_reason=reason,
+            )
+
+        backend = self.streaming_backend or "auto"
+        streaming_provider = QwenStreamingProvider(
+            model_name=self._model_name,
+            cache_dir=self.cache_dir,
+            device=self.device,
+            max_new_tokens=self.max_new_tokens,
+            streaming_backend=self.streaming_backend,
+            streaming_base_url=self.streaming_base_url,
+            streaming_timeout_seconds=self.streaming_timeout_seconds,
+        )
+        reason = "流式模型服务尚未启动"
+
+        if backend == "remote_bridge" and self.streaming_base_url:
+            try:
+                availability = await streaming_provider.check_availability()
+                return ASRRuntimeCapabilities(
+                    model_service_supported=True,
+                    model_service_mode="managed_streaming_bridge",
+                    streaming_supported=True,
+                    streaming_available=bool(availability.get("available", False)),
+                    streaming_reason=None,
+                    streaming_backend=availability.get("backend"),
+                )
+            except Exception as error:
+                reason = str(error)
+
+        return ASRRuntimeCapabilities(
+            model_service_supported=True,
+            model_service_mode="managed_streaming_bridge",
+            streaming_supported=True,
+            streaming_available=False,
+            streaming_reason=reason,
+            streaming_backend=streaming_provider.backend_type,
         )
 
     def _load_dependencies(self) -> None:

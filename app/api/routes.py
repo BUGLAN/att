@@ -636,6 +636,10 @@ async def health_check(probe_runtime: bool = False) -> dict:
         "model_service_loading": service_status.get("loading", False),
         "model_service_ready": service_status.get("ready", False),
         "model_service_error": service_status.get("error"),
+        "model_service_supported": service_status.get("model_service_supported", True),
+        "model_service_mode": service_status.get("model_service_mode"),
+        "streaming_supported": service_status.get("streaming_supported", False),
+        "streaming_backend": service_status.get("streaming_backend"),
         "streaming_available": service_status.get("streaming_available", False),
         "streaming_error": service_status.get("streaming_error"),
     }

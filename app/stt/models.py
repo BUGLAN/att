@@ -3,7 +3,7 @@ ASR provider 相关模型
 """
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 
 class ASRProviderType(str, Enum):
@@ -21,6 +21,18 @@ class ASRCapabilities:
     diarization: bool = False
     offline_batch: bool = True
     multi_language: bool = True
+
+
+@dataclass(frozen=True)
+class ASRRuntimeCapabilities:
+    """ASR 运行时能力声明。"""
+    model_service_supported: bool = True
+    model_service_mode: str = "provider"
+    model_service_reason: Optional[str] = None
+    streaming_supported: bool = False
+    streaming_available: bool = False
+    streaming_reason: Optional[str] = None
+    streaming_backend: Optional[str] = None
 
 
 @dataclass

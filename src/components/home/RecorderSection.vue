@@ -106,6 +106,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRecorder } from '@/composables/useRecorder'
+import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 
 const {
@@ -122,6 +123,7 @@ const {
   startRecording,
   stopRecording
 } = useRecorder()
+const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const serviceActionPending = ref(false)
 
@@ -131,6 +133,7 @@ const serviceLoading = computed(() => (
 ))
 const serviceReady = computed(() => settingsStore.runtimeStatus.model_service_ready)
 const serviceRunning = computed(() => settingsStore.runtimeStatus.model_service_running)
+const serviceSupported = computed(() => settingsStore.runtimeStatus.model_service_supported)
 const streamingAvailable = computed(() => settingsStore.runtimeStatus.streaming_available)
 const serviceButtonDisabled = computed(() => (
   serviceLoading.value || isRecording.value || isTranscribing.value
@@ -142,11 +145,13 @@ const recordingButtonDisabled = computed(() => (
 const buttonText = computed(() => {
   if (isRecording.value) return '结束录音'
   if (serviceLoading.value) return '模型加载中'
+  if (!serviceSupported.value) return '当前模式不支持开启模型'
   if (isStreamingModeEnabled.value && serviceReady.value && !streamingAvailable.value) return '当前环境暂不支持流式'
   if (recordingButtonDisabled.value) return '请先开启模型'
   return '开始录音'
 })
 const serviceButtonLabel = computed(() => {
+  if (!serviceSupported.value) return '当前模式不可用'
   if (serviceLoading.value) return '模型加载中'
   if (serviceReady.value) return '模型已开启'
   if (serviceRunning.value) return '模型预热中'
@@ -283,6 +288,15 @@ async function toggleModelService() {
     return
   }
 
+  if (!serviceSupported.value) {
+    appStore.showToast(
+      settingsStore.runtimeStatus.model_service_error ||
+      settingsStore.runtimeStatus.streaming_error ||
+      '当前模式不支持开启模型'
+    )
+    return
+  }
+
   serviceActionPending.value = true
   try {
     if (serviceReady.value || serviceRunning.value) {
@@ -292,6 +306,7 @@ async function toggleModelService() {
 
     await settingsStore.startStreamingService(false)
   } catch (error) {
+    appStore.showToast(error.message || '模型服务启动失败')
     console.error('[RecorderSection] Failed to toggle streaming service:', error)
   } finally {
     serviceActionPending.value = false

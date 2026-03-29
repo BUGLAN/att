@@ -206,11 +206,13 @@ class PythonManager {
         port: this.port,
         path: '/api/health',
         method: 'GET',
-        timeout: 2000
+        timeout: 5000
       }, (res) => {
         if (res.statusCode === 200) {
+          res.resume()
           resolve(true)
         } else {
+          res.resume()
           reject(new Error(`Health check failed: ${res.statusCode}`))
         }
       })

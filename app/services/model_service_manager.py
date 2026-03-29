@@ -31,12 +31,10 @@ class ModelServiceManager:
     def _current_mode(self) -> str:
         return str(user_settings.get("recording_mode", "single") or "single").lower()
 
-    def _is_streaming_bridge_mode(self) -> bool:
-        return (
-            self._asr_provider is not None and
-            getattr(self._asr_provider, "provider_type", "") == "qwen_asr" and
-            self._current_mode() == "streaming"
-        )
+    async def _get_runtime_capabilities(self):
+        if self._asr_provider is None:
+            raise RuntimeError("ASR provider 未初始化")
+        return await self._asr_provider.get_runtime_capabilities(self._current_mode())
 
     async def _warmup_standard_provider(self) -> None:
         if self._asr_provider is None:
@@ -59,7 +57,14 @@ class ModelServiceManager:
         async def run_start() -> None:
             self._last_error = None
             try:
-                if self._is_streaming_bridge_mode():
+                runtime_capabilities = await self._get_runtime_capabilities()
+                if not runtime_capabilities.model_service_supported:
+                    raise RuntimeError(
+                        runtime_capabilities.model_service_reason or
+                        "当前 provider 不支持模型服务"
+                    )
+
+                if runtime_capabilities.model_service_mode == "managed_streaming_bridge":
                     self._provider_ready = False
                     self._provider_loading = False
                     await qwen_streaming_service_manager.start(wait_until_ready=True)
@@ -94,14 +99,15 @@ class ModelServiceManager:
         return await self.status()
 
     async def status(self) -> dict:
+        runtime_capabilities = await self._get_runtime_capabilities()
         streaming_status = await qwen_streaming_service_manager.status()
         loading = self._start_task is not None and not self._start_task.done()
         provider_type = getattr(self._asr_provider, "provider_type", None)
         model_name = getattr(self._asr_provider, "model_name", None)
         mode = self._current_mode()
-        using_streaming_bridge = self._is_streaming_bridge_mode()
-        streaming_available = False
-        streaming_error = None
+        using_streaming_bridge = runtime_capabilities.model_service_mode == "managed_streaming_bridge"
+        streaming_available = runtime_capabilities.streaming_available
+        streaming_error = runtime_capabilities.streaming_reason
 
         if using_streaming_bridge:
             ready = bool(streaming_status.get("ready"))
@@ -109,17 +115,11 @@ class ModelServiceManager:
             error = streaming_status.get("error") or self._last_error
             health_payload = streaming_status.get("health") or {}
             streaming_available = bool(health_payload.get("ready") and health_payload.get("loaded"))
-            streaming_error = health_payload.get("error") or error
+            streaming_error = health_payload.get("error") or error or runtime_capabilities.streaming_reason
         else:
             ready = self._provider_ready
             running = self._provider_ready or self._provider_loading
             error = self._last_error
-            if provider_type == "qwen_asr" and mode == "streaming":
-                streaming_error = "当前流式运行时未启用"
-            elif mode != "streaming":
-                streaming_error = "当前录音模式不是流式"
-            else:
-                streaming_error = "当前 provider 不支持流式"
 
         health = streaming_status.get("health") if using_streaming_bridge else {
             "ready": self._provider_ready,
@@ -129,6 +129,7 @@ class ModelServiceManager:
             "model_name": model_name,
             "error": self._last_error,
             "streaming_available": streaming_available,
+            "streaming_backend": runtime_capabilities.streaming_backend,
         }
 
         return {
@@ -144,6 +145,10 @@ class ModelServiceManager:
             "base_url": streaming_status.get("base_url"),
             "streaming_available": streaming_available,
             "streaming_error": streaming_error,
+            "model_service_supported": runtime_capabilities.model_service_supported,
+            "model_service_mode": runtime_capabilities.model_service_mode,
+            "streaming_supported": runtime_capabilities.streaming_supported,
+            "streaming_backend": runtime_capabilities.streaming_backend,
             "health": health,
             "components": {
                 "provider": {
