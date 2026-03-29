@@ -76,3 +76,4 @@ models/
 vllm-windwos/
 tmp/
 logs/
+.worktrees/
