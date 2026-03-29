@@ -458,6 +458,7 @@ app.whenReady().then(async () => {
     })
 
     floatingWindowManager = new FloatingWindowManager()
+    floatingWindowManager.preload()
     clipboardOverlayManager = new ClipboardOverlayManager()
     clipboardMonitor = new ClipboardMonitor({
       getBackendPort: () => pythonManager?.port,

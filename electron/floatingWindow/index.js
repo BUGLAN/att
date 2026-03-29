@@ -22,6 +22,10 @@ class FloatingWindowManager {
     this.lastState = createDefaultState()
   }
 
+  preload() {
+    this.createWindow()
+  }
+
   createWindow() {
     if (this.floatingWindow) {
       return this.floatingWindow

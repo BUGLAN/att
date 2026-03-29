@@ -73,6 +73,24 @@ function syncFloatingWindow(state, options = {}) {
   }
 }
 
+function beginFloatingSession() {
+  if (floatingSessionActive) {
+    return
+  }
+
+  floatingSessionActive = true
+  syncFloatingWindow({
+    phase: 'recording',
+    duration: 0,
+    text: ['multi', 'streaming'].includes(activeRecordingMode.value) ? liveTranscript.value : ''
+  }, { show: true })
+}
+
+function logRecordingTiming(stage, startedAt) {
+  const elapsed = Math.round(performance.now() - startedAt)
+  console.log(`[RecorderTiming] ${stage} +${elapsed}ms`)
+}
+
 function clearDurationTimer() {
   if (durationTimer.value) {
     clearInterval(durationTimer.value)
@@ -429,6 +447,7 @@ function handleRecordCompleted(recordId, patch, options = {}) {
 }
 
 async function prepareRecordingEnvironment() {
+  const startedAt = performance.now()
   const settingsStore = useSettingsStore()
   const appStore = useAppStore()
   const { tray, syncRecordingState } = useElectron()
@@ -436,18 +455,33 @@ async function prepareRecordingEnvironment() {
   startPending = true
   pendingStopAfterStart = false
   floatingSessionActive = true
+  appStore.setRecording(true)
   syncFloatingWindow({
     phase: 'recording',
     duration: 0,
     text: ''
   }, { show: true })
+  logRecordingTiming('floating-shown', startedAt)
 
-  const desktopSyncResult = await syncDesktopRecordingState(syncRecordingState, true)
+  const deviceId = settingsStore.settings.audio_input_device || 'default'
+  const constraints = {
+    audio: {
+      deviceId: deviceId === 'default' ? undefined : { exact: deviceId }
+    }
+  }
+
+  const [desktopSyncResult, mediaStream] = await Promise.all([
+    syncDesktopRecordingState(syncRecordingState, true),
+    navigator.mediaDevices.getUserMedia(constraints)
+  ])
+  logRecordingTiming('desktop-sync-and-media-ready', startedAt)
+
   if (desktopSyncResult?.success === false) {
     pendingStopAfterStart = false
     duration.value = 0
     appStore.setRecording(false)
     appStore.setTranscribing(false)
+    mediaStream?.getTracks?.().forEach((track) => track.stop())
     tray.setIcon('idle')
     floatingSessionActive = false
     syncFloatingWindow({
@@ -460,14 +494,7 @@ async function prepareRecordingEnvironment() {
     return null
   }
 
-  const deviceId = settingsStore.settings.audio_input_device || 'default'
-  const constraints = {
-    audio: {
-      deviceId: deviceId === 'default' ? undefined : { exact: deviceId }
-    }
-  }
-
-  stream.value = await navigator.mediaDevices.getUserMedia(constraints)
+  stream.value = mediaStream
 
   if (pendingStopAfterStart) {
     stopMediaTracks()
@@ -519,6 +546,13 @@ function createRecorder(targetStream, onStop) {
 async function ensureStreamingRuntimeAvailable() {
   const settingsStore = useSettingsStore()
 
+  if (settingsStore.runtimeStatus.streaming_available) {
+    return {
+      available: true,
+      runtimeStatus: settingsStore.runtimeStatus
+    }
+  }
+
   if (settingsStore.settings.asr_provider !== 'qwen_asr') {
     return {
       available: false,
@@ -527,7 +561,7 @@ async function ensureStreamingRuntimeAvailable() {
   }
 
   try {
-    const runtimeStatus = await settingsStore.loadRuntimeStatus(true)
+    const runtimeStatus = await settingsStore.loadRuntimeStatus(false)
     if (runtimeStatus.streaming_available) {
       return {
         available: true,
@@ -556,8 +590,15 @@ async function ensureStreamingRuntimeAvailable() {
 async function ensureModelServiceAvailable() {
   const settingsStore = useSettingsStore()
 
+  if (settingsStore.runtimeStatus.model_service_ready) {
+    return {
+      available: true,
+      runtimeStatus: settingsStore.runtimeStatus
+    }
+  }
+
   try {
-    const runtimeStatus = await settingsStore.loadRuntimeStatus(true)
+    const runtimeStatus = await settingsStore.loadRuntimeStatus(false)
     if (runtimeStatus.model_service_ready) {
       return {
         available: true,
@@ -1175,6 +1216,7 @@ async function stopStreamingRecording() {
 }
 
 async function startSingleRecording() {
+  const startedAt = performance.now()
   const context = await prepareRecordingEnvironment()
   if (!context) {
     return
@@ -1199,6 +1241,7 @@ async function startSingleRecording() {
     }
 
     mediaRecorder.value.start(1000)
+    logRecordingTiming('media-recorder-started', startedAt)
     appStore.setRecording(true)
     tray.setIcon('recording')
     sendWebRecording('start')
@@ -1231,6 +1274,7 @@ async function startSingleRecording() {
 }
 
 async function startMultiRecording() {
+  const startedAt = performance.now()
   const context = await prepareRecordingEnvironment()
   if (!context) {
     return
@@ -1292,6 +1336,7 @@ async function startMultiRecording() {
       }
     })
     startRealtimeSegment()
+    logRecordingTiming('multi-recording-started', startedAt)
   } catch (error) {
     console.error('[Recorder] Failed to start realtime recording:', error)
     await syncDesktopRecordingState(context.syncRecordingState, false)
@@ -1315,6 +1360,7 @@ async function startMultiRecording() {
 }
 
 async function startRecording() {
+  const startedAt = performance.now()
   const appStore = useAppStore()
   const settingsStore = useSettingsStore()
 
@@ -1327,11 +1373,7 @@ async function startRecording() {
     return
   }
 
-  const modelService = await ensureModelServiceAvailable()
-  if (!modelService.available) {
-    appStore.showToast(modelService.reason || '请先开启模型')
-    return
-  }
+  logRecordingTiming('start-recording-entered', startedAt)
 
   if (settingsStore.settings.recording_mode === 'multi') {
     await startMultiRecording()
@@ -1339,12 +1381,6 @@ async function startRecording() {
   }
 
   if (settingsStore.settings.recording_mode === 'streaming') {
-    const streamingRuntime = await ensureStreamingRuntimeAvailable()
-    if (!streamingRuntime.available) {
-      appStore.showToast(streamingRuntime.reason || '请先启动模型服务')
-      return
-    }
-
     await startStreamingRecording()
     return
   }

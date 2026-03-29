@@ -44,7 +44,7 @@ class PythonManager {
       return false
     }
 
-    return process.platform === 'win32' && this.isDevelopmentRuntime()
+    return false
   }
 
   getRuntimeRoot() {
@@ -251,8 +251,8 @@ class PythonManager {
     if (this.shouldRequireExistingBackend()) {
       this.port = null
       throw new Error(
-        `WSL2 backend is required but not reachable on 127.0.0.1:${preferredPort}. ` +
-        'Please start FastAPI in WSL2 first, then run Electron again.'
+        `Existing backend is required but not reachable on 127.0.0.1:${preferredPort}. ` +
+        'Please start the backend first, or run the default Electron dev command to auto-start a local backend.'
       )
     }
 
