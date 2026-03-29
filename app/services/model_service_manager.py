@@ -100,15 +100,26 @@ class ModelServiceManager:
         model_name = getattr(self._asr_provider, "model_name", None)
         mode = self._current_mode()
         using_streaming_bridge = self._is_streaming_bridge_mode()
+        streaming_available = False
+        streaming_error = None
 
         if using_streaming_bridge:
             ready = bool(streaming_status.get("ready"))
             running = bool(streaming_status.get("running"))
             error = streaming_status.get("error") or self._last_error
+            health_payload = streaming_status.get("health") or {}
+            streaming_available = bool(health_payload.get("ready") and health_payload.get("loaded"))
+            streaming_error = health_payload.get("error") or error
         else:
             ready = self._provider_ready
             running = self._provider_ready or self._provider_loading
             error = self._last_error
+            if provider_type == "qwen_asr" and mode == "streaming":
+                streaming_error = "当前流式运行时未启用"
+            elif mode != "streaming":
+                streaming_error = "当前录音模式不是流式"
+            else:
+                streaming_error = "当前 provider 不支持流式"
 
         health = streaming_status.get("health") if using_streaming_bridge else {
             "ready": self._provider_ready,
@@ -117,6 +128,7 @@ class ModelServiceManager:
             "backend": provider_type,
             "model_name": model_name,
             "error": self._last_error,
+            "streaming_available": streaming_available,
         }
 
         return {
@@ -130,6 +142,8 @@ class ModelServiceManager:
             "error": error,
             "pid": streaming_status.get("pid"),
             "base_url": streaming_status.get("base_url"),
+            "streaming_available": streaming_available,
+            "streaming_error": streaming_error,
             "health": health,
             "components": {
                 "provider": {

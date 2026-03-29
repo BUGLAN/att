@@ -528,7 +528,7 @@ async function ensureStreamingRuntimeAvailable() {
 
   try {
     const runtimeStatus = await settingsStore.loadRuntimeStatus(true)
-    if (runtimeStatus.qwen_streaming_available) {
+    if (runtimeStatus.streaming_available) {
       return {
         available: true,
         runtimeStatus
@@ -537,9 +537,11 @@ async function ensureStreamingRuntimeAvailable() {
 
     return {
       available: false,
-      reason: runtimeStatus.qwen_streaming_service_loading
+      reason: runtimeStatus.model_service_loading
         ? '模型服务仍在加载，请稍候'
-        : runtimeStatus.qwen_streaming_service_error ||
+        : runtimeStatus.streaming_error ||
+          runtimeStatus.model_service_error ||
+          runtimeStatus.qwen_streaming_service_error ||
           runtimeStatus.qwen_streaming_error ||
           '请先启动模型服务'
     }
@@ -556,7 +558,7 @@ async function ensureModelServiceAvailable() {
 
   try {
     const runtimeStatus = await settingsStore.loadRuntimeStatus(true)
-    if (runtimeStatus.qwen_streaming_service_ready) {
+    if (runtimeStatus.model_service_ready) {
       return {
         available: true,
         runtimeStatus
@@ -565,9 +567,10 @@ async function ensureModelServiceAvailable() {
 
     return {
       available: false,
-      reason: runtimeStatus.qwen_streaming_service_loading
+      reason: runtimeStatus.model_service_loading
         ? '模型服务仍在加载，请稍候'
-        : runtimeStatus.qwen_streaming_service_error ||
+        : runtimeStatus.model_service_error ||
+          runtimeStatus.qwen_streaming_service_error ||
           runtimeStatus.qwen_streaming_error ||
           '请先开启模型'
     }

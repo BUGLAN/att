@@ -4,6 +4,7 @@ Qwen 流式桥接服务进程管理器
 import asyncio
 import contextlib
 import os
+import platform
 import signal
 import subprocess
 import sys
@@ -24,6 +25,7 @@ class QwenStreamingServiceManager:
         self.host = "127.0.0.1"
         self.port = 9000
         self.base_url = f"http://{self.host}:{self.port}"
+        self._is_windows = platform.system() == "Windows"
         self._process: Optional[asyncio.subprocess.Process] = None
         self._start_task: Optional[asyncio.Task] = None
         self._last_error: Optional[str] = None
@@ -100,9 +102,32 @@ class QwenStreamingServiceManager:
             "EngineCore_DP0",
         ]
 
+        if self._is_windows:
+            self._cleanup_stale_engine_processes_windows(patterns)
+            return
+
         for pattern in patterns:
             subprocess.run(
                 ["pkill", "-u", str(os.getuid()), "-f", pattern],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+    def _cleanup_stale_engine_processes_windows(self, patterns: list[str]) -> None:
+        for pattern in patterns:
+            command = (
+                "$pattern = @'\n"
+                f"{pattern}\n"
+                "'@.Trim(); "
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $_.CommandLine -and $_.CommandLine -like ('*' + $pattern + '*') } | "
+                "ForEach-Object { "
+                "  try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} "
+                "}"
+            )
+            subprocess.run(
+                ["powershell.exe", "-NoProfile", "-Command", command],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -123,6 +148,17 @@ class QwenStreamingServiceManager:
             else f"{self._project_root}{os.pathsep}{python_path}"
         )
 
+        spawn_kwargs = {
+            "cwd": str(self._project_root),
+            "env": env,
+            "stdout": self._log_handle,
+            "stderr": self._log_handle,
+        }
+        if self._is_windows:
+            spawn_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            spawn_kwargs["start_new_session"] = True
+
         self._process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -132,11 +168,7 @@ class QwenStreamingServiceManager:
             self.host,
             "--port",
             str(self.port),
-            cwd=str(self._project_root),
-            env=env,
-            stdout=self._log_handle,
-            stderr=self._log_handle,
-            start_new_session=True,
+            **spawn_kwargs,
         )
         self._process_group_id = self._process.pid
         logger.info(
@@ -144,6 +176,7 @@ class QwenStreamingServiceManager:
             pid=self._process.pid,
             port=self.port,
             log_path=str(self._log_path),
+            platform="windows" if self._is_windows else "posix",
         )
 
     async def _preload_existing_process(self) -> None:
@@ -167,8 +200,6 @@ class QwenStreamingServiceManager:
             try:
                 await self._spawn_process()
                 await self._wait_until_service_online()
-                # 无论前端是否等待完成，都在后台主动触发预热。
-                # 否则服务只会在线，不会真正加载模型，前端会一直停在 loading。
                 await self._request_preload()
                 await self._wait_until_ready()
             except Exception as error:
@@ -248,12 +279,32 @@ class QwenStreamingServiceManager:
     def _terminate_process_group(self) -> None:
         if self._process_group_id is None:
             return
+
+        if self._is_windows:
+            subprocess.run(
+                ["taskkill", "/PID", str(self._process_group_id), "/T"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self._process_group_id, signal.SIGTERM)
 
     def _kill_process_group(self) -> None:
         if self._process_group_id is None:
             return
+
+        if self._is_windows:
+            subprocess.run(
+                ["taskkill", "/PID", str(self._process_group_id), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+
         with contextlib.suppress(ProcessLookupError):
             os.killpg(self._process_group_id, signal.SIGKILL)
 

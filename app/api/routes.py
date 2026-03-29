@@ -610,9 +610,9 @@ async def health_check(probe_runtime: bool = False) -> dict:
         except Exception as error:
             streaming_error = str(error)
     elif configured_provider == "qwen_asr" and service_status.get("ready"):
-        streaming_available = True
+        streaming_available = bool(service_status.get("streaming_available"))
         streaming_backend = settings.qwen_streaming_backend
-        streaming_error = None
+        streaming_error = service_status.get("streaming_error")
 
     return {
         "status": "healthy",
@@ -631,6 +631,13 @@ async def health_check(probe_runtime: bool = False) -> dict:
         "qwen_streaming_service_pid": service_status.get("pid"),
         "qwen_streaming_service_url": service_status.get("base_url"),
         "qwen_streaming_service_error": service_status.get("error"),
+        "model_service_managed": service_status.get("managed", False),
+        "model_service_running": service_status.get("running", False),
+        "model_service_loading": service_status.get("loading", False),
+        "model_service_ready": service_status.get("ready", False),
+        "model_service_error": service_status.get("error"),
+        "streaming_available": service_status.get("streaming_available", False),
+        "streaming_error": service_status.get("streaming_error"),
     }
 
 

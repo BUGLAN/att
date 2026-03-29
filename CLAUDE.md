@@ -10,19 +10,19 @@ Audio-to-Text application with real-time recording, speech recognition, and AI-p
 
 ```bash
 # Install dependencies
-pip install -r requirements.txt
+uv sync
 
 # Run development server
-uvicorn app.main:app --reload
+uv run python -m uvicorn app.main:app --reload
 
 # Run system tray tool (requires pystray, Pillow, pynput)
-python -m tray.main
+uv run python -m tray.main
 
 # Run tests
-python tests/test_basic.py
+uv run python tests/test_basic.py
 
 # Download Whisper models (optional, auto-downloads on first use)
-python scripts/download_models.py --model large-v3
+uv run python scripts/download_models.py --model large-v3
 ```
 
 ## Architecture

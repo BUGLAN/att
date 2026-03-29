@@ -127,20 +127,22 @@ const serviceActionPending = ref(false)
 
 const showServiceButton = computed(() => true)
 const serviceLoading = computed(() => (
-  serviceActionPending.value || settingsStore.runtimeStatus.qwen_streaming_service_loading
+  serviceActionPending.value || settingsStore.runtimeStatus.model_service_loading
 ))
-const serviceReady = computed(() => settingsStore.runtimeStatus.qwen_streaming_service_ready)
-const serviceRunning = computed(() => settingsStore.runtimeStatus.qwen_streaming_service_running)
+const serviceReady = computed(() => settingsStore.runtimeStatus.model_service_ready)
+const serviceRunning = computed(() => settingsStore.runtimeStatus.model_service_running)
+const streamingAvailable = computed(() => settingsStore.runtimeStatus.streaming_available)
 const serviceButtonDisabled = computed(() => (
   serviceLoading.value || isRecording.value || isTranscribing.value
 ))
 const recordingButtonDisabled = computed(() => (
   !isRecording.value &&
-  !serviceReady.value
+  (!serviceReady.value || (isStreamingModeEnabled.value && !streamingAvailable.value))
 ))
 const buttonText = computed(() => {
   if (isRecording.value) return '结束录音'
   if (serviceLoading.value) return '模型加载中'
+  if (isStreamingModeEnabled.value && serviceReady.value && !streamingAvailable.value) return '当前环境暂不支持流式'
   if (recordingButtonDisabled.value) return '请先开启模型'
   return '开始录音'
 })
@@ -240,6 +242,9 @@ const segmentCountText = computed(() => {
 
 const transcriptPlaceholder = computed(() => {
   if (isStreamingModeEnabled.value) {
+    if (serviceReady.value && !streamingAvailable.value) {
+      return settingsStore.runtimeStatus.streaming_error || '当前环境暂不支持流式录音，请切换单段或多段模式。'
+    }
     if (isRecording.value) {
       return 'Qwen 真流式模式已启用，这里会持续刷新当前转写文本。'
     }
