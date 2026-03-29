@@ -814,18 +814,17 @@ async def update_settings(updates: dict) -> dict:
 
 # ==================== WebSocket Endpoints ====================
 
-@router.websocket("/ws/{client_type}")
-async def websocket_endpoint(websocket: WebSocket, client_type: str):
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
     """
     WebSocket endpoint for real-time communication.
 
     Args:
         websocket: WebSocket connection
-        client_type: Client type ("web" or "tray")
     """
     client_id = str(uuid.uuid4())
 
-    await ws_manager.connect(websocket, client_id, client_type)
+    await ws_manager.connect(websocket, client_id)
 
     try:
         while True:
@@ -946,78 +945,28 @@ async def _handle_websocket_message(client_id: str, data: dict) -> None:
     """
     message_type = data.get("type")
 
-    if message_type == "recording":
-        # 录音控制命令（来自托盘工具）
-        action = data.get("action")  # "start" | "stop"
-        logger.info(
-            "Received recording command",
-            client_id=client_id,
-            action=action
-        )
-
-        # 广播给其他客户端（web 前端）
-        await ws_manager.broadcast({
-            "type": "recording_command",
-            "action": action,
-            "source": client_id,
-            "timestamp": int(datetime.now().timestamp() * 1000)
-        }, exclude=client_id)
-
-    elif message_type == "status_update":
-        # 状态更新（来自 web 客户端）
+    if message_type == "status_update":
         await ws_manager.update_status(
             recording=data.get("recording", False),
             transcribing=data.get("transcribing", False),
             record_id=data.get("record_id"),
             duration=data.get("duration", 0.0)
         )
+        return
 
-    elif message_type == "web_recording":
-        # 网页录音通知（来自 web 客户端）
-        action = data.get("action")  # "start" | "stop"
-        logger.info(
-            "Received web_recording notification",
-            client_id=client_id,
-            action=action
-        )
-
-        # 广播给托盘工具，让其执行暂停/恢复音频
-        await ws_manager.broadcast({
-            "type": "web_recording_command",
-            "action": action,
-            "source": client_id,
-            "timestamp": int(datetime.now().timestamp() * 1000)
-        }, client_type_filter="tray")
-
-    elif message_type == "settings_update":
-        # 设置更新通知（来自 web 客户端）
-        pause_audio = data.get("pause_audio_on_recording")
-        logger.info(
-            "Received settings_update",
-            client_id=client_id,
-            pause_audio_on_recording=pause_audio
-        )
-
-        # 广播给托盘工具，让其更新设置
-        await ws_manager.broadcast({
-            "type": "settings_changed",
-            "pause_audio_on_recording": pause_audio,
-            "timestamp": int(datetime.now().timestamp() * 1000)
-        }, client_type_filter="tray")
-
-    elif message_type == "ping":
-        # 心跳
+    if message_type == "ping":
         await ws_manager.send_to_client(client_id, {"type": "pong"})
+        return
 
-    else:
-        logger.warning(
-            "Unknown WebSocket message type",
-            client_id=client_id,
-            message_type=message_type
-        )
+    logger.warning(
+        "Unknown WebSocket message type",
+        client_id=client_id,
+        message_type=message_type
+    )
 
 
 # ==================== Prompt Preset Endpoints ====================
+
 
 @router.get("/prompts")
 async def list_prompts() -> dict:

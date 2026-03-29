@@ -414,7 +414,7 @@ class QwenStreamingProvider(StreamingASRProvider):
     def backend_type(self) -> str:
         backend = self.streaming_backend
         if backend not in self.SUPPORTED_BACKENDS:
-            raise ASRProviderError(f"涓嶆敮鎸佺殑 Qwen 娴佸紡 backend: {backend}")
+            raise ASRProviderError(f"\u4e0d\u652f\u6301\u7684 Qwen \u6d41\u5f0f backend: {backend}")
 
         if backend == "auto":
             return "remote_bridge" if self.streaming_base_url else "local_vllm"

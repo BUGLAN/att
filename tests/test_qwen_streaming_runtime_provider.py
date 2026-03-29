@@ -34,7 +34,7 @@ def test_qwen_streaming_provider_rejects_invalid_backend():
     try:
         _ = provider.backend_type
     except ASRProviderError as error:
-        assert "不支持的 Qwen 流式 backend" in str(error)
+        assert "\u4e0d\u652f\u6301\u7684 Qwen \u6d41\u5f0f backend" in str(error)
         return
 
     raise AssertionError("Expected ASRProviderError")

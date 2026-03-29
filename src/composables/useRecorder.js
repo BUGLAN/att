@@ -1106,7 +1106,7 @@ async function startStreamingRecording() {
   }
 
   const { appStore, tray } = context
-  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+  const { sendRecordingStatus } = useGlobalWebSocket()
 
   try {
     activeRecordingMode.value = 'streaming'
@@ -1130,7 +1130,6 @@ async function startStreamingRecording() {
 
     appStore.setRecording(true)
     tray.setIcon('recording')
-    sendWebRecording('start')
     sendRecordingStatus({
       recording: true,
       transcribing: false,
@@ -1164,7 +1163,7 @@ async function startStreamingRecording() {
 async function stopStreamingRecording() {
   const appStore = useAppStore()
   const { tray, syncRecordingState } = useElectron()
-  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+  const { sendRecordingStatus } = useGlobalWebSocket()
 
   if (startPending && !appStore.isRecording) {
     pendingStopAfterStart = true
@@ -1182,7 +1181,6 @@ async function stopStreamingRecording() {
   appStore.setTranscribing(true)
   syncDesktopRecordingState(syncRecordingState, false).catch(() => {})
   tray.setIcon('transcribing')
-  sendWebRecording('stop')
   sendRecordingStatus({
     recording: false,
     transcribing: true,
@@ -1223,7 +1221,7 @@ async function startSingleRecording() {
   }
 
   const { appStore, tray } = context
-  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+  const { sendRecordingStatus } = useGlobalWebSocket()
 
   try {
     activeRecordingMode.value = 'single'
@@ -1244,7 +1242,6 @@ async function startSingleRecording() {
     logRecordingTiming('media-recorder-started', startedAt)
     appStore.setRecording(true)
     tray.setIcon('recording')
-    sendWebRecording('start')
     sendRecordingStatus({
       recording: true,
       transcribing: false,
@@ -1282,7 +1279,7 @@ async function startMultiRecording() {
 
   const { appStore, tray } = context
   const { api } = useElectron()
-  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+  const { sendRecordingStatus } = useGlobalWebSocket()
   const settingsStore = useSettingsStore()
 
   try {
@@ -1303,7 +1300,6 @@ async function startMultiRecording() {
 
     appStore.setRecording(true)
     tray.setIcon('recording')
-    sendWebRecording('start')
     sendRecordingStatus({
       recording: true,
       transcribing: false,
@@ -1391,7 +1387,7 @@ async function startRecording() {
 function stopSingleRecording() {
   const appStore = useAppStore()
   const { tray, syncRecordingState } = useElectron()
-  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+  const { sendRecordingStatus } = useGlobalWebSocket()
 
   if (startPending && (!mediaRecorder.value || mediaRecorder.value.state === 'inactive')) {
     pendingStopAfterStart = true
@@ -1407,7 +1403,6 @@ function stopSingleRecording() {
   appStore.setRecording(false)
   syncDesktopRecordingState(syncRecordingState, false).catch(() => {})
   tray.setIcon('idle')
-  sendWebRecording('stop')
   sendRecordingStatus({
     recording: false,
     transcribing: false,
@@ -1426,7 +1421,7 @@ function stopSingleRecording() {
 function stopMultiRecording() {
   const appStore = useAppStore()
   const { tray, syncRecordingState } = useElectron()
-  const { sendRecordingStatus, sendWebRecording } = useGlobalWebSocket()
+  const { sendRecordingStatus } = useGlobalWebSocket()
 
   if (startPending && !appStore.isRecording) {
     pendingStopAfterStart = true
@@ -1444,7 +1439,6 @@ function stopMultiRecording() {
   syncDesktopRecordingState(syncRecordingState, false).catch(() => {})
   cleanupRealtimeDetector()
   tray.setIcon('idle')
-  sendWebRecording('stop')
   sendRecordingStatus({
     recording: false,
     transcribing: false,
@@ -1487,15 +1481,6 @@ async function handleWebSocketMessage(message) {
   const settingsStore = useSettingsStore()
   const recordsStore = useRecordsStore()
   const { tray } = useElectron()
-
-  if (message.type === 'recording_command') {
-    if (message.action === 'start') {
-      await startRecording()
-    } else if (message.action === 'stop') {
-      stopRecording()
-    }
-    return
-  }
 
   if (message.type === 'segment_transcribed') {
     const sessionId = message.data?.session_id

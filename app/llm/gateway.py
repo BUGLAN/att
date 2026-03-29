@@ -96,9 +96,16 @@ class LLMGateway:
         cm = get_llm_config_manager()
 
         # Decrypt API key
+        if not config.api_key_encrypted:
+            logger.warning("LLM config is missing API key", config_id=config.id)
+            return None
+
         decrypted_key = cm.decrypt_key(config.id)
-        if not decrypted_key:
+        if decrypted_key is None:
             logger.error("Failed to decrypt API key", config_id=config.id)
+            return None
+        if not decrypted_key:
+            logger.warning("LLM config decrypted to empty API key", config_id=config.id)
             return None
 
         # Get provider class

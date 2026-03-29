@@ -32,7 +32,7 @@ export function useElectron() {
     uploadSessionSegment: (sessionId, blob, filename = 'segment.webm') => httpApi.uploadSessionSegment(sessionId, blob, filename),
     mergeSession: (sessionId) => httpApi.mergeSession(sessionId),
     deleteSession: (sessionId) => httpApi.deleteSession(sessionId),
-    getWebSocketUrl: (clientType = 'web') => httpApi.getWebSocketUrl(clientType),
+    getWebSocketUrl: () => httpApi.getWebSocketUrl(),
     getStreamingWebSocketUrl: () => httpApi.getStreamingWebSocketUrl(),
     getRecords: () => httpApi.getRecords(),
     searchRecords: (params) => httpApi.searchRecords(params),

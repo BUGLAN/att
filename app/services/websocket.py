@@ -1,13 +1,10 @@
 """
 WebSocket Connection Manager
-Manages connections from tray tools and web frontend
+Manages connections from the current frontend
 """
 from fastapi import WebSocket
-from typing import Dict, Set, Optional, Any
+from typing import Dict, Optional, Any
 from datetime import datetime
-from enum import Enum
-from pydantic import BaseModel, Field
-import json
 import asyncio
 
 from app.utils.logging import get_logger
@@ -15,69 +12,11 @@ from app.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-class MessageType(str, Enum):
-    """WebSocket message types."""
-    # Existing types
-    CONNECTED = "connected"
-    STATUS = "status"
-    RECORDING = "recording"
-    RECORDING_COMMAND = "recording_command"
-    STATUS_UPDATE = "status_update"
-    HOTKEY_UPDATE = "hotkey_update"
-    HOTKEY_CHANGED = "hotkey_changed"
-    WEB_RECORDING = "web_recording"
-    SETTINGS_UPDATE = "settings_update"
-    SETTINGS_CHANGED = "settings_changed"
-    PING = "ping"
-    PONG = "pong"
-
-    # New types for transcription/optimization notifications
-    TRANSCRIPTION_STARTED = "transcription_started"
-    TRANSCRIPTION_PROGRESS = "transcription_progress"
-    TRANSCRIPTION_COMPLETED = "transcription_completed"
-    OPTIMIZATION_STARTED = "optimization_started"
-    OPTIMIZATION_COMPLETED = "optimization_completed"
-    ERROR = "error"
-    SEGMENT_TRANSCRIBED = "segment_transcribed"
-
-
-class WSMessage(BaseModel):
-    """WebSocket message structure."""
-    type: MessageType
-    data: Optional[Dict[str, Any]] = None
-    timestamp: datetime = Field(default_factory=datetime.now)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return {
-            "type": self.type.value,
-            "data": self.data,
-            "timestamp": self.timestamp.isoformat()
-        }
-
-
 class ConnectionManager:
-    """
-    Manages WebSocket connections and message broadcasting.
-
-    Supports multiple client types:
-    - "web": Browser frontend
-    - "tray": System tray tool
-
-    Features:
-    - Connection management with unique client IDs
-    - Broadcast messages to all or specific clients
-    - Status tracking and synchronization
-    """
+    """Manage WebSocket connections and synchronized status state."""
 
     def __init__(self):
-        # 客户端连接：{client_id: websocket}
         self.active_connections: Dict[str, WebSocket] = {}
-
-        # 客户端类型：{client_id: "tray" | "web"}
-        self.client_types: Dict[str, str] = {}
-
-        # 当前状态
         self.current_status: Dict[str, Any] = {
             "recording": False,
             "transcribing": False,
@@ -85,59 +24,32 @@ class ConnectionManager:
             "duration": 0.0,
             "connected_clients": 0
         }
-
-        # 状态锁（防止并发更新）
         self._lock = asyncio.Lock()
 
-    async def connect(
-        self,
-        websocket: WebSocket,
-        client_id: str,
-        client_type: str = "web"
-    ) -> None:
-        """
-        Accept new WebSocket connection.
-
-        Args:
-            websocket: WebSocket connection
-            client_id: Unique client identifier
-            client_type: Client type ("web" or "tray")
-        """
+    async def connect(self, websocket: WebSocket, client_id: str) -> None:
         await websocket.accept()
 
         async with self._lock:
             self.active_connections[client_id] = websocket
-            self.client_types[client_id] = client_type
             self.current_status["connected_clients"] = len(self.active_connections)
 
         logger.info(
             "WebSocket client connected",
             client_id=client_id,
-            client_type=client_type,
             total_clients=len(self.active_connections)
         )
 
-        # 发送当前状态给新客户端
         await self.send_to_client(client_id, {
             "type": "connected",
             "client_id": client_id,
-            "client_type": client_type,
             "status": self.current_status,
             "timestamp": int(datetime.now().timestamp() * 1000)
         })
 
-        # 广播客户端数量更新
         await self.broadcast_status()
 
     def disconnect(self, client_id: str) -> None:
-        """
-        Remove disconnected client.
-
-        Args:
-            client_id: Client identifier to remove
-        """
         self.active_connections.pop(client_id, None)
-        self.client_types.pop(client_id, None)
         self.current_status["connected_clients"] = len(self.active_connections)
 
         logger.info(
@@ -147,69 +59,40 @@ class ConnectionManager:
         )
 
     async def send_to_client(self, client_id: str, message: dict) -> bool:
-        """
-        Send message to specific client.
-
-        Args:
-            client_id: Target client identifier
-            message: Message dictionary to send
-
-        Returns:
-            True if sent successfully, False otherwise
-        """
         if client_id in self.active_connections:
             try:
                 await self.active_connections[client_id].send_json(message)
                 return True
-            except Exception as e:
+            except Exception as error:
                 logger.error(
                     "Failed to send message to client",
                     client_id=client_id,
-                    error=str(e)
+                    error=str(error)
                 )
                 return False
         return False
 
-    async def broadcast(
-        self,
-        message: dict,
-        exclude: Optional[str] = None,
-        client_type_filter: Optional[str] = None
-    ) -> None:
-        """
-        Broadcast message to all connected clients.
-
-        Args:
-            message: Message dictionary to broadcast
-            exclude: Optional client_id to exclude from broadcast
-            client_type_filter: Optional client type to filter ("web" or "tray")
-        """
+    async def broadcast(self, message: dict, exclude: Optional[str] = None) -> None:
         disconnected = []
 
         for client_id, connection in self.active_connections.items():
             if client_id == exclude:
                 continue
 
-            # Filter by client type if specified
-            if client_type_filter and self.client_types.get(client_id) != client_type_filter:
-                continue
-
             try:
                 await connection.send_json(message)
-            except Exception as e:
+            except Exception as error:
                 logger.warning(
                     "Failed to broadcast to client, marking for disconnect",
                     client_id=client_id,
-                    error=str(e)
+                    error=str(error)
                 )
                 disconnected.append(client_id)
 
-        # 清理断开的连接
         for client_id in disconnected:
             self.disconnect(client_id)
 
     async def broadcast_status(self) -> None:
-        """Broadcast current status to all clients."""
         await self.broadcast({
             "type": "status",
             **self.current_status,
@@ -217,44 +100,17 @@ class ConnectionManager:
         })
 
     async def update_status(self, **kwargs) -> None:
-        """
-        Update status and broadcast to all clients.
-
-        Args:
-            **kwargs: Status fields to update
-        """
         async with self._lock:
             self.current_status.update(kwargs)
 
         await self.broadcast_status()
 
-    def get_tray_clients(self) -> Set[str]:
-        """Get all tray tool client IDs."""
-        return {
-            cid for cid, ctype in self.client_types.items()
-            if ctype == "tray"
-        }
-
-    def get_web_clients(self) -> Set[str]:
-        """Get all web frontend client IDs."""
-        return {
-            cid for cid, ctype in self.client_types.items()
-            if ctype == "web"
-        }
-
     def get_active_web_client(self) -> Optional[str]:
-        """Return one active web client ID if a web client is connected."""
-        return next(iter(self.get_web_clients()), None)
-
-    def get_client_type(self, client_id: str) -> Optional[str]:
-        """Get client type by ID."""
-        return self.client_types.get(client_id)
+        return next(iter(self.active_connections), None)
 
     @property
     def client_count(self) -> int:
-        """Get total number of connected clients."""
         return len(self.active_connections)
 
 
-# 全局连接管理器实例
 manager = ConnectionManager()

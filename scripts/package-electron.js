@@ -7,7 +7,6 @@ const { spawn } = require('child_process')
 const projectRoot = path.resolve(__dirname, '..')
 const pythonDistDir = path.join(projectRoot, 'python-dist')
 const pyprojectPath = path.join(projectRoot, 'pyproject.toml')
-const requirementsPath = path.join(projectRoot, 'requirements.txt')
 const pythonVersionFile = path.join(projectRoot, '.python-version')
 
 function log(message) {
@@ -220,9 +219,11 @@ async function prepareBundledPython() {
   }
 
   const pythonExecutable = getBundledPythonExecutable()
-  const dependencySource = fs.existsSync(pyprojectPath) ? pyprojectPath : requirementsPath
+  if (!fs.existsSync(pyprojectPath)) {
+    throw new Error('pyproject.toml is required for packaging')
+  }
 
-  log(`Installing backend dependencies from ${path.basename(dependencySource)}`)
+  log(`Installing backend dependencies from ${path.basename(pyprojectPath)}`)
   await run('uv', [
     'pip',
     'install',
@@ -232,7 +233,7 @@ async function prepareBundledPython() {
     'copy',
     '--compile-bytecode',
     '-r',
-    dependencySource
+    pyprojectPath
   ])
 }
 

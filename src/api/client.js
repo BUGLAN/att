@@ -192,9 +192,9 @@ export const api = {
   previewPreset: (id, text) => request('POST', `/prompts/${id}/preview`, { body: { text } }),
   setDefaultPreset: (id) => request('PUT', '/prompts/default', { body: { preset_id: id } }),
 
-  async getWebSocketUrl(clientType = 'web') {
+  async getWebSocketUrl() {
     const port = await getBackendPort()
-    return `ws://127.0.0.1:${port}/api/ws/${clientType}`
+    return `ws://127.0.0.1:${port}/api/ws`
   },
 
   async getStreamingWebSocketUrl() {

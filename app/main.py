@@ -8,7 +8,6 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import close_streaming_session_manager, init_processors
 from app.audio.processor import AudioProcessor
@@ -129,14 +128,11 @@ app.include_router(api_router)
 app.include_router(clipboard_router)
 
 project_root = Path(__file__).parent.parent
-static_dir = project_root / "static"
 dist_dir = project_root / "dist"
 dist_assets_dir = dist_dir / "assets"
 
-if static_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
 if dist_assets_dir.exists():
+    from fastapi.staticfiles import StaticFiles
     app.mount("/assets", StaticFiles(directory=str(dist_assets_dir)), name="assets")
 
 
@@ -146,10 +142,6 @@ async def root():
     dist_index = dist_dir / "index.html"
     if dist_index.exists():
         return FileResponse(str(dist_index))
-
-    static_index = static_dir / "index.html"
-    if static_index.exists():
-        return FileResponse(str(static_index))
 
     return {
         "name": settings.app_name,

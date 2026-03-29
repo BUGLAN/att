@@ -206,8 +206,15 @@ class LLMConfigManager:
         if not config:
             return None
 
+        if not config.api_key_encrypted:
+            return ""
+
         encryption = get_encryption()
-        return encryption.decrypt(config.api_key_encrypted)
+        try:
+            return encryption.decrypt(config.api_key_encrypted)
+        except ValueError:
+            logger.error("Failed to decrypt stored API key", config_id=config_id)
+            return None
 
 
 # Global instance

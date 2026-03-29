@@ -67,7 +67,7 @@ async function connectGlobal() {
 
   try {
     shouldReconnect = true
-    const url = await api.getWebSocketUrl('web')
+    const url = await api.getWebSocketUrl()
     globalWs = new WebSocket(url)
 
     globalWs.onopen = () => {
@@ -141,10 +141,7 @@ export function useGlobalWebSocket() {
     send: sendGlobal,
     addMessageHandler: addGlobalMessageHandler,
     removeMessageHandler: removeGlobalMessageHandler,
-    sendRecordingStatus: (status) => sendGlobal({ type: 'status_update', ...status }),
-    sendWebRecording: (action) => sendGlobal({ type: 'web_recording', action }),
-    sendSettingsUpdate: (settings) => sendGlobal({ type: 'settings_update', ...settings }),
-    sendHotkeyUpdate: (hotkey) => sendGlobal({ type: 'hotkey_update', hotkey })
+    sendRecordingStatus: (status) => sendGlobal({ type: 'status_update', ...status })
   }
 }
 

@@ -34,12 +34,6 @@ dependencies = [
 dev = [
   "pytest>=8.0.0",
 ]
-tray = [
-  "PySide6>=6.6.0",
-  "Pillow>=10.0.0",
-  "keyboard>=0.13.5",
-  "pyobjc>=9.0; sys_platform == 'darwin'",
-]
 
 [tool.uv]
 package = false
