@@ -1,12 +1,32 @@
 <template>
   <div class="selection-shell">
     <section class="selection-panel">
-      <header class="selection-header">
-        <div>
-          <span class="selection-kicker">AI ACTION CENTER</span>
-          <h1 class="selection-title">划词动作中心</h1>
-        </div>
-        <div class="selection-header-actions">
+      <header class="selection-toolbar">
+        <nav class="selection-tabs" aria-label="划词动作">
+          <button
+            v-for="tab in tabs"
+            :key="tab.key"
+            class="selection-tab"
+            :class="{ active: tab.key === currentTab }"
+            type="button"
+            @click="handleTabClick(tab.key)"
+          >
+            <svg
+              v-if="tab.key === 'selected'"
+              class="selection-tab-icon"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                d="M5 5.75A2.75 2.75 0 0 1 7.75 3h8.5A2.75 2.75 0 0 1 19 5.75v12.5A2.75 2.75 0 0 1 16.25 21h-8.5A2.75 2.75 0 0 1 5 18.25V5.75Zm3 1.25a.75.75 0 0 0-.75.75v8.5c0 .414.336.75.75.75h8.5a.75.75 0 0 0 .75-.75v-8.5a.75.75 0 0 0-.75-.75H8Z"
+                fill="currentColor"
+              />
+            </svg>
+            <span>{{ tab.label }}</span>
+          </button>
+        </nav>
+
+        <div class="selection-toolbar-actions">
           <button
             class="selection-icon-button"
             :class="{ active: pinned }"
@@ -32,51 +52,70 @@
         </div>
       </header>
 
-      <div class="selection-source">
-        <span class="selection-source-label">当前选中</span>
-        <p>{{ selectedText || '等待选区...' }}</p>
-      </div>
+      <div class="selection-body">
+        <Transition :name="transitionName" mode="out-in">
+          <section :key="currentTab" class="selection-view">
+            <template v-if="currentTab === 'selected'">
+              <div class="selection-text-card">
+                <span class="selection-text-label">当前选中</span>
+                <div class="selection-text-content">
+                  {{ selectedText || '等待选区...' }}
+                </div>
+              </div>
+            </template>
 
-      <div class="selection-actions">
-        <button
-          v-for="action in actions"
-          :key="action.value"
-          class="action-button"
-          :class="{ active: action.value === activeAction, loading: isLoading && action.value === activeAction }"
-          type="button"
-          :disabled="!selectedText || isLoading"
-          @click="runAction(action.value)"
-        >
-          {{ action.label }}
-        </button>
-      </div>
+            <template v-else-if="currentActionState.loading">
+              <div class="selection-loading-card">
+                <span class="loading-spinner" aria-hidden="true" />
+                <div class="loading-copy">
+                  <strong>{{ loadingTitle }}</strong>
+                  <p>{{ loadingDescription }}</p>
+                </div>
+              </div>
+            </template>
 
-      <div v-if="errorMessage" class="selection-error">
-        {{ errorMessage }}
-      </div>
+            <template v-else-if="currentActionState.error">
+              <div class="selection-error-card">
+                <strong>{{ currentActionLabel }}失败</strong>
+                <p>{{ currentActionState.error }}</p>
+                <button class="selection-retry-button" type="button" @click="retryCurrentTab">
+                  重试
+                </button>
+              </div>
+            </template>
 
-      <div v-if="isLoading" class="selection-loading">
-        <span class="loading-spinner" aria-hidden="true" />
-        <div class="loading-copy">
-          <strong>{{ loadingTitle }}</strong>
-          <p>{{ loadingDescription }}</p>
-        </div>
-      </div>
+            <template v-else-if="currentActionState.result">
+              <SelectionResultCard
+                :result="currentActionState.result"
+                :show-examples="showExamples"
+              />
+            </template>
 
-      <div v-if="result" class="selection-result-region">
-        <SelectionResultCard
-          :result="result"
-          :show-examples="showExamples"
-        />
+            <template v-else>
+              <div class="selection-empty-card">
+                <strong>{{ currentActionLabel }}</strong>
+                <p>正在准备内容，请稍候。</p>
+              </div>
+            </template>
+          </section>
+        </Transition>
       </div>
     </section>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useElectron } from '@/composables/useElectron'
 import SelectionResultCard from '@/components/selection/SelectionResultCard.vue'
+
+const tabs = [
+  { key: 'selected', label: '选中' },
+  { key: 'translate', label: '翻译' }
+]
+
+const ACTION_TAB_KEYS = ['translate']
+const TAB_LABELS = Object.fromEntries(tabs.map((tab) => [tab.key, tab.label]))
 
 const props = defineProps({
   activation: {
@@ -89,24 +128,36 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['close', 'pin', 'action-complete'])
+const emit = defineEmits(['close', 'pin'])
 
 const { api } = useElectron()
 
 const selectedText = ref('')
-const activeAction = ref('translate')
-const isLoading = ref(false)
-const errorMessage = ref('')
-const result = ref(null)
+const currentTab = ref('selected')
+const transitionName = ref('slide-left')
 const showExamples = ref(true)
 const autoAddToWordbook = ref(true)
+const activationVersion = ref(0)
+const actionState = reactive({
+  translate: { loading: false, error: '', result: null }
+})
 
-const actions = [
-  { value: 'translate', label: '翻译' },
-  { value: 'explain', label: '解释' },
-  { value: 'summarize', label: '总结' },
-  { value: 'rewrite', label: '改写' }
-]
+const LOADING_TITLES = {
+  translate: '正在翻译'
+}
+
+const LOADING_DESCRIPTIONS = {
+  translate: '正在生成更准确的翻译结果，请稍候。'
+}
+
+const currentActionState = computed(() => (
+  ACTION_TAB_KEYS.includes(currentTab.value)
+    ? actionState[currentTab.value]
+    : { loading: false, error: '', result: null }
+))
+const currentActionLabel = computed(() => TAB_LABELS[currentTab.value] || '动作')
+const loadingTitle = computed(() => LOADING_TITLES[currentTab.value] || '正在处理')
+const loadingDescription = computed(() => LOADING_DESCRIPTIONS[currentTab.value] || '请稍候。')
 
 async function loadSettings() {
   try {
@@ -118,68 +169,93 @@ async function loadSettings() {
   }
 }
 
-function resetFromActivation(payload = {}) {
-  selectedText.value = payload.text || ''
-  activeAction.value = 'translate'
-  errorMessage.value = ''
-  result.value = null
-  isLoading.value = false
+function resetActionState() {
+  for (const actionKey of ACTION_TAB_KEYS) {
+    actionState[actionKey].loading = false
+    actionState[actionKey].error = ''
+    actionState[actionKey].result = null
+  }
 }
 
-async function runAction(actionType) {
-  if (!selectedText.value || isLoading.value) {
+function resetFromActivation(payload = {}) {
+  activationVersion.value += 1
+  selectedText.value = payload.text || ''
+  currentTab.value = 'selected'
+  transitionName.value = 'slide-left'
+  resetActionState()
+}
+
+function getTabIndex(tabKey) {
+  return tabs.findIndex((tab) => tab.key === tabKey)
+}
+
+function getActionRequest(actionKey) {
+  const payload = {
+    source_text: selectedText.value,
+    auto_add_to_wordbook: autoAddToWordbook.value
+  }
+
+  return api.runAITranslate(payload)
+}
+
+async function ensureActionResult(actionKey, { force = false } = {}) {
+  if (!ACTION_TAB_KEYS.includes(actionKey) || !selectedText.value) {
     return
   }
 
-  isLoading.value = true
-  activeAction.value = actionType
-  errorMessage.value = ''
-  await nextTick()
+  const state = actionState[actionKey]
+  if (state.loading) {
+    return
+  }
+  if (!force && state.result) {
+    return
+  }
+
+  const versionAtStart = activationVersion.value
+  state.loading = true
+  state.error = ''
 
   try {
-    const payload = {
-      source_text: selectedText.value,
-      auto_add_to_wordbook: autoAddToWordbook.value
+    const result = await getActionRequest(actionKey)
+    if (activationVersion.value !== versionAtStart) {
+      return
     }
-
-    if (actionType === 'translate') {
-      result.value = await api.runAITranslate(payload)
-    } else if (actionType === 'explain') {
-      result.value = await api.runAIExplain(payload)
-    } else if (actionType === 'summarize') {
-      result.value = await api.runAISummarize(payload)
-    } else if (actionType === 'rewrite') {
-      result.value = await api.runAIRewrite(payload)
-    }
-
-    emit('action-complete', {
-      actionType,
-      pinned: props.pinned
-    })
+    state.result = result
   } catch (error) {
-    console.error('[SelectionPanel] Failed to run action:', error)
-    errorMessage.value = error.message || 'AI 动作执行失败'
+    if (activationVersion.value !== versionAtStart) {
+      return
+    }
+    state.error = error.message || `${TAB_LABELS[actionKey]}失败`
+    state.result = null
   } finally {
-    isLoading.value = false
+    if (activationVersion.value === versionAtStart) {
+      state.loading = false
+    }
   }
 }
 
-const LOADING_TITLES = {
-  translate: '正在翻译',
-  explain: '正在解释',
-  summarize: '正在总结',
-  rewrite: '正在改写'
+function handleTabClick(tabKey) {
+  if (tabKey === currentTab.value) {
+    return
+  }
+
+  const currentIndex = getTabIndex(currentTab.value)
+  const nextIndex = getTabIndex(tabKey)
+  transitionName.value = nextIndex > currentIndex ? 'slide-left' : 'slide-right'
+  currentTab.value = tabKey
+
+  if (ACTION_TAB_KEYS.includes(tabKey)) {
+    void ensureActionResult(tabKey)
+  }
 }
 
-const LOADING_DESCRIPTIONS = {
-  translate: '正在生成更准确的翻译结果，请稍候。',
-  explain: '正在结合上下文解释含义，请稍候。',
-  summarize: '正在压缩关键信息，请稍候。',
-  rewrite: '正在调整表达方式，请稍候。'
-}
+function retryCurrentTab() {
+  if (!ACTION_TAB_KEYS.includes(currentTab.value)) {
+    return
+  }
 
-const loadingTitle = computed(() => LOADING_TITLES[activeAction.value] || '正在处理')
-const loadingDescription = computed(() => LOADING_DESCRIPTIONS[activeAction.value] || '请稍候。')
+  void ensureActionResult(currentTab.value, { force: true })
+}
 
 watch(() => props.activation.sequence, () => {
   resetFromActivation(props.activation)
@@ -192,48 +268,82 @@ onMounted(async () => {
 
 <style scoped>
 .selection-shell {
+  width: 100%;
   height: 100vh;
-  padding: 10px;
   overflow: hidden;
 }
 
 .selection-panel {
   display: flex;
   flex-direction: column;
+  width: 100%;
   height: 100%;
   padding: 16px;
-  border-radius: 24px;
-  background:
-    linear-gradient(180deg, rgba(26, 21, 18, 0.95), rgba(16, 14, 12, 0.98));
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(26, 21, 18, 0.98), rgba(16, 14, 12, 1));
   color: #f7ecdf;
-  box-shadow: 0 28px 64px rgba(0, 0, 0, 0.34);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.24);
   overflow: hidden;
-}
-
-.selection-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  align-items: start;
   -webkit-app-region: drag;
 }
 
-.selection-header-actions {
+.selection-toolbar {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.selection-tabs,
+.selection-toolbar-actions {
+  display: flex;
   align-items: center;
 }
 
-.selection-kicker {
-  display: inline-flex;
-  color: #f3b460;
-  font-size: 0.72rem;
-  letter-spacing: 0.16em;
+.selection-tabs {
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: nowrap;
+  -webkit-app-region: no-drag;
 }
 
-.selection-title {
-  margin-top: 8px;
-  font-size: 1.16rem;
+.selection-toolbar-actions {
+  gap: 8px;
+  flex: 0 0 auto;
+  -webkit-app-region: no-drag;
+}
+
+.selection-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(247, 236, 223, 0.66);
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.selection-tab:hover {
+  color: #fff2e4;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.selection-tab.active {
+  background: rgba(243, 180, 96, 0.18);
+  color: #ffd9a5;
+}
+
+.selection-tab-icon {
+  width: 14px;
+  height: 14px;
+  display: block;
 }
 
 .selection-icon-button {
@@ -260,80 +370,78 @@ onMounted(async () => {
   color: #ffd9a5;
 }
 
-.selection-source {
+.selection-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
   margin-top: 16px;
-  padding: 14px;
+  overflow: hidden;
+  -webkit-app-region: no-drag;
+}
+
+.selection-view {
+  height: 100%;
+  min-height: 0;
+}
+
+.selection-text-card,
+.selection-loading-card,
+.selection-error-card,
+.selection-empty-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 16px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.05);
+  -webkit-app-region: no-drag;
 }
 
-.selection-source-label {
+.selection-text-label {
   display: inline-flex;
-  color: rgba(247, 236, 223, 0.6);
-  font-size: 0.76rem;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+  color: rgba(247, 236, 223, 0.64);
+  font-size: 0.78rem;
 }
 
-.selection-source p {
-  line-height: 1.7;
-  color: #fff6ee;
-  max-height: 88px;
+.selection-text-content {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  line-height: 1.75;
+  color: #fff6ee;
   scrollbar-width: thin;
   scrollbar-color: rgba(243, 180, 96, 0.28) transparent;
 }
 
-.selection-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 16px;
-  margin-bottom: 16px;
+.selection-loading-card {
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
 }
 
-.action-button {
-  padding: 9px 14px;
+.selection-error-card,
+.selection-empty-card {
+  justify-content: center;
+  gap: 10px;
+}
+
+.selection-error-card {
+  background: rgba(212, 93, 93, 0.14);
+  color: #ffd0d0;
+}
+
+.selection-retry-button {
+  width: fit-content;
+  padding: 8px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
   color: inherit;
   cursor: pointer;
   -webkit-app-region: no-drag;
-}
-
-.action-button.active {
-  background: rgba(243, 180, 96, 0.18);
-  border-color: rgba(243, 180, 96, 0.36);
-  color: #ffd9a5;
-}
-
-.action-button.loading {
-  opacity: 0.72;
-}
-
-.selection-error {
-  margin-bottom: 14px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(212, 93, 93, 0.14);
-  color: #ffc6c6;
-}
-
-.selection-loading {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 14px;
-  padding: 14px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(243, 180, 96, 0.14);
-}
-
-.selection-result-region {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
 }
 
 .loading-spinner {
@@ -343,7 +451,6 @@ onMounted(async () => {
   border: 2px solid rgba(243, 180, 96, 0.18);
   border-top-color: #f3b460;
   animation: selection-spin 0.8s linear infinite;
-  flex: 0 0 auto;
 }
 
 .loading-copy strong {
@@ -355,6 +462,33 @@ onMounted(async () => {
   margin-top: 4px;
   color: rgba(247, 236, 223, 0.72);
   line-height: 1.5;
+}
+
+.slide-left-enter-active,
+.slide-left-leave-active,
+.slide-right-enter-active,
+.slide-right-leave-active {
+  transition: transform 200ms ease, opacity 200ms ease;
+}
+
+.slide-left-enter-from {
+  opacity: 0;
+  transform: translateX(24px);
+}
+
+.slide-left-leave-to {
+  opacity: 0;
+  transform: translateX(-24px);
+}
+
+.slide-right-enter-from {
+  opacity: 0;
+  transform: translateX(-24px);
+}
+
+.slide-right-leave-to {
+  opacity: 0;
+  transform: translateX(24px);
 }
 
 @keyframes selection-spin {

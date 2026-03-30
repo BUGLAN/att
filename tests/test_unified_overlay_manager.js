@@ -263,6 +263,24 @@ async function testSelectionReusesLastMovedPosition() {
   assert.equal(bounds.y, 180)
 }
 
+async function testSelectionActionCompleteKeepsWindowVisible() {
+  const manager = createManager()
+  manager.openSelection({
+    text: 'hello',
+    point: { x: 200, y: 180 }
+  })
+  manager.window.handlers['did-finish-load']()
+  manager.markRendererReady()
+
+  manager.handleActionComplete({
+    mode: 'selection',
+    actionType: 'translate'
+  })
+
+  assert.equal(manager.window.visible, true)
+  assert.equal(manager.isVisible, true)
+}
+
 async function main() {
   await testSelectionWaitsForReadyBeforeShow()
   await testClipboardModeShowsAfterReady()
@@ -274,6 +292,7 @@ async function main() {
   await testSelectionOutsidePointerHidesWindow()
   await testSelectionInsidePointerKeepsWindowVisible()
   await testSelectionReusesLastMovedPosition()
+  await testSelectionActionCompleteKeepsWindowVisible()
   process.exit(0)
 }
 

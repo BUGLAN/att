@@ -372,9 +372,7 @@ class UnifiedOverlayManager {
   }
 
   handleActionComplete(payload = {}) {
-    if (payload.mode === OVERLAY_MODE.selection && !this.isPinned) {
-      this.hide('selection-action-complete')
-    }
+    void payload
   }
 
   notifyDataChanged(payload = {}) {

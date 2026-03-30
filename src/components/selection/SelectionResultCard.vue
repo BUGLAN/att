@@ -56,6 +56,7 @@ const titleText = computed(() => props.result.source_text || 'AI 动作结果')
   background: rgba(255, 250, 242, 0.96);
   border: 1px solid rgba(128, 90, 40, 0.12);
   color: #1f1711;
+  -webkit-app-region: no-drag;
 }
 
 .result-header {
