@@ -4,6 +4,7 @@ Clipboard API routes.
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.clipboard.manager import ClipboardManager
@@ -84,6 +85,16 @@ async def get_clipboard_item(item_id: str) -> dict:
     if not item:
         raise HTTPException(status_code=404, detail="Clipboard item not found")
     return item.to_dict()
+
+
+@router.get("/items/{item_id}/image")
+async def get_clipboard_item_image(item_id: str):
+    """Get clipboard image content by item ID."""
+    image_path = await clipboard_manager.get_item_image_path(item_id)
+    if not image_path:
+        raise HTTPException(status_code=404, detail="Clipboard image not found")
+
+    return FileResponse(str(image_path))
 
 
 @router.put("/items/{item_id}", response_model=dict)

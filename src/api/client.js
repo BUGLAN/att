@@ -144,6 +144,11 @@ export const api = {
   getClipboardStats: () => request('GET', '/clipboard/stats'),
   createClipboardItem: (data) => request('POST', '/clipboard/items', { body: data }),
   getClipboardItem: (id) => request('GET', `/clipboard/items/${id}`),
+  async getClipboardItemImageUrl(id, version = '') {
+    const baseUrl = await getBaseUrl()
+    const suffix = version ? `?v=${encodeURIComponent(version)}` : ''
+    return `${baseUrl}/clipboard/items/${id}/image${suffix}`
+  },
   updateClipboardItem: (id, data) => request('PUT', `/clipboard/items/${id}`, { body: data }),
   deleteClipboardItem: (id) => request('DELETE', `/clipboard/items/${id}`),
   async getWordbookEntries(params = {}) {

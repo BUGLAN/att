@@ -193,6 +193,7 @@ class ClipboardMonitor {
     try {
       const filename = `${imageHash}.png`
       const imagePath = path.join(this.imageOutputDir, filename)
+      const displayName = `剪切图片-${new Date().toLocaleString('zh-CN').replace(/[/: ]/g, '-')}.png`
       if (!fs.existsSync(imagePath)) {
         fs.writeFileSync(imagePath, buffer)
       }
@@ -206,11 +207,13 @@ class ClipboardMonitor {
           content: `image:${imageHash}`,
           source: 'system_clipboard_monitor',
           item_type: 'image',
-          title: `图片 ${new Date().toLocaleString('zh-CN')}`,
+          title: displayName,
           summary: `${size.width} x ${size.height}`,
           metadata: {
             image_path: imagePath,
-            file_name: filename,
+            file_name: displayName,
+            stored_file_name: filename,
+            image_hash: imageHash,
             width: size.width,
             height: size.height,
             file_size: buffer.length,

@@ -186,6 +186,17 @@ class ClipboardManager:
         data = await self._load_json(item_id)
         return ClipboardItem.from_dict(data) if data else None
 
+    async def get_item_image_path(self, item_id: str) -> Optional[Path]:
+        item = await self.get_item(item_id)
+        if not item or item.item_type != ClipboardItemType.IMAGE:
+            return None
+
+        image_path = Path((item.metadata or {}).get("image_path", "")).expanduser()
+        if not image_path.exists() or not image_path.is_file():
+            return None
+
+        return image_path
+
     async def list_items(
         self,
         query: Optional[str] = None,

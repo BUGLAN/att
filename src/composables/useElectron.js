@@ -189,6 +189,16 @@ export function useElectron() {
 
       throw new Error('Clipboard API unavailable')
     },
+    writeImage: async (payload) => {
+      if (globalThis.window?.electronAPI?.writeClipboardImage) {
+        const result = await globalThis.window.electronAPI.writeClipboardImage(toPlainObject(payload))
+        if (result !== false) {
+          return true
+        }
+      }
+
+      throw new Error('Image clipboard API unavailable')
+    },
     pasteActive: async () => {
       if (globalThis.window?.electronAPI?.pasteClipboard) {
         const result = await globalThis.window.electronAPI.pasteClipboard()

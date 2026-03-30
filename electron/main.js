@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, clipboard } = require('electron')
+const { app, BrowserWindow, ipcMain, clipboard, nativeImage } = require('electron')
 const path = require('path')
 const { execFile } = require('child_process')
 const { PythonManager } = require('./python/manager')
@@ -311,6 +311,27 @@ function setupIPC() {
 
   ipcMain.handle('clipboard:read-text', () => {
     return clipboard.readText()
+  })
+
+  ipcMain.handle('clipboard:write-image', (event, payload = {}) => {
+    const imagePath = String(payload.imagePath || '').trim()
+    const imageToken = String(payload.imageToken || '').trim()
+
+    if (!imagePath) {
+      return false
+    }
+
+    const image = nativeImage.createFromPath(imagePath)
+    if (image.isEmpty()) {
+      return false
+    }
+
+    if (imageToken) {
+      clipboardMonitor?.markInternalWrite(imageToken, 'renderer_write_image')
+    }
+
+    clipboard.writeImage(image)
+    return true
   })
 
   ipcMain.handle('clipboard:paste-active', async () => {

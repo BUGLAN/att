@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setTrayIcon: (iconType) => ipcRenderer.send('tray:set-icon', iconType),
   updateTrayMenu: (records) => ipcRenderer.send('tray:update-menu', records),
   writeClipboard: (text) => ipcRenderer.invoke('clipboard:write', text),
+  writeClipboardImage: (payload) => ipcRenderer.invoke('clipboard:write-image', payload),
   pasteClipboard: () => ipcRenderer.invoke('clipboard:paste-active'),
   updateHotkey: (hotkey) => ipcRenderer.invoke('hotkey:update', hotkey),
   syncInputSettings: (settings) => ipcRenderer.invoke('desktop:sync-input-settings', settings),

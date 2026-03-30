@@ -87,6 +87,15 @@ export function useClipboard() {
   }
 
   async function copyItemContent(item) {
+    if (item?.item_type === 'image' && item?.metadata?.image_path) {
+      await clipboard.writeImage({
+        imagePath: item.metadata.image_path,
+        imageToken: item.content || ''
+      })
+      appStore.showToast('已复制图片到系统剪切板')
+      return
+    }
+
     await clipboard.writeText(item.content || '')
     appStore.showToast('已复制到系统剪切板')
   }

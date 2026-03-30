@@ -1,6 +1,6 @@
 <template>
   <div class="overlay-shell">
-    <section class="overlay-panel">
+    <section ref="panelRef" class="overlay-panel">
       <header class="overlay-header">
         <div class="overlay-title-group">
           <span class="overlay-title-icon">O</span>
@@ -32,6 +32,19 @@
         </div>
       </header>
 
+      <div class="overlay-filter-row">
+        <button
+          v-for="filter in OVERLAY_CLIPBOARD_FILTERS"
+          :key="filter.value"
+          class="overlay-filter-button"
+          :class="{ active: selectedFilter === filter.value }"
+          type="button"
+          @click="selectedFilter = filter.value"
+        >
+          {{ filter.label }}
+        </button>
+      </div>
+
       <div class="overlay-search">
         <input
           ref="searchInput"
@@ -54,18 +67,52 @@
           :class="{ active: hasKeyboardSelection && index === selectedIndex }"
           role="option"
           tabindex="-1"
+          @contextmenu.prevent="handleFavoriteToggle(item)"
           @click="handleItemClick(item)"
+          @mouseenter="handleItemMouseEnter(item, $event)"
+          @mouseleave="clearHoveredPreview"
         >
           <span class="overlay-item-icon">{{ iconFor(item.item_type) }}</span>
           <span class="overlay-item-content">
-            <span class="overlay-item-title">{{ item.title || '未命名记录' }}</span>
+            <span class="overlay-item-title">{{ primaryText(item) }}</span>
             <span class="overlay-item-meta">
               <span>{{ relativeTime(item.updated_at) }}</span>
               <span v-if="item.item_type">{{ typeLabel(item.item_type) }}</span>
             </span>
           </span>
+          <button
+            class="overlay-favorite-button"
+            :class="{ active: item.is_favorite }"
+            type="button"
+            :title="item.is_favorite ? '取消收藏' : '收藏'"
+            @click.stop="handleFavoriteToggle(item)"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="m12 3.75 2.55 5.17 5.7.83-4.13 4.03.98 5.67L12 16.78 6.9 19.45l.97-5.67-4.12-4.03 5.7-.83L12 3.75Z"
+                fill="currentColor"
+              />
+            </svg>
+          </button>
         </div>
       </main>
+
+      <div
+        v-if="hoveredPreview"
+        class="overlay-image-preview"
+        :style="hoveredPreviewStyle"
+      >
+        <div class="overlay-image-preview-header">{{ displayTitle(hoveredPreview) }}</div>
+        <div v-if="previewUnavailable" class="overlay-image-preview-empty">图片不可用</div>
+        <img
+          v-else
+          class="overlay-image-preview-image"
+          :src="hoveredPreview.preview_url"
+          :alt="displayTitle(hoveredPreview)"
+          @error="markPreviewFailed(hoveredPreview)"
+        >
+        <div class="overlay-image-preview-meta">{{ getClipboardSummaryText(hoveredPreview) || '图片条目' }}</div>
+      </div>
 
       <footer class="overlay-footer">
         <span class="overlay-status">{{ pinned ? 'PINNED' : 'LIVE' }}</span>
@@ -80,6 +127,17 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { useElectron } from '@/composables/useElectron'
 import '@/styles/clipboard-overlay.css'
+import {
+  OVERLAY_CLIPBOARD_FILTERS,
+  buildClipboardQueryParams,
+  enrichClipboardItems,
+  getClipboardDisplayTitle,
+  getClipboardSummaryText,
+  getClipboardTypeIcon,
+  getClipboardTypeLabel,
+  isClipboardImageItem,
+  revokeClipboardPreviewUrls
+} from '@/utils/clipboardPresentation'
 
 const props = defineProps({
   activation: {
@@ -97,11 +155,16 @@ const emit = defineEmits(['close', 'pin'])
 const { clipboard, onClipboardChanged, removeAllListeners } = useElectron()
 
 const query = ref('')
+const selectedFilter = ref('all')
 const items = ref([])
 const isLoading = ref(false)
 const selectedIndex = ref(0)
 const hasKeyboardSelection = ref(false)
 const searchInput = ref(null)
+const panelRef = ref(null)
+const hoveredPreview = ref(null)
+const hoveredPreviewStyle = ref({ top: '120px' })
+const failedPreviewIds = ref({})
 const settings = ref({
   clipboard_overlay_enter_behavior: 'copy_and_paste',
   clipboard_overlay_auto_focus_search: true,
@@ -116,27 +179,32 @@ const footerHint = computed(() => (
     ? 'Enter 复制 | Esc 关闭'
     : 'Enter 复制并回填 | Esc 关闭'
 ))
+const previewUnavailable = computed(() => {
+  if (!hoveredPreview.value) {
+    return false
+  }
+
+  return failedPreviewIds.value[hoveredPreview.value.id] === true
+})
 
 function typeLabel(type) {
-  const labels = {
-    text: '文本',
-    link: '链接',
-    code: '代码',
-    file: '文件',
-    image: '图片'
-  }
-  return labels[type] || '记录'
+  return getClipboardTypeLabel(type)
 }
 
 function iconFor(type) {
-  const icons = {
-    text: 'T',
-    link: 'L',
-    code: '</>',
-    file: 'F',
-    image: 'I'
+  return getClipboardTypeIcon(type)
+}
+
+function displayTitle(item) {
+  return getClipboardDisplayTitle(item)
+}
+
+function primaryText(item) {
+  if (isClipboardImageItem(item)) {
+    return displayTitle(item)
   }
-  return icons[type] || '.'
+
+  return getClipboardSummaryText(item) || '暂无摘要'
 }
 
 function relativeTime(isoString) {
@@ -177,16 +245,19 @@ async function loadItems() {
   isLoading.value = true
 
   try {
-    items.value = await api.getClipboardItems({
-      query: query.value.trim(),
-      limit: 30
-    })
+    revokeClipboardPreviewUrls(items.value)
+    const result = await api.getClipboardItems(
+      buildClipboardQueryParams(selectedFilter.value, query.value.trim(), 30)
+    )
+    items.value = await enrichClipboardItems(result)
     selectedIndex.value = Math.min(selectedIndex.value, Math.max(items.value.length - 1, 0))
     hasKeyboardSelection.value = false
+    clearHoveredPreview()
   } catch (error) {
     console.error('[ClipboardPanel] Failed to load items:', error)
     items.value = []
     selectedIndex.value = 0
+    clearHoveredPreview()
   } finally {
     isLoading.value = false
   }
@@ -205,6 +276,14 @@ async function refreshOverlay({ focusSearch: shouldFocusSearch = true } = {}) {
 
 async function copyItem(item) {
   if (!item) {
+    return
+  }
+
+  if (item.item_type === 'image' && item.metadata?.image_path) {
+    await clipboard.writeImage({
+      imagePath: item.metadata.image_path,
+      imageToken: item.content || ''
+    })
     return
   }
 
@@ -259,6 +338,60 @@ async function deleteActiveItem() {
   }
 }
 
+async function handleFavoriteToggle(item) {
+  if (!item?.id) {
+    return
+  }
+
+  try {
+    await api.updateClipboardItem(item.id, {
+      is_favorite: !item.is_favorite
+    })
+    await loadItems()
+  } catch (error) {
+    console.error('[ClipboardPanel] Failed to toggle favorite item:', error)
+  }
+}
+
+function handleItemMouseEnter(item, event) {
+  if (!isClipboardImageItem(item) || !item.preview_url) {
+    clearHoveredPreview()
+    return
+  }
+
+  const panelRect = panelRef.value?.getBoundingClientRect?.()
+  const itemRect = event.currentTarget?.getBoundingClientRect?.()
+  if (!panelRect || !itemRect) {
+    hoveredPreview.value = item
+    hoveredPreviewStyle.value = { top: '120px' }
+    return
+  }
+
+  const previewHeight = 242
+  const minTop = 108
+  const maxTop = Math.max(minTop, panelRect.height - previewHeight - 18)
+  const nextTop = Math.min(
+    Math.max(itemRect.top - panelRect.top - 12, minTop),
+    maxTop
+  )
+
+  hoveredPreview.value = item
+  hoveredPreviewStyle.value = {
+    top: `${nextTop}px`
+  }
+}
+
+function clearHoveredPreview() {
+  hoveredPreview.value = null
+}
+
+function markPreviewFailed(item) {
+  failedPreviewIds.value = {
+    ...failedPreviewIds.value,
+    [item.id]: true
+  }
+}
+
 function handleKeydown(event) {
   if (event.key === 'Escape') {
     event.preventDefault()
@@ -292,7 +425,7 @@ function handleKeydown(event) {
   }
 }
 
-watch(query, () => {
+watch([query, selectedFilter], () => {
   if (searchTimer) {
     clearTimeout(searchTimer)
   }
@@ -323,7 +456,9 @@ onUnmounted(() => {
     clearTimeout(searchTimer)
   }
 
+  clearHoveredPreview()
   window.removeEventListener('keydown', handleKeydown, true)
+  revokeClipboardPreviewUrls(items.value)
   removeAllListeners('clipboard:changed')
 })
 </script>

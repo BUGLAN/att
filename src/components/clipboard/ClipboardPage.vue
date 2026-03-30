@@ -4,7 +4,8 @@
       <div class="clipboard-hero-copy">
         <span class="clipboard-kicker">DIGITAL OBSIDIAN</span>
         <h1 class="clipboard-title">剪切板历史</h1>
-        <p class="clipboard-subtitle">琥珀黑曜石风格的剪切板记录中心，当前先支持文本导入与历史整理。</p>
+        <div class="clipboard-today-pill">今日记录 {{ stats.today }} 条</div>
+        <p class="clipboard-subtitle">琥珀黑曜石风格的剪切板记录中心，支持文本、图片、文件与链接的历史整理与悬停预览。</p>
       </div>
 
       <div class="clipboard-hero-stats">
@@ -49,12 +50,6 @@
         <button class="ghost-button" type="button" :disabled="isLoading" @click="refreshCurrentView">
           刷新
         </button>
-        <button class="ghost-button" :class="{ active: favoriteOnly }" type="button" @click="favoriteOnly = !favoriteOnly">
-          {{ favoriteOnly ? '仅看收藏中' : '筛选收藏' }}
-        </button>
-        <button class="primary-button" type="button" :disabled="isImporting" @click="handleImportCurrentClipboard">
-          {{ isImporting ? '导入中...' : '导入当前剪切板' }}
-        </button>
       </div>
     </section>
 
@@ -70,7 +65,7 @@
 
     <section v-else-if="!items.length" class="clipboard-empty">
       <strong>还没有剪切板记录</strong>
-      <p>先点击“导入当前剪切板”，把一条文本记录放进库里，再继续推进自动监听和悬浮窗。</p>
+      <p>当前还没有可展示的剪切板历史记录，等待系统监听产生新内容。</p>
     </section>
 
     <section v-else class="clipboard-grid">
@@ -93,6 +88,7 @@ import { useAppStore } from '@/stores/app'
 import { useClipboard } from '@/composables/useClipboard'
 import { useElectron } from '@/composables/useElectron'
 import ClipboardCard from '@/components/clipboard/ClipboardCard.vue'
+import { PAGE_CLIPBOARD_FILTERS } from '@/utils/clipboardPresentation'
 
 const appStore = useAppStore()
 const { onClipboardChanged, removeAllListeners } = useElectron()
@@ -100,9 +96,7 @@ const {
   items,
   stats,
   isLoading,
-  isImporting,
   refresh,
-  importCurrentClipboard,
   toggleFavorite,
   togglePin,
   removeItem,
@@ -111,15 +105,7 @@ const {
 
 const query = ref('')
 const selectedType = ref('all')
-const favoriteOnly = ref(false)
-
-const filters = [
-  { value: 'all', label: '全部内容' },
-  { value: 'text', label: '纯文本' },
-  { value: 'code', label: '长文本' },
-  { value: 'link', label: '链接' },
-  { value: 'file', label: '文件' }
-]
+const filters = PAGE_CLIPBOARD_FILTERS
 
 function debounce(fn, delay) {
   let timer = null
@@ -135,20 +121,12 @@ function buildFilters() {
   return {
     query: query.value,
     item_type: selectedType.value === 'all' ? undefined : selectedType.value,
-    favorite_only: favoriteOnly.value,
     limit: 120
   }
 }
 
 async function refreshCurrentView() {
   await refresh(buildFilters())
-}
-
-async function handleImportCurrentClipboard() {
-  const created = await importCurrentClipboard()
-  if (created) {
-    await refreshCurrentView()
-  }
 }
 
 async function handleCopy(item) {
@@ -190,7 +168,7 @@ async function handleTogglePin(item) {
 
 const debouncedRefresh = debounce(refreshCurrentView, 250)
 
-watch([query, selectedType, favoriteOnly], () => {
+watch([query, selectedType], () => {
   debouncedRefresh()
 })
 
@@ -248,6 +226,19 @@ onUnmounted(() => {
   color: var(--text-secondary);
   font-size: 0.98rem;
   line-height: 1.8;
+}
+
+.clipboard-today-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  margin-bottom: 14px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 197, 87, 0.14);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
 }
 
 .clipboard-hero-stats {
