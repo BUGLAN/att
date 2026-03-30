@@ -20,7 +20,8 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'src/index.html'),
         floating: resolve(__dirname, 'src/floating.html'),
-        clipboardOverlay: resolve(__dirname, 'src/clipboard-overlay.html')
+        clipboardOverlay: resolve(__dirname, 'src/clipboard-overlay.html'),
+        selectionToolbar: resolve(__dirname, 'src/selection-toolbar.html')
       },
       output: {
         manualChunks: {

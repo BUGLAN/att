@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   toggleClipboardOverlay: (payload) => ipcRenderer.send('clipboard-overlay:toggle', payload),
   toggleClipboardOverlayPinned: () => ipcRenderer.send('clipboard-overlay:toggle-pin'),
   startClipboardOverlayNativeDrag: (payload) => ipcRenderer.send('clipboard-overlay:start-native-drag', payload),
+  hideSelectionToolbar: () => ipcRenderer.send('selection-toolbar:hide'),
+  resizeSelectionToolbar: (payload) => ipcRenderer.send('selection-toolbar:resize', payload),
+  toggleSelectionToolbarPin: (payload) => ipcRenderer.invoke('selection-toolbar:toggle-pin', payload),
   debugLog: (scope, message, details) => ipcRenderer.send('debug:log', { scope, message, details }),
   openSettingsPage: () => ipcRenderer.send('main:open-settings'),
   onHotkeyToggle: (callback) => {
@@ -44,6 +47,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onClipboardChanged: (callback) => {
     ipcRenderer.on('clipboard:changed', (event, payload) => callback(payload))
+  },
+  onSelectionToolbarActivate: (callback) => {
+    ipcRenderer.on('selection-toolbar:activate', (event, payload) => callback(payload))
+  },
+  onSelectionToolbarPinnedChanged: (callback) => {
+    ipcRenderer.on('selection-toolbar:pinned-changed', (event, payload) => callback(payload))
   },
   removeAllListeners: (channel) => {
     ipcRenderer.removeAllListeners(channel)

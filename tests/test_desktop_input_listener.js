@@ -2,7 +2,8 @@ const assert = require('node:assert/strict')
 
 const {
   DesktopInputManager,
-  normalizeHotkey
+  normalizeHotkey,
+  normalizeSettings
 } = require('../electron/input/listener')
 
 async function testNormalizeHotkeyOrder() {
@@ -95,11 +96,85 @@ async function testToggleHotkeyRequiresFullChordAgainAfterPartialRelease() {
   assert.equal(toggles, 2)
 }
 
+async function testSelectionTriggerRequiresReasonableDrag() {
+  const triggers = []
+  const originalNow = Date.now
+  let now = 1000
+  Date.now = () => now
+
+  try {
+    const manager = new DesktopInputManager({
+      onSelectionTrigger: (payload) => {
+        triggers.push(payload)
+      }
+    })
+
+    manager.updateSettings({
+      selection_toolbar_enabled: true,
+      selection_toolbar_trigger_delay_ms: 220
+    })
+
+    manager.handleMousedown({ button: 1, x: 100, y: 100 })
+    now += 120
+    manager.handleMouseup({ button: 1, x: 126, y: 110 })
+
+    assert.equal(triggers.length, 1)
+    assert.equal(triggers[0].trigger, 'mouse_selection')
+  } finally {
+    Date.now = originalNow
+  }
+}
+
+async function testSelectionTriggerIgnoresShortAndOversizedDrag() {
+  const triggers = []
+  const originalNow = Date.now
+  let now = 1000
+  Date.now = () => now
+
+  try {
+    const manager = new DesktopInputManager({
+      onSelectionTrigger: (payload) => {
+        triggers.push(payload)
+      }
+    })
+
+    manager.updateSettings({
+      selection_toolbar_enabled: true,
+      selection_toolbar_trigger_delay_ms: 220
+    })
+
+    manager.handleMousedown({ button: 1, x: 100, y: 100 })
+    now += 20
+    manager.handleMouseup({ button: 1, x: 140, y: 100 })
+
+    manager.handleMousedown({ button: 1, x: 100, y: 100 })
+    now += 160
+    manager.handleMouseup({ button: 1, x: 1200, y: 120 })
+
+    assert.equal(triggers.length, 0)
+  } finally {
+    Date.now = originalNow
+  }
+}
+
+async function testNormalizeSettingsForcesSelectionClipboardFallbackForCurrentVersion() {
+  const settings = normalizeSettings({
+    selection_toolbar_enabled: true,
+    selection_toolbar_fallback_to_clipboard: false
+  })
+
+  assert.equal(settings.selection_toolbar_enabled, true)
+  assert.equal(settings.selection_toolbar_fallback_to_clipboard, true)
+}
+
 async function main() {
   await testNormalizeHotkeyOrder()
   await testToggleHotkeyTriggersOncePerPress()
   await testToggleHotkeyResetsAfterRelease()
   await testToggleHotkeyRequiresFullChordAgainAfterPartialRelease()
+  await testSelectionTriggerRequiresReasonableDrag()
+  await testSelectionTriggerIgnoresShortAndOversizedDrag()
+  await testNormalizeSettingsForcesSelectionClipboardFallbackForCurrentVersion()
   process.exit(0)
 }
 

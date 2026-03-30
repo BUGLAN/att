@@ -146,6 +146,33 @@ export const api = {
   getClipboardItem: (id) => request('GET', `/clipboard/items/${id}`),
   updateClipboardItem: (id, data) => request('PUT', `/clipboard/items/${id}`, { body: data }),
   deleteClipboardItem: (id) => request('DELETE', `/clipboard/items/${id}`),
+  async getWordbookEntries(params = {}) {
+    const searchParams = new URLSearchParams()
+
+    if (params.query) {
+      searchParams.set('query', params.query)
+    }
+    if (params.entry_type) {
+      searchParams.set('entry_type', params.entry_type)
+    }
+    if (params.favorite_only) {
+      searchParams.set('favorite_only', 'true')
+    }
+    if (params.limit) {
+      searchParams.set('limit', String(params.limit))
+    }
+
+    const query = searchParams.toString()
+    return request('GET', `/wordbook${query ? `?${query}` : ''}`)
+  },
+  getWordbookStats: () => request('GET', '/wordbook/stats'),
+  createWordbookEntry: (data) => request('POST', '/wordbook', { body: data }),
+  getWordbookEntry: (id) => request('GET', `/wordbook/${id}`),
+  updateWordbookEntry: (id, data) => request('PUT', `/wordbook/${id}`, { body: data }),
+  runAITranslate: (data) => request('POST', '/ai-actions/translate', { body: data }),
+  runAIExplain: (data) => request('POST', '/ai-actions/explain', { body: data }),
+  runAISummarize: (data) => request('POST', '/ai-actions/summarize', { body: data }),
+  runAIRewrite: (data) => request('POST', '/ai-actions/rewrite', { body: data }),
 
   async exportRecord(id, format = 'txt') {
     const baseUrl = await getBaseUrl()

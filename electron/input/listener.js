@@ -12,7 +12,10 @@ const DEFAULT_SETTINGS = {
   hotkey: DEFAULT_HOTKEY,
   clipboard_overlay_trigger: 'mouse_middle',
   clipboard_overlay_retrigger_action: 'toggle',
-  clipboard_overlay_auto_focus_search: true
+  clipboard_overlay_auto_focus_search: true,
+  selection_toolbar_enabled: true,
+  selection_toolbar_trigger_delay_ms: 220,
+  selection_toolbar_fallback_to_clipboard: true
 }
 
 const MODIFIER_LABELS = {
@@ -42,6 +45,9 @@ const MODIFIER_RAWCODES = {
 const LEFT_MOUSE_BUTTON = 1
 const RIGHT_MOUSE_BUTTON = 2
 const MIDDLE_MOUSE_BUTTON = 3
+const MIN_SELECTION_DRAG_DISTANCE_PX = 12
+const MAX_SELECTION_DRAG_DISTANCE_PX = 960
+const MIN_SELECTION_DRAG_DURATION_MS = 80
 
 function ensureIoHookLoaded() {
   if (ioHookLoadAttempted) {
@@ -105,7 +111,13 @@ function normalizeSettings(settings = {}) {
     hotkey: normalizeHotkey(settings.hotkey || DEFAULT_SETTINGS.hotkey),
     clipboard_overlay_trigger: settings.clipboard_overlay_trigger || DEFAULT_SETTINGS.clipboard_overlay_trigger,
     clipboard_overlay_retrigger_action: settings.clipboard_overlay_retrigger_action || DEFAULT_SETTINGS.clipboard_overlay_retrigger_action,
-    clipboard_overlay_auto_focus_search: settings.clipboard_overlay_auto_focus_search !== false
+    clipboard_overlay_auto_focus_search: settings.clipboard_overlay_auto_focus_search !== false,
+    selection_toolbar_enabled: settings.selection_toolbar_enabled !== false,
+    selection_toolbar_trigger_delay_ms: Number(settings.selection_toolbar_trigger_delay_ms) > 0
+      ? Number(settings.selection_toolbar_trigger_delay_ms)
+      : DEFAULT_SETTINGS.selection_toolbar_trigger_delay_ms,
+    // 当前版本仅实现了复制回退捕获，暂时强制开启该路径。
+    selection_toolbar_fallback_to_clipboard: true
   }
 }
 
@@ -113,6 +125,7 @@ class DesktopInputManager {
   constructor(options = {}) {
     this.onHotkeyToggle = options.onHotkeyToggle
     this.onClipboardTrigger = options.onClipboardTrigger
+    this.onSelectionTrigger = options.onSelectionTrigger
     this.onError = options.onError
     this.log = options.log || (() => {})
 
@@ -123,6 +136,11 @@ class DesktopInputManager {
     this.activeModifiers = new Set()
     this.activeKeys = new Set()
     this.activeMouseButtons = new Set()
+    this.selectionTracking = {
+      startPoint: null,
+      dragging: false,
+      startedAt: 0
+    }
 
     this.boundKeydown = this.handleKeydown.bind(this)
     this.boundKeyup = this.handleKeyup.bind(this)
@@ -192,6 +210,11 @@ class DesktopInputManager {
     this.activeModifiers.clear()
     this.activeKeys.clear()
     this.activeMouseButtons.clear()
+    this.selectionTracking = {
+      startPoint: null,
+      dragging: false,
+      startedAt: 0
+    }
     this.log('Desktop input manager stopped')
   }
 
@@ -232,6 +255,14 @@ class DesktopInputManager {
         this.activeMouseButtons.add(button)
       }
 
+      if (button === LEFT_MOUSE_BUTTON) {
+        this.selectionTracking = {
+          startPoint: this.resolvePoint(event),
+          dragging: false,
+          startedAt: Date.now()
+        }
+      }
+
       if (this.settings.clipboard_overlay_trigger === 'mouse_middle' && button === MIDDLE_MOUSE_BUTTON) {
         this.triggerClipboardOverlay()
         return
@@ -253,6 +284,13 @@ class DesktopInputManager {
 
   handleMouseup(event = {}) {
     const button = Number(event.button)
+    const point = this.resolvePoint(event)
+    const wasSelectionTrigger = (
+      button === LEFT_MOUSE_BUTTON &&
+      this.settings.selection_toolbar_enabled &&
+      this.didCompleteSelection(point)
+    )
+
     if (!Number.isNaN(button)) {
       this.activeMouseButtons.delete(button)
     }
@@ -262,6 +300,23 @@ class DesktopInputManager {
       (!this.activeMouseButtons.has(LEFT_MOUSE_BUTTON) || !this.activeMouseButtons.has(RIGHT_MOUSE_BUTTON))
     ) {
       this.clipboardChordTriggered = false
+    }
+
+    if (wasSelectionTrigger) {
+      this.onSelectionTrigger?.({
+        trigger: 'mouse_selection',
+        point,
+        delayMs: this.settings.selection_toolbar_trigger_delay_ms,
+        allowClipboardFallback: this.settings.selection_toolbar_fallback_to_clipboard !== false
+      })
+    }
+
+    if (button === LEFT_MOUSE_BUTTON) {
+      this.selectionTracking = {
+        startPoint: null,
+        dragging: false,
+        startedAt: 0
+      }
     }
   }
 
@@ -360,6 +415,35 @@ class DesktopInputManager {
     }
 
     return null
+  }
+
+  resolvePoint(event = {}) {
+    const x = Number(event.x)
+    const y = Number(event.y)
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      return { x, y }
+    }
+    return null
+  }
+
+  didCompleteSelection(currentPoint) {
+    const startPoint = this.selectionTracking.startPoint
+    if (!startPoint || !currentPoint) {
+      return false
+    }
+
+    const distanceX = Math.abs(currentPoint.x - startPoint.x)
+    const distanceY = Math.abs(currentPoint.y - startPoint.y)
+    const dragDistance = Math.max(distanceX, distanceY)
+    const dragDurationMs = this.selectionTracking.startedAt > 0
+      ? Math.max(0, Date.now() - this.selectionTracking.startedAt)
+      : 0
+
+    return (
+      dragDistance >= MIN_SELECTION_DRAG_DISTANCE_PX &&
+      dragDistance <= MAX_SELECTION_DRAG_DISTANCE_PX &&
+      dragDurationMs >= MIN_SELECTION_DRAG_DURATION_MS
+    )
   }
 }
 

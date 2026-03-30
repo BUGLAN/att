@@ -33,6 +33,10 @@
         <ClipboardPage />
       </div>
 
+      <div v-show="currentPage === 'wordbook'" class="container page-view">
+        <WordbookPage />
+      </div>
+
       <div v-show="currentPage === 'settings'" class="container page-view">
         <SettingsPage />
       </div>
@@ -62,6 +66,7 @@ import RecordsSection from '@/components/home/RecordsSection.vue'
 import ClipboardPage from '@/components/clipboard/ClipboardPage.vue'
 import RecordsLibraryPage from '@/components/records/RecordsLibraryPage.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
+import WordbookPage from '@/components/wordbook/WordbookPage.vue'
 
 import RecordEditModal from '@/components/modals/RecordEditModal.vue'
 import PresetModal from '@/components/modals/PresetModal.vue'

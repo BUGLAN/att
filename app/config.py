@@ -199,6 +199,11 @@ class UserSettings:
         "clipboard_overlay_enter_behavior": "copy_and_paste",
         "clipboard_overlay_auto_focus_search": True,
         "clipboard_overlay_close_on_click_copy": True,
+        "selection_toolbar_enabled": True,
+        "selection_toolbar_auto_add_to_wordbook": True,
+        "selection_toolbar_show_examples": True,
+        "selection_toolbar_trigger_delay_ms": 220,
+        "selection_toolbar_fallback_to_clipboard": True,
         # Recording mode settings
         "recording_mode": "single",     # single / multi / streaming
         "silence_threshold": 1.5,       # 静音阈值（秒）

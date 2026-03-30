@@ -9,13 +9,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from app.ai_actions.routes import init_ai_action_service
+from app.ai_actions.service import AIActionService
 from app.api.routes import close_streaming_session_manager, init_processors
 from app.audio.processor import AudioProcessor
 from app.clipboard.manager import ClipboardManager
 from app.clipboard.routes import init_clipboard_manager
 from app.config import settings
+from app.llm.gateway import get_gateway
 from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
+from app.wordbook.manager import WordbookManager
+from app.wordbook.routes import init_wordbook_manager
 from app.services.model_service_manager import model_service_manager
 from app.services.qwen_streaming_service_manager import qwen_streaming_service_manager
 from app.stt.factory import create_asr_provider, get_asr_provider_config
@@ -69,12 +74,17 @@ async def lifespan(app: FastAPI):
     optimizer = TextOptimizer()
     record_manager = RecordManager(settings.data_path)
     clipboard_manager = ClipboardManager(settings.data_path)
+    wordbook_manager = WordbookManager(settings.data_path)
+    ai_action_service = AIActionService(get_gateway(), wordbook_manager)
 
     await record_manager.initialize()
     await clipboard_manager.initialize()
+    await wordbook_manager.initialize()
 
     init_processors(audio_processor, asr_provider, optimizer, record_manager)
     init_clipboard_manager(clipboard_manager)
+    init_wordbook_manager(wordbook_manager)
+    init_ai_action_service(ai_action_service)
     model_service_manager.configure(asr_provider)
 
     await maybe_preload_asr_provider(asr_provider)
@@ -122,10 +132,14 @@ app.add_middleware(
 )
 
 from app.api.routes import router as api_router
+from app.ai_actions.routes import router as ai_action_router
 from app.clipboard.routes import router as clipboard_router
+from app.wordbook.routes import router as wordbook_router
 
 app.include_router(api_router)
+app.include_router(ai_action_router)
 app.include_router(clipboard_router)
+app.include_router(wordbook_router)
 
 project_root = Path(__file__).parent.parent
 dist_dir = project_root / "dist"

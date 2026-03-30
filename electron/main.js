@@ -6,6 +6,7 @@ const { DesktopAudioController } = require('./audio/controller')
 const { TrayManager } = require('./tray/index')
 const { FloatingWindowManager } = require('./floatingWindow')
 const { ClipboardOverlayManager } = require('./clipboardOverlay')
+const { SelectionToolbarManager } = require('./selectionToolbar')
 const { ClipboardMonitor } = require('./clipboardMonitor')
 const { logElectronOverlay, electronOverlayLogFile } = require('./logger')
 const { DesktopInputManager, normalizeSettings } = require('./input/listener')
@@ -17,14 +18,17 @@ let trayManager = null
 let audioController = null
 let floatingWindowManager = null
 let clipboardOverlayManager = null
+let selectionToolbarManager = null
 let clipboardMonitor = null
 let inputManager = null
 let isQuitting = false
+let pendingSelectionToolbarTimer = null
 let lastClipboardOverlayCommand = {
   channel: null,
   timestamp: 0
 }
 const pasteHelperPath = path.join(__dirname, 'python', 'paste_helper.py')
+const selectionCaptureHelperPath = path.join(__dirname, 'python', 'selection_capture_helper.py')
 
 const isDev = isDevelopmentRuntime()
 const CLIPBOARD_OVERLAY_COMMAND_DEDUP_MS = 180
@@ -176,6 +180,74 @@ function handleClipboardOverlayTrigger(payload = {}) {
   })
 }
 
+function captureSelectedText() {
+  return new Promise((resolve) => {
+    const pythonPath = pythonManager?.getPythonPath?.()
+    if (!pythonPath) {
+      resolve({ success: false, error: 'Python runtime unavailable' })
+      return
+    }
+
+    execFile(
+      pythonPath,
+      [selectionCaptureHelperPath],
+      { cwd: path.join(__dirname, '..') },
+      (error, stdout, stderr) => {
+        const output = (stdout || '').trim()
+        if (output) {
+          try {
+            const parsed = JSON.parse(output)
+            if (error && parsed.success !== false) {
+              resolve({
+                ...parsed,
+                success: false,
+                error: stderr?.trim() || error.message
+              })
+              return
+            }
+            resolve(parsed)
+            return
+          } catch (parseError) {
+            // Fall through to generic error handling.
+          }
+        }
+
+        resolve({
+          success: false,
+          error: (stderr || '').trim() || error?.message || 'Selection capture helper returned no output'
+        })
+      }
+    )
+  })
+}
+
+function scheduleSelectionToolbar(payload = {}) {
+  const delayMs = Number(payload.delayMs) > 0 ? Number(payload.delayMs) : 0
+
+  if (pendingSelectionToolbarTimer) {
+    clearTimeout(pendingSelectionToolbarTimer)
+    pendingSelectionToolbarTimer = null
+  }
+
+  pendingSelectionToolbarTimer = setTimeout(async () => {
+    pendingSelectionToolbarTimer = null
+    const captureResult = await captureSelectedText()
+    if (!captureResult?.success || !captureResult?.text) {
+      logElectronOverlay('main', 'Selection capture failed', {
+        payload,
+        captureResult
+      })
+      return
+    }
+
+    selectionToolbarManager?.showAtSelection({
+      text: captureResult.text,
+      point: payload.point || null,
+      trigger: payload.trigger || 'selection'
+    })
+  }, delayMs)
+}
+
 async function initializeDesktopInput(port) {
   const settings = await loadDesktopInputSettings(port)
   inputManager = new DesktopInputManager({
@@ -186,6 +258,10 @@ async function initializeDesktopInput(port) {
     onClipboardTrigger: (payload) => {
       logElectronOverlay('main', 'Desktop clipboard trigger', payload)
       handleClipboardOverlayTrigger(payload)
+    },
+    onSelectionTrigger: (payload) => {
+      logElectronOverlay('main', 'Desktop selection trigger', payload)
+      scheduleSelectionToolbar(payload)
     },
     onError: (error) => {
       logElectronOverlay('main', 'Desktop input error', {
@@ -429,6 +505,25 @@ function setupIPC() {
     clipboardOverlayManager?.startNativeDrag(event.sender, payload)
   })
 
+  ipcMain.on('selection-toolbar:hide', () => {
+    selectionToolbarManager?.hide()
+  })
+
+  ipcMain.on('selection-toolbar:backdrop-pointer-down', (event, payload = {}) => {
+    selectionToolbarManager?.handleBackdropPointerDown(payload)
+  })
+
+  ipcMain.on('selection-toolbar:resize', (event, payload = {}) => {
+    selectionToolbarManager?.resizeToContent(payload.height)
+  })
+
+  ipcMain.handle('selection-toolbar:toggle-pin', (event, payload = {}) => {
+    return {
+      success: true,
+      pinned: selectionToolbarManager?.togglePinned(payload.pinned) === true
+    }
+  })
+
   ipcMain.on('debug:log', (event, payload = {}) => {
     logElectronOverlay(
       payload.scope || 'renderer',
@@ -456,6 +551,7 @@ app.whenReady().then(async () => {
     floatingWindowManager = new FloatingWindowManager()
     floatingWindowManager.preload()
     clipboardOverlayManager = new ClipboardOverlayManager()
+    selectionToolbarManager = new SelectionToolbarManager()
     clipboardMonitor = new ClipboardMonitor({
       getBackendPort: () => pythonManager?.port,
       onCaptured: (payload) => {
@@ -486,17 +582,27 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   logElectronOverlay('main', 'before-quit received')
   isQuitting = true
+  if (pendingSelectionToolbarTimer) {
+    clearTimeout(pendingSelectionToolbarTimer)
+    pendingSelectionToolbarTimer = null
+  }
   trayManager?.destroy()
   floatingWindowManager?.destroy()
   clipboardOverlayManager?.destroy()
+  selectionToolbarManager?.destroy()
   clipboardMonitor?.stop()
 })
 
 app.on('will-quit', () => {
   logElectronOverlay('main', 'will-quit received')
+  if (pendingSelectionToolbarTimer) {
+    clearTimeout(pendingSelectionToolbarTimer)
+    pendingSelectionToolbarTimer = null
+  }
   inputManager?.stop()
   floatingWindowManager?.destroy()
   clipboardOverlayManager?.destroy()
+  selectionToolbarManager?.destroy()
   clipboardMonitor?.stop()
   pythonManager?.stop()
 })

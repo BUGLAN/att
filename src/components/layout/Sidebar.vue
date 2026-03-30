@@ -43,6 +43,15 @@
         </span>
         <span v-if="!collapsed" class="nav-text">剪切板</span>
       </button>
+      <button class="nav-item" :class="{ active: currentPage === 'wordbook' }" type="button" @click="navigateTo('wordbook')">
+        <span class="nav-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M6.5 4.5h8.75A2.75 2.75 0 0 1 18 7.25v11.25l-4-2.2-4 2.2V7.25A2.75 2.75 0 0 1 12.75 4.5Z" />
+            <path d="M6.5 6H5.75A2.25 2.25 0 0 0 3.5 8.25v10.25L8 16" />
+          </svg>
+        </span>
+        <span v-if="!collapsed" class="nav-text">生词本</span>
+      </button>
       <button class="nav-item" :class="{ active: currentPage === 'settings' }" type="button" @click="navigateTo('settings')">
         <span class="nav-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">

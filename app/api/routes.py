@@ -735,6 +735,11 @@ async def update_settings(updates: dict) -> dict:
         "clipboard_overlay_trigger", "clipboard_overlay_retrigger_action",
         "clipboard_overlay_enter_behavior", "clipboard_overlay_auto_focus_search",
         "clipboard_overlay_close_on_click_copy",
+        "selection_toolbar_enabled",
+        "selection_toolbar_auto_add_to_wordbook",
+        "selection_toolbar_show_examples",
+        "selection_toolbar_trigger_delay_ms",
+        "selection_toolbar_fallback_to_clipboard",
         # Recording mode settings
         "recording_mode", "silence_threshold", "silence_level",
         # Prompt preset settings

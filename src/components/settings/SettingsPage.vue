@@ -303,6 +303,62 @@
           </div>
         </div>
 
+        <div class="settings-group">
+          <h3 class="settings-group-title">AI 动作中心</h3>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">启用划词动作中心</span>
+              <span class="setting-desc">在桌面选中文本后尝试弹出轻工具条，作为翻译和解释等 AI 动作入口。</span>
+            </div>
+            <label class="toggle-switch">
+              <input v-model="form.selection_toolbar_enabled" type="checkbox">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">自动加入生词本</span>
+              <span class="setting-desc">翻译动作完成后自动写入生词本，减少手动收藏操作。</span>
+            </div>
+            <label class="toggle-switch">
+              <input v-model="form.selection_toolbar_auto_add_to_wordbook" type="checkbox">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">展示例句</span>
+              <span class="setting-desc">翻译结果卡片优先展示主释义，并按该开关决定是否继续显示例句。</span>
+            </div>
+            <label class="toggle-switch">
+              <input v-model="form.selection_toolbar_show_examples" type="checkbox">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">触发延迟</span>
+              <span class="setting-desc">用户结束选择后等待多少毫秒再尝试弹出工具条，避免误触。</span>
+            </div>
+            <input v-model.number="form.selection_toolbar_trigger_delay_ms" class="setting-input" type="number" min="80" max="1000" step="20">
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">失败回退到剪贴板</span>
+              <span class="setting-desc">当前版本仅支持复制回退捕获，暂时固定开启；等直接读取选区接入后再开放关闭。</span>
+            </div>
+            <label class="toggle-switch">
+              <input v-model="form.selection_toolbar_fallback_to_clipboard" type="checkbox" disabled>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
       <div class="settings-group">
         <h3 class="settings-group-title">LLM 配置</h3>
 
@@ -494,6 +550,11 @@ function normalizeSettings(value = {}) {
     clipboard_overlay_enter_behavior: value.clipboard_overlay_enter_behavior || 'copy_and_paste',
     clipboard_overlay_auto_focus_search: value.clipboard_overlay_auto_focus_search ?? true,
     clipboard_overlay_close_on_click_copy: value.clipboard_overlay_close_on_click_copy ?? false,
+    selection_toolbar_enabled: value.selection_toolbar_enabled ?? true,
+    selection_toolbar_auto_add_to_wordbook: value.selection_toolbar_auto_add_to_wordbook ?? true,
+    selection_toolbar_show_examples: value.selection_toolbar_show_examples ?? true,
+    selection_toolbar_trigger_delay_ms: value.selection_toolbar_trigger_delay_ms ?? 220,
+    selection_toolbar_fallback_to_clipboard: true,
     recording_mode: value.recording_mode || 'single',
     silence_threshold: value.silence_threshold ?? 1.5,
     silence_level: value.silence_level ?? -40
@@ -525,6 +586,11 @@ function buildSettingsPayload() {
     clipboard_overlay_enter_behavior: form.value.clipboard_overlay_enter_behavior,
     clipboard_overlay_auto_focus_search: form.value.clipboard_overlay_auto_focus_search,
     clipboard_overlay_close_on_click_copy: form.value.clipboard_overlay_close_on_click_copy,
+    selection_toolbar_enabled: form.value.selection_toolbar_enabled,
+    selection_toolbar_auto_add_to_wordbook: form.value.selection_toolbar_auto_add_to_wordbook,
+    selection_toolbar_show_examples: form.value.selection_toolbar_show_examples,
+    selection_toolbar_trigger_delay_ms: form.value.selection_toolbar_trigger_delay_ms,
+    selection_toolbar_fallback_to_clipboard: true,
     recording_mode: form.value.recording_mode,
     silence_threshold: form.value.silence_threshold,
     silence_level: form.value.silence_level
@@ -655,7 +721,10 @@ async function handleSave() {
       hotkey: payload.hotkey,
       clipboard_overlay_trigger: payload.clipboard_overlay_trigger,
       clipboard_overlay_retrigger_action: payload.clipboard_overlay_retrigger_action,
-      clipboard_overlay_auto_focus_search: payload.clipboard_overlay_auto_focus_search
+      clipboard_overlay_auto_focus_search: payload.clipboard_overlay_auto_focus_search,
+      selection_toolbar_enabled: payload.selection_toolbar_enabled,
+      selection_toolbar_trigger_delay_ms: payload.selection_toolbar_trigger_delay_ms,
+      selection_toolbar_fallback_to_clipboard: payload.selection_toolbar_fallback_to_clipboard
     })
     if (inputSyncResult?.success === false) {
       throw new Error(inputSyncResult.error || '桌面输入同步失败')
