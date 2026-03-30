@@ -106,6 +106,7 @@ export function useClipboard() {
     isLoading,
     isImporting,
     refresh,
+    refreshStats: loadStats,
     importCurrentClipboard,
     toggleFavorite,
     togglePin,

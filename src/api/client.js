@@ -134,6 +134,9 @@ export const api = {
     if (params.favorite_only) {
       searchParams.set('favorite_only', 'true')
     }
+    if (params.pinned_only) {
+      searchParams.set('pinned_only', 'true')
+    }
     if (params.limit) {
       searchParams.set('limit', String(params.limit))
     }

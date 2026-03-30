@@ -45,6 +45,7 @@ async def list_clipboard_items(
     query: Optional[str] = None,
     item_type: Optional[str] = Query(default=None, pattern="^(text|link|code|file|image)?$"),
     favorite_only: bool = False,
+    pinned_only: bool = False,
     limit: int = Query(default=100, ge=1, le=500)
 ) -> List[dict]:
     """List clipboard items with optional filters."""
@@ -53,6 +54,7 @@ async def list_clipboard_items(
         query=query,
         item_type=resolved_type,
         favorite_only=favorite_only,
+        pinned_only=pinned_only,
         limit=limit
     )
     return [item.to_dict() for item in items]

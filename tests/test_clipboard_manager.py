@@ -80,3 +80,33 @@ def test_clipboard_manager_resolves_image_items():
             shutil.rmtree(test_root, ignore_errors=True)
 
     asyncio.run(run_test())
+
+
+def test_clipboard_manager_supports_pinned_filter():
+    async def run_test():
+        test_root = Path(__file__).resolve().parent.parent / 'data' / 'test-clipboard' / str(uuid.uuid4())
+        test_root.mkdir(parents=True, exist_ok=True)
+
+        try:
+            manager = ClipboardManager(test_root)
+            await manager.initialize()
+
+            pinned_item = await manager.create_item(
+                content='pinned text',
+                source='test'
+            )
+            normal_item = await manager.create_item(
+                content='normal text',
+                source='test'
+            )
+
+            await manager.update_item(pinned_item.id, is_pinned=True)
+
+            pinned_items = await manager.list_items(pinned_only=True)
+            assert len(pinned_items) == 1
+            assert pinned_items[0].id == pinned_item.id
+            assert pinned_items[0].id != normal_item.id
+        finally:
+            shutil.rmtree(test_root, ignore_errors=True)
+
+    asyncio.run(run_test())

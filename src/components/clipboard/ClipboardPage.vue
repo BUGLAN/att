@@ -33,19 +33,6 @@
         >
       </div>
 
-      <div class="clipboard-filters">
-        <button
-          v-for="filter in filters"
-          :key="filter.value"
-          class="filter-button"
-          :class="{ active: selectedType === filter.value }"
-          type="button"
-          @click="selectedType = filter.value"
-        >
-          {{ filter.label }}
-        </button>
-      </div>
-
       <div class="clipboard-actions">
         <button class="ghost-button" type="button" :disabled="isLoading" @click="refreshCurrentView">
           刷新
@@ -54,9 +41,40 @@
     </section>
 
     <section class="clipboard-summary-row">
-      <div class="summary-pill">今天 {{ stats.today }} 条记录</div>
-      <div class="summary-pill muted">收藏 {{ stats.favorites }}</div>
-      <div class="summary-pill muted">置顶 {{ stats.pinned }}</div>
+      <button
+        class="summary-pill summary-button"
+        :class="{ muted: activeQuickFilter !== 'all', active: activeQuickFilter === 'all' }"
+        type="button"
+        @click="resetAllFilters"
+      >
+        今天 {{ stats.today }} 条记录
+      </button>
+      <button
+        class="summary-pill summary-button"
+        :class="{ muted: activeQuickFilter !== 'favorite', active: activeQuickFilter === 'favorite' }"
+        type="button"
+        @click="setQuickFilter('favorite')"
+      >
+        收藏 {{ stats.favorites }}
+      </button>
+      <button
+        class="summary-pill summary-button"
+        :class="{ muted: activeQuickFilter !== 'pinned', active: activeQuickFilter === 'pinned' }"
+        type="button"
+        @click="setQuickFilter('pinned')"
+      >
+        置顶 {{ stats.pinned }}
+      </button>
+      <button
+        v-for="filter in visibleTypeFilters"
+        :key="filter.value"
+        class="summary-pill summary-button"
+        :class="{ muted: activeQuickFilter !== filter.value, active: activeQuickFilter === filter.value }"
+        type="button"
+        @click="setQuickFilter(filter.value)"
+      >
+        {{ filter.label }}
+      </button>
     </section>
 
     <section v-if="isLoading" class="clipboard-empty">
@@ -73,6 +91,7 @@
         v-for="item in items"
         :key="item.id"
         :item="item"
+        :item-action-state="getItemActionState(item.id)"
         @copy="handleCopy"
         @delete="handleDelete"
         @toggle-favorite="handleToggleFavorite"
@@ -89,6 +108,7 @@ import { useClipboard } from '@/composables/useClipboard'
 import { useElectron } from '@/composables/useElectron'
 import ClipboardCard from '@/components/clipboard/ClipboardCard.vue'
 import { PAGE_CLIPBOARD_FILTERS } from '@/utils/clipboardPresentation'
+import { buildClipboardTogglePatch, patchClipboardItems } from '@/utils/clipboardCardActions.mjs'
 
 const appStore = useAppStore()
 const { onClipboardChanged, removeAllListeners } = useElectron()
@@ -97,6 +117,7 @@ const {
   stats,
   isLoading,
   refresh,
+  refreshStats,
   toggleFavorite,
   togglePin,
   removeItem,
@@ -104,8 +125,10 @@ const {
 } = useClipboard()
 
 const query = ref('')
-const selectedType = ref('all')
+const activeQuickFilter = ref('all')
 const filters = PAGE_CLIPBOARD_FILTERS
+const itemActionState = ref({})
+const visibleTypeFilters = filters.filter((filter) => filter.value !== 'all')
 
 function debounce(fn, delay) {
   let timer = null
@@ -120,9 +143,21 @@ function debounce(fn, delay) {
 function buildFilters() {
   return {
     query: query.value,
-    item_type: selectedType.value === 'all' ? undefined : selectedType.value,
+    item_type: ['text', 'image', 'file', 'link', 'code'].includes(activeQuickFilter.value)
+      ? activeQuickFilter.value
+      : undefined,
+    favorite_only: activeQuickFilter.value === 'favorite',
+    pinned_only: activeQuickFilter.value === 'pinned',
     limit: 120
   }
+}
+
+function setQuickFilter(filterValue) {
+  activeQuickFilter.value = filterValue
+}
+
+function resetAllFilters() {
+  activeQuickFilter.value = 'all'
 }
 
 async function refreshCurrentView() {
@@ -144,31 +179,72 @@ async function handleDelete(item) {
   }
 }
 
+function getItemActionState(itemId) {
+  return itemActionState.value[itemId] || {
+    favorite: false,
+    pin: false
+  }
+}
+
+function setItemActionState(itemId, actionKey, isBusy) {
+  itemActionState.value = {
+    ...itemActionState.value,
+    [itemId]: {
+      ...getItemActionState(itemId),
+      [actionKey]: isBusy
+    }
+  }
+}
+
 async function handleToggleFavorite(item) {
+  if (getItemActionState(item.id).favorite) {
+    return
+  }
+
+  const previousItems = items.value
+  items.value = patchClipboardItems(items.value, buildClipboardTogglePatch(item, 'is_favorite'))
+  setItemActionState(item.id, 'favorite', true)
+
   try {
-    await toggleFavorite(item)
-    await refreshCurrentView()
-    appStore.showToast(item.is_favorite ? '已取消收藏' : '已加入收藏')
+    const updatedItem = await toggleFavorite(item)
+    items.value = patchClipboardItems(items.value, updatedItem)
+    await refreshStats()
+    appStore.showToast(updatedItem.is_favorite ? '已加入收藏' : '已取消收藏')
   } catch (error) {
+    items.value = previousItems
     console.error('[Clipboard] Failed to toggle favorite:', error)
     appStore.showToast('更新收藏状态失败')
+  } finally {
+    setItemActionState(item.id, 'favorite', false)
   }
 }
 
 async function handleTogglePin(item) {
+  if (getItemActionState(item.id).pin) {
+    return
+  }
+
+  const previousItems = items.value
+  items.value = patchClipboardItems(items.value, buildClipboardTogglePatch(item, 'is_pinned'))
+  setItemActionState(item.id, 'pin', true)
+
   try {
-    await togglePin(item)
-    await refreshCurrentView()
-    appStore.showToast(item.is_pinned ? '已取消置顶' : '已置顶该记录')
+    const updatedItem = await togglePin(item)
+    items.value = patchClipboardItems(items.value, updatedItem)
+    await refreshStats()
+    appStore.showToast(updatedItem.is_pinned ? '已置顶该记录' : '已取消置顶')
   } catch (error) {
+    items.value = previousItems
     console.error('[Clipboard] Failed to toggle pin:', error)
     appStore.showToast('更新置顶状态失败')
+  } finally {
+    setItemActionState(item.id, 'pin', false)
   }
 }
 
 const debouncedRefresh = debounce(refreshCurrentView, 250)
 
-watch([query, selectedType], () => {
+watch([query, activeQuickFilter], () => {
   debouncedRefresh()
 })
 
@@ -271,7 +347,7 @@ onUnmounted(() => {
 
 .clipboard-toolbar {
   display: grid;
-  grid-template-columns: minmax(240px, 1.1fr) minmax(280px, 1fr) auto;
+  grid-template-columns: minmax(240px, 1fr) auto;
   gap: 16px;
   align-items: center;
   margin-bottom: 18px;
@@ -314,13 +390,6 @@ onUnmounted(() => {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-}
-
-.clipboard-filters {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: nowrap;
 }
 
 .filter-button,
@@ -372,6 +441,7 @@ onUnmounted(() => {
 
 .clipboard-summary-row {
   margin-bottom: 22px;
+  row-gap: 12px;
 }
 
 .summary-pill {
@@ -386,9 +456,21 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+.summary-button {
+  border: none;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
 .summary-pill.muted {
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-secondary);
+}
+
+.summary-button:hover,
+.summary-button.active {
+  background: rgba(255, 197, 87, 0.16);
+  color: var(--accent);
 }
 
 .clipboard-grid {

@@ -202,6 +202,7 @@ class ClipboardManager:
         query: Optional[str] = None,
         item_type: Optional[ClipboardItemType] = None,
         favorite_only: bool = False,
+        pinned_only: bool = False,
         limit: int = 100
     ) -> List[ClipboardItem]:
         items: List[ClipboardItem] = []
@@ -217,6 +218,8 @@ class ClipboardManager:
 
         def matches(item: ClipboardItem) -> bool:
             if favorite_only and not item.is_favorite:
+                return False
+            if pinned_only and not item.is_pinned:
                 return False
             if item_type and item.item_type != item_type:
                 return False

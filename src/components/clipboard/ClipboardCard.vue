@@ -2,47 +2,39 @@
   <article
     class="clipboard-card"
     :class="[{ pinned: item.is_pinned, 'image-card': isImageItem }]"
-    draggable="false"
-    @dragstart="handleDragStart"
     @mouseenter="handlePreviewHover"
   >
+    <div class="clipboard-card-action-bar">
+      <button
+        class="icon-button"
+        :class="{ active: item.is_pinned }"
+        :disabled="itemActionState.pin"
+        type="button"
+        :title="item.is_pinned ? '取消置顶' : '置顶'"
+        @click.stop="emit('toggle-pin', item)"
+      >
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M8.5 4.5h7l-1 5 3 3v1h-4v5l-1.5 1.5-1.5-1.5v-5h-4v-1l3-3-1-5Z" />
+        </svg>
+      </button>
+      <button
+        class="icon-button"
+        :class="{ active: item.is_favorite }"
+        :disabled="itemActionState.favorite"
+        type="button"
+        :title="item.is_favorite ? '取消收藏' : '收藏'"
+        @click.stop="emit('toggle-favorite', item)"
+      >
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="m12 3.75 2.55 5.17 5.7.83-4.13 4.03.98 5.67L12 16.78 6.9 19.45l.97-5.67-4.12-4.03 5.7-.83L12 3.75Z" />
+        </svg>
+      </button>
+    </div>
+
     <div class="clipboard-card-top">
       <div class="clipboard-card-meta">
         <span class="clipboard-chip">{{ typeLabel }}</span>
         <span class="clipboard-time">{{ relativeTime }}</span>
-      </div>
-
-      <div class="clipboard-card-flags">
-        <button
-          class="icon-button"
-          :class="{ active: item.is_pinned }"
-          draggable="false"
-          type="button"
-          :title="item.is_pinned ? '取消置顶' : '置顶'"
-          @pointerdown.stop
-          @mousedown.stop
-          @click.prevent.stop="emit('toggle-pin', item)"
-          @dragstart.prevent
-        >
-          <svg viewBox="0 0 24 24" fill="none">
-            <path d="M8.5 4.5h7l-1 5 3 3v1h-4v5l-1.5 1.5-1.5-1.5v-5h-4v-1l3-3-1-5Z" />
-          </svg>
-        </button>
-        <button
-          class="icon-button"
-          :class="{ active: item.is_favorite }"
-          draggable="false"
-          type="button"
-          :title="item.is_favorite ? '取消收藏' : '收藏'"
-          @pointerdown.stop
-          @mousedown.stop
-          @click.prevent.stop="emit('toggle-favorite', item)"
-          @dragstart.prevent
-        >
-          <svg viewBox="0 0 24 24" fill="none">
-            <path d="m12 3.75 2.55 5.17 5.7.83-4.13 4.03.98 5.67L12 16.78 6.9 19.45l.97-5.67-4.12-4.03 5.7-.83L12 3.75Z" />
-          </svg>
-        </button>
       </div>
     </div>
 
@@ -72,8 +64,8 @@
     <footer class="clipboard-card-footer">
       <span class="clipboard-size">{{ sizeLabel }}</span>
       <div class="clipboard-card-actions">
-        <button class="text-button" draggable="false" type="button" @pointerdown.stop @mousedown.stop @click.prevent.stop="emit('copy', item)" @dragstart.prevent>复制</button>
-        <button class="text-button danger" draggable="false" type="button" @pointerdown.stop @mousedown.stop @click.prevent.stop="emit('delete', item)" @dragstart.prevent>删除</button>
+        <button class="text-button" type="button" @click.stop="emit('copy', item)">复制</button>
+        <button class="text-button danger" type="button" @click.stop="emit('delete', item)">删除</button>
       </div>
     </footer>
   </article>
@@ -93,6 +85,13 @@ const props = defineProps({
   item: {
     type: Object,
     required: true
+  },
+  itemActionState: {
+    type: Object,
+    default: () => ({
+      favorite: false,
+      pin: false
+    })
   }
 })
 
@@ -172,20 +171,6 @@ const relativeTime = computed(() => {
   })
 })
 
-function handleDragStart(event) {
-  if (!props.item?.content || isImageItem.value) {
-    event.preventDefault()
-    return
-  }
-
-  event.dataTransfer.effectAllowed = 'copy'
-  event.dataTransfer.setData('text/plain', props.item.content)
-
-  if (props.item.item_type === 'link') {
-    event.dataTransfer.setData('text/uri-list', props.item.content)
-  }
-}
-
 async function handlePreviewHover() {
   if (!isImageItem.value || previewRequested.value || resolvedPreviewUrl.value) {
     return
@@ -193,6 +178,7 @@ async function handlePreviewHover() {
 
   previewRequested.value = true
   previewLoading.value = true
+  previewFailed.value = false
 
   try {
     const sourceUrl = await api.getClipboardItemImageUrl(
@@ -209,6 +195,7 @@ async function handlePreviewHover() {
   } catch (error) {
     console.error('[ClipboardCard] Failed to resolve image preview URL:', error)
     previewFailed.value = true
+    previewRequested.value = false
   } finally {
     previewLoading.value = false
   }
@@ -260,6 +247,16 @@ function blobToDataUrl(blob) {
   pointer-events: none;
 }
 
+.clipboard-card-action-bar {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 30;
+}
+
 .clipboard-card:hover {
   transform: translateY(-3px);
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.36);
@@ -286,8 +283,11 @@ function blobToDataUrl(blob) {
   z-index: 5;
 }
 
+.clipboard-card-top {
+  padding-right: 92px;
+}
+
 .clipboard-card-meta,
-.clipboard-card-flags,
 .clipboard-card-actions {
   display: flex;
   align-items: center;
@@ -362,7 +362,10 @@ function blobToDataUrl(blob) {
 
 .clipboard-card-image-hover {
   position: absolute;
-  inset: 16px;
+  top: 64px;
+  right: 16px;
+  bottom: 16px;
+  left: 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -374,7 +377,8 @@ function blobToDataUrl(blob) {
   pointer-events: none;
   transform: translateY(8px);
   transition: opacity var(--transition-fast), transform var(--transition-fast);
-  z-index: 20;
+  z-index: 12;
+  overflow: hidden;
 }
 
 .clipboard-card:hover .clipboard-card-image-hover {
@@ -399,9 +403,10 @@ function blobToDataUrl(blob) {
 }
 
 .clipboard-card-image {
+  flex: 1 1 auto;
   width: 100%;
-  height: 100%;
-  min-height: 180px;
+  min-height: 0;
+  max-height: 100%;
   object-fit: contain;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.04);
@@ -425,16 +430,18 @@ function blobToDataUrl(blob) {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-muted);
-  position: relative;
-  z-index: 6;
-  pointer-events: auto;
-  -webkit-user-drag: none;
 }
 
 .icon-button:hover,
 .icon-button.active {
   background: rgba(255, 197, 87, 0.12);
   color: var(--accent);
+}
+
+.icon-button:disabled,
+.text-button:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 .icon-button svg {
@@ -452,10 +459,6 @@ function blobToDataUrl(blob) {
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-secondary);
   font-size: 0.78rem;
-  position: relative;
-  z-index: 6;
-  pointer-events: auto;
-  -webkit-user-drag: none;
 }
 
 .text-button:hover {
