@@ -77,3 +77,4 @@ vllm-windwos/
 tmp/
 logs/
 .worktrees/
+.superpowers/
