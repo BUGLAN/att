@@ -1,4 +1,15 @@
-﻿const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer } = require('electron')
+
+const OVERLAY_CHANNELS = {
+  openSelection: 'overlay:open-selection',
+  openClipboard: 'overlay:open-clipboard',
+  hide: 'overlay:hide',
+  pin: 'overlay:pin',
+  ready: 'overlay:ready',
+  activate: 'overlay:activate',
+  pinnedChanged: 'overlay:pinned-changed',
+  actionComplete: 'overlay:action-complete'
+}
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
@@ -11,7 +22,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateTrayMenu: (records) => ipcRenderer.send('tray:update-menu', records),
   writeClipboard: (text) => ipcRenderer.invoke('clipboard:write', text),
   pasteClipboard: () => ipcRenderer.invoke('clipboard:paste-active'),
-  notifyClipboardOverlayDrag: (active) => ipcRenderer.send('clipboard-overlay:drag-state', { active }),
   updateHotkey: (hotkey) => ipcRenderer.invoke('hotkey:update', hotkey),
   syncInputSettings: (settings) => ipcRenderer.invoke('desktop:sync-input-settings', settings),
   syncDesktopSettings: (settings) => ipcRenderer.invoke('desktop:sync-settings', settings),
@@ -20,14 +30,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   hideFloatingWindow: () => ipcRenderer.send('floating:hide'),
   toggleFloatingWindow: () => ipcRenderer.send('floating:toggle'),
   updateFloatingWindowState: (payload) => ipcRenderer.send('floating:update-state', payload),
-  showClipboardOverlay: (payload) => ipcRenderer.send('clipboard-overlay:show', payload),
-  hideClipboardOverlay: () => ipcRenderer.send('clipboard-overlay:hide'),
-  toggleClipboardOverlay: (payload) => ipcRenderer.send('clipboard-overlay:toggle', payload),
-  toggleClipboardOverlayPinned: () => ipcRenderer.send('clipboard-overlay:toggle-pin'),
-  startClipboardOverlayNativeDrag: (payload) => ipcRenderer.send('clipboard-overlay:start-native-drag', payload),
-  hideSelectionToolbar: () => ipcRenderer.send('selection-toolbar:hide'),
-  resizeSelectionToolbar: (payload) => ipcRenderer.send('selection-toolbar:resize', payload),
-  toggleSelectionToolbarPin: (payload) => ipcRenderer.invoke('selection-toolbar:toggle-pin', payload),
+  openSelectionOverlay: (payload) => ipcRenderer.send(OVERLAY_CHANNELS.openSelection, payload),
+  openClipboardOverlay: (payload) => ipcRenderer.send(OVERLAY_CHANNELS.openClipboard, payload),
+  hideOverlay: () => ipcRenderer.send(OVERLAY_CHANNELS.hide),
+  setOverlayPinned: (payload) => ipcRenderer.send(OVERLAY_CHANNELS.pin, payload),
+  notifyOverlayReady: () => ipcRenderer.send(OVERLAY_CHANNELS.ready),
+  notifyOverlayActionComplete: (payload) => ipcRenderer.send(OVERLAY_CHANNELS.actionComplete, payload),
   debugLog: (scope, message, details) => ipcRenderer.send('debug:log', { scope, message, details }),
   openSettingsPage: () => ipcRenderer.send('main:open-settings'),
   onHotkeyToggle: (callback) => {
@@ -39,20 +47,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onNavigateSettings: (callback) => {
     ipcRenderer.on('navigate:settings', () => callback())
   },
-  onClipboardOverlayActivate: (callback) => {
-    ipcRenderer.on('clipboard-overlay:activate', (event, payload) => callback(payload))
+  onOverlayActivate: (callback) => {
+    ipcRenderer.on(OVERLAY_CHANNELS.activate, (event, payload) => callback(payload))
   },
-  onClipboardOverlayPinnedChanged: (callback) => {
-    ipcRenderer.on('clipboard-overlay:pinned-changed', (event, payload) => callback(payload))
+  onOverlayPinnedChanged: (callback) => {
+    ipcRenderer.on(OVERLAY_CHANNELS.pinnedChanged, (event, payload) => callback(payload))
   },
   onClipboardChanged: (callback) => {
     ipcRenderer.on('clipboard:changed', (event, payload) => callback(payload))
-  },
-  onSelectionToolbarActivate: (callback) => {
-    ipcRenderer.on('selection-toolbar:activate', (event, payload) => callback(payload))
-  },
-  onSelectionToolbarPinnedChanged: (callback) => {
-    ipcRenderer.on('selection-toolbar:pinned-changed', (event, payload) => callback(payload))
   },
   removeAllListeners: (channel) => {
     ipcRenderer.removeAllListeners(channel)

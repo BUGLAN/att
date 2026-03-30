@@ -102,25 +102,52 @@ export function useElectron() {
     show: (payload = {}) => {
       const plainPayload = toPlainObject(payload)
       debugLog('renderer.useElectron', 'Calling clipboardOverlay.show', plainPayload)
-      globalThis.window?.electronAPI?.showClipboardOverlay(plainPayload)
+      globalThis.window?.electronAPI?.openClipboardOverlay?.(plainPayload)
     },
     hide: () => {
       debugLog('renderer.useElectron', 'Calling clipboardOverlay.hide')
-      globalThis.window?.electronAPI?.hideClipboardOverlay()
+      globalThis.window?.electronAPI?.hideOverlay?.()
     },
     toggle: (payload = {}) => {
       const plainPayload = toPlainObject(payload)
       debugLog('renderer.useElectron', 'Calling clipboardOverlay.toggle', plainPayload)
-      globalThis.window?.electronAPI?.toggleClipboardOverlay(plainPayload)
+      globalThis.window?.electronAPI?.openClipboardOverlay?.(plainPayload)
     },
-    togglePinned: () => {
-      debugLog('renderer.useElectron', 'Calling clipboardOverlay.togglePinned')
-      globalThis.window?.electronAPI?.toggleClipboardOverlayPinned?.()
+    togglePinned: (pinned = true) => {
+      debugLog('renderer.useElectron', 'Calling clipboardOverlay.togglePinned', { pinned })
+      globalThis.window?.electronAPI?.setOverlayPinned?.({ pinned })
     },
     startNativeDrag: (payload = {}) => {
       const plainPayload = toPlainObject(payload)
       debugLog('renderer.useElectron', 'Calling clipboardOverlay.startNativeDrag', plainPayload)
-      globalThis.window?.electronAPI?.startClipboardOverlayNativeDrag?.(plainPayload)
+      void plainPayload
+    }
+  }
+
+  const overlay = {
+    openSelection: (payload = {}) => {
+      const plainPayload = toPlainObject(payload)
+      debugLog('renderer.useElectron', 'Calling overlay.openSelection', plainPayload)
+      globalThis.window?.electronAPI?.openSelectionOverlay?.(plainPayload)
+    },
+    openClipboard: (payload = {}) => {
+      const plainPayload = toPlainObject(payload)
+      debugLog('renderer.useElectron', 'Calling overlay.openClipboard', plainPayload)
+      globalThis.window?.electronAPI?.openClipboardOverlay?.(plainPayload)
+    },
+    hide: () => {
+      debugLog('renderer.useElectron', 'Calling overlay.hide')
+      globalThis.window?.electronAPI?.hideOverlay?.()
+    },
+    setPinned: (pinned) => {
+      debugLog('renderer.useElectron', 'Calling overlay.setPinned', { pinned })
+      globalThis.window?.electronAPI?.setOverlayPinned?.({ pinned })
+    },
+    notifyReady: () => {
+      globalThis.window?.electronAPI?.notifyOverlayReady?.()
+    },
+    notifyActionComplete: (payload = {}) => {
+      globalThis.window?.electronAPI?.notifyOverlayActionComplete?.(toPlainObject(payload))
     }
   }
 
@@ -190,20 +217,16 @@ export function useElectron() {
     globalThis.window?.electronAPI?.onNavigateSettings(callback)
   }
 
-  function onClipboardOverlayActivate(callback) {
-    globalThis.window?.electronAPI?.onClipboardOverlayActivate(callback)
+  function onOverlayActivate(callback) {
+    globalThis.window?.electronAPI?.onOverlayActivate?.(callback)
   }
 
   function onClipboardChanged(callback) {
     globalThis.window?.electronAPI?.onClipboardChanged(callback)
   }
 
-  function onClipboardOverlayPinnedChanged(callback) {
-    globalThis.window?.electronAPI?.onClipboardOverlayPinnedChanged?.(callback)
-  }
-
-  function notifyClipboardOverlayDrag(active) {
-    globalThis.window?.electronAPI?.notifyClipboardOverlayDrag?.(active)
+  function onOverlayPinnedChanged(callback) {
+    globalThis.window?.electronAPI?.onOverlayPinnedChanged?.(callback)
   }
 
   function openSettingsPage() {
@@ -256,6 +279,7 @@ export function useElectron() {
     windowControl,
     tray,
     floatingWindow,
+    overlay,
     clipboardOverlay,
     clipboard,
     onRecordStatus,
@@ -263,10 +287,9 @@ export function useElectron() {
     onHotkeyToggle,
     onPasteText,
     onNavigateSettings,
-    onClipboardOverlayActivate,
-    onClipboardOverlayPinnedChanged,
+    onOverlayActivate,
+    onOverlayPinnedChanged,
     onClipboardChanged,
-    notifyClipboardOverlayDrag,
     openSettingsPage,
     debugLog,
     removeAllListeners,

@@ -5,8 +5,8 @@ const { PythonManager } = require('./python/manager')
 const { DesktopAudioController } = require('./audio/controller')
 const { TrayManager } = require('./tray/index')
 const { FloatingWindowManager } = require('./floatingWindow')
-const { ClipboardOverlayManager } = require('./clipboardOverlay')
-const { SelectionToolbarManager } = require('./selectionToolbar')
+const { UnifiedOverlayManager } = require('./overlay')
+const { OVERLAY_CHANNELS } = require('./overlay/constants')
 const { ClipboardMonitor } = require('./clipboardMonitor')
 const { logElectronOverlay, electronOverlayLogFile } = require('./logger')
 const { DesktopInputManager, normalizeSettings } = require('./input/listener')
@@ -17,8 +17,7 @@ let pythonManager = null
 let trayManager = null
 let audioController = null
 let floatingWindowManager = null
-let clipboardOverlayManager = null
-let selectionToolbarManager = null
+let overlayManager = null
 let clipboardMonitor = null
 let inputManager = null
 let isQuitting = false
@@ -168,14 +167,7 @@ function handleClipboardOverlayTrigger(payload = {}) {
     return
   }
 
-  if (payload.retriggerAction === 'show_only') {
-    clipboardOverlayManager?.show({
-      focusSearch: payload.focusSearch !== false
-    })
-    return
-  }
-
-  clipboardOverlayManager?.toggle({
+  overlayManager?.openClipboard({
     focusSearch: payload.focusSearch !== false
   })
 }
@@ -240,7 +232,7 @@ function scheduleSelectionToolbar(payload = {}) {
       return
     }
 
-    selectionToolbarManager?.showAtSelection({
+    overlayManager?.openSelection({
       text: captureResult.text,
       point: payload.point || null,
       trigger: payload.trigger || 'selection'
@@ -262,6 +254,9 @@ async function initializeDesktopInput(port) {
     onSelectionTrigger: (payload) => {
       logElectronOverlay('main', 'Desktop selection trigger', payload)
       scheduleSelectionToolbar(payload)
+    },
+    onPointerDown: (payload) => {
+      overlayManager?.handleGlobalPointerDown(payload)
     },
     onError: (error) => {
       logElectronOverlay('main', 'Desktop input error', {
@@ -296,7 +291,7 @@ function setupTray() {
 
 function notifyClipboardChanged(payload = {}) {
   mainWindow?.webContents.send('clipboard:changed', payload)
-  clipboardOverlayManager?.notifyDataChanged(payload)
+  overlayManager?.notifyDataChanged(payload)
 }
 
 function setupIPC() {
@@ -459,69 +454,34 @@ function setupIPC() {
     floatingWindowManager?.updateState(payload)
   })
 
-  ipcMain.on('clipboard-overlay:show', (event, payload = {}) => {
+  ipcMain.on(OVERLAY_CHANNELS.openClipboard, (event, payload = {}) => {
     if (shouldSuppressClipboardOverlayCommand('clipboard-overlay:show', payload)) {
       return
     }
 
-    logElectronOverlay('main', 'Received clipboard-overlay:show', payload)
-    clipboardOverlayManager?.show(payload)
+    logElectronOverlay('main', 'Received overlay:open-clipboard', payload)
+    overlayManager?.openClipboard(payload)
   })
 
-  ipcMain.on('clipboard-overlay:hide', () => {
-    logElectronOverlay('main', 'Received clipboard-overlay:hide')
-    clipboardOverlayManager?.hide()
+  ipcMain.on(OVERLAY_CHANNELS.openSelection, (event, payload = {}) => {
+    logElectronOverlay('main', 'Received overlay:open-selection', payload)
+    overlayManager?.openSelection(payload)
   })
 
-  ipcMain.on('clipboard-overlay:toggle', (event, payload = {}) => {
-    if (shouldSuppressClipboardOverlayCommand('clipboard-overlay:toggle', payload)) {
-      return
-    }
-
-    logElectronOverlay('main', 'Received clipboard-overlay:toggle', payload)
-    clipboardOverlayManager?.toggle(payload)
+  ipcMain.on(OVERLAY_CHANNELS.hide, () => {
+    overlayManager?.hide('renderer-hide')
   })
 
-  ipcMain.on('clipboard-overlay:toggle-pin', () => {
-    logElectronOverlay('main', 'Received clipboard-overlay:toggle-pin')
-    clipboardOverlayManager?.togglePinned()
+  ipcMain.on(OVERLAY_CHANNELS.pin, (event, payload = {}) => {
+    overlayManager?.setPinned(payload.pinned === true)
   })
 
-  ipcMain.on('clipboard-overlay:backdrop-pointer-down', (event, payload = {}) => {
-    logElectronOverlay('main', 'Received clipboard-overlay:backdrop-pointer-down', payload)
-    clipboardOverlayManager?.handleBackdropPointerDown(payload)
+  ipcMain.on(OVERLAY_CHANNELS.ready, () => {
+    overlayManager?.markRendererReady()
   })
 
-  ipcMain.on('clipboard-overlay:drag-state', (event, payload = {}) => {
-    logElectronOverlay('main', 'Received clipboard-overlay:drag-state', payload)
-    clipboardOverlayManager?.setDragState(payload.active === true)
-  })
-
-  ipcMain.on('clipboard-overlay:start-native-drag', (event, payload = {}) => {
-    logElectronOverlay('main', 'Received clipboard-overlay:start-native-drag', {
-      itemId: payload.itemId || null,
-      itemType: payload.itemType || null
-    })
-    clipboardOverlayManager?.startNativeDrag(event.sender, payload)
-  })
-
-  ipcMain.on('selection-toolbar:hide', () => {
-    selectionToolbarManager?.hide()
-  })
-
-  ipcMain.on('selection-toolbar:backdrop-pointer-down', (event, payload = {}) => {
-    selectionToolbarManager?.handleBackdropPointerDown(payload)
-  })
-
-  ipcMain.on('selection-toolbar:resize', (event, payload = {}) => {
-    selectionToolbarManager?.resizeToContent(payload.height)
-  })
-
-  ipcMain.handle('selection-toolbar:toggle-pin', (event, payload = {}) => {
-    return {
-      success: true,
-      pinned: selectionToolbarManager?.togglePinned(payload.pinned) === true
-    }
+  ipcMain.on(OVERLAY_CHANNELS.actionComplete, (event, payload = {}) => {
+    overlayManager?.handleActionComplete(payload)
   })
 
   ipcMain.on('debug:log', (event, payload = {}) => {
@@ -550,8 +510,7 @@ app.whenReady().then(async () => {
 
     floatingWindowManager = new FloatingWindowManager()
     floatingWindowManager.preload()
-    clipboardOverlayManager = new ClipboardOverlayManager()
-    selectionToolbarManager = new SelectionToolbarManager()
+    overlayManager = new UnifiedOverlayManager()
     clipboardMonitor = new ClipboardMonitor({
       getBackendPort: () => pythonManager?.port,
       onCaptured: (payload) => {
@@ -588,8 +547,7 @@ app.on('before-quit', () => {
   }
   trayManager?.destroy()
   floatingWindowManager?.destroy()
-  clipboardOverlayManager?.destroy()
-  selectionToolbarManager?.destroy()
+  overlayManager?.destroy()
   clipboardMonitor?.stop()
 })
 
@@ -601,8 +559,7 @@ app.on('will-quit', () => {
   }
   inputManager?.stop()
   floatingWindowManager?.destroy()
-  clipboardOverlayManager?.destroy()
-  selectionToolbarManager?.destroy()
+  overlayManager?.destroy()
   clipboardMonitor?.stop()
   pythonManager?.stop()
 })

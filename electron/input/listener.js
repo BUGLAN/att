@@ -126,6 +126,7 @@ class DesktopInputManager {
     this.onHotkeyToggle = options.onHotkeyToggle
     this.onClipboardTrigger = options.onClipboardTrigger
     this.onSelectionTrigger = options.onSelectionTrigger
+    this.onPointerDown = options.onPointerDown
     this.onError = options.onError
     this.log = options.log || (() => {})
 
@@ -251,13 +252,14 @@ class DesktopInputManager {
   handleMousedown(event = {}) {
     try {
       const button = Number(event.button)
+      const point = this.resolvePoint(event)
       if (!Number.isNaN(button)) {
         this.activeMouseButtons.add(button)
       }
 
       if (button === LEFT_MOUSE_BUTTON) {
         this.selectionTracking = {
-          startPoint: this.resolvePoint(event),
+          startPoint: point,
           dragging: false,
           startedAt: Date.now()
         }
@@ -276,7 +278,13 @@ class DesktopInputManager {
       ) {
         this.clipboardChordTriggered = true
         this.triggerClipboardOverlay()
+        return
       }
+
+      this.onPointerDown?.({
+        button,
+        point
+      })
     } catch (error) {
       this.onError?.(error)
     }
