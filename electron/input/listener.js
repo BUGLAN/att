@@ -339,12 +339,20 @@ class DesktopInputManager {
   matchesHotkey() {
     const { hotkey } = this.settings
 
+    if (this.activeModifiers.size !== hotkey.modifiers.length) {
+      return false
+    }
+
     if (!hotkey.modifiers.every((modifier) => this.activeModifiers.has(modifier))) {
       return false
     }
 
     if (!hotkey.key) {
-      return true
+      return this.activeKeys.size === 0
+    }
+
+    if (this.activeKeys.size !== 1) {
+      return false
     }
 
     return this.activeKeys.has(hotkey.key)

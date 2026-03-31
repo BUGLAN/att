@@ -96,6 +96,54 @@ async function testToggleHotkeyRequiresFullChordAgainAfterPartialRelease() {
   assert.equal(toggles, 2)
 }
 
+async function testModifierOnlyHotkeyIgnoresExtraNonModifierKeys() {
+  let toggles = 0
+
+  const manager = new DesktopInputManager({
+    onHotkeyToggle: () => {
+      toggles += 1
+    }
+  })
+
+  manager.updateSettings({
+    hotkey: {
+      modifiers: ['win', 'alt'],
+      key: null
+    }
+  })
+
+  manager.handleKeydown({ rawcode: 91, keycode: 91, metaKey: true })
+  manager.handleKeydown({ rawcode: 18, keycode: 18, metaKey: true, altKey: true })
+  manager.handleKeyup({ rawcode: 18, keycode: 18, metaKey: true, altKey: false })
+  manager.handleKeydown({ rawcode: 18, keycode: 18, metaKey: true, altKey: true })
+  manager.handleKeydown({ rawcode: 69, keycode: 69, keychar: 69, metaKey: true, altKey: true })
+
+  assert.equal(toggles, 2)
+}
+
+async function testHotkeyRequiresExactModifierMatch() {
+  let toggles = 0
+
+  const manager = new DesktopInputManager({
+    onHotkeyToggle: () => {
+      toggles += 1
+    }
+  })
+
+  manager.updateSettings({
+    hotkey: {
+      modifiers: ['win'],
+      key: 'e'
+    }
+  })
+
+  manager.handleKeydown({ rawcode: 91, keycode: 91, metaKey: true })
+  manager.handleKeydown({ rawcode: 16, keycode: 16, metaKey: true, shiftKey: true })
+  manager.handleKeydown({ rawcode: 69, keycode: 69, keychar: 69, metaKey: true, shiftKey: true })
+
+  assert.equal(toggles, 0)
+}
+
 async function testSelectionTriggerRequiresReasonableDrag() {
   const triggers = []
   const originalNow = Date.now
@@ -172,6 +220,8 @@ async function main() {
   await testToggleHotkeyTriggersOncePerPress()
   await testToggleHotkeyResetsAfterRelease()
   await testToggleHotkeyRequiresFullChordAgainAfterPartialRelease()
+  await testModifierOnlyHotkeyIgnoresExtraNonModifierKeys()
+  await testHotkeyRequiresExactModifierMatch()
   await testSelectionTriggerRequiresReasonableDrag()
   await testSelectionTriggerIgnoresShortAndOversizedDrag()
   await testNormalizeSettingsForcesSelectionClipboardFallbackForCurrentVersion()
