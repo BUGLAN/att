@@ -16,6 +16,7 @@ from app.clipboard.models import ClipboardItem, ClipboardItemType
 URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
 WINDOWS_PATH_PATTERN = re.compile(r"^[a-zA-Z]:[\\/]")
 UNC_PATH_PATTERN = re.compile(r"^\\\\[^\\]+\\[^\\]+")
+DATA_PATH_SEGMENT_PATTERN = re.compile(r"(^|/)data/(.+)$", re.IGNORECASE)
 
 
 class ClipboardManager:
@@ -94,6 +95,31 @@ class ClipboardManager:
             return ""
         single_line = " ".join(part.strip() for part in normalized.splitlines() if part.strip())
         return single_line[:240]
+
+    def _iter_image_path_candidates(self, metadata: Optional[dict]) -> List[Path]:
+        candidates: List[Path] = []
+        source = metadata or {}
+        raw_image_path = str(source.get("image_path", "")).strip()
+        stored_file_name = str(source.get("stored_file_name", "")).strip()
+
+        if raw_image_path:
+            direct_path = Path(raw_image_path).expanduser()
+            candidates.append(direct_path)
+
+            normalized_image_path = raw_image_path.replace("\\", "/").lstrip("./")
+            if normalized_image_path.startswith("images/"):
+                candidates.append(self.clipboard_path / Path(normalized_image_path))
+            elif normalized_image_path:
+                candidates.append(self.clipboard_path / Path(normalized_image_path))
+
+            data_match = DATA_PATH_SEGMENT_PATTERN.search(normalized_image_path)
+            if data_match:
+                candidates.append(self.data_path / Path(data_match.group(2)))
+
+        if stored_file_name:
+            candidates.append(self.clipboard_path / "images" / stored_file_name)
+
+        return candidates
 
     async def create_item(
         self,
@@ -191,11 +217,11 @@ class ClipboardManager:
         if not item or item.item_type != ClipboardItemType.IMAGE:
             return None
 
-        image_path = Path((item.metadata or {}).get("image_path", "")).expanduser()
-        if not image_path.exists() or not image_path.is_file():
-            return None
+        for image_path in self._iter_image_path_candidates(item.metadata):
+            if image_path.exists() and image_path.is_file():
+                return image_path
 
-        return image_path
+        return None
 
     async def list_items(
         self,

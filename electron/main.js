@@ -32,6 +32,19 @@ const selectionCaptureHelperPath = path.join(__dirname, 'python', 'selection_cap
 const isDev = isDevelopmentRuntime()
 const CLIPBOARD_OVERLAY_COMMAND_DEDUP_MS = 180
 
+function resolveClipboardImagePath(imagePath) {
+  const normalizedPath = String(imagePath || '').trim()
+  if (!normalizedPath) {
+    return ''
+  }
+
+  if (path.isAbsolute(normalizedPath)) {
+    return normalizedPath
+  }
+
+  return path.join(__dirname, '..', 'data', 'clipboard', normalizedPath)
+}
+
 function shouldSuppressClipboardOverlayCommand(channel, payload = {}) {
   const now = Date.now()
   const sameChannel = lastClipboardOverlayCommand.channel === channel
@@ -314,7 +327,7 @@ function setupIPC() {
   })
 
   ipcMain.handle('clipboard:write-image', (event, payload = {}) => {
-    const imagePath = String(payload.imagePath || '').trim()
+    const imagePath = resolveClipboardImagePath(payload.imagePath)
     const imageToken = String(payload.imageToken || '').trim()
 
     if (!imagePath) {

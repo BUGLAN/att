@@ -55,27 +55,48 @@ def test_clipboard_manager_resolves_image_items():
             manager = ClipboardManager(test_root)
             await manager.initialize()
 
-            image_path = test_root / 'clipboard-image.png'
+            image_dir = test_root / 'clipboard' / 'images'
+            image_dir.mkdir(parents=True, exist_ok=True)
+            image_path = image_dir / 'clipboard-image.png'
             image_path.write_bytes(b'fake-image')
 
-            item = await manager.create_item(
+            relative_item = await manager.create_item(
                 content='image:test-image',
                 source='test',
                 item_type=ClipboardItemType.IMAGE,
                 title='测试图片',
                 summary='64 x 32',
                 metadata={
-                    'image_path': str(image_path),
+                    'image_path': 'images/clipboard-image.png',
                     'file_name': '测试图片.png'
                 }
             )
 
-            resolved_path = await manager.get_item_image_path(item.id)
-            assert resolved_path == image_path
+            relative_resolved_path = await manager.get_item_image_path(relative_item.id)
+            assert relative_resolved_path == image_path
+
+            legacy_item = await manager.create_item(
+                content='image:test-image-legacy',
+                source='test',
+                item_type=ClipboardItemType.IMAGE,
+                title='旧图片记录',
+                summary='64 x 32',
+                metadata={
+                    'image_path': 'E:\\repo\\att\\data\\clipboard\\images\\clipboard-image.png',
+                    'stored_file_name': 'clipboard-image.png',
+                    'file_name': '旧图片记录.png'
+                }
+            )
+
+            legacy_resolved_path = await manager.get_item_image_path(legacy_item.id)
+            assert legacy_resolved_path == image_path
 
             image_items = await manager.list_items(item_type=ClipboardItemType.IMAGE)
-            assert len(image_items) == 1
-            assert image_items[0].id == item.id
+            assert len(image_items) == 2
+            assert {image_item.id for image_item in image_items} == {
+                relative_item.id,
+                legacy_item.id
+            }
         finally:
             shutil.rmtree(test_root, ignore_errors=True)
 
