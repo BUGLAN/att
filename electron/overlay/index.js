@@ -347,10 +347,15 @@ class UnifiedOverlayManager {
       return
     }
 
-    this.window.hide()
+    // 销毁窗口而不是隐藏，避免下次打开时闪烁
+    this.window.destroy()
+    this.window = null
+    this.isWindowLoaded = false
     this.isVisible = false
     this.userMovedWindow = false
     this.ignoreBlurUntil = 0
+    this.rendererReady = false
+    this.pendingActivation = null
   }
 
   setPinned(active) {
