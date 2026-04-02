@@ -78,3 +78,5 @@ tmp/
 logs/
 .worktrees/
 .superpowers/
+.watchdog/
+.kilo/
