@@ -30,7 +30,7 @@ export default defineConfig({
     }
   },
   server: {
-    port: 5173,
+    port: 8090,
     strictPort: true  // 如果端口被占用则报错，而不是使用其他端口
   }
 })

@@ -5,6 +5,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useElectron } from './useElectron'
 import { useGlobalWebSocket } from './useWebSocket'
 import { createSilenceDetector } from './useSilenceDetector'
+import { derivePostStopState, deriveStartAbortState } from '@/utils/recordingStopState.mjs'
 
 const MIN_REALTIME_SEGMENT_DURATION = 2.2
 const MAX_REALTIME_SEGMENT_DURATION = 10
@@ -54,6 +55,29 @@ let streamingPendingSamples = []
 let streamingPendingSampleCount = 0
 let streamingAwaitingFinish = false
 const completedPhases = new Set()
+
+function logRecorderHotkey(message, details = {}) {
+  const appStore = useAppStore()
+  const { debugLog } = useElectron()
+
+  debugLog('renderer.recorder', message, {
+    isRecording: appStore.isRecording,
+    isTranscribing: appStore.isTranscribing,
+    startPending,
+    pendingStopAfterStart,
+    activeRecordingMode: activeRecordingMode.value,
+    mediaRecorderState: mediaRecorder.value?.state || 'none',
+    duration: duration.value,
+    ...details
+  })
+}
+
+function applyAbortedStartState(appStore, tray) {
+  const nextState = deriveStartAbortState()
+  appStore.setRecording(nextState.recording)
+  appStore.setTranscribing(nextState.transcribing)
+  tray.setIcon(nextState.trayIcon)
+}
 
 function syncFloatingWindow(state, options = {}) {
   const { floatingWindow } = useElectron()
@@ -498,6 +522,8 @@ async function prepareRecordingEnvironment() {
 
   if (pendingStopAfterStart) {
     stopMediaTracks()
+    applyAbortedStartState(appStore, tray)
+    duration.value = 0
     await syncDesktopRecordingState(syncRecordingState, false)
     floatingSessionActive = false
     syncFloatingWindow({
@@ -801,9 +827,7 @@ async function handleShortPressCancellation(syncRecordingState) {
   pendingStopAfterStart = false
   clearDurationTimer()
   duration.value = 0
-  appStore.setRecording(false)
-  appStore.setTranscribing(false)
-  tray.setIcon('idle')
+  applyAbortedStartState(appStore, tray)
   await syncDesktopRecordingState(syncRecordingState, false)
 
   if (floatingSessionActive) {
@@ -1400,12 +1424,17 @@ function stopSingleRecording() {
 
   pendingStopAfterStart = false
   clearDurationTimer()
-  appStore.setRecording(false)
+  const nextState = derivePostStopState({
+    mode: 'single',
+    durationSeconds: duration.value
+  })
+  appStore.setRecording(nextState.recording)
+  appStore.setTranscribing(nextState.transcribing)
   syncDesktopRecordingState(syncRecordingState, false).catch(() => {})
-  tray.setIcon('idle')
+  tray.setIcon(nextState.trayIcon)
   sendRecordingStatus({
-    recording: false,
-    transcribing: false,
+    recording: nextState.recording,
+    transcribing: nextState.transcribing,
     duration: duration.value
   })
   if (floatingSessionActive && duration.value >= 1) {
@@ -1435,13 +1464,18 @@ function stopMultiRecording() {
   pendingStopAfterStart = false
   realtimeStopRequested = true
   clearDurationTimer()
-  appStore.setRecording(false)
+  const nextState = derivePostStopState({
+    mode: 'multi',
+    durationSeconds: duration.value
+  })
+  appStore.setRecording(nextState.recording)
+  appStore.setTranscribing(nextState.transcribing)
   syncDesktopRecordingState(syncRecordingState, false).catch(() => {})
   cleanupRealtimeDetector()
-  tray.setIcon('idle')
+  tray.setIcon(nextState.trayIcon)
   sendRecordingStatus({
-    recording: false,
-    transcribing: false,
+    recording: nextState.recording,
+    transcribing: nextState.transcribing,
     duration: duration.value
   })
 
@@ -1786,7 +1820,7 @@ export function useRecorder() {
   const appStore = useAppStore()
   const settingsStore = useSettingsStore()
   const { connect, addMessageHandler, removeMessageHandler } = useGlobalWebSocket()
-  const { onHotkeyToggle, removeAllListeners } = useElectron()
+  const { onHotkeyPress, onHotkeyRelease, removeAllListeners } = useElectron()
 
   onMounted(async () => {
     mountedInstances += 1
@@ -1798,13 +1832,28 @@ export function useRecorder() {
     }
 
     if (!desktopHotkeyAttached) {
-      onHotkeyToggle(() => {
-        if (appStore.isRecording) {
-          stopRecording()
+      onHotkeyPress((payload) => {
+        logRecorderHotkey('Received desktop hotkey press', {
+          payload
+        })
+
+        if (appStore.isRecording || appStore.isTranscribing || startPending) {
           return
         }
 
         void startRecording()
+      })
+
+      onHotkeyRelease((payload) => {
+        logRecorderHotkey('Received desktop hotkey release', {
+          payload
+        })
+
+        if (!appStore.isRecording && !startPending) {
+          return
+        }
+
+        stopRecording()
       })
       desktopHotkeyAttached = true
     }
@@ -1819,7 +1868,8 @@ export function useRecorder() {
         wsAttached = false
       }
 
-      removeAllListeners('hotkey:toggle')
+      removeAllListeners('hotkey:press')
+      removeAllListeners('hotkey:release')
       desktopHotkeyAttached = false
       mountedInstances = 0
     }

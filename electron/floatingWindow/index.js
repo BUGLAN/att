@@ -5,6 +5,7 @@ const { isDevelopmentRuntime } = require('../utils/runtime')
 const WINDOW_WIDTH = 512
 const WINDOW_HEIGHT = 40
 const WINDOW_BOTTOM_OFFSET = 32
+const DEV_SERVER_URL = 'http://localhost:8090'
 
 function createDefaultState() {
   return {
@@ -67,7 +68,7 @@ class FloatingWindowManager {
     })
 
     if (isDev) {
-      this.floatingWindow.loadURL('http://localhost:5173/floating.html')
+      this.floatingWindow.loadURL(`${DEV_SERVER_URL}/floating.html`)
     } else {
       this.floatingWindow.loadFile(path.join(__dirname, '../../dist/floating.html'))
     }

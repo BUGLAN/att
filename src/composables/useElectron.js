@@ -215,8 +215,12 @@ export function useElectron() {
   function onRecordStatus() {}
   function onRecordCompleted() {}
 
-  function onHotkeyToggle(callback) {
-    globalThis.window?.electronAPI?.onHotkeyToggle(callback)
+  function onHotkeyPress(callback) {
+    globalThis.window?.electronAPI?.onHotkeyPress?.(callback)
+  }
+
+  function onHotkeyRelease(callback) {
+    globalThis.window?.electronAPI?.onHotkeyRelease?.(callback)
   }
 
   function onPasteText(callback) {
@@ -233,6 +237,14 @@ export function useElectron() {
 
   function onClipboardChanged(callback) {
     globalThis.window?.electronAPI?.onClipboardChanged(callback)
+  }
+
+  function onDesktopPermissionRequired(callback) {
+    globalThis.window?.electronAPI?.onDesktopPermissionRequired?.(callback)
+  }
+
+  function onDesktopAgentError(callback) {
+    globalThis.window?.electronAPI?.onDesktopAgentError?.(callback)
   }
 
   function onOverlayPinnedChanged(callback) {
@@ -271,6 +283,14 @@ export function useElectron() {
     return globalThis.window.electronAPI.syncDesktopSettings(toPlainObject(settings))
   }
 
+  async function getDesktopSettings() {
+    return globalThis.window?.electronAPI?.getDesktopSettings?.()
+  }
+
+  async function saveDesktopSettings(settings) {
+    return globalThis.window?.electronAPI?.saveDesktopSettings?.(toPlainObject(settings))
+  }
+
   async function syncRecordingState(payload) {
     if (!globalThis.window?.electronAPI?.syncRecordingState) {
       return { success: false, error: 'Recording state sync unavailable' }
@@ -294,18 +314,23 @@ export function useElectron() {
     clipboard,
     onRecordStatus,
     onRecordCompleted,
-    onHotkeyToggle,
+    onHotkeyPress,
+    onHotkeyRelease,
     onPasteText,
     onNavigateSettings,
     onOverlayActivate,
     onOverlayPinnedChanged,
     onClipboardChanged,
+    onDesktopPermissionRequired,
+    onDesktopAgentError,
     openSettingsPage,
     debugLog,
     removeAllListeners,
     updateHotkey,
     syncInputSettings,
     syncDesktopSettings,
+    getDesktopSettings,
+    saveDesktopSettings,
     syncRecordingState,
     startStatusPolling,
     stopStatusPolling,

@@ -7,7 +7,7 @@
 
 ## 功能概览
 
-- 全局快捷键录音，支持按住录音、松开结束。
+- 全局快捷键录音，支持按下开始、松开结束，兼容 `Win+Alt` 这类纯修饰键组合。
 - 支持三种录音模式：
   - 单段录音：一次录完，一次上传，一次出结果。
   - 多段录音：基于静音阈值自动切段，边说边分段转写，最后合并成完整记录。
@@ -15,7 +15,7 @@
 - 支持 `Whisper / faster-whisper` 与 `Qwen3-ASR` 两类 ASR Provider。
 - 转写完成后可自动调用默认 LLM 做文本优化。
 - 支持剪贴板历史、收藏、置顶、悬浮窗唤起和回填。
-- 支持提示词预设、LLM 配置管理、录音设备选择、录音期间系统音频处理。
+- 支持提示词预设、LLM 配置管理、录音设备选择、录音期间系统输出静音与恢复。
 - 所有记录、会话、提示词和剪贴板数据默认存放在本地 `data/` 目录，便于调试和迁移。
 
 ## 适用场景
@@ -38,8 +38,8 @@
 ### 录音链路
 
 - 主界面提供录音状态、记录列表和当前处理结果。
-- 全局热键由 Electron 侧监听，Renderer 只负责展示和状态同步。
-- 录音时可通知桌面层暂停其他音频，结束后恢复。
+- 全局热键与录音期间静音由 Electron 主进程拉起的本地 Python desktop agent 执行，Renderer 只负责展示和状态同步。
+- 录音时可通知桌面代理将系统输出静音，结束后恢复到录音前状态。
 - 浮窗会在录音、转写、优化等阶段同步显示状态。
 
 ### 剪贴板链路
@@ -108,7 +108,7 @@ uv run python -m pytest tests -q
 
 1. 启动桌面应用。
 2. 在“设置”里选择 ASR Provider、录音模式、麦克风和默认优化预设。
-3. 按下全局快捷键开始录音，松开后结束。
+3. 按下全局快捷键开始录音，松开后结束；若按压时间过短，会提示“录音时间过短”并恢复为空闲状态。
 4. 等待转写完成。
 5. 若开启“自动 AI 优化”，系统会继续生成优化文本。
 6. 若开启“自动复制到剪贴板”，结果会自动复制，并尝试粘贴到当前焦点输入框。
@@ -136,23 +136,24 @@ uv run python -m pytest tests -q
 
 ## 已知问题
 
-### Windows 全局热键偶发误触发录音
+### 桌面热键依赖本地桌面代理
 
-- 当前 Windows 默认录音热键支持 `Win+Alt` 这类仅由修饰键组成的组合。
-- Electron 侧通过 `iohook` 监听全局键盘事件时，偶发会把单独按下 `Alt` 误判为满足当前热键条件，导致直接开始录音。
-- 当前 Renderer 收到热键事件后执行的是“切换录音状态”，并非严格意义上的“按住开始、松开结束”，因此一旦误触发，会表现为单按 `Alt` 也可能启动录音。
-- 设置页与部分文档中关于“按住快捷键开始录音，松开结束”的描述，与当前实现存在偏差；在问题修复前，应将其视为已知限制。
+- 当前桌面端全局热键与录音期间系统静音由 Electron 主进程拉起的本地 Python desktop agent 提供。
+- Windows 默认热键仍支持 `Win+Alt` 这类仅由修饰键组成的组合，行为语义为“按下开始、松开结束”。
+- macOS 首次使用全局热键前，需要在系统设置中授予输入监听相关权限。
 
 ## 项目结构
 
 ```text
 electron/
   main.js                     Electron 主进程入口
-  input/listener.js          全局快捷键与鼠标触发监听
-  audio/controller.js        录音期间的桌面音频控制
-  clipboardOverlay/          剪贴板悬浮窗窗口管理
-  floatingWindow/            录音状态浮窗
-  python/manager.js          Python 后端启动与守护
+  desktop/                    本地桌面设置持久化
+  desktopAgent/               本地桌面代理管理
+  audio/controller.js         录音期间的桌面音频控制（代理不可用时的后备路径）
+  clipboardOverlay/           剪贴板悬浮窗窗口管理
+  floatingWindow/             录音状态浮窗
+  python/desktop_agent.py     本地桌面代理
+  python/manager.js           Python 后端启动与守护
 
 src/
   components/                Vue 组件
@@ -182,11 +183,13 @@ data/
 ```text
 Electron Main
   -> 启动 Python FastAPI
-  -> 管理托盘、全局输入、浮窗、剪贴板悬浮窗
+  -> 拉起本地 Python desktop agent（热键、静音）
+  -> 管理托盘、浮窗、剪贴板悬浮窗
 
 Vue Renderer
   -> 通过 HTTP / WebSocket 调 FastAPI
   -> 通过 preload API 调用桌面专属能力
+  -> 不直接与 desktop agent 通信
 
 FastAPI Backend
   -> 校验与转码音频
@@ -199,10 +202,18 @@ FastAPI Backend
 
 - `electron/main.js`
   - 启动后端。
+  - 启动并管理本地 desktop agent。
   - 注册 IPC。
   - 创建主窗口、托盘、浮窗、剪贴板悬浮窗。
+- `electron/desktop/settings.js`
+  - 持久化本地桌面配置。
+  - 管理热键和录音静音开关的默认值与归一化。
+- `electron/desktopAgent/manager.js`
+  - 通过 stdio JSON-RPC 管理 Python desktop agent 生命周期。
+  - 转发热键按下、松开、权限与错误事件。
 - `src/composables/useRecorder.js`
   - 统一处理单段、多段、流式三套录音模式。
+  - 消费 desktop agent 的按下/松开事件并驱动录音状态机。
   - 负责上传、状态同步、自动复制与 UI 提示。
 - `app/main.py`
   - 初始化音频处理器、ASR Provider、LLM 优化器、记录管理器、剪贴板管理器。
@@ -235,7 +246,7 @@ FastAPI Backend
 
 ### 用户设置
 
-用户设置保存在 `data/settings.json`，主要包括：
+业务用户设置保存在 `data/settings.json`，主要包括：
 
 - `asr_provider`
 - `recording_mode`
@@ -248,6 +259,11 @@ FastAPI Backend
 - `silence_level`
 - `clipboard_overlay_*`
 - `default_preset_id`
+
+桌面本地设置由 Electron 单独持久化，默认位于 Electron `userData` 目录下的 `desktop-settings.json`，主要包括：
+
+- `hotkey`
+- `pause_audio_on_recording`
 
 ## 后端 API
 
@@ -386,11 +402,13 @@ FastAPI Backend
 
 ### 2. 快捷键按下没有反应
 
-快捷键监听由 Electron 侧负责，不是浏览器页面自己监听。优先检查：
+快捷键监听由本地 Python desktop agent 负责，不是浏览器页面自己监听。优先检查：
 
 - 设置页中的快捷键是否已成功保存。
 - 当前快捷键是否与系统级快捷键冲突。
-- 是否在 Windows 下使用了不被当前系统允许的组合。
+- Windows / macOS 本机是否允许当前组合键。
+- desktop agent 依赖是否已通过 `uv sync` 安装完成。
+- macOS 是否已授予输入监听权限。
 
 ### 3. 录音完成后没有自动粘贴
 

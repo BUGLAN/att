@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, clipboard, nativeImage } = require('electro
 const path = require('path')
 const { execFile } = require('child_process')
 const { PythonManager } = require('./python/manager')
+const { PythonManager: PythonRuntimeManager } = require('./python/runtime-manager')
 const { DesktopAudioController } = require('./audio/controller')
 const { TrayManager } = require('./tray/index')
 const { FloatingWindowManager } = require('./floatingWindow')
@@ -9,19 +10,24 @@ const { UnifiedOverlayManager } = require('./overlay')
 const { OVERLAY_CHANNELS } = require('./overlay/constants')
 const { ClipboardMonitor } = require('./clipboardMonitor')
 const { logElectronOverlay, electronOverlayLogFile } = require('./logger')
-const { DesktopInputManager, normalizeSettings } = require('./input/listener')
+const { DesktopSettingsStore } = require('./desktop/settings')
+const { DesktopAgentManager } = require('./desktopAgent/manager')
 const { isDevelopmentRuntime } = require('./utils/runtime')
 
 let mainWindow = null
 let pythonManager = null
+let pythonRuntimeManager = null
 let trayManager = null
 let audioController = null
+let desktopAgentManager = null
+let desktopSettingsStore = null
 let floatingWindowManager = null
 let overlayManager = null
 let clipboardMonitor = null
-let inputManager = null
 let isQuitting = false
 let pendingSelectionToolbarTimer = null
+let pendingDesktopPermissionRequired = null
+let pendingDesktopAgentError = null
 let lastClipboardOverlayCommand = {
   channel: null,
   timestamp: 0
@@ -31,6 +37,12 @@ const selectionCaptureHelperPath = path.join(__dirname, 'python', 'selection_cap
 
 const isDev = isDevelopmentRuntime()
 const CLIPBOARD_OVERLAY_COMMAND_DEDUP_MS = 180
+const DEV_SERVER_URL = 'http://localhost:8090'
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+
+if (!hasSingleInstanceLock) {
+  app.quit()
+}
 
 function resolveClipboardImagePath(imagePath) {
   const normalizedPath = String(imagePath || '').trim()
@@ -68,6 +80,46 @@ function shouldSuppressClipboardOverlayCommand(channel, payload = {}) {
   return false
 }
 
+function sendToMainWindow(channel, payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false
+  }
+
+  mainWindow.webContents.send(channel, payload)
+  return true
+}
+
+function cacheDesktopAgentEvent(channel, payload) {
+  if (channel === 'desktop:permission-required') {
+    pendingDesktopPermissionRequired = payload
+    return
+  }
+
+  if (channel === 'desktop:agent-error') {
+    pendingDesktopAgentError = payload
+  }
+}
+
+function flushPendingDesktopAgentEvents() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  if (pendingDesktopPermissionRequired) {
+    sendToMainWindow('desktop:permission-required', pendingDesktopPermissionRequired)
+    pendingDesktopPermissionRequired = null
+  }
+
+  if (pendingDesktopAgentError) {
+    sendToMainWindow('desktop:agent-error', pendingDesktopAgentError)
+    pendingDesktopAgentError = null
+  }
+}
+
+function hasReadyDesktopAgent() {
+  return desktopAgentManager?.isReady === true
+}
+
 async function createWindow() {
   logElectronOverlay('main', 'Creating main window')
   mainWindow = new BrowserWindow({
@@ -101,8 +153,12 @@ async function createWindow() {
     app.quit()
   })
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    flushPendingDesktopAgentEvents()
+  })
+
   if (isDev) {
-    await mainWindow.loadURL('http://localhost:5173')
+    await mainWindow.loadURL(DEV_SERVER_URL)
     mainWindow.webContents.openDevTools()
   } else {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
@@ -151,28 +207,86 @@ async function startBackend() {
   return port
 }
 
-function getDefaultDesktopInputSettings() {
-  return normalizeSettings()
+function getDesktopSettingsStore() {
+  if (!desktopSettingsStore) {
+    desktopSettingsStore = new DesktopSettingsStore({
+      filePath: path.join(app.getPath('userData'), 'desktop-settings.json'),
+      platform: process.platform
+    })
+  }
+
+  return desktopSettingsStore
 }
 
-async function loadDesktopInputSettings(port) {
-  const fallback = getDefaultDesktopInputSettings()
+function loadLocalDesktopSettings() {
+  return getDesktopSettingsStore().load()
+}
 
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/settings`)
-    if (!response.ok) {
-      throw new Error(`Backend settings request failed with status ${response.status}`)
+function saveLocalDesktopSettings(partialSettings = {}) {
+  const store = getDesktopSettingsStore()
+  const currentSettings = store.load()
+  return store.save({
+    ...currentSettings,
+    ...partialSettings
+  })
+}
+
+async function startDesktopAgent() {
+  const desktopSettings = loadLocalDesktopSettings()
+  pythonRuntimeManager = new PythonRuntimeManager()
+
+  desktopAgentManager = new DesktopAgentManager({
+    pythonPath: pythonRuntimeManager.getPythonPath(),
+    scriptPath: path.join(__dirname, 'python', 'desktop_agent.py'),
+    runtimeRoot: pythonRuntimeManager.getRuntimeRoot(),
+    spawnProcess: (pythonPath, args, options) => (
+      pythonRuntimeManager.spawnBackendProcess(pythonPath, args, options)
+    ),
+    log: (message, details) => {
+      logElectronOverlay('desktop-agent', message, details)
+    }
+  })
+
+  desktopAgentManager.on('ready', (payload) => {
+    logElectronOverlay('main', 'Desktop agent ready', payload)
+    mainWindow?.webContents.send('desktop:agent-ready', payload)
+  })
+  desktopAgentManager.on('hotkey:press', (payload) => {
+    logElectronOverlay('main', 'Desktop agent hotkey press', payload)
+    mainWindow?.webContents.send('hotkey:press', payload)
+  })
+  desktopAgentManager.on('hotkey:release', (payload) => {
+    logElectronOverlay('main', 'Desktop agent hotkey release', payload)
+    mainWindow?.webContents.send('hotkey:release', payload)
+  })
+  desktopAgentManager.on('permission:required', (payload) => {
+    logElectronOverlay('main', 'Desktop agent permission required', payload)
+    cacheDesktopAgentEvent('desktop:permission-required', payload)
+    sendToMainWindow('desktop:permission-required', payload)
+  })
+  desktopAgentManager.on('agent:error', (payload) => {
+    logElectronOverlay('main', 'Desktop agent error', payload)
+    cacheDesktopAgentEvent('desktop:agent-error', payload)
+    sendToMainWindow('desktop:agent-error', payload)
+  })
+  desktopAgentManager.on('exit', (payload) => {
+    logElectronOverlay('main', 'Desktop agent exited', payload)
+    desktopAgentManager = null
+
+    if (payload.expected || isQuitting) {
+      return
     }
 
-    const payload = await response.json()
-    return normalizeSettings(payload)
-  } catch (error) {
-    logElectronOverlay('main', 'Failed to load desktop input settings from backend', {
-      error: error.message,
-      fallback
-    })
-    return fallback
-  }
+    const errorPayload = {
+      error: 'Desktop agent exited unexpectedly',
+      ...payload
+    }
+    cacheDesktopAgentEvent('desktop:agent-error', errorPayload)
+    sendToMainWindow('desktop:agent-error', errorPayload)
+  })
+
+  await desktopAgentManager.start(desktopSettings)
+  return desktopSettings
 }
 
 function handleClipboardOverlayTrigger(payload = {}) {
@@ -251,40 +365,6 @@ function scheduleSelectionToolbar(payload = {}) {
       trigger: payload.trigger || 'selection'
     })
   }, delayMs)
-}
-
-async function initializeDesktopInput(port) {
-  const settings = await loadDesktopInputSettings(port)
-  inputManager = new DesktopInputManager({
-    onHotkeyToggle: (payload) => {
-      logElectronOverlay('main', 'Desktop hotkey toggle', payload)
-      mainWindow?.webContents.send('hotkey:toggle', payload)
-    },
-    onClipboardTrigger: (payload) => {
-      logElectronOverlay('main', 'Desktop clipboard trigger', payload)
-      handleClipboardOverlayTrigger(payload)
-    },
-    onSelectionTrigger: (payload) => {
-      logElectronOverlay('main', 'Desktop selection trigger', payload)
-      scheduleSelectionToolbar(payload)
-    },
-    onPointerDown: (payload) => {
-      overlayManager?.handleGlobalPointerDown(payload)
-    },
-    onError: (error) => {
-      logElectronOverlay('main', 'Desktop input error', {
-        error: error.message,
-        stack: error.stack
-      })
-    },
-    log: (message, details) => {
-      logElectronOverlay('desktop-input', message, details)
-    }
-  })
-
-  inputManager.updateSettings(settings)
-  inputManager.start()
-  logElectronOverlay('main', 'Desktop input initialized', settings)
 }
 
 function setupTray() {
@@ -389,18 +469,37 @@ function setupIPC() {
   })
 
   ipcMain.handle('desktop:sync-settings', async (event, settings = {}) => {
-    if (!audioController) {
-      return { success: false, error: 'Audio controller unavailable' }
+    const desktopSettings = saveLocalDesktopSettings(settings)
+
+    if (hasReadyDesktopAgent()) {
+      const result = await desktopAgentManager.updateMutePolicy({
+        pause_audio_on_recording: desktopSettings.pause_audio_on_recording
+      })
+      return {
+        ...(result || { success: true }),
+        settings: desktopSettings
+      }
     }
 
-    const result = await audioController.updateSettings(settings)
+    if (!audioController) {
+      return { success: false, error: 'Audio controller unavailable', settings: desktopSettings }
+    }
+
+    const result = await audioController.updateSettings(desktopSettings)
     if (!result.success) {
       console.error('[Audio] Failed to sync settings:', result.error)
     }
-    return result
+    return {
+      ...result,
+      settings: desktopSettings
+    }
   })
 
   ipcMain.handle('desktop:recording-state', async (event, payload = {}) => {
+    if (hasReadyDesktopAgent()) {
+      return desktopAgentManager.setRecordingActive(payload.recording === true)
+    }
+
     if (!audioController) {
       return { success: false, error: 'Audio controller unavailable' }
     }
@@ -441,35 +540,61 @@ function setupIPC() {
   })
 
   ipcMain.handle('hotkey:update', async (event, hotkey = null) => {
-    if (!inputManager) {
+    const desktopSettings = saveLocalDesktopSettings({ hotkey })
+
+    if (hasReadyDesktopAgent()) {
+      const result = await desktopAgentManager.updateHotkey(desktopSettings.hotkey)
       return {
-        success: false,
-        error: 'Desktop input manager unavailable'
+        ...(result || { success: true }),
+        managedBy: 'desktop-agent',
+        hotkey: desktopSettings.hotkey
       }
     }
 
-    const settings = inputManager.updateSettings({ hotkey })
     return {
       success: true,
-      managedBy: 'electron',
-      hotkey: settings.hotkey
+      managedBy: 'desktop-settings-only',
+      hotkey: desktopSettings.hotkey
     }
   })
 
   ipcMain.handle('desktop:sync-input-settings', async (event, payload = {}) => {
-    if (!inputManager) {
-      return {
-        success: false,
-        error: 'Desktop input manager unavailable'
+    let desktopSettings = null
+    if (payload.hotkey) {
+      desktopSettings = saveLocalDesktopSettings({ hotkey: payload.hotkey })
+      if (hasReadyDesktopAgent()) {
+        await desktopAgentManager.updateHotkey(desktopSettings.hotkey)
       }
     }
 
-    const settings = inputManager.updateSettings(payload)
     return {
       success: true,
-      managedBy: 'electron',
-      settings
+      managedBy: hasReadyDesktopAgent() ? 'desktop-agent' : 'desktop-settings-only',
+      settings: payload,
+      desktopSettings: desktopSettings || loadLocalDesktopSettings()
     }
+  })
+
+  ipcMain.handle('desktop:settings:get', async () => {
+    return loadLocalDesktopSettings()
+  })
+
+  ipcMain.handle('desktop:settings:save', async (event, settings = {}) => {
+    const desktopSettings = saveLocalDesktopSettings(settings)
+
+    if (hasReadyDesktopAgent()) {
+      if (settings.hotkey) {
+        await desktopAgentManager.updateHotkey(desktopSettings.hotkey)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(settings, 'pause_audio_on_recording')) {
+        await desktopAgentManager.updateMutePolicy({
+          pause_audio_on_recording: desktopSettings.pause_audio_on_recording
+        })
+      }
+    }
+
+    return desktopSettings
   })
 
   ipcMain.on('floating:show', () => {
@@ -531,46 +656,63 @@ function setupIPC() {
   })
 }
 
-app.whenReady().then(async () => {
-  try {
-    logElectronOverlay('main', 'App whenReady start', {
-      isDev
-    })
-    const port = await startBackend()
-    console.log('Backend started on port', port)
-    logElectronOverlay('main', 'Backend started', {
-      port
-    })
-
-    floatingWindowManager = new FloatingWindowManager()
-    floatingWindowManager.preload()
-    overlayManager = new UnifiedOverlayManager()
-    clipboardMonitor = new ClipboardMonitor({
-      getBackendPort: () => pythonManager?.port,
-      onCaptured: (payload) => {
-        notifyClipboardChanged({
-          reason: 'captured',
-          itemId: payload?.id || null
+if (hasSingleInstanceLock) {
+  app.whenReady().then(async () => {
+    try {
+      logElectronOverlay('main', 'App whenReady start', {
+        isDev
+      })
+      let desktopSettings = null
+      try {
+        desktopSettings = await startDesktopAgent()
+        logElectronOverlay('main', 'Desktop agent started', {
+          desktopSettings
+        })
+      } catch (desktopAgentError) {
+        logElectronOverlay('main', 'Desktop agent failed to start', {
+          error: desktopAgentError.message,
+          stack: desktopAgentError.stack
+        })
+        desktopAgentManager = null
+        cacheDesktopAgentEvent('desktop:agent-error', {
+          error: desktopAgentError.message || 'Desktop agent failed to start'
         })
       }
-    })
-    clipboardMonitor.start()
-    logElectronOverlay('main', 'Window managers initialized')
-    setupIPC()
-    await createWindow()
-    setupTray()
-    await initializeDesktopInput(port)
-    console.log('App ready')
-    logElectronOverlay('main', 'App ready complete')
-  } catch (error) {
-    console.error('Failed to start app:', error)
-    logElectronOverlay('main', 'Failed to start app', {
-      error: error.message,
-      stack: error.stack
-    })
-    app.quit()
-  }
-})
+      const port = await startBackend()
+      console.log('Backend started on port', port)
+      logElectronOverlay('main', 'Backend started', {
+        port
+      })
+
+      floatingWindowManager = new FloatingWindowManager()
+      floatingWindowManager.preload()
+      overlayManager = new UnifiedOverlayManager()
+      clipboardMonitor = new ClipboardMonitor({
+        getBackendPort: () => pythonManager?.port,
+        onCaptured: (payload) => {
+          notifyClipboardChanged({
+            reason: 'captured',
+            itemId: payload?.id || null
+          })
+        }
+      })
+      clipboardMonitor.start()
+      logElectronOverlay('main', 'Window managers initialized')
+      setupIPC()
+      await createWindow()
+      setupTray()
+      console.log('App ready')
+      logElectronOverlay('main', 'App ready complete')
+    } catch (error) {
+      console.error('Failed to start app:', error)
+      logElectronOverlay('main', 'Failed to start app', {
+        error: error.message,
+        stack: error.stack
+      })
+      app.quit()
+    }
+  })
+}
 
 app.on('before-quit', () => {
   logElectronOverlay('main', 'before-quit received')
@@ -591,7 +733,7 @@ app.on('will-quit', () => {
     clearTimeout(pendingSelectionToolbarTimer)
     pendingSelectionToolbarTimer = null
   }
-  inputManager?.stop()
+  desktopAgentManager?.stop()
   floatingWindowManager?.destroy()
   overlayManager?.destroy()
   clipboardMonitor?.stop()
@@ -622,6 +764,16 @@ app.on('activate', () => {
   showMainWindow().catch((error) => {
     console.error('Failed to show main window:', error)
     logElectronOverlay('main', 'Failed to show main window', {
+      error: error.message,
+      stack: error.stack
+    })
+  })
+})
+
+app.on('second-instance', () => {
+  showMainWindow().catch((error) => {
+    console.error('Failed to show main window for second instance:', error)
+    logElectronOverlay('main', 'Failed to show main window for second instance', {
       error: error.message,
       stack: error.stack
     })

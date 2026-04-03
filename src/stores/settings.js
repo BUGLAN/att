@@ -103,7 +103,7 @@ function normalizeHotkey(hotkey) {
 }
 
 export const useSettingsStore = defineStore('settings', () => {
-  const { api } = useElectron()
+  const { api, getDesktopSettings, saveDesktopSettings } = useElectron()
   let streamingServicePollPromise = null
 
   const settings = ref({
@@ -194,10 +194,17 @@ export const useSettingsStore = defineStore('settings', () => {
 
     try {
       const result = await api.getSettings()
+      let desktopSettings = null
+      try {
+        desktopSettings = await getDesktopSettings?.()
+      } catch (desktopError) {
+        console.warn('[Settings] Failed to load desktop settings:', desktopError)
+      }
       settings.value = {
         ...settings.value,
         ...result,
-        hotkey: normalizeHotkey(result.hotkey)
+        hotkey: normalizeHotkey(desktopSettings?.hotkey || result.hotkey),
+        pause_audio_on_recording: desktopSettings?.pause_audio_on_recording ?? result.pause_audio_on_recording ?? settings.value.pause_audio_on_recording
       }
       defaultPresetId.value = settings.value.default_preset_id || defaultPresetId.value || null
       return settings.value
@@ -217,10 +224,20 @@ export const useSettingsStore = defineStore('settings', () => {
         ...newSettings
       }
       const result = await api.saveSettings(payload)
+      let desktopSettings = null
+      try {
+        desktopSettings = await saveDesktopSettings?.({
+          hotkey: payload.hotkey,
+          pause_audio_on_recording: payload.pause_audio_on_recording
+        })
+      } catch (desktopError) {
+        console.warn('[Settings] Failed to save desktop settings:', desktopError)
+      }
       settings.value = {
         ...settings.value,
         ...result,
-        hotkey: normalizeHotkey(isValidHotkey(result.hotkey) ? result.hotkey : payload.hotkey)
+        hotkey: normalizeHotkey(desktopSettings?.hotkey || (isValidHotkey(result.hotkey) ? result.hotkey : payload.hotkey)),
+        pause_audio_on_recording: desktopSettings?.pause_audio_on_recording ?? result.pause_audio_on_recording ?? payload.pause_audio_on_recording
       }
       defaultPresetId.value = settings.value.default_preset_id || defaultPresetId.value || null
       await loadRuntimeStatus(true)

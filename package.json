@@ -11,29 +11,15 @@
     "codex:frontend": "powershell -ExecutionPolicy Bypass -File scripts/start_dev_with_codex.ps1 -Preset frontend",
     "backend:dev:uv": "cross-env UV_PROJECT_ENVIRONMENT=.venv UV_CACHE_DIR=tmp/uv-cache uv run --no-sync python -m uvicorn app.main:app --reload",
     "qwen:streaming:uv": "cross-env UV_PROJECT_ENVIRONMENT=.venv UV_CACHE_DIR=tmp/uv-cache uv run --no-sync python -m uvicorn scripts.qwen_streaming_service:app --host 0.0.0.0 --port 9000",
-    "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
-    "electron:dev:existing-backend": "cross-env ATT_REQUIRE_EXISTING_BACKEND=1 concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env ATT_REQUIRE_EXISTING_BACKEND=1 NODE_ENV=development electron .\"",
+    "electron:dev": "concurrently -k \"vite --strictPort\" \"wait-on http://localhost:8090 && cross-env NODE_ENV=development electron .\"",
+    "electron:dev:existing-backend": "cross-env ATT_REQUIRE_EXISTING_BACKEND=1 concurrently -k \"vite --strictPort\" \"wait-on http://localhost:8090 && cross-env ATT_REQUIRE_EXISTING_BACKEND=1 NODE_ENV=development electron .\"",
     "electron:build": "vite build && electron-builder",
     "electron:build:win": "vite build && electron-builder --win",
     "electron:build:mac": "vite build && electron-builder --mac"
   },
   "dependencies": {
-    "@tkomde/iohook": "^1.1.6",
     "vue": "^3.4.21",
     "pinia": "^2.1.7"
-  },
-  "iohook": {
-    "targets": [
-      "node-127",
-      "electron-121"
-    ],
-    "platforms": [
-      "win32",
-      "linux"
-    ],
-    "arches": [
-      "x64"
-    ]
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.4",

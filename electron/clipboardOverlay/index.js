@@ -6,6 +6,7 @@ const { isDevelopmentRuntime } = require('../utils/runtime')
 
 const WINDOW_WIDTH = 380
 const WINDOW_HEIGHT = 560
+const DEV_SERVER_URL = 'http://localhost:8090'
 
 class ClipboardOverlayManager {
   constructor() {
@@ -85,7 +86,7 @@ class ClipboardOverlayManager {
     })
 
     if (isDev) {
-      this.window.loadURL('http://localhost:5173/clipboard-overlay.html')
+      this.window.loadURL(`${DEV_SERVER_URL}/clipboard-overlay.html`)
     } else {
       this.window.loadFile(path.join(__dirname, '../../dist/clipboard-overlay.html'))
     }

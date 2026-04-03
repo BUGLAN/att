@@ -1,19 +1,74 @@
 ﻿import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
+import { createSingletonAsyncInvoker } from '@/utils/asyncSingleton.mjs'
 
 const globalWsState = {
   isConnected: ref(false),
   lastMessage: ref(null),
   error: ref(null)
 }
-
 const messageHandlers = new Set()
 
 let globalWs = null
 let globalReconnectTimer = null
 let globalHeartbeatTimer = null
 let shouldReconnect = true
+const connectGlobalOnce = createSingletonAsyncInvoker(async () => {
+  try {
+    shouldReconnect = true
+    const url = await api.getWebSocketUrl()
+
+    if (globalWs?.readyState === WebSocket.OPEN || globalWs?.readyState === WebSocket.CONNECTING) {
+      return globalWs
+    }
+
+    globalWs = new WebSocket(url)
+
+    globalWs.onopen = () => {
+      const appStore = useAppStore()
+      globalWsState.isConnected.value = true
+      globalWsState.error.value = null
+      appStore.setConnected(true)
+      startGlobalHeartbeat()
+    }
+
+    globalWs.onclose = () => {
+      const appStore = useAppStore()
+      globalWsState.isConnected.value = false
+      stopGlobalHeartbeat()
+      appStore.setConnected(false)
+      appStore.setConnectedClients(0)
+
+      if (shouldReconnect) {
+        scheduleGlobalReconnect()
+      }
+    }
+
+    globalWs.onerror = (event) => {
+      console.error('[GlobalWebSocket] Error:', event)
+      globalWsState.error.value = 'WebSocket connection error'
+    }
+
+    globalWs.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        globalWsState.lastMessage.value = data
+        applyConnectionState(data)
+        messageHandlers.forEach((handler) => handler(data))
+      } catch (e) {
+        console.error('[GlobalWebSocket] Failed to parse message:', e)
+      }
+    }
+
+    return globalWs
+  } catch (e) {
+    console.error('[GlobalWebSocket] Failed to connect:', e)
+    globalWsState.error.value = e.message
+    scheduleGlobalReconnect()
+    throw e
+  }
+})
 
 function applyConnectionState(data) {
   const appStore = useAppStore()
@@ -62,54 +117,10 @@ function scheduleGlobalReconnect() {
 
 async function connectGlobal() {
   if (globalWs?.readyState === WebSocket.OPEN || globalWs?.readyState === WebSocket.CONNECTING) {
-    return
+    return globalWs
   }
 
-  try {
-    shouldReconnect = true
-    const url = await api.getWebSocketUrl()
-    globalWs = new WebSocket(url)
-
-    globalWs.onopen = () => {
-      const appStore = useAppStore()
-      globalWsState.isConnected.value = true
-      globalWsState.error.value = null
-      appStore.setConnected(true)
-      startGlobalHeartbeat()
-    }
-
-    globalWs.onclose = () => {
-      const appStore = useAppStore()
-      globalWsState.isConnected.value = false
-      stopGlobalHeartbeat()
-      appStore.setConnected(false)
-      appStore.setConnectedClients(0)
-
-      if (shouldReconnect) {
-        scheduleGlobalReconnect()
-      }
-    }
-
-    globalWs.onerror = (event) => {
-      console.error('[GlobalWebSocket] Error:', event)
-      globalWsState.error.value = 'WebSocket connection error'
-    }
-
-    globalWs.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        globalWsState.lastMessage.value = data
-        applyConnectionState(data)
-        messageHandlers.forEach((handler) => handler(data))
-      } catch (e) {
-        console.error('[GlobalWebSocket] Failed to parse message:', e)
-      }
-    }
-  } catch (e) {
-    console.error('[GlobalWebSocket] Failed to connect:', e)
-    globalWsState.error.value = e.message
-    scheduleGlobalReconnect()
-  }
+  return connectGlobalOnce()
 }
 
 function disconnectGlobal() {

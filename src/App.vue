@@ -56,7 +56,6 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
-import { useRecorder } from '@/composables/useRecorder'
 import { useGlobalWebSocket } from '@/composables/useWebSocket'
 
 import Sidebar from '@/components/layout/Sidebar.vue'
@@ -79,13 +78,14 @@ import { useElectron } from '@/composables/useElectron'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
-useRecorder()
 const { connect, addMessageHandler, removeMessageHandler } = useGlobalWebSocket()
 const {
   isElectron,
   clipboardOverlay,
   onPasteText,
   onNavigateSettings,
+  onDesktopPermissionRequired,
+  onDesktopAgentError,
   removeAllListeners,
   syncDesktopSettings,
   debugLog
@@ -143,6 +143,16 @@ onMounted(async () => {
     appStore.setCurrentPage('settings')
   })
 
+  onDesktopPermissionRequired((payload) => {
+    debugLog('renderer.app', 'Desktop permission required', payload)
+    appStore.showToast(payload?.message || '桌面权限不足，请在系统设置中授权')
+  })
+
+  onDesktopAgentError((payload) => {
+    debugLog('renderer.app', 'Desktop agent error', payload)
+    appStore.showToast(payload?.error || '本地桌面代理发生错误')
+  })
+
   await settingsStore.loadSettings()
 
   try {
@@ -161,6 +171,8 @@ onUnmounted(() => {
   removeMessageHandler(handleGlobalMessage)
   removeAllListeners('paste-text')
   removeAllListeners('navigate:settings')
+  removeAllListeners('desktop:permission-required')
+  removeAllListeners('desktop:agent-error')
 })
 </script>
 

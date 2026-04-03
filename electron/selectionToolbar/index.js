@@ -6,6 +6,7 @@ const WINDOW_WIDTH = 420
 const WINDOW_COMPACT_HEIGHT = 320
 const WINDOW_EXPANDED_HEIGHT = 520
 const WINDOW_SAFE_MARGIN = 24
+const DEV_SERVER_URL = 'http://localhost:8090'
 
 class SelectionToolbarManager {
   constructor(dependencies = {}) {
@@ -65,7 +66,7 @@ class SelectionToolbarManager {
     })
 
     if (isDev) {
-      this.window.loadURL('http://localhost:5173/selection-toolbar.html')
+      this.window.loadURL(`${DEV_SERVER_URL}/selection-toolbar.html`)
     } else {
       this.window.loadFile(path.join(__dirname, '../../dist/selection-toolbar.html'))
     }

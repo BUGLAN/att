@@ -18,6 +18,7 @@ const MODE_CONFIG = {
     closeOnBlur: true
   }
 }
+const DEV_SERVER_URL = 'http://localhost:8090'
 
 class UnifiedOverlayManager {
   constructor(dependencies = {}) {
@@ -84,7 +85,7 @@ class UnifiedOverlayManager {
     })
 
     if (isDev) {
-      this.window.loadURL('http://localhost:5173/unified-overlay.html')
+      this.window.loadURL(`${DEV_SERVER_URL}/unified-overlay.html`)
     } else {
       this.window.loadFile(path.join(__dirname, '../../dist/unified-overlay.html'))
     }

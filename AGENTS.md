@@ -36,7 +36,8 @@ uv run python -m pytest tests -q
 ```text
 Electron Main (electron/)
   -> starts Python backend through electron/python/manager.js
-  -> manages tray, global input, floating window, clipboard overlay
+  -> starts local Python desktop agent for global hotkey and recording mute
+  -> manages tray, floating window, clipboard overlay
 
 Vue Renderer (src/)
   -> talks to FastAPI over HTTP/WebSocket
@@ -52,8 +53,10 @@ FastAPI Backend (app/)
 ## Core Modules
 
 - `electron/main.js` - Electron app entry, backend startup, IPC wiring.
-- `electron/input/listener.js` - Global hotkey and clipboard trigger handling.
-- `electron/audio/controller.js` - Pause/resume desktop audio during recording.
+- `electron/desktop/settings.js` - Local desktop settings storage for hotkey and mute policy.
+- `electron/desktopAgent/manager.js` - Starts and monitors the local Python desktop agent.
+- `electron/audio/controller.js` - Pause/resume desktop audio during recording as a fallback path.
+- `electron/python/desktop_agent.py` - Local desktop agent for hotkey press/release and mute control.
 - `electron/python/manager.js` - Starts and monitors the bundled Python backend.
 - `src/composables/useRecorder.js` - Main recording workflow for single, multi, and streaming modes.
 - `src/composables/useWebSocket.js` - Shared WebSocket client for renderer status sync.
@@ -78,12 +81,15 @@ Important backend settings:
 - `QWEN_ASR_*`
 - `QWEN_STREAMING_*`
 
-User settings are persisted in `data/settings.json` and include:
-- Hotkey configuration
+Business settings are persisted in `data/settings.json` and include:
 - Recording mode and silence thresholds
 - Clipboard overlay behavior
 - Auto-optimize / auto-copy toggles
 - Default prompt preset
+
+Desktop-local settings are persisted by Electron separately and include:
+- Hotkey configuration
+- Pause-audio-on-recording switch
 
 ## API Surface
 
@@ -117,6 +123,6 @@ WS   /api/asr/stream
 1. Recording uploads are asynchronous; completion is tracked through polling and WebSocket events.
 2. Browser recordings are uploaded as merged blobs; individual MediaRecorder chunks are not independently usable.
 3. Records, sessions, clipboard items, prompts, and LLM configs are stored under `data/` as JSON files.
-4. Desktop-only capabilities are implemented through Electron IPC, not backend tray compatibility.
+4. Desktop-only capabilities are implemented through Electron IPC; global hotkey and recording mute are provided by the local Python desktop agent, not the business backend.
 5. Code comments must be written in Chinese.
 6. New comments, documentation, and agent instruction files should default to Chinese first unless there is a clear reason to use another language.

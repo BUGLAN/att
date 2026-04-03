@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   syncInputSettings: (settings) => ipcRenderer.invoke('desktop:sync-input-settings', settings),
   syncDesktopSettings: (settings) => ipcRenderer.invoke('desktop:sync-settings', settings),
   syncRecordingState: (payload) => ipcRenderer.invoke('desktop:recording-state', payload),
+  getDesktopSettings: () => ipcRenderer.invoke('desktop:settings:get'),
+  saveDesktopSettings: (settings) => ipcRenderer.invoke('desktop:settings:save', settings),
   showFloatingWindow: () => ipcRenderer.send('floating:show'),
   hideFloatingWindow: () => ipcRenderer.send('floating:hide'),
   toggleFloatingWindow: () => ipcRenderer.send('floating:toggle'),
@@ -39,8 +41,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   notifyOverlayActionComplete: (payload) => ipcRenderer.send(OVERLAY_CHANNELS.actionComplete, payload),
   debugLog: (scope, message, details) => ipcRenderer.send('debug:log', { scope, message, details }),
   openSettingsPage: () => ipcRenderer.send('main:open-settings'),
-  onHotkeyToggle: (callback) => {
-    ipcRenderer.on('hotkey:toggle', () => callback())
+  onHotkeyPress: (callback) => {
+    ipcRenderer.on('hotkey:press', (event, payload) => callback(payload))
+  },
+  onHotkeyRelease: (callback) => {
+    ipcRenderer.on('hotkey:release', (event, payload) => callback(payload))
   },
   onPasteText: (callback) => {
     ipcRenderer.on('paste-text', () => callback())
@@ -56,6 +61,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onClipboardChanged: (callback) => {
     ipcRenderer.on('clipboard:changed', (event, payload) => callback(payload))
+  },
+  onDesktopPermissionRequired: (callback) => {
+    ipcRenderer.on('desktop:permission-required', (event, payload) => callback(payload))
+  },
+  onDesktopAgentError: (callback) => {
+    ipcRenderer.on('desktop:agent-error', (event, payload) => callback(payload))
   },
   removeAllListeners: (channel) => {
     ipcRenderer.removeAllListeners(channel)
