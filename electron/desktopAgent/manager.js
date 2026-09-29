@@ -44,15 +44,14 @@ class DesktopAgentManager extends EventEmitter {
       const expected = this.isStopping
       this.log('Desktop agent exited', { code })
       this.rejectPendingRequests(new Error('Desktop agent exited before completing pending requests'))
-      this.process = null
-      this.isReady = false
-      this.isStopping = false
+      this._resetState()
       this.emit('exit', { code, expected })
     })
     this.process.on('error', (error) => {
       this.log('Desktop agent failed', { error: error.message })
       this.rejectPendingRequests(error)
-      this.emit('error', error)
+      this._resetState()
+      this.emit('agent:error', { error: error.message })
     })
 
     await this.sendRequest('agent.init', {
@@ -140,6 +139,12 @@ class DesktopAgentManager extends EventEmitter {
         })
       }
     }
+  }
+
+  _resetState() {
+    this.process = null
+    this.isReady = false
+    this.isStopping = false
   }
 
   rejectPendingRequests(error) {

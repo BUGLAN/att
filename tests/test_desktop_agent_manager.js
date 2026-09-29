@@ -182,3 +182,25 @@ test('DesktopAgentManager marks shutdown exit as expected', async () => {
 
   assert.deepEqual(exits, [{ code: 0, expected: true }])
 })
+
+test('DesktopAgentManager converts spawn errors into agent:error notifications', async () => {
+  const child = new FakeChildProcess()
+  const manager = new DesktopAgentManager({
+    pythonPath: 'python',
+    scriptPath: 'desktop_agent.py',
+    runtimeRoot: 'E:/repo/att',
+    spawnProcess: () => child
+  })
+
+  const errors = []
+  manager.on('agent:error', (payload) => errors.push(payload))
+
+  const startPromise = manager.start()
+
+  assert.doesNotThrow(() => {
+    child.emit('error', new Error('spawn blocked'))
+  })
+
+  await assert.rejects(startPromise, /spawn blocked/)
+  assert.deepEqual(errors, [{ error: 'spawn blocked' }])
+})
