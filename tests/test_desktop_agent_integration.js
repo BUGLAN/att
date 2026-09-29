@@ -72,3 +72,26 @@ test('renderer recorder only uses press/release semantics', () => {
   assert.match(recorderSource, /onHotkeyRelease/, '录音器必须监听热键松开事件')
   assert.doesNotMatch(recorderSource, /hotkey:toggle/, '录音器不应再保留旧的 toggle 语义')
 })
+
+test('desktop settings UI removes dead mouse-trigger configuration after desktop agent refactor', () => {
+  const mainProcessSource = fs.readFileSync(path.join(repoRoot, 'electron', 'main.js'), 'utf8')
+  const settingsPageSource = fs.readFileSync(path.join(repoRoot, 'src', 'components', 'settings', 'SettingsPage.vue'), 'utf8')
+
+  assert.doesNotMatch(
+    settingsPageSource,
+    /form\.clipboard_overlay_trigger/,
+    '设置页不应继续暴露已下线的桌面端剪贴板鼠标触发配置'
+  )
+
+  assert.doesNotMatch(
+    settingsPageSource,
+    /selection_toolbar_enabled|selection_toolbar_trigger_delay_ms|selection_toolbar_fallback_to_clipboard/,
+    '设置页不应继续暴露已失效的全局划词触发配置'
+  )
+
+  assert.doesNotMatch(
+    mainProcessSource,
+    /clipboard_overlay_trigger|scheduleSelectionToolbar|handleClipboardOverlayTrigger/,
+    '主进程不应继续保留桌面端鼠标触发的残留同步或调度逻辑'
+  )
+})

@@ -25,7 +25,6 @@ let floatingWindowManager = null
 let overlayManager = null
 let clipboardMonitor = null
 let isQuitting = false
-let pendingSelectionToolbarTimer = null
 let pendingDesktopPermissionRequired = null
 let pendingDesktopAgentError = null
 let lastClipboardOverlayCommand = {
@@ -33,7 +32,6 @@ let lastClipboardOverlayCommand = {
   timestamp: 0
 }
 const pasteHelperPath = path.join(__dirname, 'python', 'paste_helper.py')
-const selectionCaptureHelperPath = path.join(__dirname, 'python', 'selection_capture_helper.py')
 
 const isDev = isDevelopmentRuntime()
 const CLIPBOARD_OVERLAY_COMMAND_DEDUP_MS = 180
@@ -289,84 +287,6 @@ async function startDesktopAgent() {
   return desktopSettings
 }
 
-function handleClipboardOverlayTrigger(payload = {}) {
-  if (shouldSuppressClipboardOverlayCommand('global-input:clipboard-overlay', payload)) {
-    return
-  }
-
-  overlayManager?.openClipboard({
-    focusSearch: payload.focusSearch !== false
-  })
-}
-
-function captureSelectedText() {
-  return new Promise((resolve) => {
-    const pythonPath = pythonManager?.getPythonPath?.()
-    if (!pythonPath) {
-      resolve({ success: false, error: 'Python runtime unavailable' })
-      return
-    }
-
-    execFile(
-      pythonPath,
-      [selectionCaptureHelperPath],
-      { cwd: path.join(__dirname, '..') },
-      (error, stdout, stderr) => {
-        const output = (stdout || '').trim()
-        if (output) {
-          try {
-            const parsed = JSON.parse(output)
-            if (error && parsed.success !== false) {
-              resolve({
-                ...parsed,
-                success: false,
-                error: stderr?.trim() || error.message
-              })
-              return
-            }
-            resolve(parsed)
-            return
-          } catch (parseError) {
-            // Fall through to generic error handling.
-          }
-        }
-
-        resolve({
-          success: false,
-          error: (stderr || '').trim() || error?.message || 'Selection capture helper returned no output'
-        })
-      }
-    )
-  })
-}
-
-function scheduleSelectionToolbar(payload = {}) {
-  const delayMs = Number(payload.delayMs) > 0 ? Number(payload.delayMs) : 0
-
-  if (pendingSelectionToolbarTimer) {
-    clearTimeout(pendingSelectionToolbarTimer)
-    pendingSelectionToolbarTimer = null
-  }
-
-  pendingSelectionToolbarTimer = setTimeout(async () => {
-    pendingSelectionToolbarTimer = null
-    const captureResult = await captureSelectedText()
-    if (!captureResult?.success || !captureResult?.text) {
-      logElectronOverlay('main', 'Selection capture failed', {
-        payload,
-        captureResult
-      })
-      return
-    }
-
-    overlayManager?.openSelection({
-      text: captureResult.text,
-      point: payload.point || null,
-      trigger: payload.trigger || 'selection'
-    })
-  }, delayMs)
-}
-
 function setupTray() {
   trayManager = new TrayManager(mainWindow, null)
   trayManager.create()
@@ -567,11 +487,15 @@ function setupIPC() {
       }
     }
 
+    // 统一获取桌面设置，避免重复读取文件
+    const resultSettings = desktopSettings || loadLocalDesktopSettings()
     return {
       success: true,
       managedBy: hasReadyDesktopAgent() ? 'desktop-agent' : 'desktop-settings-only',
-      settings: payload,
-      desktopSettings: desktopSettings || loadLocalDesktopSettings()
+      settings: {
+        hotkey: payload.hotkey || resultSettings.hotkey
+      },
+      desktopSettings: resultSettings
     }
   })
 
@@ -717,10 +641,6 @@ if (hasSingleInstanceLock) {
 app.on('before-quit', () => {
   logElectronOverlay('main', 'before-quit received')
   isQuitting = true
-  if (pendingSelectionToolbarTimer) {
-    clearTimeout(pendingSelectionToolbarTimer)
-    pendingSelectionToolbarTimer = null
-  }
   trayManager?.destroy()
   floatingWindowManager?.destroy()
   overlayManager?.destroy()
@@ -729,10 +649,6 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   logElectronOverlay('main', 'will-quit received')
-  if (pendingSelectionToolbarTimer) {
-    clearTimeout(pendingSelectionToolbarTimer)
-    pendingSelectionToolbarTimer = null
-  }
   desktopAgentManager?.stop()
   floatingWindowManager?.destroy()
   overlayManager?.destroy()
