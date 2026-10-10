@@ -1,4 +1,4 @@
-﻿# AGENTS.md
+# AGENTS.md
 
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
@@ -64,7 +64,9 @@ FastAPI Backend (app/)
 - `app/main.py` - FastAPI app entry and lifespan wiring.
 - `app/api/routes.py` - REST and WebSocket API endpoints.
 - `app/audio/processor.py` - Audio validation, conversion, and persistence.
-- `app/stt/` - Whisper and Qwen ASR provider integrations.
+- `app/stt/` - Whisper / Qwen / 豆包（火山引擎在线流式）ASR provider integrations.
+  - `app/stt/providers/volcengine_sauc.py` - 豆包 SAUC 二进制协议编解码与错误归一化（纯函数）。
+  - `app/stt/providers/doubao_asr_provider.py` - 豆包流式会话 + 批量转写 provider。
 - `app/llm/` - LLM gateway, config management, and optimizer logic.
 - `app/records/` - JSON-backed record/session storage.
 - `app/clipboard/` - Clipboard item storage and API routes.
@@ -80,6 +82,14 @@ Important backend settings:
 - `WHISPER_MODEL`, `WHISPER_DEVICE`, `WHISPER_COMPUTE_TYPE`
 - `QWEN_ASR_*`
 - `QWEN_STREAMING_*`
+- `DOUBAO_ASR_*`（豆包在线流式：`DOUBAO_ASR_API_KEY` / `DOUBAO_ASR_RESOURCE_ID` / `DOUBAO_ASR_ENDPOINT` …）
+
+豆包 Access Token 的两条来源（优先级从高到低）：
+1. `data/settings.json` 的 `doubao_asr_api_key_encrypted`（设置页填写，Fernet 加密落盘）；
+2. 环境变量 `DOUBAO_ASR_API_KEY`。
+`GET /api/settings` 只回报 `doubao_asr_api_key_set`，**不回传明文或密文**；
+`PUT /api/settings` 的 `doubao_asr_api_key` 是只写字段，空串表示「本次不修改」，
+清除要走 `doubao_asr_api_key_clear=true`。
 
 Business settings are persisted in `data/settings.json` and include:
 - Recording mode and silence thresholds

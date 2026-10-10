@@ -221,3 +221,67 @@ fix(overlay): 关闭时销毁窗口避免二次打开闪烁
 
 - [Electron BrowserWindow 文档](https://www.electronjs.org/docs/latest/api/browser-window)
 - [Electron 窗口动画问题讨论](https://github.com/electron/electron/issues/2170)
+
+---
+
+# 补充（2026-10-01）：真正根因与修复
+
+## 之前五次尝试的共同盲点
+
+本文档「尝试过的无效方案」里的 5 次尝试——延迟 `setBounds` 时机、`setOpacity(0)` 遮蔽、
+双 `requestAnimationFrame`、hide 时重置尺寸、移除 `moveTop/focus`——**全部只调整「显示时机」**，
+没有一次检查过「**窗口创建尺寸是否等于目标尺寸**」。而症状是"**缩小又弹大**"，
+这是一个**尺寸过渡动画**的特征，不是显示时机问题。
+
+## 根因
+
+### 根因 A：窗口创建尺寸与目标模式尺寸不一致（主因）
+
+`electron/overlay/index.js` 的 `createWindow()` 旧实现**固定使用 selection 模式的尺寸**：
+
+```javascript
+const selectionConfig = MODE_CONFIG[OVERLAY_MODE.selection]   // 420 x 320
+this.window = new this.BrowserWindow({
+  width: selectionConfig.width,    // ← 无论什么模式，一律 420x320
+  height: selectionConfig.height,
+  ...
+})
+```
+
+于是剪切板模式的每次打开流程是：
+
+```
+createWindow()            → 以 420x320 创建（隐藏）
+applyBounds(380x560)      → 在隐藏状态下 setBounds 改成 380x560
+[渲染完成后] show()        → Windows 播放一次尺寸过渡动画 = 用户看到的"缩小又弹大"
+```
+
+因为 `hide()` 会销毁窗口，**每次打开都会重放一遍这个动画**，所以"第二次及以后都闪"。
+
+### 根因 B：透明窗口叠加系统投影
+
+`transparent: true` + `hasShadow: true` 的组合在 Windows 上会由 DWM 负责绘制投影，
+显示时可能伴随动画与边缘残影，叠加根因 A 后闪烁更明显。
+
+## 修复
+
+| 改动 | 位置 | 说明 |
+| --- | --- | --- |
+| `createWindow(mode)` 按**目标模式**尺寸创建 | `electron/overlay/index.js` `createWindow()` | `openSelection`/`openClipboard` 各传自己的模式，创建即目标尺寸，**显示前不再发生尺寸变化** |
+| `hasShadow: false` | 同上 | 关闭 DWM 投影；悬浮层已有自绘描边与阴影，视觉无损失 |
+| `applyBounds()` 增加"边界完全一致则跳过" | 同上 `applyBounds()` | 避免多余的窗口管理调用触发系统动画 |
+
+## 回归测试
+
+`tests/test_unified_overlay_manager.js` 新增 4 个用例（11 → 15）：
+
+- 剪切板窗口按目标尺寸创建（380x560）+ `hasShadow === false`
+- 选择窗口按目标尺寸创建（420x320）
+- 销毁后以另一模式重开，新窗口使用**当前模式**尺寸
+- 边界完全一致时跳过多余 `setBounds`，仅位置变化时仍生效
+
+## 需要人工确认的部分
+
+闪烁是**视觉现象**，自动化测试只能锁住"创建尺寸 ≠ 目标尺寸"这一代码级根因。
+请在真实使用中确认：若仍闪，下一个排查方向是 `show()` 的 Windows 窗口动画本身，
+可尝试改用「预创建常驻窗口 + 只 show/hide 不销毁」（本文档「后续优化方向」第 1 条）。

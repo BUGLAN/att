@@ -1,4 +1,4 @@
-﻿# CLAUDE.md
+# CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -60,7 +60,9 @@ FastAPI Backend (app/)
 - `app/main.py` - FastAPI entrypoint and lifespan setup.
 - `app/api/routes.py` - Main API and WebSocket endpoints.
 - `app/audio/processor.py` - Audio validation, conversion, persistence.
-- `app/stt/` - Whisper and Qwen providers, runtime services.
+- `app/stt/` - Whisper / Qwen / 豆包（火山引擎在线流式）providers, runtime services.
+  - `app/stt/providers/volcengine_sauc.py` - 豆包 SAUC 二进制协议编解码、definite 前缀推进、错误归一化（纯函数）。
+  - `app/stt/providers/doubao_asr_provider.py` - 豆包流式会话与批量转写 provider（在线，无需本地模型）。
 - `app/llm/` - LLM config management, gateway, optimizer.
 - `app/prompts/` - Prompt preset loading and persistence.
 - `app/records/` - Record and session storage.
