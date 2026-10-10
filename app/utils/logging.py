@@ -10,10 +10,34 @@ import structlog
 from structlog.types import Processor
 
 from app.config import settings
+from app.llm.security import redact_secrets
 
 # 日志文件大小上限与保留份数（约 5MB × 5）
 LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
 LOG_FILE_BACKUP_COUNT = 5
+
+
+def _redact_value(value):
+    """递归地把日志事件里的字符串做密钥脱敏，其它类型原样返回。"""
+    if isinstance(value, str):
+        return redact_secrets(value)
+    if isinstance(value, dict):
+        return {key: _redact_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_redact_value(item) for item in value)
+    return value
+
+
+def redact_secrets_processor(logger, method_name, event_dict):
+    """兜底脱敏：任何日志（含第三方库）里的密钥都不允许落盘。
+
+    AGENTS.md §3.4 要求「日志与异常文案里不得出现密钥」，但第三方库不受我们控制，
+    例如 ``websockets`` 的 DEBUG 日志会把请求头（含 ``X-Api-Key``）原样打印。
+    除了压低这些库的日志级别，这里再加一道与来源无关的兜底。
+    """
+    for key, value in list(event_dict.items()):
+        event_dict[key] = _redact_value(value)
+    return event_dict
 
 
 def _force_utf8_stream(stream):
@@ -55,6 +79,8 @@ def setup_logging() -> None:
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.UnicodeDecoder(),
+        # 放在渲染之前：无论日志来自应用还是第三方库，密钥都先被洗掉
+        redact_secrets_processor,
     ]
 
     # Configure structlog
@@ -104,6 +130,14 @@ def setup_logging() -> None:
     # Reduce noise from third-party libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # websockets 的 DEBUG 日志会把请求头（含 X-Api-Key 豆包 Access Token）原样打出来，
+    # 既泄露凭据又让单次录音产生上百 KB 日志，因此整条链路压到 WARNING
+    logging.getLogger("websockets").setLevel(logging.WARNING)
+    # openai / anthropic SDK 的 DEBUG 日志会把整个请求体打出来：提示词里嵌着
+    # 用户刚转写的原文。项目既有约定是只记长度（text_length / original_length）、
+    # 不记内容，因此这些 SDK 的请求体日志一并压掉
+    logging.getLogger("openai").setLevel(logging.WARNING)
+    logging.getLogger("anthropic").setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
