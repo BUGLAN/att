@@ -1,3 +1,6 @@
+/* 全平台唯一标题栏：Windows/macOS 均由 TitleBar.vue 自绘。
+   macOS 原生红黄绿按钮已在 electron/main.js 里用 setWindowButtonVisibility(false) 隐藏，
+   因此这里的 left 内边距在两端都是 12px（env(titlebar-area-x) 无 Window Controls Overlay 时为 0）。 */
 .title-bar {
   position: fixed;
   top: 0;

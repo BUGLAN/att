@@ -39,3 +39,14 @@ test('electron main process enables single instance lock', () => {
     '主进程必须处理 second-instance 事件，将焦点切回现有窗口'
   )
 })
+
+test('electron main process hides macOS native window buttons', () => {
+  const mainProcessPath = path.join(repoRoot, 'electron', 'main.js')
+  const mainProcessSource = fs.readFileSync(mainProcessPath, 'utf8')
+
+  assert.match(
+    mainProcessSource,
+    /process\.platform === 'darwin'[\s\S]{0,200}setWindowButtonVisibility\(false\)/,
+    "macOS 必须隐藏原生红黄绿按钮，标题栏只保留 TitleBar.vue 的自绘按钮（与 Windows 一致）"
+  )
+})

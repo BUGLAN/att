@@ -106,6 +106,13 @@ async function createWindow() {
     }
   })
 
+  // macOS 下 titleBarStyle: 'hidden' 会保留原生红黄绿按钮，与自绘标题栏
+  // （src/components/layout/TitleBar.vue）的品牌区重叠；这里显式隐藏，
+  // 让 macOS 与 Windows（frame: false 时无原生按钮）保持同一套自绘标题栏。
+  if (process.platform === 'darwin') {
+    mainWindow.setWindowButtonVisibility(false)
+  }
+
   mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
     callback(permission === 'media')
   })
