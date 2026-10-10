@@ -1,112 +1,31 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本项目的 AI 编码指引**以 [AGENTS.md](AGENTS.md) 为准**，请先完整读它。
 
-## Project Overview
+这里只补充 Claude Code 使用中容易踩的几点，避免两份文件内容重复后各自腐化：
 
-Audio-to-Text desktop application built around an Electron shell, a Vue renderer, and a FastAPI backend. The active codepath is `electron/` + `src/` + `app/`; the old Python tray and static frontend have been removed.
+## 与 AGENTS.md 的关系
 
-## Commands
+- 架构、命令、硬约束、陷阱清单、已知缺陷、常见任务做法：全部在 `AGENTS.md`，本文不再复制。
+- 若发现两份文件冲突，**以 `AGENTS.md` 为准**，并顺手修掉本文的过期表述。
 
-```bash
-# Install Python dependencies
-uv sync
+## Claude Code 特有的注意点
 
-# Install frontend dependencies
-npm install
+1. **改动前先看 `docs/已知问题.md`**：那里列着当前确认的缺陷（统一浮层无入口、`--win` 打包
+   在 nsis 阶段失败、多段录音上传失败会卡住、LLM provider 无超时）。别在不了解现状的情况下
+   "顺手重构"这些区域。
+2. **不要用 `git add -A`**：仓库里有未纳入版本库的审计截图与设计产物
+   （`docs/ui-audit/`、`.tmp-shots/`、`.stitch/`，已在 `.gitignore` 里）。改动请按文件显式暂存。
+3. **提交信息用中文 Conventional Commits**：`<type>(<scope>): <中文描述>`，一个提交只做一件逻辑完整的事。
+4. **改完必须跑**：`uv run python -m pytest tests -q` 与 `node scripts/run-node-tests.mjs`。
+   前端有构建影响时再跑 `npm run build`。
+5. **Windows 环境注意**：控制台默认 GBK，脚本里 print 中文/符号前先
+   `sys.stdout.reconfigure(encoding="utf-8")`（参考 `scripts/probe_doubao_asr.py`）；
+   `data/settings.json` 与 `.env` 同时存在时前者优先。
+6. **不要修改 `.env`**（含真实密钥，已被 `.gitignore` 忽略）；需要新增变量时改 `.env.example`
+   并在 `docs/配置说明.md` 里同步说明。
 
-# Run backend only
-npm run backend:dev:uv
+## 文档索引
 
-# Run Electron + Vite renderer
-npm run electron:dev
-
-# Build renderer bundle
-npm run build
-
-# Package Electron app
-node scripts/package-electron.js --win
-
-# Run tests
-uv run python -m pytest tests -q
-```
-
-## Architecture
-
-```text
-Electron Main (electron/)
-  -> starts the Python backend
-  -> owns tray, global input, floating window, clipboard overlay
-
-Vue Renderer (src/)
-  -> uses HTTP/WebSocket for backend data
-  -> uses preload APIs for desktop integration
-
-FastAPI Backend (app/)
-  -> audio processing and ASR orchestration
-  -> prompt presets and LLM optimization
-  -> records, sessions, clipboard, and settings persistence
-```
-
-## Core Modules
-
-- `electron/main.js` - Electron bootstrap, IPC registration, backend lifecycle.
-- `electron/input/listener.js` - Global hotkey and clipboard trigger logic.
-- `electron/audio/controller.js` - Audio pause/resume integration.
-- `electron/python/manager.js` - Python backend process management.
-- `src/composables/useRecorder.js` - End-to-end recording workflow.
-- `src/composables/useWebSocket.js` - Shared renderer WebSocket client.
-- `src/stores/` - Pinia state for app, settings, and records.
-- `app/main.py` - FastAPI entrypoint and lifespan setup.
-- `app/api/routes.py` - Main API and WebSocket endpoints.
-- `app/audio/processor.py` - Audio validation, conversion, persistence.
-- `app/stt/` - Whisper / Qwen / 豆包（火山引擎在线流式）providers, runtime services.
-  - `app/stt/providers/volcengine_sauc.py` - 豆包 SAUC 二进制协议编解码、definite 前缀推进、错误归一化（纯函数）。
-  - `app/stt/providers/doubao_asr_provider.py` - 豆包流式会话与批量转写 provider（在线，无需本地模型）。
-- `app/llm/` - LLM config management, gateway, optimizer.
-- `app/prompts/` - Prompt preset loading and persistence.
-- `app/records/` - Record and session storage.
-- `app/clipboard/` - Clipboard APIs and storage.
-- `app/config.py` - Environment and persisted user settings.
-
-## Data and Config
-
-- Environment variables are defined in `.env.example`.
-- Runtime user settings live in `data/settings.json`.
-- Records, sessions, clipboard items, prompts, and LLM configs are JSON-backed under `data/`.
-
-## API Surface
-
-```text
-POST /api/audio/upload
-GET  /api/records
-GET  /api/records/search
-GET  /api/records/{id}
-GET  /api/records/{id}/status
-PUT  /api/records/{id}
-DELETE /api/records/{id}
-GET  /api/records/{id}/audio
-GET  /api/records/{id}/export
-POST /api/records/{id}/optimize
-
-POST /api/sessions
-GET  /api/sessions/{id}
-POST /api/sessions/{id}/segments
-POST /api/sessions/{id}/merge
-DELETE /api/sessions/{id}
-
-GET  /api/settings
-PUT  /api/settings
-GET  /api/health
-WS   /api/ws
-WS   /api/asr/stream
-```
-
-## Key Notes
-
-1. Recording and transcription are asynchronous.
-2. Multi-segment and streaming flows are owned by the Vue renderer plus backend session APIs.
-3. Desktop integration flows through Electron IPC, not backend-managed tray clients.
-4. Packaging uses `pyproject.toml` as the single Python dependency source.
-5. Code comments must be written in Chinese.
-6. New comments, documentation, and agent instruction files should default to Chinese first unless there is a clear reason to use another language.
+`README.md`、`AGENTS.md`、`docs/使用说明.md`、`docs/架构说明.md`、`docs/配置说明.md`、
+`docs/API.md`、`docs/ASR接入.md`、`docs/开发与运维.md`、`docs/已知问题.md`。

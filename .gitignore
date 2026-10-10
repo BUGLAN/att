@@ -67,6 +67,11 @@ Thumbs.db
 data/
 node_modules
 
+# 审计与设计工具产物（保留在本地，不纳入版本库）
+.tmp-shots/
+.stitch/
+docs/ui-audit/
+
 release/
 python-dist/
 

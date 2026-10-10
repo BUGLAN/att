@@ -1,0 +1,274 @@
+# API 接口说明
+
+本文档中的全部事实由代码提取，主要来源：`app/main.py`、`app/api/routers/*.py`、
+`app/ai_actions/routes.py`、`app/clipboard/routes.py`、`app/wordbook/routes.py`、
+`app/api/schemas.py`、`app/api/uploads.py`、`app/services/*`。
+
+> 代码与常识不符之处一律以代码为准，并在备注中标注。
+
+## 0. 基础信息
+
+| 项 | 事实 | 出处 |
+| --- | --- | --- |
+| 默认监听 | `0.0.0.0:8000`（直接 `python -m app.main` 时）；Electron 用 `ATT_BACKEND_PORT` / `PORT` 决定端口 | `app/main.py:204-208`、`electron/python/manager.js:86` |
+| 路由装配 | `app/main.py:168-175` 逐个 `include_router`：records / sessions / settings / prompts / llm / ai_actions / clipboard / wordbook | `app/main.py:168-175` |
+| 聚合 router | `app/api/routes.py:55` 的聚合 router **不参与生产挂载**，只为测试与兼容再导出（且它只含前 5 个子路由，不含 ai_actions/clipboard/wordbook） | `app/api/routes.py:53-60` |
+| 前缀 | 各子路由自带 `prefix="/api"`；`ai_actions` 为 `/api/ai-actions`，`clipboard` 为 `/api/clipboard`，`wordbook` 为 `/api/wordbook` | `app/ai_actions/routes.py:14` 等 |
+| 静态资源 | `dist/assets` 存在时挂载到 `/assets` | `app/main.py:181-183` |
+| 根路径 | `dist/index.html` 存在则返回该文件，否则返回 `{name, version, docs, health}` JSON | `app/main.py:186-198` |
+| 鉴权 | **无任何鉴权**。跨域隔离靠 CORS 白名单：`http://localhost:8090`、`http://127.0.0.1:8090`、`null` + 正则 `^https?://(localhost\|127\.0\.0\.1)(:\d+)?$`，且 `allow_credentials=False` | `app/main.py:151-165` |
+| 请求校验失败 | 路由内 Pydantic 请求体校验失败由 FastAPI 自动返回 **422**（如 `AIActionRequest.source_text` 的 `min_length=1`、查询参数的 `pattern`/`le`）；而 `PUT /api/settings` 的请求体校验被路由捕获后转成 **400** | `app/ai_actions/routes.py:28`、`app/api/routers/records.py:179`、`app/services/settings_service.py:216-221` |
+
+---
+
+## 1. 系统与健康检查
+
+| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| GET | `/` | 返回前端页面或服务信息 | — | 有 `dist/index.html` 时返回 HTML；否则 `{name, version, docs, health}` | `app/main.py:186-198` |
+| GET | `/assets/*` | 前端静态资源 | — | 文件内容 | 仅当 `dist/assets` 存在时挂载 `app/main.py:181-183` |
+| GET | `/api/health` | 健康检查 + 模型/流式状态 | query `probe_runtime`（bool，默认 `false`，为 `true` 时会真实探测流式 provider） | `status`、`runtime_environment`、`asr_provider`、`asr_model`、`deepseek_configured`、`ws_clients`、`qwen_streaming_*`（旧名）、`streaming_*`、`model_service_*`（新名，与旧名同源） | `app/api/routers/settings.py:36-45`、字段拼装在 `app/services/model_service.py:81-108` |
+
+`probe_runtime=true` 只对 `qwen_asr` / `doubao_asr` 生效（`app/services/model_service.py:63-70`）。
+
+---
+
+## 2. 记录与音频（records）
+
+| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| POST | `/api/audio/upload` | 上传音频并（可选）异步转写 | multipart `file`；query `auto_transcribe`（默认 `true`） | `status`、`record_id`、`duration`、`transcription_status` | `app/api/routers/records.py:66-151`；无文件名 400；格式/时长非法 400；超限 413（见 §5.1） |
+| GET | `/api/records` | 列出记录 | query `status`、`limit`（默认 200，上限 1000）、`offset`（≥0） | **记录数组**（不是 `{items,total}`） | `records.py:156-173`；注释明确「响应体保持为记录数组，前端契约不变」 |
+| GET | `/api/records/search` | 按文本/收藏搜索 | query `q`、`search_type`（`all\|raw\|optimized`）、`favorite_only`、`page`（≥1）、`page_size`（1..200） | `items`、`total`、`page`、`page_size`、`total_pages` | `records.py:176-203`；内部先取最多 5000 条再内存分页 |
+| GET | `/api/records/{record_id}` | 记录详情 | path `record_id` | `Record.to_dict()`：`id/created_at/updated_at/audio_path/duration/raw_text/optimized_text/status/processing_time/is_modified/is_favorite/error/revision` | `records.py:206-212`、`app/records/models.py:102-118` |
+| GET | `/api/records/{record_id}/status` | 轮询转写状态（最小字段集） | path `record_id` | `record_id`、`status`、`raw_text`（仅 transcribed/optimizing/optimized 时非 null）、`optimized_text`（仅 optimized）、`duration`、`processing_time`、`is_favorite` | `records.py:215-239` |
+| PUT | `/api/records/{record_id}` | 修改记录文本/收藏 | body：`raw_text`、`optimized_text`、`is_modified`、`is_favorite`、`revision`（均可选） | 更新后的 `Record.to_dict()` | `records.py:242-269`；传 `revision` 且版本已变 → **409** |
+| DELETE | `/api/records/{record_id}` | 删除记录及其音频 | path `record_id` | `{status:"deleted", record_id}` | `records.py:272-279` |
+| GET | `/api/records/{record_id}/audio` | 播放音频 | path `record_id` | WAV 文件流（`media_type="audio/wav"`） | `records.py:282-304`；`audio_path` 为空或非普通文件 → 404 |
+| POST | `/api/records/{record_id}/optimize` | 用 AI 优化文本 | query `style`（默认 `"default"`） | `record_id`、`original_text`、`optimized_text`、`processing_time` | `records.py:307-379`；无 `raw_text` → 400；优化异常 → **502**，同时广播 WS `optimization_failed` |
+| GET | `/api/records/{record_id}/export` | 导出单条记录 | query `format`（`txt`/`json`，默认 `txt`）、`use_optimized`（默认 `true`） | `PlainTextResponse`，带 `Content-Disposition: attachment; filename=record_<id>.<format>` | `records.py:382-418`；`format` 非法 → 400（`ExportFormat` 仅 `txt`/`json`，`app/records/models.py:21-24`） |
+
+---
+
+## 3. 多段录音会话（sessions）
+
+| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| POST | `/api/sessions` | 新建多段录音会话 | — | `session_id`、`status`、`created_at` | `app/api/routers/sessions.py:44-52` |
+| GET | `/api/sessions/{session_id}` | 会话详情 | path `session_id` | `RecordingSession.to_dict()` | `sessions.py:55-61`；不存在 404 |
+| POST | `/api/sessions/{session_id}/segments` | 上传一个片段 | multipart `file`（服务端强制按 `segment_<uuid>.webm` 命名保存） | `segment_id`、`sequence`、`duration`、`status` | `sessions.py:64-117`；会话不存在 404；格式/时长非法 400；超限 413 |
+| POST | `/api/sessions/{session_id}/merge` | 合并全部片段为一条记录 | path `session_id` | `session_id`、`record_id`、`merged_text`、`optimized_text`、`record`、`total_duration`、`segment_count` | `sessions.py:120-195`；整段转写失败会回退到分段拼接文本（不报错）；`auto_optimize=true` 时顺带优化 |
+| DELETE | `/api/sessions/{session_id}` | 删除会话及其片段 | path `session_id` | `{status:"deleted", session_id}` | `sessions.py:198-204` |
+| WS | `/api/ws` | 全局状态广播通道 | 见 §4.2 | 见 §4.2 | `sessions.py:209-241` |
+| WS | `/api/asr/stream` | 真流式 ASR | 见 §4.1 | 见 §4.1 | `sessions.py:243-352` |
+
+---
+
+## 4. WebSocket 协议
+
+### 4.1 `/api/asr/stream`（真流式 ASR）
+
+连接后服务端立即 `accept()`（`sessions.py:246`），不发送握手消息。
+
+**客户端 → 服务端**
+
+| 帧类型 | 内容 | 说明 |
+| --- | --- | --- |
+| 文本 JSON | `{"type":"stream_start","language":"zh","context":""}` | `language` 默认 `"zh"`，`context` 默认 `""`（`sessions.py:269-280`）。前端实际只发 `type` + `language`（`src/composables/recorder/streamProtocol.mjs:112-117`） |
+| 文本 JSON | `{"type":"stream_finish"}` | 结束并落库（`sessions.py:282-293`）；未启动会话时报 `流式会话尚未启动` |
+| 文本 JSON | `{"type":"stream_cancel"}` | 取消当前会话（`sessions.py:295-303`）；即使没有活动会话也回 `stream_cancelled` |
+| 文本 JSON | `{"type":"ping"}` | 服务端回 `{"type":"pong"}`（无 `data`/`timestamp`）（`sessions.py:305-307`） |
+| 二进制帧 | 原始 **16 kHz / 单声道 / int16 小端 PCM** | 直接作为 WAV 帧写入磁盘（`app/services/streaming_session_manager.py:92-98, 148-150`）。**服务端不做格式校验**；16 kHz 由前端强制（`src/composables/useRecorder.js:847-850`） |
+| 其他文本 | 任意 `type` | 抛 `ValueError(f"未知的流式命令: {command}")` → 转成 `stream_error` 并关闭连接（`sessions.py:309`） |
+
+**服务端 → 客户端**（`timestamp` 均为 `datetime.now().isoformat()`，`sessions.py:385-387`）
+
+| 帧类型 | 载荷 | 触发时机 | 出处 |
+| --- | --- | --- | --- |
+| `stream_ready` | `{"type":"stream_ready","data":{"session_id","language","sample_rate":16000},"timestamp"}` | 收到 `stream_start` 后 | `sessions.py:275-279`、`streaming_session_manager.py:124-128` |
+| `stream_partial` | `{"type":"stream_partial","data":{"text","language","duration"},"timestamp"}` | **每个**二进制音频帧都会回一条 | `sessions.py:315-320`、`streaming_session_manager.py:157-161` |
+| `stream_finished` | `{"type":"stream_finished","data":{"record","raw_text","language","duration", "optimized_text"?},"timestamp"}` | 收到 `stream_finish` 且识别到有效文本后；`optimized_text` 仅在 `auto_optimize=true` 且优化成功时出现 | `sessions.py:286-292`、`streaming_session_manager.py:194-224` |
+| `stream_cancelled` | `{"type":"stream_cancelled","timestamp"}`（**无 `data` 字段**） | 收到 `stream_cancel` 后 | `sessions.py:299-302` |
+| `stream_error` | `{"type":"stream_error","data":{"error":"<异常文本>"},"timestamp"}`，随后服务端 `close()` | 任意未捕获异常（含未知命令、未启动就发音频、未识别到文本等） | `sessions.py:324-338` |
+
+其它契约：
+
+- 音频会话为空文本时 `finish_session` 抛 `未识别到有效语音文本`（`streaming_session_manager.py:185`），最终表现为 `stream_error`。
+- 客户端断开（`websocket.disconnect`）时跳出循环，`finally` 统一 `cancel_session`，避免会话与临时 WAV 泄漏（`sessions.py:260-263, 339-352`）。
+- 当前 provider 不支持真流式时，`_get_provider()` 抛 `RuntimeError`（`streaming_session_manager.py:75-79`）→ `stream_error`。
+
+### 4.2 `/api/ws`（全局状态通道）
+
+服务端**只接受文本 JSON**（`await websocket.receive_json()`，`sessions.py:224`）。
+
+**客户端 → 服务端**
+
+| `type` | 字段 | 行为 |
+| --- | --- | --- |
+| `status_update` | `recording`、`transcribing`、`record_id`、`duration` | 更新共享状态并向**所有**连接广播 `status`（`sessions.py:365-372`、`app/services/websocket.py:102-106`） |
+| `ping` | — | 仅向该连接回 `{"type":"pong"}`（`sessions.py:374-376`） |
+| 其他 | — | 只记一条 warning，**不回任何消息**（`sessions.py:378-382`） |
+
+**服务端 → 客户端**
+
+| `type` | 载荷 | 触发时机 | 出处 |
+| --- | --- | --- | --- |
+| `connected` | `{type, client_id, status:{recording,transcribing,record_id,duration,connected_clients}, timestamp}`，`timestamp` 为**毫秒整数** | 连接建立后仅发给新客户端 | `websocket.py:42-47` |
+| `status` | `{type:"status", recording, transcribing, record_id, duration, connected_clients, timestamp}`，`timestamp` 为**毫秒整数** | 连接/断开、`status_update` 后广播给所有客户端 | `websocket.py:95-100`、`sessions.py:229-231` |
+| `pong` | `{type:"pong"}` | 收到 `ping` | `sessions.py:375` |
+| `optimization_failed` | `{type, data:{record_id, error, status}, timestamp}`，此处 `timestamp` 为 **ISO 字符串**（与上面两种毫秒整数不一致） | `POST /api/records/{id}/optimize` 失败时广播 | `app/api/routers/records.py:345-353` |
+
+---
+
+## 5. 设置与模型服务（settings / model-service）
+
+### 5.1 端点表
+
+| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| GET | `/api/settings` | 读取用户设置 | — | `data/settings.json` 全量键 + 派生标记 `doubao_asr_api_key_set` | `settings.py:94-97`、`app/services/settings_service.py:171-196` |
+| PUT | `/api/settings` | 更新用户设置 | 请求体为设置键字典（白名单见 `app/api/schemas.py:31-97`） | 更新后的完整设置（同样脱敏） | `settings.py:100-118`；未知键静默丢弃；校验失败 400 |
+| GET | `/api/model-service` | 模型服务状态 | — | `managed`、`provider_type`、`model_name`、`recording_mode`、`loading`、`running`、`ready`、`error`、`pid`、`base_url`、`streaming_*`、`model_service_*`、`health`、`components` | `settings.py:50-53`、`app/services/model_service_manager.py:141-166` |
+| POST | `/api/model-service/start` | 启动/预热模型服务 | body `{"wait_until_ready": true}`（默认 `true`） | 同状态结构 | `settings.py:56-62`；异常 → 500 |
+| POST | `/api/model-service/stop` | 停止模型服务 | — | 同状态结构 | `settings.py:65-71`；异常 → 500 |
+| GET | `/api/streaming/service` | **兼容别名**，等价 `GET /api/model-service` | — | 同上 | `settings.py:74-77` |
+| POST | `/api/streaming/service/start` | **兼容别名**，等价 `POST /api/model-service/start` | 同上 | 同上 | `settings.py:80-83` |
+| POST | `/api/streaming/service/stop` | **兼容别名**，等价 `POST /api/model-service/stop` | — | 同上 | `settings.py:86-89` |
+
+> `/api/streaming/service*` 与 `/api/model-service*` 是同一实现的兼容别名（`settings.py:9` 注释、`app/services/model_service.py:5-6`）；前端只用后者。
+
+### 5.2 上传体积上限
+
+| 层 | 上限 | 触发结果 | 出处 |
+| --- | --- | --- | --- |
+| 请求体限流（上传/片段共用） | `settings.max_upload_size`，默认 `500 * 1024 * 1024` | **413**，detail 为「上传文件过大：请求体超过上限 X MB」或「…音频超过上限 X MB」 | `app/api/routers/records.py:95`、`app/api/routers/sessions.py:79`、`app/api/uploads.py:23-45`、默认值 `app/config.py:356` |
+| `AudioProcessor.validate_audio` | **硬编码** `MAX_FILE_SIZE = 500 * 1024 * 1024` | **400**，detail 为「File too large: N bytes. Max: …」 | `app/audio/processor.py:31, 72-76` |
+
+限流实现先看 `Content-Length` 快速拒绝，再按 1 MiB 分块累计，内存上界为 `limit + 1 MiB`（`app/api/uploads.py:14-15, 25-44`）。
+若把 `MAX_UPLOAD_SIZE` 调大到 500 MB 以上，500 MB～新上限之间的文件会改由 `validate_audio` 以 **400** 拒绝。
+
+### 5.3 `PUT /api/settings` 的校验失败行为
+
+请求体先经 `UserSettingsUpdate`（`app/api/schemas.py:31-97`）校验，规则：
+
+1. **未知键静默丢弃**（`model_config = ConfigDict(extra="ignore")`，`schemas.py:38`）——Electron 会整份提交快照，因此这是有意保留的宽松策略。
+2. **显式传 `null` 视为「本次未提供」**，不会写进 `settings.json`（`settings_service.py:223-228`）。
+3. 类型 / 枚举 / 范围非法 → **400**，detail 形如 `设置项校验失败：silence_threshold 必须是数字`（`app/api/schemas.py:100-127`）。
+4. 过滤后没有任何有效键 → **400** `No valid settings provided`（`settings_service.py:243-244`）。
+5. `hotkey` 非法 → **400** `Invalid hotkey configuration`（`settings_service.py:230-231`）。
+6. 需要重建 ASR provider 但运行时 provider 未初始化 → **500**；重建过程抛异常 → **500**（**设置已落盘**）（`settings_service.py:271-288`）。
+
+写入后的副作用：模型运行时相关键变化会先 `model_service_manager.stop()` + 关闭流式会话管理器，再重建 provider（`settings_service.py:258-291`、`MODEL_RUNTIME_KEYS` 定义见 `settings_service.py:34-52`）。
+
+### 5.4 `GET /api/settings` 的豆包密钥脱敏契约
+
+- 响应中**不含** `doubao_asr_api_key_encrypted`（密文被剔除），只返回布尔 `doubao_asr_api_key_set`（`settings_service.py:133-145`）。
+- `doubao_asr_api_key`（明文）从来不是响应字段，也**不会**落盘到 `settings.json`；写入时立即加密为 `doubao_asr_api_key_encrypted`（`settings_service.py:148-168`）。
+- 空串或未传 = 保留已存密钥；`doubao_asr_api_key_clear=true` 才清除（`settings_service.py:157-168`）。
+- `GET /api/settings` 默认纯读：只有「提示词预设 id 失效」或「浮层枚举值失效」这两类可修复键才会单次落盘（`settings_service.py:183-194`）。
+
+---
+
+## 6. 提示词预设（prompts）
+
+| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| GET | `/api/prompts` | 列出全部预设 | — | `presets`（数组）、`default_preset_id`、`last_used_preset_id` | `app/api/routers/prompts.py:35-49`；注意 `last_used_preset_id` 实际回的是 `default_preset_id` 的归一化结果 |
+| PUT | `/api/prompts/default` | 设为默认预设 | body `{"preset_id": "..."}` | `{status:"updated", default_preset_id}` | `prompts.py:52-70`；预设不存在 → 404 |
+| GET | `/api/prompts/{preset_id}` | 读取单个预设 | path `preset_id` | `PromptPreset` 全字段 | `prompts.py:73-80`；不存在 404 |
+| POST | `/api/prompts` | 新建预设 | body `PromptPresetCreate` | — | **恒 400**（见下方说明） |
+| PUT | `/api/prompts/{preset_id}` | 更新预设 | body `PromptPresetUpdate` | — | **恒 400**（预设不存在时 404） |
+| DELETE | `/api/prompts/{preset_id}` | 删除预设 | path `preset_id` | — | **恒 400**（预设不存在时 404） |
+| POST | `/api/prompts/{preset_id}/preview` | 用测试文本渲染提示词 | body `{"text": "..."}` | `preset_id`、`rendered_prompt` | `prompts.py:120-130`；模板含 `{text}` 时 `format`，否则拼接（`app/prompts/file_manager.py:89-99`） |
+
+> **写接口恒 400 的原因**：`PromptManager.create/update/delete` 主动 `raise ValueError("只支持 prompts 目录中的提示词文件")`，
+> 路由捕获后统一转 400（`app/prompts/file_manager.py:101-112`、`prompts.py:90-91, 103-104, 116-117`）。
+> 预设的唯一真相源是仓库根目录 `prompts/*.txt`；预设 id 由文件名派生为 `preset-<文件名去掉扩展名>`（`file_manager.py:17-18, 44-45`）。
+
+---
+
+## 7. LLM 配置（llm）
+
+| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| GET | `/api/llm/configs` | 列出全部 LLM 配置 | — | `configs[]`（`id/provider/name/model/api_base/temperature/max_tokens/is_default/created_at/updated_at`）、`default_config_id` | `app/api/routers/llm.py:37-60`；**不返回 `api_key`** |
+| GET | `/api/llm/configs/{config_id}` | 单条配置 | path `config_id` | 同上单条 | `llm.py:63-83`；不存在 404 |
+| POST | `/api/llm/configs` | 新建配置 | `provider`、`name`、`api_key`（明文）、`model`、可选 `api_base/temperature/max_tokens/extra_params` | `id`、`provider`、`name`、`model`、`is_default` | `llm.py:86-100`、`app/llm/models.py:42-51`；异常 → 400；`api_key` 立即加密为 `api_key_encrypted` 落盘（`app/llm/config_manager.py:105, 115`） |
+| PUT | `/api/llm/configs/{config_id}` | 更新配置 | `name`、`api_key`、`api_base`、`model`、`temperature`、`max_tokens`、`extra_params`（均可选） | `id`、`name`、`model`、`updated_at` | `llm.py:103-118`；不存在 404；`ValueError` → 400 |
+| DELETE | `/api/llm/configs/{config_id}` | 删除配置 | path `config_id` | `{status:"deleted", config_id}` | `llm.py:121-133`；不存在 404；同时使网关缓存失效 |
+| PUT | `/api/llm/configs/{config_id}/default` | 设为默认 | path `config_id` | `{status:"updated", default_config_id}` | `llm.py:136-148`；不存在 404 |
+| POST | `/api/llm/configs/{config_id}/test` | 测试连通性 | path `config_id` | provider 的 `test_connection()` 结果；provider 创建失败时 `{success:false, error}` | `llm.py:151-165`；配置不存在 404 |
+| GET | `/api/llm/providers` | 支持的 provider 元数据 | — | `providers[]`：`id/name/default_base_url/models/default_model` | `llm.py:168-182`、`app/llm/models.py:66-103` |
+| GET | `/api/llm/providers/{provider}/models` | 某 provider 的模型列表 | path `provider` | `provider`、`models` | `llm.py:185-193`；未知 provider → 400 |
+
+`LLMProvider` 枚举：`deepseek`、`claude`、`openai`、`doubao`、`qwen`、`custom`（`app/llm/models.py:11-18`）。
+
+---
+
+## 8. AI 动作（ai-actions）
+
+所有端点都直接复用默认 LLM provider；服务未初始化时 → **503**（`app/ai_actions/routes.py:56-61`）。
+
+| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| POST | `/api/ai-actions/chat` | Agent 多轮对话 | `messages[]`（`{role, content}`）、`metadata` | `AIActionService.chat()` 的结果字典 | `routes.py:75-93`；未配置 LLM → **502** + 中文提示；请求体语义错误（空 messages / 非法 role / 空 content）→ **400**；其他异常 → 502 |
+| POST | `/api/ai-actions/translate` | 翻译 | `source_text`（必填，`min_length=1`）、`source_app`、`source_context`、`auto_add_to_wordbook`（默认 `true`）、`metadata` | 动作结果字典 | `routes.py:96-100` |
+| POST | `/api/ai-actions/explain` | 解释 | 同上 | 同上 | `routes.py:103-107` |
+| POST | `/api/ai-actions/summarize` | 总结 | 同上 | 同上 | `routes.py:110-114` |
+| POST | `/api/ai-actions/rewrite` | 改写 | 同上 | 同上 | `routes.py:117-121` |
+
+> 这 4 个动作端点未包 `try/except`：`_run()` 抛出的异常会变成 FastAPI 的 500（与 `/chat` 统一转 502 的策略不同）。
+
+---
+
+## 9. 剪贴板（clipboard）
+
+| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| GET | `/api/clipboard/items` | 列出条目 | query `query`、`item_type`（`text\|link\|code\|file\|image`）、`favorite_only`、`pinned_only`、`limit`（1..500，默认 100） | **条目数组** | `app/clipboard/routes.py:43-60` |
+| GET | `/api/clipboard/stats` | 统计 | — | `total`、`today`、`favorites`、`pinned` | `routes.py:63-66`、`app/clipboard/manager.py:390-401` |
+| POST | `/api/clipboard/items` | 新建条目 | `content`（必填，`min_length=1`）、`source`（默认 `manual`）、`item_type`、`title`、`summary`、`metadata` | 条目字典 | `routes.py:69-80` |
+| GET | `/api/clipboard/items/{item_id}` | 读取条目 | path `item_id` | 条目字典 | `routes.py:83-89`；不存在 404 |
+| GET | `/api/clipboard/items/{item_id}/image` | 读取图片内容 | path `item_id` | 图片文件流 | `routes.py:92-103`；无图片或路径越界（不在 `data/clipboard/images/` 内）一律 404 |
+| PUT | `/api/clipboard/items/{item_id}` | 更新条目 | `content`、`title`、`summary`、`is_favorite`、`is_pinned`（均可选） | 条目字典 | `routes.py:106-119`；不存在 404 |
+| DELETE | `/api/clipboard/items/{item_id}` | 删除条目 | path `item_id` | `{status:"deleted", item_id}` | `routes.py:122-128`；不存在 404 |
+
+---
+
+## 10. 生词本（wordbook）
+
+| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| GET | `/api/wordbook` | 查询词条 | query `query`、`entry_type`（`word\|phrase\|sentence`）、`favorite_only`、`limit`（1..500，默认 100） | **词条数组** | `app/wordbook/routes.py:47-63`（`prefix` + 空路径） |
+| POST | `/api/wordbook` | 创建或追加词条 | `source_text`、`normalized_text`、`translation`（三者必填 `min_length=1`）、`language`（默认 `unknown`）、`entry_type`（默认 `word`）、`explanations`、`examples`、`source_app`、`source_context`、`metadata` | 词条字典 | `routes.py:66-82` |
+| GET | `/api/wordbook/stats` | 统计 | — | `total`、`today`、`favorites`、`queried_total` | `routes.py:85-89`、`app/wordbook/manager.py:276-286` |
+| GET | `/api/wordbook/{entry_id}` | 读取单条 | path `entry_id` | 词条字典 | `routes.py:92-99`；不存在 404 |
+| PUT | `/api/wordbook/{entry_id}` | 更新词条 | `translation`、`explanations`、`examples`、`is_favorite`、`metadata`（均可选） | 词条字典 | `routes.py:102-116`；不存在 404 |
+
+> 生词本**没有** DELETE 端点（对比剪贴板）。
+
+---
+
+## 11. 响应状态码约定
+
+| 状态码 | 出现场景 | 代码证据 |
+| --- | --- | --- |
+| **400** | ① 上传无文件名：`No filename provided`；② 音频校验失败（格式不支持 / 时长 < 0.5s / 空文件 / 超过硬编码 500MB）；③ 记录无 `raw_text` 却请求优化：`No text to optimize`；④ 导出 `format` 非 `txt`/`json`；⑤ `PUT /api/settings` 类型/枚举/范围校验失败、无有效键、热键非法；⑥ 提示词 `POST/PUT/DELETE /api/prompts`（恒 400）；⑦ LLM 配置创建/更新异常、未知 provider；⑧ `POST /api/ai-actions/chat` 请求体语义错误 | `records.py:92, 100-101, 319, 396-400`；`sessions.py:82-83`；`settings_service.py:216-244`；`file_manager.py:101-112`；`llm.py:99-100, 117-118, 192-193`；`ai_actions/routes.py:86-88` |
+| **404** | 资源不存在：记录、会话、提示词预设、LLM 配置、剪贴板条目/图片、生词本词条；以及记录音频路径为空或不是普通文件 | `records.py:211, 222, 267, 277, 287, 294, 299, 316, 392`；`sessions.py:60, 76, 125, 203`；`prompts.py:60, 79, 101, 114, 126`；`llm.py:69, 110, 127, 142, 157`；`clipboard/routes.py:88, 97, 101, 118, 127`；`wordbook/routes.py:98, 115` |
+| **409** | 记录乐观锁冲突：`PUT /api/records/{id}` 传了 `revision`，且该记录仍存在但版本已变（detail：`记录已被其他操作修改，请刷新后重试`） | `records.py:258-266` |
+| **413** | 上传请求体或音频超过 `settings.max_upload_size`（`POST /api/audio/upload`、`POST /api/sessions/{id}/segments`） | `app/api/uploads.py:26-43` |
+| **422** | FastAPI/Pydantic 对**未捕获**的请求体或查询参数校验失败自动返回（如 `AIActionRequest.source_text` 缺失、`search_type` 不在枚举内、`page_size > 200`） | `ai_actions/routes.py:28`、`records.py:179-182`、`clipboard/routes.py:46-49`、`wordbook/routes.py:50-52` |
+| **500** | ① `POST /api/model-service/start|stop` 内部异常；② `PUT /api/settings` 需重建 provider 但 provider 未初始化，或重建过程抛异常（设置已落盘）；③ `/api/ai-actions/{translate,explain,summarize,rewrite}` 未捕获异常 | `settings.py:62, 71`；`settings_service.py:273, 285-288`；`ai_actions/routes.py:64-72, 96-121` |
+| **502** | ① `POST /api/records/{id}/optimize` 优化失败（detail：`文本优化失败：…`，并广播 WS `optimization_failed`）；② `POST /api/ai-actions/chat` 未配置可用 LLM 或上游 LLM 异常 | `records.py:360-363`；`ai_actions/routes.py:83-93` |
+| **503** | AI 动作服务尚未初始化（`ai_action_service is None`） | `ai_actions/routes.py:56-61` |
+
+> 说明：文档里未列出的 4xx/5xx 只可能来自 FastAPI 自身（如路由不匹配的 404、方法不允许的 405）。
+
+---
+
+## 12. 待确认
+
+- `GET /api/prompts` 的 `last_used_preset_id` 字段回传的是 `default_preset_id` 的归一化值（`prompts.py:48`），
+  但 `PUT /api/prompts/default` 会同时写 `default_preset_id` 与 `last_used_preset_id`（`prompts.py:62-65`）。
+  这是**有意为之还是笔误**，代码中无注释说明，**待确认**。
+- `/api/ai-actions/*` 的动作端点未像 `/chat` 那样统一把上游异常转成 502，**是否为设计意图待确认**。
