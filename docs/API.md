@@ -46,7 +46,7 @@
 | PUT | `/api/records/{record_id}` | 修改记录文本/收藏 | body：`raw_text`、`optimized_text`、`is_modified`、`is_favorite`、`revision`（均可选） | 更新后的 `Record.to_dict()` | `records.py:242-269`；传 `revision` 且版本已变 → **409** |
 | DELETE | `/api/records/{record_id}` | 删除记录及其音频 | path `record_id` | `{status:"deleted", record_id}` | `records.py:272-279` |
 | GET | `/api/records/{record_id}/audio` | 播放音频 | path `record_id` | WAV 文件流（`media_type="audio/wav"`） | `records.py:282-304`；`audio_path` 为空或非普通文件 → 404 |
-| POST | `/api/records/{record_id}/optimize` | 用 AI 优化文本 | query `style`（默认 `"default"`） | `record_id`、`original_text`、`optimized_text`、`processing_time` | `records.py:307-379`；无 `raw_text` → 400；优化异常 → **502**，同时广播 WS `optimization_failed` |
+| POST | `/api/records/{record_id}/optimize` | 用 AI 优化文本 | query `style`（默认 `"default"`） | `record_id`、`original_text`、`optimized_text`、`processing_time`、`fallback_reason` | `records.py:307-392`；无 `raw_text` → 400；优化异常 → **502**，同时广播 WS `optimization_failed`。**降级不再静默**：`fallback_reason` 非空表示「设置里配置的 LLM 调用失败、已回退到 `.env` 内置 key 完成」，取值为脱敏后的原因（`app/llm/optimizer.py:233-289`）；失败详情与 `fallback_reason` 均不含明文密钥 |
 | GET | `/api/records/{record_id}/export` | 导出单条记录 | query `format`（`txt`/`json`，默认 `txt`）、`use_optimized`（默认 `true`） | `PlainTextResponse`，带 `Content-Disposition: attachment; filename=record_<id>.<format>` | `records.py:382-418`；`format` 非法 → 400（`ExportFormat` 仅 `txt`/`json`，`app/records/models.py:21-24`） |
 
 ---
@@ -117,7 +117,8 @@
 | `connected` | `{type, client_id, status:{recording,transcribing,record_id,duration,connected_clients}, timestamp}`，`timestamp` 为**毫秒整数** | 连接建立后仅发给新客户端 | `websocket.py:42-47` |
 | `status` | `{type:"status", recording, transcribing, record_id, duration, connected_clients, timestamp}`，`timestamp` 为**毫秒整数** | 连接/断开、`status_update` 后广播给所有客户端 | `websocket.py:95-100`、`sessions.py:229-231` |
 | `pong` | `{type:"pong"}` | 收到 `ping` | `sessions.py:375` |
-| `optimization_failed` | `{type, data:{record_id, error, status}, timestamp}`，此处 `timestamp` 为 **ISO 字符串**（与上面两种毫秒整数不一致） | `POST /api/records/{id}/optimize` 失败时广播 | `app/api/routers/records.py:345-353` |
+| `optimization_failed` | `{type, data:{record_id, error, status}, timestamp}`，此处 `timestamp` 为 **ISO 字符串**（与上面两种毫秒整数不一致） | `POST /api/records/{id}/optimize` 失败时广播 | `app/api/routers/records.py:344-353` |
+| `optimization_degraded` | `{type, data:{record_id, reason}, timestamp}`，`timestamp` 为 **ISO 字符串** | 自动优化（单段 / 流式）中「设置里配置的 LLM 调用失败、回退到 `.env` 内置 key 完成」时广播，`reason` 为脱敏后的原因；手动优化走同步响应字段 `fallback_reason`，不重复广播 | `app/services/transcription_service.py:137-152`、`app/services/streaming_session_manager.py:262-278` |
 
 ---
 
@@ -193,7 +194,7 @@
 | PUT | `/api/llm/configs/{config_id}` | 更新配置 | `name`、`api_key`、`api_base`、`model`、`temperature`、`max_tokens`、`extra_params`（均可选） | `id`、`name`、`model`、`updated_at` | `llm.py:103-118`；不存在 404；`ValueError` → 400 |
 | DELETE | `/api/llm/configs/{config_id}` | 删除配置 | path `config_id` | `{status:"deleted", config_id}` | `llm.py:121-133`；不存在 404；同时使网关缓存失效 |
 | PUT | `/api/llm/configs/{config_id}/default` | 设为默认 | path `config_id` | `{status:"updated", default_config_id}` | `llm.py:136-148`；不存在 404 |
-| POST | `/api/llm/configs/{config_id}/test` | 测试连通性 | path `config_id` | provider 的 `test_connection()` 结果；provider 创建失败时 `{success:false, error}` | `llm.py:151-165`；配置不存在 404 |
+| POST | `/api/llm/configs/{config_id}/test` | 测试连通性 | path `config_id` | provider 的 `test_connection()` 结果；provider 创建失败时 `{success:false, error}` | `llm.py:151-165`；配置不存在 404；**错误文案里回显的密钥已脱敏**（`app/llm/security.py`）；渲染层入口在 LLM 配置管理弹窗的「测试连接」按钮 |
 | GET | `/api/llm/providers` | 支持的 provider 元数据 | — | `providers[]`：`id/name/default_base_url/models/default_model` | `llm.py:168-182`、`app/llm/models.py:66-103` |
 | GET | `/api/llm/providers/{provider}/models` | 某 provider 的模型列表 | path `provider` | `provider`、`models` | `llm.py:185-193`；未知 provider → 400 |
 
