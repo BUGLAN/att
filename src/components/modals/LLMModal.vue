@@ -6,6 +6,7 @@
       @create="openEditModal()"
       @edit="openEditModal"
       @delete="requestDelete"
+      @test="handleTest"
     />
   </Modal>
 
@@ -34,6 +35,7 @@ const {
   llmConfigs,
   loadLLMConfigs,
   deleteLLMConfig,
+  testLLMConfig,
   defaultConfigId: storeDefaultConfigId
 } = useLLMConfig()
 
@@ -54,6 +56,16 @@ function openEditModal(config = null) {
 function requestDelete(id) {
   pendingDeleteId.value = id
   isDeleteConfirmVisible.value = true
+}
+
+// 测试连接：验证已保存的 key 是否真的可用。
+// 没有这个入口时，用户只能靠「优化结果看起来对不对」间接猜 key 有没有生效。
+async function handleTest(config) {
+  if (!config?.id) {
+    return
+  }
+
+  await testLLMConfig(config.id)
 }
 
 async function confirmDelete() {

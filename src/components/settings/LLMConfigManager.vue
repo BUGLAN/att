@@ -18,6 +18,20 @@
             variant="ghost"
             size="sm"
             icon
+            title="测试连接"
+            aria-label="测试连接"
+            @click="$emit('test', config)"
+          >
+            <template #icon>
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" />
+              </svg>
+            </template>
+          </BaseButton>
+          <BaseButton
+            variant="ghost"
+            size="sm"
+            icon
             title="编辑配置"
             aria-label="编辑配置"
             @click="$emit('edit', config)"
@@ -75,5 +89,5 @@ defineProps({
   }
 })
 
-defineEmits(['create', 'edit', 'delete'])
+defineEmits(['create', 'edit', 'delete', 'test'])
 </script>
