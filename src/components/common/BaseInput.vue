@@ -2,7 +2,7 @@
   <!--
     单行输入框原语：统一高度 / 圆角 / focus 环 / 错误态。
     - 默认形态：自带底色与描边（原 .form-input / .setting-input / .settings-records-search）
-    - bare 形态：透明无边框，用于与图标包一层容器做搜索框（原 .clipboard-search input / .wordbook-search input）
+    - bare 形态：透明无边框，用于与图标包一层容器做搜索框（原 .clipboard-search input）
     - 其余属性（type / placeholder / min / max / step / readonly 等）与事件自动透传到原生 input
   -->
   <input
