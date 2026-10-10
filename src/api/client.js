@@ -220,7 +220,6 @@ export const api = {
   },
   getClipboardStats: () => request('GET', '/clipboard/stats'),
   createClipboardItem: (data) => request('POST', '/clipboard/items', { body: data }),
-  getClipboardItem: (id) => request('GET', `/clipboard/items/${id}`),
   async getClipboardItemImageUrl(id, version = '') {
     const baseUrl = await getBaseUrl()
     const suffix = version ? `?v=${encodeURIComponent(version)}` : ''
@@ -252,7 +251,6 @@ export const api = {
   stopStreamingService: () => request('POST', '/model-service/stop'),
 
   getLLMConfigs: () => request('GET', '/llm/configs'),
-  getLLMConfig: (id) => request('GET', `/llm/configs/${id}`),
   saveLLMConfig: (config) => (
     config.id
       ? request('PUT', `/llm/configs/${config.id}`, { body: config })
@@ -262,7 +260,6 @@ export const api = {
   testLLMConfig: (id) => request('POST', `/llm/configs/${id}/test`, { timeout: SLOW_TIMEOUT_MS }),
   setDefaultLLMConfig: (id) => request('PUT', `/llm/configs/${id}/default`),
   getLLMProviders: () => request('GET', '/llm/providers'),
-  getLLMProviderModels: (provider) => request('GET', `/llm/providers/${provider}/models`),
 
   // 预设是只读的（唯一真相源是 prompts/*.txt）：只保留列出与设默认两个接口
   getPresets: () => request('GET', '/prompts'),

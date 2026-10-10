@@ -55,10 +55,9 @@ SERIALIZATION_JSON = 0b0001
 COMPRESSION_NONE = 0b0000
 COMPRESSION_GZIP = 0b0001
 
-# 接入点与资源 ID（ASR 2.0 用 seedasr，1.0 用 bigasr；不匹配会直接 403）
+# 接入点与资源 ID（ASR 2.0 用 seedasr；不匹配会直接 403）
 DEFAULT_ENDPOINT = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
 DEFAULT_RESOURCE_ID = "volc.seedasr.sauc.duration"
-RESOURCE_ID_ASR_1_0 = "volc.bigasr.sauc.duration"
 MODEL_NAME = "bigmodel"
 
 SAMPLE_RATE = 16000
@@ -67,7 +66,6 @@ BITS = 16
 CHUNK_MS = 200
 # 200ms / 16kHz / 单声道 / 16bit = 3200 采样 = 6400 字节
 CHUNK_SAMPLES = SAMPLE_RATE * CHUNK_MS // 1000
-CHUNK_BYTES = CHUNK_SAMPLES * 2
 
 # 对话上下文（corpus.context）上限，按码点计
 ASR_CONTEXT_MAX_CHARS = 800
@@ -84,7 +82,6 @@ KIND_SERVER = "server"
 KIND_NETWORK = "network"
 KIND_PROTOCOL = "protocol"
 KIND_INPUT = "input"
-KIND_CANCELED = "canceled"
 
 
 # ==================== 数据结构 ====================

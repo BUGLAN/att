@@ -55,7 +55,3 @@ class ASRProviderError(RuntimeError):
 
 class ASRConfigError(ASRProviderError):
     """ASR 配置异常"""
-
-
-class ASRCapabilityError(ASRProviderError):
-    """ASR 能力不满足时的异常"""

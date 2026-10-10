@@ -96,10 +96,6 @@ export const useAppStore = defineStore('app', () => {
   const toastTimers = new Map()
   let toastSeq = 0
 
-  // 向后兼容：旧代码只读 toastMessage / toastVisible，这里作为派生值保留
-  const toastMessage = computed(() => toasts.value[toasts.value.length - 1]?.message || '')
-  const toastVisible = computed(() => toasts.value.length > 0)
-
   const selectMode = ref(false)
   const selectedRecords = ref(new Set())
 
@@ -116,28 +112,6 @@ export const useAppStore = defineStore('app', () => {
 
   function setCurrentPage(page) {
     currentPage.value = page
-  }
-
-  function collapseSidebar() {
-    sidebarDragWidth.value = null
-    sidebarCollapsed.value = true
-    persistSidebarLayout()
-  }
-
-  function expandSidebar(width = sidebarWidth.value) {
-    sidebarDragWidth.value = null
-    sidebarWidth.value = sanitizeExpandedWidth(width)
-    sidebarCollapsed.value = false
-    persistSidebarLayout()
-  }
-
-  function toggleSidebar() {
-    if (sidebarCollapsed.value) {
-      expandSidebar()
-      return
-    }
-
-    collapseSidebar()
   }
 
   function setSidebarWidth(width) {
@@ -174,14 +148,6 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  function startRecording() {
-    setRecording(true)
-  }
-
-  function stopRecording() {
-    setRecording(false)
-  }
-
   function setTranscribing(value) {
     isTranscribing.value = value
   }
@@ -216,12 +182,6 @@ export const useAppStore = defineStore('app', () => {
 
   function closeModal(modalName) {
     modals.value[modalName] = false
-  }
-
-  function closeAllModals() {
-    Object.keys(modals.value).forEach((key) => {
-      modals.value[key] = false
-    })
   }
 
   function removeToast(id) {
@@ -263,18 +223,6 @@ export const useAppStore = defineStore('app', () => {
 
     toastTimers.set(id, setTimeout(() => removeToast(id), duration))
     return id
-  }
-
-  // 不传 id 时清空全部，传 id 时只移除指定那条
-  function hideToast(id) {
-    if (id != null) {
-      removeToast(id)
-      return
-    }
-
-    toastTimers.forEach((timer) => clearTimeout(timer))
-    toastTimers.clear()
-    toasts.value = []
   }
 
   function toggleSelectMode() {
@@ -322,20 +270,13 @@ export const useAppStore = defineStore('app', () => {
     connectedClients,
     modals,
     toasts,
-    toastMessage,
-    toastVisible,
     selectMode,
     selectedRecords,
     setCurrentPage,
-    collapseSidebar,
-    expandSidebar,
-    toggleSidebar,
     setSidebarWidth,
     startSidebarResize,
     stopSidebarResize,
     setRecording,
-    startRecording,
-    stopRecording,
     setTranscribing,
     setCurrentRecordId,
     setCurrentRecord,
@@ -345,9 +286,7 @@ export const useAppStore = defineStore('app', () => {
     setConnectedClients,
     openModal,
     closeModal,
-    closeAllModals,
     showToast,
-    hideToast,
     toggleSelectMode,
     toggleRecordSelection,
     selectAllRecords,

@@ -3,18 +3,6 @@ import { api as httpApi, getBackendPort } from '@/api/client'
 
 const isElectron = typeof window !== 'undefined' && !!window.electronAPI
 
-function toPlainHotkey(hotkey) {
-  if (!hotkey) {
-    return null
-  }
-
-  return {
-    modifiers: Array.isArray(hotkey.modifiers) ? [...hotkey.modifiers] : [],
-    key: hotkey.key ?? null,
-    display: hotkey.display ?? ''
-  }
-}
-
 function toPlainObject(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value))
 }
@@ -50,19 +38,16 @@ export function useElectron() {
     getClipboardItems: (params) => httpApi.getClipboardItems(params),
     getClipboardStats: () => httpApi.getClipboardStats(),
     createClipboardItem: (payload) => httpApi.createClipboardItem(payload),
-    getClipboardItem: (id) => httpApi.getClipboardItem(id),
     updateClipboardItem: (id, data) => httpApi.updateClipboardItem(id, data),
     deleteClipboardItem: (id) => httpApi.deleteClipboardItem(id),
     getSettings: () => httpApi.getSettings(),
     saveSettings: (settings) => httpApi.saveSettings(settings),
     getLLMConfigs: () => httpApi.getLLMConfigs(),
-    getLLMConfig: (id) => httpApi.getLLMConfig(id),
     saveLLMConfig: (config) => httpApi.saveLLMConfig(config),
     deleteLLMConfig: (id) => httpApi.deleteLLMConfig(id),
     testLLMConfig: (id) => httpApi.testLLMConfig(id),
     setDefaultLLMConfig: (id) => httpApi.setDefaultLLMConfig(id),
     getLLMProviders: () => httpApi.getLLMProviders(),
-    getLLMProviderModels: (provider) => httpApi.getLLMProviderModels(provider),
     getPresets: () => httpApi.getPresets(),
     setDefaultPreset: (id) => httpApi.setDefaultPreset(id)
   }
@@ -148,8 +133,8 @@ export function useElectron() {
     }
   }
 
-  function onRecordStatus() {}
-  function onRecordCompleted() {}
+  // 历史上的 onRecordStatus / onRecordCompleted / startStatusPolling / stopStatusPolling
+  // 是静默 no-op（记录状态实时刷新只走全局 WebSocket），已删除。
 
   function onHotkeyPress(callback) {
     globalThis.window?.electronAPI?.onHotkeyPress?.(callback)
@@ -179,24 +164,8 @@ export function useElectron() {
     globalThis.window?.electronAPI?.onDesktopAgentError?.(callback)
   }
 
-  function openSettingsPage() {
-    globalThis.window?.electronAPI?.openSettingsPage()
-  }
-
   function removeAllListeners(channel) {
     globalThis.window?.electronAPI?.removeAllListeners(channel)
-  }
-
-  async function updateHotkey(hotkey) {
-    const plainHotkey = toPlainHotkey(hotkey)
-    if (!Array.isArray(plainHotkey?.modifiers) || plainHotkey.modifiers.length === 0) {
-      return {
-        success: false,
-        error: '快捷键至少需要一个修饰键'
-      }
-    }
-
-    return globalThis.window?.electronAPI?.updateHotkey(plainHotkey)
   }
 
   async function syncInputSettings(settings) {
@@ -227,9 +196,6 @@ export function useElectron() {
     return globalThis.window.electronAPI.syncRecordingState(toPlainObject(payload))
   }
 
-  function startStatusPolling() {}
-  function stopStatusPolling() {}
-
   return {
     isElectron,
     isReady,
@@ -238,8 +204,6 @@ export function useElectron() {
     tray,
     floatingWindow,
     clipboard,
-    onRecordStatus,
-    onRecordCompleted,
     onHotkeyPress,
     onHotkeyRelease,
     onPasteText,
@@ -247,17 +211,13 @@ export function useElectron() {
     onClipboardChanged,
     onDesktopPermissionRequired,
     onDesktopAgentError,
-    openSettingsPage,
     debugLog,
     removeAllListeners,
-    updateHotkey,
     syncInputSettings,
     syncDesktopSettings,
     getDesktopSettings,
     saveDesktopSettings,
     syncRecordingState,
-    startStatusPolling,
-    stopStatusPolling,
     platform: globalThis.window?.electronAPI?.platform || 'web',
     getBackendPort
   }

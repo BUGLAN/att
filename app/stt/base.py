@@ -4,7 +4,7 @@ ASR 抽象基类
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from app.records.models import AudioChunk, TranscriptionResult
+from app.records.models import TranscriptionResult
 from app.stt.models import ASRCapabilities, ASRRuntimeCapabilities
 
 
@@ -63,84 +63,6 @@ class ASRProvider(ABC):
         **kwargs
     ) -> TranscriptionResult:
         """转写单个音频文件"""
-
-    async def transcribe_chunk(
-        self,
-        chunk: AudioChunk,
-        language: str = "zh",
-        **kwargs
-    ) -> TranscriptionResult:
-        """转写单个分块并修正时间戳"""
-        result = await self.transcribe(
-            chunk.file_path,
-            language=language,
-            **kwargs
-        )
-
-        for segment in result.segments:
-            segment.start += chunk.start_time
-            segment.end += chunk.start_time
-
-        return result
-
-    async def transcribe_chunks(
-        self,
-        chunks: list[AudioChunk],
-        language: str = "zh",
-        **kwargs
-    ) -> TranscriptionResult:
-        """顺序转写多个分块并合并结果"""
-        all_segments = []
-        total_processing_time = 0.0
-        detected_language = language
-        language_probability = 1.0
-        total_duration = 0.0
-
-        for chunk in chunks:
-            result = await self.transcribe_chunk(
-                chunk,
-                language=language,
-                **kwargs
-            )
-            all_segments.extend(result.segments)
-            total_processing_time += result.processing_time
-            total_duration = max(total_duration, chunk.end_time)
-
-            if detected_language == language and result.language:
-                detected_language = result.language
-                language_probability = result.language_probability
-
-        merged_segments = self._merge_overlapping_segments(all_segments)
-
-        return TranscriptionResult(
-            segments=merged_segments,
-            language=detected_language,
-            language_probability=language_probability,
-            duration=total_duration,
-            processing_time=total_processing_time
-        )
-
-    def _merge_overlapping_segments(
-        self,
-        segments,
-        min_gap: float = 0.5
-    ):
-        """合并重叠分段"""
-        if not segments:
-            return segments
-
-        sorted_segments = sorted(segments, key=lambda segment: segment.start)
-        merged = [sorted_segments[0]]
-
-        for segment in sorted_segments[1:]:
-            last = merged[-1]
-            if segment.start < last.end - min_gap:
-                if segment.end > last.end:
-                    merged[-1] = segment
-            else:
-                merged.append(segment)
-
-        return merged
 
     async def warmup(self) -> None:
         """预热模型"""

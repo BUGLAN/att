@@ -323,9 +323,3 @@ def get_record_index(data_path) -> RecordIndex:
             index = RecordIndex(data_path)
             _INDEXES[key] = index
         return index
-
-
-def reset_record_indexes() -> None:
-    """清空索引注册表（仅供测试隔离使用）。"""
-    with _INDEXES_LOCK:
-        _INDEXES.clear()

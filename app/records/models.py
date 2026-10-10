@@ -43,17 +43,6 @@ class AudioMetadata:
 
 
 @dataclass
-class AudioChunk:
-    """Represents a chunked audio segment"""
-    chunk_id: str
-    file_path: str
-    start_time: float  # seconds
-    end_time: float
-    duration: float
-    sequence: int
-
-
-@dataclass
 class TranscriptionSegment:
     """Single transcription segment from whisper"""
     start: float

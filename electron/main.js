@@ -427,24 +427,7 @@ function setupIPC() {
     trayManager?.updateMenu(records)
   })
 
-  ipcMain.handle('hotkey:update', async (event, hotkey = null) => {
-    const desktopSettings = saveLocalDesktopSettings({ hotkey })
-
-    if (hasReadyDesktopAgent()) {
-      const result = await desktopAgentManager.updateHotkey(desktopSettings.hotkey)
-      return {
-        ...(result || { success: true }),
-        managedBy: 'desktop-agent',
-        hotkey: desktopSettings.hotkey
-      }
-    }
-
-    return {
-      success: true,
-      managedBy: 'desktop-settings-only',
-      hotkey: desktopSettings.hotkey
-    }
-  })
+  // 快捷键更新统一走 desktop:sync-input-settings（hotkey:update 是旧通道，已删除）
 
   ipcMain.handle('desktop:sync-input-settings', async (event, payload = {}) => {
     let desktopSettings = null

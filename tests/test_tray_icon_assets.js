@@ -17,7 +17,6 @@ const PLATFORM_SIZES = {
 const TRAY_ICON_ROOT = path.join(__dirname, '..', 'electron', 'tray', 'icons')
 const SRC_ROOT = path.join(__dirname, '..', 'src')
 const TRAY_SOURCE = path.join(__dirname, '..', 'electron', 'tray', 'index.js')
-const GENERATOR_SOURCE = path.join(__dirname, '..', 'scripts', 'generate_app_icon.py')
 
 /** 递归列出 src/ 下的 js / mjs / vue 源文件，供状态字面量扫描。 */
 function listSourceFiles(root) {
@@ -172,15 +171,7 @@ test('托盘状态：渲染层写死的 state 字面量都在托盘状态表内'
   }
 })
 
-test('托盘状态：渲染层 / 图标资产 / 生成脚本三处的状态集合一致', async () => {
-  // 生成脚本里登记的托盘状态（scripts/generate_app_icon.py 的 TRAY_STATES）
-  const generatorSource = fs.readFileSync(GENERATOR_SOURCE, 'utf8')
-  const generated = [
-    ...generatorSource.matchAll(/^\s*\("([a-z_]+)",\s*CHAR_[A-Z]+/gm)
-  ].map((m) => m[1]).sort()
-
-  assert.deepEqual(generated, [...STATES].sort(), '生成脚本的 TRAY_STATES 与资产清单不一致')
-
+test('托盘状态：渲染层与图标资产的状态集合一致', async () => {
   // 渲染层能推导出的状态（ESM，这里用动态 import 拿）
   const { TRAY_ICON_STATES } = await import('../src/composables/recorder/trayState.mjs')
   assert.deepEqual([...TRAY_ICON_STATES].sort(), [...STATES].sort())

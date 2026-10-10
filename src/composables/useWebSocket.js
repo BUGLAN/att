@@ -1,4 +1,4 @@
-﻿import { onMounted, onUnmounted, ref } from 'vue'
+import { ref } from 'vue'
 import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 import { createSingletonAsyncInvoker } from '@/utils/asyncSingleton.mjs'
@@ -154,20 +154,4 @@ export function useGlobalWebSocket() {
     removeMessageHandler: removeGlobalMessageHandler,
     sendRecordingStatus: (status) => sendGlobal({ type: 'status_update', ...status })
   }
-}
-
-export function useWebSocket() {
-  const ws = useGlobalWebSocket()
-
-  onMounted(() => {
-    ws.connect()
-  })
-
-  onUnmounted(() => {
-    if (messageHandlers.size === 0) {
-      ws.disconnect()
-    }
-  })
-
-  return ws
 }

@@ -12,7 +12,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   writeClipboard: (text) => ipcRenderer.invoke('clipboard:write', text),
   writeClipboardImage: (payload) => ipcRenderer.invoke('clipboard:write-image', payload),
   pasteClipboard: () => ipcRenderer.invoke('clipboard:paste-active'),
-  updateHotkey: (hotkey) => ipcRenderer.invoke('hotkey:update', hotkey),
   syncInputSettings: (settings) => ipcRenderer.invoke('desktop:sync-input-settings', settings),
   syncDesktopSettings: (settings) => ipcRenderer.invoke('desktop:sync-settings', settings),
   syncRecordingState: (payload) => ipcRenderer.invoke('desktop:recording-state', payload),
@@ -23,7 +22,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   toggleFloatingWindow: () => ipcRenderer.send('floating:toggle'),
   updateFloatingWindowState: (payload) => ipcRenderer.send('floating:update-state', payload),
   debugLog: (scope, message, details) => ipcRenderer.send('debug:log', { scope, message, details }),
-  openSettingsPage: () => ipcRenderer.send('main:open-settings'),
   onHotkeyPress: (callback) => {
     ipcRenderer.on('hotkey:press', (event, payload) => callback(payload))
   },

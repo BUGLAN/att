@@ -106,38 +106,7 @@ body::before {
 
 /* Processing State */
 
-/* Recording Status */
-.recording-status {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-md);
-    padding: var(--space-sm) var(--space-lg);
-    background: var(--bg-card);
-    border-radius: var(--radius-full);
-    border: 1px solid var(--border);
-    min-width: 120px;
-    position: relative;
-}
-
-.status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--gray-500);
-    transition: all var(--transition-base);
-}
-
-.recording .status-dot {
-    background: var(--danger);
-    box-shadow: 0 0 12px var(--danger);
-    animation: blink 1.5s ease-in-out infinite;
-}
-
-@keyframes blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-}
+/* Recording Status（.status-text 仍被 Sidebar 连接状态复用；状态胶囊样式已随 RecordingStatus 组件删除） */
 
 .status-text {
     font-size: var(--fs-sm);
