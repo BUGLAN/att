@@ -3,10 +3,87 @@
  * 管理系统托盘图标、右键菜单
  */
 
-const { Tray, Menu, nativeImage, app } = require('electron')
+const { Tray, Menu, nativeImage, screen } = require('electron')
+const fs = require('fs')
 const path = require('path')
 const EventEmitter = require('events')
-const { isDevelopmentRuntime } = require('../utils/runtime')
+
+/**
+ * 托盘状态 → 图标文件名。state 字符串由渲染层经 IPC 传入
+ * （见 src/composables/useRecorder.js 的 tray.setIcon 调用），必须与文件一一对应。
+ */
+const TRAY_ICON_STATES = ['idle', 'recording', 'transcribing', 'disconnected']
+
+/** Windows 托盘逻辑尺寸（DIP）。各 DPI 档位的像素尺寸都是它的整数倍。 */
+const TRAY_BASE_SIZE = 16
+
+/**
+ * Windows 托盘各 DPI 档位：[像素尺寸, 文件名后缀]，按尺寸升序。
+ * 与 scripts/generate_app_icon.py 的 WIN_TRAY_SIZES 必须一一对应。
+ */
+const WIN_TRAY_LADDER = [
+  [16, ''],
+  [20, '@1.25x'],
+  [24, '@1.5x'],
+  [28, '@1.75x'],
+  [32, '@2x'],
+  [40, '@2.5x'],
+  [48, '@3x']
+]
+
+/**
+ * 多倍图目录：Windows 托盘以 16px 为基准，macOS/Linux 菜单栏以 22px 为基准。
+ */
+function trayIconPlatformDir() {
+  return process.platform === 'win32' ? 'win' : 'macos'
+}
+
+/** 把状态字符串收敛到已知状态，未知一律按 idle。 */
+function normalizeTrayIconState(iconType) {
+  return TRAY_ICON_STATES.includes(iconType) ? iconType : 'idle'
+}
+
+/** 像素尺寸 → 文件名后缀。 */
+function trayIconSuffixForSize(size) {
+  const entry = WIN_TRAY_LADDER.find(([px]) => px === size)
+  return entry ? entry[1] : ''
+}
+
+/**
+ * 当前主显示器的缩放系数；读不到（如单测环境）返回 null。
+ *
+ * 托盘挂在主屏任务栏上，所以取主屏的 scaleFactor 就够。
+ */
+function currentDisplayScaleFactor() {
+  try {
+    const factor = screen?.getPrimaryDisplay?.()?.scaleFactor
+    return Number.isFinite(factor) && factor > 0 ? factor : null
+  } catch (error) {
+    return null
+  }
+}
+
+/**
+ * 按缩放系数挑一个"够用"的图标像素尺寸：不小于需要的物理像素的最小档位。
+ *
+ * 为什么不是直接给 16px 让系统自己缩放：Windows 托盘图标是按物理像素画的，
+ * 200% 缩放时槽位是 32px，给 16px 位图就会被放大成糊块（用用户截图与各档位
+ * 做 MSE 比对确认过：截图最接近"16px 双线性放大到 32px"）。反过来，给足像素
+ * 让系统去缩小，边缘和笔画都保得住。
+ *
+ * 读不到缩放系数时给最大档：宁可让系统缩小，也不要放大。
+ */
+function pickWindowsTraySize(scaleFactor) {
+  const largest = WIN_TRAY_LADDER[WIN_TRAY_LADDER.length - 1][0]
+
+  if (!Number.isFinite(scaleFactor) || scaleFactor <= 0) {
+    return largest
+  }
+
+  const needed = Math.max(TRAY_BASE_SIZE, Math.round(TRAY_BASE_SIZE * scaleFactor))
+  const match = WIN_TRAY_LADDER.find(([px]) => px >= needed)
+  return match ? match[0] : largest
+}
 
 class TrayManager extends EventEmitter {
   constructor(mainWindow, apiProxy) {
@@ -20,21 +97,24 @@ class TrayManager extends EventEmitter {
 
   /**
    * 获取图标路径
+   *
+   * 直接读 __dirname 下的资源：开发态和打包态（app.asar 内）Electron 都能读，
+   * 不要再走 process.resourcesPath —— electron-builder 从未把图标解包到那里，
+   * 那条路径在打包版里必然落空。
+   *
+   * Windows 走 DPI 分档（见 pickWindowsTraySize）；macOS 由 createFromPath
+   * 自己处理同目录的 @2x 约定。
    */
-  getIconPath(iconType) {
-    const iconName = {
-      idle: 'idle.png',
-      recording: 'recording.png',
-      transcribing: 'transcribing.png',
-      disconnected: 'disconnected.png'
-    }[iconType] || 'idle.png'
+  getIconPath(iconType, scaleFactor = currentDisplayScaleFactor()) {
+    const state = normalizeTrayIconState(iconType)
+    const dir = path.join(__dirname, 'icons', trayIconPlatformDir())
 
-    const isDev = isDevelopmentRuntime()
-    const basePath = isDev
-      ? path.join(__dirname, 'icons')
-      : path.join(process.resourcesPath, 'icons')
+    if (process.platform !== 'win32') {
+      return path.join(dir, `${state}.png`)
+    }
 
-    return path.join(basePath, iconName)
+    const suffix = trayIconSuffixForSize(pickWindowsTraySize(scaleFactor))
+    return path.join(dir, `${state}${suffix}.png`)
   }
 
   /**
@@ -43,53 +123,15 @@ class TrayManager extends EventEmitter {
   createTrayIcon(iconType) {
     const iconPath = this.getIconPath(iconType)
 
-    // 如果图标文件不存在，创建默认图标
-    if (!require('fs').existsSync(iconPath)) {
-      return this.createDefaultIcon(iconType)
+    if (fs.existsSync(iconPath)) {
+      return nativeImage.createFromPath(iconPath)
     }
 
-    return nativeImage.createFromPath(iconPath)
-  }
-
-  /**
-   * 创建默认图标（如果没有图标文件）
-   */
-  createDefaultIcon(iconType) {
-    const size = 22
-    const canvas = Buffer.alloc(size * size * 4)
-
-    const colors = {
-      idle: [201, 162, 39, 255],
-      recording: [230, 126, 34, 255],
-      transcribing: [201, 162, 39, 255],
-      disconnected: [113, 113, 122, 180]
-    }
-
-    const color = colors[iconType] || colors.idle
-    const center = (size - 1) / 2
-    const radius = 8
-
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const idx = (y * size + x) * 4
-        const distance = Math.hypot(x - center, y - center)
-
-        if (distance > radius + 0.75) {
-          continue
-        }
-
-        const alphaScale = distance > radius
-          ? Math.max(0, 1 - (distance - radius) / 0.75)
-          : 1
-
-        canvas[idx] = color[0]
-        canvas[idx + 1] = color[1]
-        canvas[idx + 2] = color[2]
-        canvas[idx + 3] = Math.round(color[3] * alphaScale)
-      }
-    }
-
-    return nativeImage.createFromBuffer(canvas, { width: size, height: size })
+    // 这里刻意不再手绘兜底图标：历史实现用裸 RGBA 缓冲喂 createFromBuffer，
+    // 被 Electron 当成 BGRA 解析后 R/B 互换，画出来是个青蓝色小球。
+    // 缺图就退回应用图标并留下日志，方便一眼看出是资产没生成。
+    console.error(`[Tray] 缺少托盘图标：${iconPath}，已回退应用图标`)
+    return nativeImage.createFromPath(path.join(__dirname, '..', 'icons', 'icon.png'))
   }
 
   /**
@@ -99,6 +141,15 @@ class TrayManager extends EventEmitter {
     const icon = this.createTrayIcon('idle')
     this.tray = new Tray(icon)
     this.tray.setToolTip('Audio to Text')
+
+    // 显示器缩放变化（改 DPI、换屏）后按新档位重新取图，
+    // 否则图标会停在旧档位上，又被系统放大成糊图
+    this.handleDisplayMetricsChanged = () => this.setIcon(this.currentIcon)
+    try {
+      screen?.on?.('display-metrics-changed', this.handleDisplayMetricsChanged)
+    } catch (error) {
+      // 单测 / 无 GUI 环境拿不到 screen，忽略即可
+    }
 
     this.updateMenu()
     this.setupEvents()
@@ -236,6 +287,15 @@ class TrayManager extends EventEmitter {
    * 销毁托盘
    */
   destroy() {
+    if (this.handleDisplayMetricsChanged) {
+      try {
+        screen?.removeListener?.('display-metrics-changed', this.handleDisplayMetricsChanged)
+      } catch (error) {
+        // 同上：无 GUI 环境忽略
+      }
+      this.handleDisplayMetricsChanged = null
+    }
+
     if (this.tray) {
       this.tray.destroy()
       this.tray = null
@@ -243,4 +303,11 @@ class TrayManager extends EventEmitter {
   }
 }
 
-module.exports = { TrayManager }
+module.exports = {
+  TrayManager,
+  // 纯函数导出给单测用（不依赖 Electron 运行时）
+  TRAY_ICON_STATES,
+  WIN_TRAY_LADDER,
+  normalizeTrayIconState,
+  pickWindowsTraySize
+}

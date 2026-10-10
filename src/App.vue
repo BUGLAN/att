@@ -75,6 +75,7 @@ import LLMEditModal from '@/components/modals/LLMEditModal.vue'
 import Toast from '@/components/common/Toast.vue'
 
 import { useElectron } from '@/composables/useElectron'
+import { useTrayIcon } from '@/composables/useTrayIcon'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
@@ -90,6 +91,9 @@ const {
   syncDesktopSettings,
   debugLog
 } = useElectron()
+
+// 托盘图标：录音 / 转写由 useRecorder 直接切，这里补上"后端断连"那条边
+useTrayIcon()
 
 const currentPage = computed(() => appStore.currentPage)
 const sidebarDisplayCollapsed = computed(() => appStore.sidebarDisplayCollapsed)
