@@ -89,12 +89,18 @@ try:  # pragma: no cover - 依赖缺失属于环境问题，单独给出可读�
         if "additional_headers" in inspect.signature(_ws_connect).parameters
         else "extra_headers"
     )
+    # websockets 15+ 新增 proxy 参数且默认值为 True（自动使用系统代理）：
+    # macOS 上它读的是系统代理设置而非环境变量，会把实时音频绕到代理节点，
+    # 代理为 SOCKS 时还会因缺少 python-socks 直接抛 ImportError。
+    # 豆包为境内服务，这里显式关闭代理，与项目其它直连的网络请求保持一致。
+    _PROXY_KWARG_SUPPORTED = "proxy" in inspect.signature(_ws_connect).parameters
     WEBSOCKETS_AVAILABLE = True
 except ImportError:  # pragma: no cover
     ConnectionClosed = Exception  # type: ignore[assignment,misc]
     InvalidStatus = Exception  # type: ignore[assignment,misc]
     _ws_connect = None  # type: ignore[assignment]
     _HEADER_KWARG = "additional_headers"
+    _PROXY_KWARG_SUPPORTED = False
     WEBSOCKETS_AVAILABLE = False
 
 
@@ -534,15 +540,20 @@ class DoubaoStreamingProvider(StreamingASRProvider):
         )
 
         try:
-            socket = _ws_connect(
-                self.endpoint,
-                open_timeout=self.connect_timeout_seconds,
-                close_timeout=5,
-                ping_interval=20,
-                ping_timeout=20,
-                max_size=2**22,
-                **{_HEADER_KWARG: headers},
-            )
+            connect_kwargs: dict[str, Any] = {
+                "open_timeout": self.connect_timeout_seconds,
+                "close_timeout": 5,
+                "ping_interval": 20,
+                "ping_timeout": 20,
+                "max_size": 2**22,
+                _HEADER_KWARG: headers,
+            }
+            if _PROXY_KWARG_SUPPORTED:
+                # 显式直连：境内 ASR 服务不该经系统代理中转实时音频，
+                # Clash 等工具处于全局模式时会把音频绕到境外节点导致连接失败或高延迟
+                connect_kwargs["proxy"] = None
+
+            socket = _ws_connect(self.endpoint, **connect_kwargs)
         except InvalidStatus as error:
             status_code = getattr(getattr(error, "response", None), "status_code", 0) or 0
             reason = getattr(getattr(error, "response", None), "reason_phrase", "") or ""

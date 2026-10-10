@@ -135,6 +135,24 @@ def test_create_session_sends_handshake_headers_and_full_request(monkeypatch):
     assert context["context_data"][0]["text"] == "上一次我们聊了版本范围"
 
 
+def test_create_session_disables_system_proxy(monkeypatch):
+    """websockets 15+ 的 proxy 默认为 True，会自动读取系统代理。
+
+    macOS 上读的是系统代理设置而非环境变量，且 SOCKS 代理缺少 python-socks 时
+    直接抛 ImportError，表现为“流式连接已断开”。建连必须显式 proxy=None 直连。
+    """
+    if not provider_module._PROXY_KWARG_SUPPORTED:
+        pytest.skip("当前 websockets 版本不支持 proxy 参数，无需关闭代理")
+
+    captured = {}
+    patch_socket(monkeypatch, FakeSocket(), captured)
+    provider = make_provider()
+
+    asyncio.run(provider.create_session(language="zh"))
+
+    assert captured["kwargs"]["proxy"] is None
+
+
 def test_create_session_without_key_raises_readable_error(monkeypatch):
     patch_socket(monkeypatch, FakeSocket())
     provider = make_provider(api_key="")
