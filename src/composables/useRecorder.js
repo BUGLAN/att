@@ -1498,6 +1498,37 @@ async function startMultiRecording() {
   }
 }
 
+/**
+ * 转写中状态泄漏自愈。
+ *
+ * 「转写中」本应只存在于有活跃会话 / 收尾等待的窗口内；历史缺陷（收尾
+ * 无超时、状态复位遗漏、HMR 状态残留等）会让它永久卡住，表现为托盘
+ * 一直「转写中」且热键全部失效，只能重启应用。判定：流式模式下既没有
+ * 收尾等待、也没有活跃会话，却停在转写中——必然是泄漏，直接复位。
+ *
+ * 返回 true 表示可以继续开始录音；false 表示真的在收尾中，应保持吞掉。
+ */
+function recoverLeakedTranscribingState() {
+  const appStore = useAppStore()
+  if (!appStore.isTranscribing) {
+    return true
+  }
+
+  const leaked = activeRecordingMode.value === 'streaming'
+    && !streamingAwaitingFinish
+    && !currentSessionId.value
+
+  if (!leaked) {
+    return false
+  }
+
+  const { tray } = useElectron()
+  appStore.setTranscribing(false)
+  tray.setIcon('idle')
+  logRecorderHotkey('Recovered leaked transcribing state on record entry', {})
+  return true
+}
+
 async function startRecording() {
   const startedAt = performance.now()
   const appStore = useAppStore()
@@ -1506,9 +1537,13 @@ async function startRecording() {
   if (
     startPending ||
     appStore.isRecording ||
-    appStore.isTranscribing ||
     mediaRecorder.value?.state === 'recording'
   ) {
+    return
+  }
+
+  // 真在收尾中保持吞掉；检测到泄漏的转写状态则复位后照常开始
+  if (appStore.isTranscribing && !recoverLeakedTranscribingState()) {
     return
   }
 
@@ -1934,7 +1969,12 @@ export function useRecorder() {
           payload
         })
 
-        if (appStore.isRecording || appStore.isTranscribing || startPending) {
+        if (appStore.isRecording || startPending) {
+          return
+        }
+
+        // 真在收尾中保持吞掉；检测到泄漏的转写状态则复位后照常开始
+        if (appStore.isTranscribing && !recoverLeakedTranscribingState()) {
           return
         }
 
