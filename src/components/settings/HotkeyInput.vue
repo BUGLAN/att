@@ -1,22 +1,31 @@
 <template>
   <div class="hotkey-input-wrapper">
-    <input
-      type="text"
+    <BaseInput
       class="hotkey-input"
       :class="{ listening: isListening }"
       :value="displayValue"
+      type="text"
       readonly
       :placeholder="placeholder"
       @keydown="handleKeyDown"
       @focus="startListening"
       @blur="stopListening"
-    >
-    <button v-if="showReset" class="hotkey-reset-btn" @click="reset">↺</button>
+    />
+    <BaseButton v-if="showReset" variant="ghost" icon title="恢复默认快捷键" @click="reset">
+      <template #icon>
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M4 10.5A8 8 0 1 1 6.6 17" />
+          <path d="M4 5v5.5h5.5" />
+        </svg>
+      </template>
+    </BaseButton>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import BaseButton from '@/components/common/BaseButton.vue'
+import BaseInput from '@/components/common/BaseInput.vue'
 
 const props = defineProps({
   modelValue: {

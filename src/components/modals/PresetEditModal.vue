@@ -1,31 +1,30 @@
-﻿<template>
+<template>
   <Modal title="查看提示词" modal-name="presetEdit">
     <div v-if="preset" class="preset-viewer">
       <div class="form-group">
         <label>名称</label>
-        <input :value="preset.name" class="form-input" type="text" readonly>
+        <BaseInput :value="preset.name" type="text" readonly />
       </div>
 
       <div class="form-group">
         <label>描述</label>
-        <input :value="preset.description || '无描述'" class="form-input" type="text" readonly>
+        <BaseInput :value="preset.description || '无描述'" type="text" readonly />
       </div>
 
       <div class="form-group">
         <label>提示词内容</label>
-        <textarea
+        <BaseTextarea
           :value="preset.prompt_template || ''"
-          class="form-textarea"
-          rows="14"
+          :rows="14"
           readonly
-        ></textarea>
+        />
       </div>
     </div>
 
-    <div v-else class="manager-empty">未找到提示词内容</div>
+    <EmptyState v-else size="sm" title="未找到提示词内容" />
 
     <template #footer>
-      <button class="btn btn-secondary" type="button" @click="close">关闭</button>
+      <BaseButton variant="outline" @click="close">关闭</BaseButton>
     </template>
   </Modal>
 </template>
@@ -35,6 +34,10 @@ import { computed } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import Modal from '@/components/common/Modal.vue'
+import BaseButton from '@/components/common/BaseButton.vue'
+import BaseInput from '@/components/common/BaseInput.vue'
+import BaseTextarea from '@/components/common/BaseTextarea.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()

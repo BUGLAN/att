@@ -1,4 +1,4 @@
-﻿import { defineStore } from 'pinia'
+import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 const SIDEBAR_LAYOUT_STORAGE_KEY = 'att.sidebar.layout'
@@ -7,6 +7,10 @@ const SIDEBAR_COLLAPSED_WIDTH = 60
 const SIDEBAR_MIN_WIDTH = SIDEBAR_COLLAPSED_WIDTH
 const SIDEBAR_MAX_WIDTH = 280
 const SIDEBAR_COLLAPSE_THRESHOLD = 110
+
+// Toast 默认展示时长与最大同时条数（队列上限）
+const TOAST_DEFAULT_DURATION = 3000
+const TOAST_MAX_VISIBLE = 3
 
 function clampSidebarWidth(width) {
   return Math.min(Math.max(width, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH)
@@ -87,9 +91,14 @@ export const useAppStore = defineStore('app', () => {
     llmEdit: false
   })
 
-  const toastMessage = ref('')
-  const toastVisible = ref(false)
-  let toastTimeout = null
+  // Toast 队列：每条消息有独立 tone 与独立计时，最多同时展示 3 条
+  const toasts = ref([])
+  const toastTimers = new Map()
+  let toastSeq = 0
+
+  // 向后兼容：旧代码只读 toastMessage / toastVisible，这里作为派生值保留
+  const toastMessage = computed(() => toasts.value[toasts.value.length - 1]?.message || '')
+  const toastVisible = computed(() => toasts.value.length > 0)
 
   const selectMode = ref(false)
   const selectedRecords = ref(new Set())
@@ -215,24 +224,57 @@ export const useAppStore = defineStore('app', () => {
     })
   }
 
-  function showToast(message, duration = 3000) {
-    toastMessage.value = message
-    toastVisible.value = true
+  function removeToast(id) {
+    toasts.value = toasts.value.filter((item) => item.id !== id)
 
-    if (toastTimeout) {
-      clearTimeout(toastTimeout)
+    const timer = toastTimers.get(id)
+    if (timer) {
+      clearTimeout(timer)
+      toastTimers.delete(id)
     }
-
-    toastTimeout = setTimeout(() => {
-      toastVisible.value = false
-    }, duration)
   }
 
-  function hideToast() {
-    toastVisible.value = false
-    if (toastTimeout) {
-      clearTimeout(toastTimeout)
+  /**
+   * 显示一条 Toast（保持向后兼容）。
+   * - 旧签名：showToast('文案') / showToast('文案', 3000)
+   * - 新签名：showToast('文案', { tone: 'success' | 'error' | 'info', duration: 3000 })
+   */
+  function showToast(message, options = {}) {
+    const normalized = typeof options === 'number' ? { duration: options } : (options || {})
+    const tone = ['success', 'error', 'info'].includes(normalized.tone) ? normalized.tone : 'info'
+    const duration = Number.isFinite(normalized.duration) ? normalized.duration : TOAST_DEFAULT_DURATION
+    const id = ++toastSeq
+
+    toasts.value = [...toasts.value, {
+      id,
+      tone,
+      duration,
+      message: String(message ?? '')
+    }].slice(-TOAST_MAX_VISIBLE)
+
+    // 被挤出队列的旧条目要同步清理计时器，避免定时器泄漏
+    const aliveIds = new Set(toasts.value.map((item) => item.id))
+    toastTimers.forEach((timer, timerId) => {
+      if (!aliveIds.has(timerId)) {
+        clearTimeout(timer)
+        toastTimers.delete(timerId)
+      }
+    })
+
+    toastTimers.set(id, setTimeout(() => removeToast(id), duration))
+    return id
+  }
+
+  // 不传 id 时清空全部，传 id 时只移除指定那条
+  function hideToast(id) {
+    if (id != null) {
+      removeToast(id)
+      return
     }
+
+    toastTimers.forEach((timer) => clearTimeout(timer))
+    toastTimers.clear()
+    toasts.value = []
   }
 
   function toggleSelectMode() {
@@ -279,6 +321,7 @@ export const useAppStore = defineStore('app', () => {
     isConnected,
     connectedClients,
     modals,
+    toasts,
     toastMessage,
     toastVisible,
     selectMode,

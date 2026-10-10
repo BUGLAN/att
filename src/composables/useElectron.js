@@ -98,29 +98,19 @@ export function useElectron() {
     updateState: (payload) => globalThis.window?.electronAPI?.updateFloatingWindowState(toPlainObject(payload))
   }
 
+  // 兼容别名：旧的独立剪贴板悬浮窗已删除，这里只剩「打开统一浮层」这一条入口，
+  // 仍被 src/App.vue 的浏览器回退分支引用，故保留；hide/togglePinned/startNativeDrag
+  // 已确认全仓无引用（对应旧窗口的隐藏、置顶与原生拖拽），本轮删除。
   const clipboardOverlay = {
     show: (payload = {}) => {
       const plainPayload = toPlainObject(payload)
       debugLog('renderer.useElectron', 'Calling clipboardOverlay.show', plainPayload)
       globalThis.window?.electronAPI?.openClipboardOverlay?.(plainPayload)
     },
-    hide: () => {
-      debugLog('renderer.useElectron', 'Calling clipboardOverlay.hide')
-      globalThis.window?.electronAPI?.hideOverlay?.()
-    },
     toggle: (payload = {}) => {
       const plainPayload = toPlainObject(payload)
       debugLog('renderer.useElectron', 'Calling clipboardOverlay.toggle', plainPayload)
       globalThis.window?.electronAPI?.openClipboardOverlay?.(plainPayload)
-    },
-    togglePinned: (pinned = true) => {
-      debugLog('renderer.useElectron', 'Calling clipboardOverlay.togglePinned', { pinned })
-      globalThis.window?.electronAPI?.setOverlayPinned?.({ pinned })
-    },
-    startNativeDrag: (payload = {}) => {
-      const plainPayload = toPlainObject(payload)
-      debugLog('renderer.useElectron', 'Calling clipboardOverlay.startNativeDrag', plainPayload)
-      void plainPayload
     }
   }
 

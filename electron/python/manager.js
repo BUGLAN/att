@@ -8,6 +8,14 @@ const path = require('path')
 const fs = require('fs')
 const http = require('http')
 
+let electronApp = null
+try {
+  // 允许在没有 Electron 运行时（例如 Node 单测）下加载本模块
+  ;({ app: electronApp } = require('electron'))
+} catch (error) {
+  electronApp = null
+}
+
 class PythonManager {
   constructor() {
     this.process = null
@@ -25,7 +33,53 @@ class PythonManager {
       path.join(runtimeRoot, '.venv')
     ]
 
+    // 打包态（app.isPackaged === true）一律算生产运行，避免安装目录里恰好存在同名文件时误判
+    if (electronApp && electronApp.isPackaged === true) {
+      return false
+    }
+
     return process.env.NODE_ENV === 'development' || markers.some((marker) => fs.existsSync(marker))
+  }
+
+  /**
+   * 判断当前是否运行在「已打包」的安装态。
+   * 只有安装态才把数据目录切到用户目录；开发态必须继续使用仓库内 data/。
+   */
+  isPackagedRuntime() {
+    if (electronApp && typeof electronApp.isPackaged === 'boolean') {
+      return electronApp.isPackaged
+    }
+
+    return !this.isDevelopmentRuntime()
+  }
+
+  /**
+   * 解析安装态应使用的数据目录：<userData>/data。
+   *
+   * 这里必须只用 app.getPath('userData')，不得退回 resourcesPath：
+   * 安装目录（Program Files）通常不可写，而且安装目录里的 data/ 会在卸载时被删除。
+   * 返回 null 表示「不要注入 DATA_DIR」，交给后端使用默认的仓库内 data/。
+   */
+  getPackagedDataDir() {
+    if (!this.isPackagedRuntime()) {
+      return null
+    }
+
+    if (!electronApp || typeof electronApp.getPath !== 'function') {
+      console.warn('[PythonManager] 运行在打包态但拿不到 userData 路径，回退到默认数据目录')
+      return null
+    }
+
+    const dataDir = path.join(electronApp.getPath('userData'), 'data')
+
+    // 先建目录：后端首次启动时 data/ 子目录由后端自己创建，但根目录需要先存在
+    try {
+      fs.mkdirSync(dataDir, { recursive: true })
+    } catch (error) {
+      console.error(`[PythonManager] 创建用户数据目录失败：${dataDir}`, error)
+    }
+
+    return dataDir
   }
 
   getPreferredBackendPort() {
@@ -276,9 +330,16 @@ class PythonManager {
       UV_PROJECT_ENVIRONMENT: process.env.UV_PROJECT_ENVIRONMENT || path.join(__dirname, '..', '..', '.venv')
     }
 
+    // 仅安装态注入 DATA_DIR：开发态保持仓库内 data/ 不变（用户真实数据在那里）
+    const packagedDataDir = this.getPackagedDataDir()
+    if (packagedDataDir) {
+      env.DATA_DIR = packagedDataDir
+      console.log(`[PythonManager] 安装态数据目录：${packagedDataDir}`)
+    }
+
     // 启动进程 - cwd 必须是项目根目录，才能找到 app 模块
     this.process = spawn(backendCommand, backendArgs, {
-      cwd: path.join(__dirname, '..', '..'),  // 项目根目录
+      cwd: this.getRuntimeRoot(),  // 开发态=仓库根目录，安装态=resources/
       env: env,
       stdio: ['pipe', 'pipe', 'pipe']
     })

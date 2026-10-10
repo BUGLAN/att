@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <Modal title="编辑记录" modal-name="recordEdit">
     <div class="form-group">
       <label>原始文本</label>
@@ -16,12 +16,12 @@
 
     <div class="form-group">
       <label>编辑内容</label>
-      <textarea id="recordEditText" v-model="editText" class="form-textarea" placeholder="输入文本..."></textarea>
+      <BaseTextarea id="recordEditText" v-model="editText" placeholder="输入文本..." />
     </div>
 
     <template #footer>
-      <button class="btn btn-secondary" type="button" @click="close">取消</button>
-      <button class="btn btn-primary" type="button" @click="save">保存</button>
+      <BaseButton variant="outline" @click="close">取消</BaseButton>
+      <BaseButton variant="solid" @click="save">保存</BaseButton>
     </template>
   </Modal>
 </template>
@@ -32,6 +32,8 @@ import { useAppStore } from '@/stores/app'
 import { useRecordsStore } from '@/stores/records'
 import { useElectron } from '@/composables/useElectron'
 import Modal from '@/components/common/Modal.vue'
+import BaseButton from '@/components/common/BaseButton.vue'
+import BaseTextarea from '@/components/common/BaseTextarea.vue'
 
 const appStore = useAppStore()
 const recordsStore = useRecordsStore()
@@ -56,7 +58,7 @@ function close() {
 async function copyField(text) {
   if (!text) return
   await clipboard.writeText(text)
-  appStore.showToast('已复制到剪贴板')
+  appStore.showToast('已复制到剪贴板', { tone: 'success' })
 }
 
 async function save() {
@@ -71,10 +73,10 @@ async function save() {
   try {
     const updated = await recordsStore.updateRecord(record.value.id, payload)
     appStore.setCurrentRecord({ ...record.value, ...updated })
-    appStore.showToast('记录已保存')
+    appStore.showToast('记录已保存', { tone: 'success' })
     close()
   } catch (error) {
-    appStore.showToast('保存记录失败')
+    appStore.showToast('保存记录失败', { tone: 'error' })
   }
 }
 </script>

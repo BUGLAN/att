@@ -27,28 +27,39 @@
         </nav>
 
         <div class="selection-toolbar-actions">
-          <button
-            class="selection-icon-button"
-            :class="{ active: pinned }"
-            type="button"
+          <BaseButton
+            variant="ghost"
+            icon
+            class="selection-icon-btn"
+            :active="pinned"
             :title="pinned ? '取消固定' : '固定窗口'"
             @click="emit('pin', !pinned)"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M8.5 4.5h7l-1 5 3 3v1h-4v5l-1.5 1.5-1.5-1.5v-5h-4v-1l3-3-1-5Z"
-                fill="currentColor"
-              />
-            </svg>
-          </button>
-          <button class="selection-icon-button" type="button" title="关闭" @click="emit('close')">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M6.53 5.47a.75.75 0 0 1 1.06 0L12 9.88l4.41-4.41a.75.75 0 1 1 1.06 1.06L13.06 11l4.41 4.41a.75.75 0 0 1-1.06 1.06L12 12.06l-4.41 4.41a.75.75 0 1 1-1.06-1.06L10.94 11 6.53 6.59a.75.75 0 0 1 0-1.12Z"
-                fill="currentColor"
-              />
-            </svg>
-          </button>
+            <template #icon>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M8.5 4.5h7l-1 5 3 3v1h-4v5l-1.5 1.5-1.5-1.5v-5h-4v-1l3-3-1-5Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </template>
+          </BaseButton>
+          <BaseButton
+            variant="ghost"
+            icon
+            class="selection-icon-btn"
+            title="关闭"
+            @click="emit('close')"
+          >
+            <template #icon>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M6.53 5.47a.75.75 0 0 1 1.06 0L12 9.88l4.41-4.41a.75.75 0 1 1 1.06 1.06L13.06 11l4.41 4.41a.75.75 0 0 1-1.06 1.06L12 12.06l-4.41 4.41a.75.75 0 1 1-1.06-1.06L10.94 11 6.53 6.59a.75.75 0 0 1 0-1.12Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </template>
+          </BaseButton>
         </div>
       </header>
 
@@ -78,9 +89,9 @@
               <div class="selection-error-card">
                 <strong>{{ currentActionLabel }}失败</strong>
                 <p>{{ currentActionState.error }}</p>
-                <button class="selection-retry-button" type="button" @click="retryCurrentTab">
+                <BaseButton variant="outline" size="sm" class="selection-retry-btn" @click="retryCurrentTab">
                   重试
-                </button>
+                </BaseButton>
               </div>
             </template>
 
@@ -92,10 +103,11 @@
             </template>
 
             <template v-else>
-              <div class="selection-empty-card">
-                <strong>{{ currentActionLabel }}</strong>
-                <p>正在准备内容，请稍候。</p>
-              </div>
+              <EmptyState
+                class="selection-empty-state"
+                :title="currentActionLabel"
+                description="正在准备内容，请稍候。"
+              />
             </template>
           </section>
         </Transition>
@@ -108,6 +120,8 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useElectron } from '@/composables/useElectron'
 import SelectionResultCard from '@/components/selection/SelectionResultCard.vue'
+import BaseButton from '@/components/common/BaseButton.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 
 const tabs = [
   { key: 'selected', label: '选中' },
@@ -279,10 +293,11 @@ onMounted(async () => {
   width: 100%;
   height: 100%;
   padding: 16px;
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(26, 21, 18, 0.98), rgba(16, 14, 12, 1));
-  color: #f7ecdf;
-  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.24);
+  border-radius: var(--r-lg);
+  /* 原为暖棕渐变 + 亮金，与同窗口的 ClipboardPanel（冷灰）是两套语言：现统一到共享令牌 */
+  background: linear-gradient(180deg, var(--bg-card), var(--bg-base));
+  color: var(--text-1);
+  box-shadow: var(--e-4);
   overflow: hidden;
   -webkit-app-region: drag;
 }
@@ -293,7 +308,7 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 12px;
   padding-bottom: 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .selection-tabs,
@@ -322,22 +337,32 @@ onMounted(async () => {
   height: 34px;
   padding: 0 12px;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: transparent;
-  color: rgba(247, 236, 223, 0.66);
+  color: var(--text-3);
   cursor: pointer;
-  transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
   -webkit-app-region: no-drag;
 }
 
 .selection-tab:hover {
-  color: #fff2e4;
-  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-1);
+  background: var(--line-soft);
+}
+
+.selection-tab:active {
+  transform: translateY(1px);
+  filter: brightness(0.94);
+}
+
+.selection-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .selection-tab.active {
-  background: rgba(243, 180, 96, 0.18);
-  color: #ffd9a5;
+  background: var(--accent-dim);
+  color: var(--accent-hi);
 }
 
 .selection-tab-icon {
@@ -346,28 +371,19 @@ onMounted(async () => {
   display: block;
 }
 
-.selection-icon-button {
+.selection-toolbar-actions .selection-icon-btn {
   width: 32px;
   height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  border-radius: var(--r-full);
+  background: var(--line-soft);
   color: inherit;
-  cursor: pointer;
   -webkit-app-region: no-drag;
 }
 
-.selection-icon-button svg {
-  width: 16px;
-  height: 16px;
-}
-
-.selection-icon-button.active {
-  background: rgba(243, 180, 96, 0.22);
-  color: #ffd9a5;
+/* 实心图标需要覆盖原语的描边式 svg 规则 */
+.selection-toolbar-actions .selection-icon-btn :deep(svg) {
+  fill: currentColor;
+  stroke: none;
 }
 
 .selection-body {
@@ -386,23 +402,33 @@ onMounted(async () => {
 
 .selection-text-card,
 .selection-loading-card,
-.selection-error-card,
-.selection-empty-card {
+.selection-error-card {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
   padding: 16px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.05);
+  border-radius: var(--r-lg);
+  background: var(--line-soft);
+  -webkit-app-region: no-drag;
+}
+
+/* 空态改用原语，仅补齐"占满浮层高度 + 居中"的容器约束 */
+.selection-view .selection-empty-state {
+  height: 100%;
+  justify-content: center;
+  gap: 10px;
+  border: 1px solid var(--line-soft-strong);
+  border-radius: var(--r-lg);
+  background: var(--line-soft);
   -webkit-app-region: no-drag;
 }
 
 .selection-text-label {
   display: inline-flex;
   margin-bottom: 10px;
-  color: rgba(247, 236, 223, 0.64);
-  font-size: 0.78rem;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
 }
 
 .selection-text-content {
@@ -410,9 +436,9 @@ onMounted(async () => {
   min-height: 0;
   overflow-y: auto;
   line-height: 1.75;
-  color: #fff6ee;
+  color: var(--text-1);
   scrollbar-width: thin;
-  scrollbar-color: rgba(243, 180, 96, 0.28) transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 
 .selection-loading-card {
@@ -423,44 +449,43 @@ onMounted(async () => {
 }
 
 .selection-error-card,
-.selection-empty-card {
+.selection-loading-card {
   justify-content: center;
   gap: 10px;
 }
 
 .selection-error-card {
-  background: rgba(212, 93, 93, 0.14);
-  color: #ffd0d0;
+  background: var(--err-soft);
+  color: var(--err);
 }
 
-.selection-retry-button {
+/* 重试按钮：在原语基线上保留胶囊外观 */
+.selection-error-card .selection-retry-btn {
   width: fit-content;
-  padding: 8px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  border-radius: var(--r-full);
+  background: var(--line-soft);
+  border-color: var(--line-soft-strong);
   color: inherit;
-  cursor: pointer;
   -webkit-app-region: no-drag;
 }
 
 .loading-spinner {
   width: 18px;
   height: 18px;
-  border-radius: 999px;
-  border: 2px solid rgba(243, 180, 96, 0.18);
-  border-top-color: #f3b460;
+  border-radius: var(--r-full);
+  border: 2px solid var(--accent-tint);
+  border-top-color: var(--accent);
   animation: selection-spin 0.8s linear infinite;
 }
 
 .loading-copy strong {
   display: block;
-  color: #fff4e6;
+  color: var(--text-1);
 }
 
 .loading-copy p {
   margin-top: 4px;
-  color: rgba(247, 236, 223, 0.72);
+  color: var(--text-3);
   line-height: 1.5;
 }
 

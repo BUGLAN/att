@@ -6,11 +6,18 @@ import { useElectron } from './useElectron'
 import { useGlobalWebSocket } from './useWebSocket'
 import { createSilenceDetector } from './useSilenceDetector'
 import { derivePostStopState, deriveStartAbortState } from '@/utils/recordingStopState.mjs'
+// 第 5 轮"安全抽取"出的纯逻辑模块（不依赖 Vue / 浏览器全局对象，可被 Node 直接单测）。
+// 本文件保留全部时序编排：startRecording / stopRecording 主流程、AudioContext、
+// WebSocket 生命周期、热键与悬浮窗同步，只把纯计算与纯判定委托给这些模块。
+import * as pcm from './recorder/pcm.mjs'
+import * as segmentPolicy from './recorder/segmentPolicy.mjs'
+import * as pollPolicy from './recorder/pollPolicy.mjs'
+import * as streamProtocol from './recorder/streamProtocol.mjs'
+import * as statusCopy from './recorder/statusCopy.mjs'
 
-const MIN_REALTIME_SEGMENT_DURATION = 2.2
-const MAX_REALTIME_SEGMENT_DURATION = 10
 const STREAM_SAMPLE_RATE = 16000
-const STREAM_FLUSH_SAMPLES = 3200
+// 流式连接必须在限定时间内 settle，否则调用方的 finally 永不执行，startPending 会永久为真
+const STREAM_CONNECT_TIMEOUT_MS = 8000
 
 const duration = ref(0)
 const mediaRecorder = ref(null)
@@ -27,6 +34,8 @@ const streamingConnectionState = ref('idle')
 const sessionStatusText = ref('按住快捷键开始录音')
 
 let pollingTimer = null
+// 连续轮询失败次数：超过失败上限（见 recorder/pollPolicy.mjs）必须停止并提示，避免静默永久轮询
+let pollingFailureCount = 0
 let mountedInstances = 0
 let wsAttached = false
 let desktopHotkeyAttached = false
@@ -95,6 +104,25 @@ function syncFloatingWindow(state, options = {}) {
   if (options.hide) {
     floatingWindow.hide()
   }
+}
+
+/**
+ * 悬浮窗会话收尾：仅在会话活跃时同步一次终态并复位活跃标志。
+ * 等价于原先在终止 / 失败路径上重复了十几遍的
+ * `if (floatingSessionActive) { syncFloatingWindow({ phase, duration: 0, text }); floatingSessionActive = false }`，
+ * 同步顺序与文案完全不变，只是去掉了重复代码。
+ */
+function completeFloatingSession(phase, text) {
+  if (!floatingSessionActive) {
+    return
+  }
+
+  syncFloatingWindow({
+    phase,
+    duration: 0,
+    text
+  })
+  floatingSessionActive = false
 }
 
 function beginFloatingSession() {
@@ -190,6 +218,33 @@ function cleanupStreamingSocket() {
   streamingAwaitingFinish = false
 }
 
+/**
+ * 流式连接在录音过程中意外断开时的完整收口。
+ * 原实现只把内部状态置为 error，导致麦克风继续采集、计时器继续跑、
+ * 悬浮窗永久置顶显示"正在完成流式转写"，只能重启应用。
+ */
+function handleUnexpectedStreamingClose() {
+  const appStore = useAppStore()
+  const { tray } = useElectron()
+
+  clearDurationTimer()
+  cleanupStreamingAudio()
+  stopMediaTracks()
+  mediaRecorder.value = null
+  streamingSocket = null
+  startPending = false
+  streamingAwaitingFinish = false
+  appStore.setRecording(false)
+  appStore.setTranscribing(false)
+  tray.setIcon('idle')
+  livePhase.value = 'error'
+  sessionStatusText.value = '流式连接已断开，请重新开始录音'
+
+  completeFloatingSession('error', '流式连接已断开')
+
+  appStore.showToast('流式转写连接已断开，请重新开始录音')
+}
+
 function updateStreamingTranscript(text) {
   if (!text && liveTranscript.value) {
     return
@@ -206,51 +261,14 @@ function updateStreamingTranscript(text) {
   }
 }
 
-function calculateAudioLevel(samples) {
-  if (!samples?.length) {
-    return 0
-  }
-
-  let sumSquares = 0
-  for (let index = 0; index < samples.length; index += 1) {
-    sumSquares += samples[index] * samples[index]
-  }
-
-  const rms = Math.sqrt(sumSquares / samples.length)
-  return Math.max(0, Math.min(1, rms * 6))
-}
-
+// 仅保留"改模块级缓冲状态"的部分，纯切分计算在 recorder/pcm.mjs 里。
+// 注意：原实现在队列不足时也会执行 `streamingPendingSampleCount -= count`（计数器可能为负），
+// 该历史行为本次不修改，逐字保留。
 function takeStreamingSamples(count) {
-  const result = new Float32Array(count)
-  let offset = 0
-
-  while (offset < count && streamingPendingSamples.length > 0) {
-    const current = streamingPendingSamples[0]
-    const remaining = count - offset
-
-    if (current.length <= remaining) {
-      result.set(current, offset)
-      offset += current.length
-      streamingPendingSamples.shift()
-      continue
-    }
-
-    result.set(current.subarray(0, remaining), offset)
-    streamingPendingSamples[0] = current.subarray(remaining)
-    offset += remaining
-  }
-
+  const { samples, remaining } = pcm.takeSamplesFromQueue(streamingPendingSamples, count)
+  streamingPendingSamples = remaining
   streamingPendingSampleCount -= count
-  return result
-}
-
-function convertFloat32ToPcm16Buffer(samples) {
-  const pcm16 = new Int16Array(samples.length)
-  for (let index = 0; index < samples.length; index += 1) {
-    const sample = Math.max(-1, Math.min(1, samples[index]))
-    pcm16[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
-  }
-  return pcm16.buffer
+  return samples
 }
 
 function sendStreamingSamples(force = false) {
@@ -259,26 +277,26 @@ function sendStreamingSamples(force = false) {
   }
 
   if (!force) {
-    while (streamingPendingSampleCount >= STREAM_FLUSH_SAMPLES) {
-      const chunk = takeStreamingSamples(STREAM_FLUSH_SAMPLES)
-      streamingSocket.send(convertFloat32ToPcm16Buffer(chunk))
+    // 分片尺寸由 planFlushChunkSizes 预先算好，等价于原来的 while 循环
+    for (const chunkSize of pcm.planFlushChunkSizes(streamingPendingSampleCount, pcm.STREAM_FLUSH_SAMPLES)) {
+      streamingSocket.send(pcm.convertFloat32ToPcm16Buffer(takeStreamingSamples(chunkSize)))
     }
     return
   }
 
   if (streamingPendingSampleCount > 0) {
     const chunk = takeStreamingSamples(streamingPendingSampleCount)
-    streamingSocket.send(convertFloat32ToPcm16Buffer(chunk))
+    streamingSocket.send(pcm.convertFloat32ToPcm16Buffer(chunk))
   }
 }
 
 function queueStreamingSamples(samples) {
-  if (!samples?.length) {
+  if (!pcm.hasSamples(samples)) {
     return
   }
 
-  audioLevel.value = calculateAudioLevel(samples)
-  streamingPendingSamples.push(samples)
+  audioLevel.value = pcm.calculateAudioLevel(samples)
+  streamingPendingSamples = pcm.appendSamples(streamingPendingSamples, samples)
   streamingPendingSampleCount += samples.length
   sendStreamingSamples(false)
 }
@@ -302,6 +320,7 @@ function stopPolling() {
     pollingTimer = null
   }
   pollingInFlight = false
+  pollingFailureCount = 0
 }
 
 function resetStreamingState() {
@@ -334,14 +353,11 @@ function resetRealtimeState() {
 }
 
 function updateLiveTranscriptPreview() {
-  const orderedSegments = [...liveSegments.value].sort((left, right) => {
-    const leftSequence = typeof left.sequence === 'number' ? left.sequence : Number.MAX_SAFE_INTEGER
-    const rightSequence = typeof right.sequence === 'number' ? right.sequence : Number.MAX_SAFE_INTEGER
-    return leftSequence - rightSequence
-  })
+  // 排序与拼接是纯计算，见 recorder/segmentPolicy.mjs
+  const orderedSegments = segmentPolicy.sortSegmentsBySequence(liveSegments.value)
 
   liveSegments.value = orderedSegments
-  liveTranscript.value = orderedSegments.map((segment) => segment.text).join('\n\n')
+  liveTranscript.value = segmentPolicy.joinSegmentTexts(orderedSegments)
 
   if (floatingSessionActive && activeRecordingMode.value === 'multi') {
     syncFloatingWindow({
@@ -366,27 +382,8 @@ function syncRecordIntoStore(record) {
 
 function setRealtimePhase(phase, text) {
   livePhase.value = phase
-
-  if (text) {
-    sessionStatusText.value = text
-    return
-  }
-
-  if (phase === 'listening') {
-    sessionStatusText.value = '静音切段已启用，停顿后会自动出字'
-  } else if (phase === 'speaking') {
-    sessionStatusText.value = '正在监听语音片段...'
-  } else if (phase === 'segment-processing') {
-    sessionStatusText.value = '上一段正在转写，继续说话即可'
-  } else if (phase === 'finalizing') {
-    sessionStatusText.value = '正在合并整场录音结果'
-  } else if (phase === 'completed') {
-    sessionStatusText.value = '多段录音处理完成'
-  } else if (phase === 'error') {
-    sessionStatusText.value = '本次录音未形成有效结果'
-  } else {
-    sessionStatusText.value = '按住快捷键开始录音'
-  }
+  // 阶段文案映射是纯查表，见 recorder/statusCopy.mjs
+  sessionStatusText.value = text || statusCopy.deriveRealtimePhaseText(phase)
 }
 
 async function syncDesktopRecordingState(syncRecordingState, recording) {
@@ -494,10 +491,48 @@ async function prepareRecordingEnvironment() {
     }
   }
 
-  const [desktopSyncResult, mediaStream] = await Promise.all([
-    syncDesktopRecordingState(syncRecordingState, true),
-    navigator.mediaDevices.getUserMedia(constraints)
-  ])
+  let desktopSyncResult = null
+  let mediaStream = null
+
+  // 分别持有两个 Promise：任一方失败时都要能收口另一方，避免拿到却没释放的麦克风轨道
+  const desktopSyncPromise = syncDesktopRecordingState(syncRecordingState, true)
+  const mediaPromise = navigator.mediaDevices.getUserMedia(constraints)
+
+  try {
+    ;[desktopSyncResult, mediaStream] = await Promise.all([desktopSyncPromise, mediaPromise])
+  } catch (error) {
+    // 关键修复：本函数在 await 之前已经置位 startPending / isRecording / floatingSessionActive，
+    // 若此处直接抛出，热键与录音按钮会被永久静默拦截，用户只能重启应用（docs/todo.md 相关 bug 的根因之一）。
+    console.error('[Recorder] Failed to prepare recording environment:', error)
+
+    const leakedStream = await mediaPromise.catch(() => null)
+    leakedStream?.getTracks?.().forEach((track) => track.stop())
+
+    await syncDesktopRecordingState(syncRecordingState, false).catch(() => {})
+
+    clearDurationTimer()
+    stopMediaTracks()
+    cleanupStreamingAudio()
+    cleanupStreamingSocket()
+    appStore.setRecording(false)
+    appStore.setTranscribing(false)
+    tray.setIcon('idle')
+    startPending = false
+    pendingStopAfterStart = false
+    floatingSessionActive = false
+    streamingAwaitingFinish = false
+    livePhase.value = 'idle'
+    sessionStatusText.value = '按住快捷键开始录音'
+
+    syncFloatingWindow({
+      phase: 'error',
+      duration: 0,
+      text: '无法访问麦克风'
+    })
+    appStore.showToast('无法访问麦克风，请检查系统权限或输入设备')
+    return null
+  }
+
   logRecordingTiming('desktop-sync-and-media-ready', startedAt)
 
   if (desktopSyncResult?.success === false) {
@@ -579,10 +614,10 @@ async function ensureStreamingRuntimeAvailable() {
     }
   }
 
-  if (settingsStore.settings.asr_provider !== 'qwen_asr') {
+  if (!streamProtocol.isStreamingProviderSupported(settingsStore.settings.asr_provider)) {
     return {
       available: false,
-      reason: '真流式模式仅支持 Qwen3-ASR provider'
+      reason: '真流式模式仅支持 Qwen3-ASR 或豆包在线 ASR provider'
     }
   }
 
@@ -660,19 +695,22 @@ async function connectStreamingSocket(language) {
     streamingSocket = new WebSocket(url)
     streamingSocket.binaryType = 'arraybuffer'
 
+    // 连接超时兜底：无论发生什么（含被 cleanupStreamingSocket 摘掉 handler），Promise 都必须 settle
+    const connectTimer = setTimeout(() => {
+      fail(new Error('流式连接超时（8 秒内未就绪）'))
+    }, STREAM_CONNECT_TIMEOUT_MS)
+
     const fail = (error) => {
       if (settled) {
         return
       }
       settled = true
+      clearTimeout(connectTimer)
       reject(error instanceof Error ? error : new Error(String(error)))
     }
 
     streamingSocket.onopen = () => {
-      streamingSocket.send(JSON.stringify({
-        type: 'stream_start',
-        language: language || 'zh'
-      }))
+      streamingSocket.send(JSON.stringify(streamProtocol.deriveStreamStartPayload(language)))
     }
 
     streamingSocket.onerror = () => {
@@ -680,89 +718,104 @@ async function connectStreamingSocket(language) {
     }
 
     streamingSocket.onclose = () => {
-      if (!settled && streamingConnectionState.value === 'connecting') {
+      // 关闭动作的判定抽到 recorder/streamProtocol.mjs，这里只负责执行副作用
+      const action = streamProtocol.deriveStreamCloseAction({
+        settled,
+        awaitingFinish: streamingAwaitingFinish,
+        connectionState: streamingConnectionState.value
+      })
+
+      if (action === streamProtocol.STREAM_CLOSE_ACTIONS.FAIL) {
         fail(new Error('流式连接已关闭'))
-      } else if (!streamingAwaitingFinish && streamingConnectionState.value !== 'idle') {
+        return
+      }
+
+      if (action === streamProtocol.STREAM_CLOSE_ACTIONS.UNEXPECTED) {
+        // 录音过程中意外断开：原实现只改内部状态，导致麦克风继续采集、时长无限增长、
+        // 悬浮窗永久置顶显示"正在完成"，必须在此完整收口。
         streamingConnectionState.value = 'error'
+        handleUnexpectedStreamingClose()
       }
     }
 
     streamingSocket.onmessage = async (event) => {
       try {
-        const message = JSON.parse(event.data)
-
-        if (message.type === 'stream_ready') {
-          currentSessionId.value = message.data?.session_id || null
-          streamingConnectionState.value = 'streaming'
-          if (!settled) {
-            settled = true
-            resolve(message)
-          }
-          return
+        const parsed = streamProtocol.parseStreamMessage(event.data)
+        if (!parsed.ok) {
+          throw parsed.error
         }
 
-        if (message.type === 'stream_partial') {
-          updateStreamingTranscript(message.data?.text || '')
-          sessionStatusText.value = 'Qwen 真流式转写中'
-          livePhase.value = 'streaming'
-          return
-        }
+        const message = parsed.message
 
-        if (message.type === 'stream_finished') {
-          const appStore = useAppStore()
-          const recordsStore = useRecordsStore()
-          const { tray } = useElectron()
-          const payload = message.data || {}
-          const record = payload.record || null
-
-          if (record) {
-            syncRecordIntoStore(record)
-            appStore.setCurrentRecordId(record.id)
-            appStore.setCurrentRecord(record)
-            appStore.setRecordStatus({ record_id: record.id, status: record.status })
+        switch (streamProtocol.classifyStreamMessage(message)) {
+          case streamProtocol.STREAM_MESSAGE_TYPES.READY: {
+            currentSessionId.value = streamProtocol.deriveStreamReadySessionId(message)
+            streamingConnectionState.value = 'streaming'
+            if (!settled) {
+              settled = true
+              clearTimeout(connectTimer)
+              resolve(message)
+            }
+            return
           }
 
-          const finalText = payload.optimized_text || payload.raw_text || record?.optimized_text || record?.raw_text || ''
-          updateStreamingTranscript(finalText)
-          livePhase.value = 'completed'
-          sessionStatusText.value = 'Qwen 真流式录音已完成'
-          appStore.setRecording(false)
-          appStore.setTranscribing(false)
-          tray.setIcon('idle')
-
-          if (floatingSessionActive) {
-            syncFloatingWindow({
-              phase: 'complete',
-              duration: 0,
-              text: finalText
-            })
-            floatingSessionActive = false
+          case streamProtocol.STREAM_MESSAGE_TYPES.PARTIAL: {
+            updateStreamingTranscript(streamProtocol.deriveStreamPartialText(message))
+            sessionStatusText.value = `${streamProtocol.deriveStreamingProviderLabel(
+              useSettingsStore().settings.asr_provider
+            )}转写中`
+            livePhase.value = 'streaming'
+            return
           }
 
-          const copyResult = await maybeCopyText(finalText)
-          appStore.showToast(
-            copyResult.pasted
-              ? '真流式转写完成，已复制并粘贴'
-              : copyResult.attempted
-                ? '真流式转写完成，复制或粘贴失败'
-                : '真流式转写完成'
-          )
+          case streamProtocol.STREAM_MESSAGE_TYPES.FINISHED: {
+            const appStore = useAppStore()
+            const recordsStore = useRecordsStore()
+            const { tray } = useElectron()
+            const { record, finalText } = streamProtocol.deriveStreamFinishedPayload(message)
 
-          streamingAwaitingFinish = false
-          cleanupStreamingSocket()
-          currentSessionId.value = null
-          return
-        }
+            if (record) {
+              syncRecordIntoStore(record)
+              appStore.setCurrentRecordId(record.id)
+              appStore.setCurrentRecord(record)
+              appStore.setRecordStatus({ record_id: record.id, status: record.status })
+            }
 
-        if (message.type === 'stream_cancelled') {
-          streamingAwaitingFinish = false
-          cleanupStreamingSocket()
-          currentSessionId.value = null
-          return
-        }
+            updateStreamingTranscript(finalText)
+            livePhase.value = 'completed'
+            sessionStatusText.value = `${streamProtocol.deriveStreamingProviderLabel(
+              useSettingsStore().settings.asr_provider
+            )}录音已完成`
+            appStore.setRecording(false)
+            appStore.setTranscribing(false)
+            tray.setIcon('idle')
 
-        if (message.type === 'stream_error') {
-          throw new Error(message.data?.error || '流式转写失败')
+            completeFloatingSession('complete', finalText)
+
+            appStore.showToast(
+              statusCopy.deriveCompletionToast('streaming', await maybeCopyText(finalText))
+            )
+
+            streamingAwaitingFinish = false
+            cleanupStreamingSocket()
+            currentSessionId.value = null
+            return
+          }
+
+          case streamProtocol.STREAM_MESSAGE_TYPES.CANCELLED: {
+            streamingAwaitingFinish = false
+            cleanupStreamingSocket()
+            currentSessionId.value = null
+            return
+          }
+
+          case streamProtocol.STREAM_MESSAGE_TYPES.ERROR: {
+            throw new Error(streamProtocol.deriveStreamErrorMessage(message))
+          }
+
+          default:
+            // 未识别的消息类型：与原实现一致，静默忽略
+            return
         }
       } catch (error) {
         if (!settled) {
@@ -781,14 +834,7 @@ async function connectStreamingSocket(language) {
         tray.setIcon('idle')
         livePhase.value = 'error'
         sessionStatusText.value = error.message || '流式转写失败'
-        if (floatingSessionActive) {
-          syncFloatingWindow({
-            phase: 'error',
-            duration: 0,
-            text: error.message || '流式转写失败'
-          })
-          floatingSessionActive = false
-        }
+        completeFloatingSession('error', error.message || '流式转写失败')
         appStore.showToast(error.message || '流式转写失败')
       }
     }
@@ -830,15 +876,7 @@ async function handleShortPressCancellation(syncRecordingState) {
   applyAbortedStartState(appStore, tray)
   await syncDesktopRecordingState(syncRecordingState, false)
 
-  if (floatingSessionActive) {
-    syncFloatingWindow({
-      phase: 'error',
-      duration: 0,
-      text: '录音时间过短'
-    })
-  }
-
-  floatingSessionActive = false
+  completeFloatingSession('error', '录音时间过短')
   resetRealtimeState()
   appStore.showToast('录音时间过短')
 }
@@ -853,14 +891,7 @@ async function uploadSingleRecording(blob) {
       appStore.showToast('录音时间过短')
       appStore.setTranscribing(false)
       tray.setIcon('idle')
-      if (floatingSessionActive) {
-        syncFloatingWindow({
-          phase: 'error',
-          duration: 0,
-          text: '录音时间过短'
-        })
-        floatingSessionActive = false
-      }
+      completeFloatingSession('error', '录音时间过短')
       return
     }
 
@@ -899,14 +930,7 @@ async function uploadSingleRecording(blob) {
     console.error('[Recorder] Upload failed:', error)
     appStore.setTranscribing(false)
     tray.setIcon('idle')
-    if (floatingSessionActive) {
-      syncFloatingWindow({
-        phase: 'error',
-        duration: 0,
-        text: '上传录音失败'
-      })
-      floatingSessionActive = false
-    }
+    completeFloatingSession('error', '上传录音失败')
     appStore.showToast('上传录音失败')
   }
 }
@@ -915,15 +939,17 @@ async function uploadRealtimeSegment(blob, segmentDuration, options = {}) {
   const { api } = useElectron()
   const { force = false, hadSpeech = false } = options
 
-  if (!currentSessionId.value || !blob.size || !hadSpeech) {
-    return
-  }
+  // 上传门槛判定委托给 recorder/segmentPolicy.mjs（判定顺序与原实现逐字一致）
+  const shouldUpload = segmentPolicy.shouldUploadRealtimeSegment({
+    hasSession: currentSessionId.value,
+    hasContent: blob.size,
+    hadSpeech,
+    force,
+    segmentDuration,
+    hasCapturedSpeech: realtimeHasCapturedSpeech
+  })
 
-  if (!force && segmentDuration < MIN_REALTIME_SEGMENT_DURATION) {
-    return
-  }
-
-  if (force && segmentDuration < 0.8 && !realtimeHasCapturedSpeech) {
+  if (!shouldUpload) {
     return
   }
 
@@ -952,11 +978,15 @@ async function finalizeRealtimeSession() {
   const settingsStore = useSettingsStore()
   const { api, tray } = useElectron()
 
-  if (!currentSessionId.value || realtimeFinalizing) {
-    return
-  }
+  const canFinalize = segmentPolicy.shouldFinalizeRealtimeSession({
+    hasSessionId: currentSessionId.value,
+    finalizing: realtimeFinalizing,
+    hasRecorder: mediaRecorder.value,
+    pendingUploads: realtimePendingUploads,
+    pendingSegmentCount: realtimePendingSegmentIds.size
+  })
 
-  if (mediaRecorder.value || realtimePendingUploads > 0 || realtimePendingSegmentIds.size > 0) {
+  if (!canFinalize) {
     return
   }
 
@@ -975,10 +1005,13 @@ async function finalizeRealtimeSession() {
   }
 
   try {
-    const noSpeechCaptured = !realtimeHasCapturedSpeech || processedSegmentCount.value === 0
+    const noSpeechCaptured = segmentPolicy.isMissingRealtimeSpeech({
+      hasCapturedSpeech: realtimeHasCapturedSpeech,
+      processedSegmentCount: processedSegmentCount.value
+    })
     if (noSpeechCaptured) {
       await api.deleteSession(sessionId).catch(() => {})
-      throw new Error(duration.value >= 1 ? '未检测到有效语音' : '录音时间过短')
+      throw new Error(segmentPolicy.deriveMissingSpeechErrorMessage(duration.value))
     }
 
     const merged = await api.mergeSession(sessionId)
@@ -1000,34 +1033,13 @@ async function finalizeRealtimeSession() {
     liveTranscript.value = finalText || liveTranscript.value
     setRealtimePhase('completed')
 
-    if (floatingSessionActive) {
-      syncFloatingWindow({
-        phase: 'complete',
-        duration: 0,
-        text: finalText || ''
-      })
-      floatingSessionActive = false
-    }
+    completeFloatingSession('complete', finalText || '')
 
-    const copyResult = await maybeCopyText(finalText)
-    appStore.showToast(
-      copyResult.pasted
-        ? '多段录音完成，已复制并粘贴'
-        : copyResult.attempted
-          ? '多段录音完成，复制并粘贴失败'
-          : '多段录音完成'
-    )
+    appStore.showToast(statusCopy.deriveCompletionToast('multi', await maybeCopyText(finalText)))
   } catch (error) {
     console.error('[Recorder] Failed to finalize realtime session:', error)
     setRealtimePhase('error', error.message || '多段录音处理失败')
-    if (floatingSessionActive) {
-      syncFloatingWindow({
-        phase: 'error',
-        duration: 0,
-        text: error.message || '多段录音处理失败'
-      })
-      floatingSessionActive = false
-    }
+    completeFloatingSession('error', error.message || '多段录音处理失败')
     appStore.showToast(error.message || '多段录音处理失败')
   } finally {
     appStore.setTranscribing(false)
@@ -1052,7 +1064,11 @@ async function maybeFinalizeRealtimeSession() {
 }
 
 function startRealtimeSegment() {
-  if (!stream.value || mediaRecorder.value || realtimeFinalizing) {
+  if (!segmentPolicy.canStartRealtimeSegment({
+    hasStream: stream.value,
+    hasRecorder: mediaRecorder.value,
+    finalizing: realtimeFinalizing
+  })) {
     return
   }
 
@@ -1066,9 +1082,15 @@ function startRealtimeSegment() {
     realtimeSegmentHasSpeech = false
     clearRealtimeMaxSegmentTimer()
     mediaRecorder.value = null
-    const segmentDuration = (performance.now() - realtimeSegmentStartedAt) / 1000
+    const segmentDuration = segmentPolicy.computeRealtimeSegmentDurationSeconds(
+      realtimeSegmentStartedAt,
+      performance.now()
+    )
     realtimeSegmentStartedAt = 0
-    const shouldContinueCapture = !realtimeStopRequested && !realtimeFinalizing
+    const shouldContinueCapture = segmentPolicy.shouldContinueRealtimeCapture({
+      stopRequested: realtimeStopRequested,
+      finalizing: realtimeFinalizing
+    })
 
     if (shouldContinueCapture) {
       startRealtimeSegment()
@@ -1083,7 +1105,10 @@ function startRealtimeSegment() {
       return
     }
 
-    if (!realtimeStopRequested && !realtimeFinalizing) {
+    if (segmentPolicy.shouldContinueRealtimeCapture({
+      stopRequested: realtimeStopRequested,
+      finalizing: realtimeFinalizing
+    })) {
       setRealtimePhase('listening')
     }
 
@@ -1094,28 +1119,34 @@ function startRealtimeSegment() {
   setRealtimePhase(realtimeSpeechActive ? 'speaking' : 'listening')
   clearRealtimeMaxSegmentTimer()
   realtimeMaxSegmentTimer = setTimeout(() => {
-    if (!mediaRecorder.value || mediaRecorder.value.state === 'inactive') {
+    if (segmentPolicy.isRecorderInactive(mediaRecorder.value)) {
       return
     }
 
     realtimeRestartAfterStop = true
     setRealtimePhase('segment-processing', '当前语句较长，正在拆分为较大的片段')
     stopRealtimeSegment({ force: true })
-  }, MAX_REALTIME_SEGMENT_DURATION * 1000)
+  }, segmentPolicy.resolveRealtimeMaxSegmentDelayMs())
 }
 
 function stopRealtimeSegment(options = {}) {
   const { force = false } = options
 
-  if (!mediaRecorder.value || mediaRecorder.value.state === 'inactive') {
+  if (segmentPolicy.isRecorderInactive(mediaRecorder.value)) {
     return
   }
 
-  const segmentDuration = realtimeSegmentStartedAt
-    ? (performance.now() - realtimeSegmentStartedAt) / 1000
-    : 0
+  const segmentDuration = segmentPolicy.computeRealtimeSegmentDurationSeconds(
+    realtimeSegmentStartedAt,
+    performance.now()
+  )
 
-  if (!force && realtimeSegmentHasSpeech && !realtimeStopRequested && segmentDuration < MIN_REALTIME_SEGMENT_DURATION) {
+  if (!segmentPolicy.shouldStopRealtimeSegment({
+    force,
+    segmentHasSpeech: realtimeSegmentHasSpeech,
+    stopRequested: realtimeStopRequested,
+    segmentDuration
+  })) {
     setRealtimePhase('speaking', '停顿过短，继续合并当前语句')
     return
   }
@@ -1137,11 +1168,15 @@ async function startStreamingRecording() {
     resetRealtimeState()
     resetStreamingState()
     livePhase.value = 'connecting'
-    sessionStatusText.value = '正在连接 Qwen 真流式服务'
 
-    if (context.settingsStore.settings.asr_provider !== 'qwen_asr') {
-      throw new Error('真流式模式仅支持 Qwen3-ASR provider')
+    if (!streamProtocol.isStreamingProviderSupported(context.settingsStore.settings.asr_provider)) {
+      throw new Error('真流式模式仅支持 Qwen3-ASR 或豆包在线 ASR provider')
     }
+
+    const streamingLabel = streamProtocol.deriveStreamingProviderLabel(
+      context.settingsStore.settings.asr_provider
+    )
+    sessionStatusText.value = `正在连接${streamingLabel}服务`
 
     await connectStreamingSocket(context.settingsStore.settings.asr_language || 'zh')
     await setupStreamingAudioCapture(stream.value)
@@ -1161,7 +1196,7 @@ async function startStreamingRecording() {
     })
     startDurationClock()
     livePhase.value = 'streaming'
-    sessionStatusText.value = 'Qwen 真流式转写中'
+    sessionStatusText.value = `${streamingLabel}转写中`
   } catch (error) {
     console.error('[Recorder] Failed to start streaming recording:', error)
     await syncDesktopRecordingState(context.syncRecordingState, false)
@@ -1170,14 +1205,7 @@ async function startStreamingRecording() {
     stopMediaTracks()
     mediaRecorder.value = null
     appStore.setRecording(false)
-    if (floatingSessionActive) {
-      syncFloatingWindow({
-        phase: 'error',
-        duration: 0,
-        text: error.message || '无法启动真流式录音'
-      })
-      floatingSessionActive = false
-    }
+    completeFloatingSession('error', error.message || '无法启动真流式录音')
     appStore.showToast(error.message || '无法启动真流式录音')
   } finally {
     startPending = false
@@ -1220,13 +1248,13 @@ async function stopStreamingRecording() {
   }
 
   livePhase.value = 'finalizing'
-  sessionStatusText.value = '正在完成 Qwen 真流式转写'
+  sessionStatusText.value = '正在完成流式转写'
   cleanupStreamingAudio()
   stopMediaTracks()
 
   if (streamingSocket && streamingSocket.readyState === WebSocket.OPEN) {
     sendStreamingSamples(true)
-    streamingSocket.send(JSON.stringify({ type: 'stream_finish' }))
+    streamingSocket.send(JSON.stringify(streamProtocol.deriveStreamFinishPayload()))
     return
   }
 
@@ -1280,14 +1308,7 @@ async function startSingleRecording() {
     stopMediaTracks()
     mediaRecorder.value = null
     appStore.setRecording(false)
-    if (floatingSessionActive) {
-      syncFloatingWindow({
-        phase: 'error',
-        duration: 0,
-        text: '无法访问麦克风'
-      })
-      floatingSessionActive = false
-    }
+    completeFloatingSession('error', '无法访问麦克风')
     appStore.showToast('无法访问麦克风')
   } finally {
     startPending = false
@@ -1364,14 +1385,7 @@ async function startMultiRecording() {
     stopMediaTracks()
     mediaRecorder.value = null
     appStore.setRecording(false)
-    if (floatingSessionActive) {
-      syncFloatingWindow({
-        phase: 'error',
-        duration: 0,
-        text: '无法启动多段录音'
-      })
-      floatingSessionActive = false
-    }
+    completeFloatingSession('error', '无法启动多段录音')
     appStore.showToast('无法启动多段录音')
     resetRealtimeState()
   } finally {
@@ -1606,21 +1620,9 @@ async function handleWebSocketMessage(message) {
     })
 
     if (!settingsStore.settings.auto_optimize) {
-      if (floatingSessionActive) {
-        syncFloatingWindow({
-          phase: 'complete',
-          duration: 0,
-          text: message.data?.text || ''
-        })
-        floatingSessionActive = false
-      }
-      const copyResult = await maybeCopyText(message.data?.text)
+      completeFloatingSession('complete', message.data?.text || '')
       appStore.showToast(
-        copyResult.pasted
-          ? '转写完成，已复制并粘贴'
-          : copyResult.attempted
-            ? '转写完成，复制并粘贴失败'
-            : '转写完成'
+        statusCopy.deriveCompletionToast('transcription', await maybeCopyText(message.data?.text))
       )
     } else {
       if (floatingSessionActive) {
@@ -1670,21 +1672,9 @@ async function handleWebSocketMessage(message) {
       status: 'optimized',
       optimized_text: message.data?.optimized_text || ''
     })
-    if (floatingSessionActive) {
-      syncFloatingWindow({
-        phase: 'complete',
-        duration: 0,
-        text: message.data?.optimized_text || ''
-      })
-      floatingSessionActive = false
-    }
-    const copyResult = await maybeCopyText(message.data?.optimized_text)
+    completeFloatingSession('complete', message.data?.optimized_text || '')
     appStore.showToast(
-      copyResult.pasted
-        ? '优化完成，已复制并粘贴'
-        : copyResult.attempted
-          ? '优化完成，复制并粘贴失败'
-          : '优化完成'
+      statusCopy.deriveCompletionToast('optimization', await maybeCopyText(message.data?.optimized_text))
     )
     return
   }
@@ -1699,14 +1689,7 @@ async function handleWebSocketMessage(message) {
 
     appStore.setTranscribing(false)
     tray.setIcon('idle')
-    if (floatingSessionActive) {
-      syncFloatingWindow({
-        phase: 'error',
-        duration: 0,
-        text: message.data?.error || '处理失败'
-      })
-      floatingSessionActive = false
-    }
+    completeFloatingSession('error', message.data?.error || '处理失败')
     appStore.showToast(message.data?.error || '处理失败')
   }
 }
@@ -1728,21 +1711,9 @@ async function pollRecordStatus(recordId) {
       }
       stopPolling()
       handleRecordCompleted(recordId, status)
-      if (floatingSessionActive) {
-        syncFloatingWindow({
-          phase: 'complete',
-          duration: 0,
-          text: status.optimized_text || ''
-        })
-        floatingSessionActive = false
-      }
-      const copyResult = await maybeCopyText(status.optimized_text)
+      completeFloatingSession('complete', status.optimized_text || '')
       appStore.showToast(
-        copyResult.pasted
-          ? '优化完成，已复制并粘贴'
-          : copyResult.attempted
-            ? '优化完成，复制并粘贴失败'
-            : '优化完成'
+        statusCopy.deriveCompletionToast('optimization', await maybeCopyText(status.optimized_text))
       )
       return true
     }
@@ -1754,21 +1725,9 @@ async function pollRecordStatus(recordId) {
         }
         stopPolling()
         handleRecordCompleted(recordId, status)
-        if (floatingSessionActive) {
-          syncFloatingWindow({
-            phase: 'complete',
-            duration: 0,
-            text: status.raw_text || ''
-          })
-          floatingSessionActive = false
-        }
-        const copyResult = await maybeCopyText(status.raw_text)
+        completeFloatingSession('complete', status.raw_text || '')
         appStore.showToast(
-          copyResult.pasted
-            ? '转写完成，已复制并粘贴'
-            : copyResult.attempted
-              ? '转写完成，复制并粘贴失败'
-              : '转写完成'
+          statusCopy.deriveCompletionToast('transcription', await maybeCopyText(status.raw_text))
         )
         return true
       }
@@ -1782,38 +1741,46 @@ async function pollRecordStatus(recordId) {
       stopPolling()
       appStore.setTranscribing(false)
       tray.setIcon('idle')
-      if (floatingSessionActive) {
-        syncFloatingWindow({
-          phase: 'error',
-          duration: 0,
-          text: '转写失败'
-        })
-        floatingSessionActive = false
-      }
+      completeFloatingSession('error', '转写失败')
       appStore.showToast('转写失败')
       return true
     }
 
     return false
   } catch (error) {
+    pollingFailureCount = pollPolicy.nextPollFailureCount(pollingFailureCount)
     console.error('[Recorder] Failed to poll status:', error)
+
+    // 超过失败上限就停止轮询并提示，避免后端异常时永久 1Hz 静默轮询、UI 卡在"转写中"
+    if (pollPolicy.hasReachedPollFailureLimit(pollingFailureCount)) {
+      stopPolling()
+      appStore.setTranscribing(false)
+      tray.setIcon('idle')
+
+      completeFloatingSession('error', '查询转写状态失败')
+
+      appStore.showToast('查询转写状态失败，请稍后在记录集里刷新查看')
+      return true
+    }
+
     return false
   }
 }
 
 function startPolling(recordId) {
   stopPolling()
+  pollingFailureCount = 0
   pollingTimer = setInterval(async () => {
-    if (pollingInFlight) {
+    if (pollPolicy.shouldSkipPollTick(pollingInFlight)) {
       return
     }
     pollingInFlight = true
     const completed = await pollRecordStatus(recordId)
     pollingInFlight = false
-    if (completed) {
+    if (pollPolicy.shouldStopPollingAfterTick(completed)) {
       stopPolling()
     }
-  }, 1000)
+  }, pollPolicy.POLL_INTERVAL_MS)
 }
 
 export function useRecorder() {
@@ -1871,6 +1838,17 @@ export function useRecorder() {
       removeAllListeners('hotkey:press')
       removeAllListeners('hotkey:release')
       desktopHotkeyAttached = false
+
+      // 原实现只摘 WS 与热键，定时器 / WebSocket / AudioContext / 麦克风轨道全部泄漏，
+      // 组件卸载后仍会继续轮询与采集。
+      clearDurationTimer()
+      clearRealtimeMaxSegmentTimer()
+      stopPolling()
+      cleanupStreamingSocket()
+      cleanupStreamingAudio()
+      cleanupRealtimeDetector()
+      stopMediaTracks()
+      mediaRecorder.value = null
       mountedInstances = 0
     }
   })

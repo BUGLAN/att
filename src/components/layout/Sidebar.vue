@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <aside
     class="sidebar"
     :class="{
@@ -75,7 +75,8 @@
         <span class="status-indicator" :class="isConnected ? 'connected' : 'disconnected'"></span>
         <span class="status-text">{{ isConnected ? '已连接后端' : '未连接后端' }}</span>
       </div>
-      <div v-if="!collapsed" class="client-count">
+      <!-- 调试信息不再常驻正式 UI：仅在开发模式（vite dev）下显示 -->
+      <div v-if="showDebugInfo && !collapsed" class="client-count">
         <span class="client-icon">WS</span>
         <span class="client-text">{{ connectedClients }} 个客户端在线</span>
       </div>
@@ -134,6 +135,8 @@ const liveWidth = ref(props.width)
 const currentPage = computed(() => appStore.currentPage)
 const isConnected = computed(() => appStore.isConnected)
 const connectedClients = computed(() => appStore.connectedClients)
+// 调试信息开关：仅开发模式显示，打包后的正式界面不再暴露 WS 连接数
+const showDebugInfo = import.meta.env.DEV
 const collapseThreshold = computed(() => appStore.sidebarCollapseThreshold)
 const minWidth = computed(() => appStore.sidebarMinWidth)
 const maxWidth = computed(() => appStore.sidebarMaxWidth)

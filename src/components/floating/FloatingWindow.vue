@@ -40,22 +40,42 @@
       </div>
 
       <div class="actions">
-        <button class="action-button" type="button" title="打开设置" @click="openSettings">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="m19.14 12.94.04-.94-.04-.94 2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.4 7.4 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.49-.42h-3.84a.5.5 0 0 0-.49.42l-.36 2.54c-.58.23-1.13.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.84a.5.5 0 0 0 .12.64l2.03 1.58-.04.94.04.94-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.71 1.63.94l.36 2.54a.5.5 0 0 0 .49.42h3.84a.5.5 0 0 0 .49-.42l.36-2.54c.58-.23 1.13-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"
-              fill="currentColor"
-            />
-          </svg>
-        </button>
-        <button class="action-button close" type="button" title="关闭悬浮窗" @click="closeWindow">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M6.53 5.47a.75.75 0 0 1 1.06 0L12 9.88l4.41-4.41a.75.75 0 1 1 1.06 1.06L13.06 11l4.41 4.41a.75.75 0 0 1-1.06 1.06L12 12.06l-4.41 4.41a.75.75 0 1 1-1.06-1.06L10.94 11 6.53 6.59a.75.75 0 0 1 0-1.12Z"
-              fill="currentColor"
-            />
-          </svg>
-        </button>
+        <BaseButton
+          variant="ghost"
+          icon
+          size="sm"
+          class="action-button"
+          style="--ui-icon-size: 24px"
+          title="打开设置"
+          @click="openSettings"
+        >
+          <template #icon>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="m19.14 12.94.04-.94-.04-.94 2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.4 7.4 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.49-.42h-3.84a.5.5 0 0 0-.49.42l-.36 2.54c-.58.23-1.13.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.84a.5.5 0 0 0 .12.64l2.03 1.58-.04.94.04.94-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.71 1.63.94l.36 2.54a.5.5 0 0 0 .49.42h3.84a.5.5 0 0 0 .49-.42l.36-2.54c.58-.23 1.13-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"
+                fill="currentColor"
+              />
+            </svg>
+          </template>
+        </BaseButton>
+        <BaseButton
+          variant="ghost"
+          icon
+          size="sm"
+          class="action-button close"
+          style="--ui-icon-size: 24px"
+          title="关闭悬浮窗"
+          @click="closeWindow"
+        >
+          <template #icon>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M6.53 5.47a.75.75 0 0 1 1.06 0L12 9.88l4.41-4.41a.75.75 0 1 1 1.06 1.06L13.06 11l4.41 4.41a.75.75 0 0 1-1.06 1.06L12 12.06l-4.41 4.41a.75.75 0 1 1-1.06-1.06L10.94 11 6.53 6.59a.75.75 0 0 1 0-1.12Z"
+                fill="currentColor"
+              />
+            </svg>
+          </template>
+        </BaseButton>
       </div>
     </section>
   </div>
@@ -63,6 +83,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import BaseButton from '@/components/common/BaseButton.vue'
 
 const AUTO_HIDE_MS = 800
 
@@ -208,3 +229,17 @@ onUnmounted(() => {
   window.floatingAPI?.removeAllListeners('floating:state')
 })
 </script>
+
+<style scoped>
+/* 关闭按钮保留"悬停变红"的语义（用足够高的复合选择器覆盖原语幽灵态） */
+.floating-pill .action-button.close:hover:not(:disabled) {
+  color: var(--err);
+  background: var(--err-soft);
+}
+
+/* 悬浮窗图标按钮使用实心图标，需要覆盖原语的描边式 svg 规则 */
+.floating-pill .action-button :deep(svg) {
+  fill: currentColor;
+  stroke: none;
+}
+</style>

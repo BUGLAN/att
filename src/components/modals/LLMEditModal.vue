@@ -1,53 +1,53 @@
-﻿<template>
+<template>
   <Modal :title="isEdit ? '编辑 LLM 配置' : '新建 LLM 配置'" modal-name="llmEdit">
     <div class="form-group">
       <label>服务商</label>
-      <select v-model="form.provider" class="form-select" @change="handleProviderChange">
+      <BaseSelect v-model="form.provider" @change="handleProviderChange">
         <option v-for="provider in providers" :key="provider.id" :value="provider.id">
           {{ provider.name }}
         </option>
-      </select>
+      </BaseSelect>
     </div>
 
     <div class="form-group">
       <label>配置名称</label>
-      <input v-model="form.name" class="form-input" type="text" placeholder="例如：我的 DeepSeek">
+      <BaseInput v-model="form.name" type="text" placeholder="例如：我的 DeepSeek" />
     </div>
 
     <div class="form-group">
       <label>API Key</label>
-      <input v-model="form.api_key" class="form-input" type="password" :placeholder="isEdit ? '留空保持现有密钥' : 'sk-...'">
+      <BaseInput v-model="form.api_key" type="password" :placeholder="isEdit ? '留空保持现有密钥' : 'sk-...'" />
       <span class="form-hint">编辑时留空会保留现有 API Key。</span>
     </div>
 
     <div class="form-group">
       <label>API Base</label>
-      <input v-model="form.api_base" class="form-input" type="text" placeholder="留空使用默认端点">
+      <BaseInput v-model="form.api_base" type="text" placeholder="留空使用默认端点" />
     </div>
 
     <div class="form-group">
       <label>模型</label>
-      <select v-model="form.model" class="form-select">
+      <BaseSelect v-model="form.model">
         <option v-for="model in availableModels" :key="model" :value="model">
           {{ model }}
         </option>
-      </select>
+      </BaseSelect>
     </div>
 
     <div class="form-row">
       <div class="form-group half">
         <label>Temperature</label>
-        <input v-model.number="form.temperature" class="form-input" type="number" min="0" max="2" step="0.1">
+        <BaseInput v-model.number="form.temperature" type="number" min="0" max="2" step="0.1" />
       </div>
       <div class="form-group half">
         <label>Max Tokens</label>
-        <input v-model.number="form.max_tokens" class="form-input" type="number" min="100" max="32000" step="100">
+        <BaseInput v-model.number="form.max_tokens" type="number" min="100" max="32000" step="100" />
       </div>
     </div>
 
     <template #footer>
-      <button class="btn btn-secondary" type="button" @click="close">取消</button>
-      <button class="btn btn-primary" type="button" @click="save">保存</button>
+      <BaseButton variant="outline" @click="close">取消</BaseButton>
+      <BaseButton variant="solid" @click="save">保存</BaseButton>
     </template>
   </Modal>
 </template>
@@ -57,6 +57,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import Modal from '@/components/common/Modal.vue'
+import BaseButton from '@/components/common/BaseButton.vue'
+import BaseInput from '@/components/common/BaseInput.vue'
+import BaseSelect from '@/components/common/BaseSelect.vue'
 import { useLLMConfig } from '@/composables/useSettings'
 
 const appStore = useAppStore()
@@ -152,12 +155,12 @@ function buildPayload() {
 
 async function save() {
   if (!form.value.name.trim()) {
-    appStore.showToast('请输入配置名称')
+    appStore.showToast('请输入配置名称', { tone: 'error' })
     return
   }
 
   if (!form.value.api_key && !isEdit.value) {
-    appStore.showToast('请输入 API Key')
+    appStore.showToast('请输入 API Key', { tone: 'error' })
     return
   }
 
@@ -165,7 +168,7 @@ async function save() {
     await saveLLMConfig(buildPayload())
     close()
   } catch (error) {
-    appStore.showToast('保存配置失败')
+    appStore.showToast('保存配置失败', { tone: 'error' })
   }
 }
 

@@ -1,41 +1,38 @@
-﻿<template>
+<template>
   <section class="recorder-stage">
-    <div class="stage-shell">
-      <div class="stage-header">
-        <div class="stage-heading">
-          <h1 class="stage-title">录音</h1>
-        </div>
-        <div class="stage-actions">
-          <button
-            v-if="showServiceButton"
-            class="service-toggle"
-            :class="{
-              active: serviceReady,
-              loading: serviceLoading
-            }"
-            type="button"
-            :disabled="serviceButtonDisabled"
-            @click="toggleModelService"
-          >
+    <!-- 首页页头：统一由 PageHeader 提供，卡片内不再重复放标题 -->
+    <PageHeader
+      title="录音"
+      subtitle="按下录音按钮开始语音输入；转写、优化与历史记录都会在下方实时更新。"
+    >
+      <template #actions>
+        <BaseButton
+          v-if="showServiceButton"
+          size="sm"
+          pill
+          class="service-toggle"
+          :active="serviceReady"
+          :loading="serviceLoading"
+          :disabled="serviceButtonDisabled"
+          @click="toggleModelService"
+        >
+          <template #icon>
             <span class="service-toggle-dot"></span>
-            <span>{{ serviceButtonLabel }}</span>
-          </button>
+          </template>
+          {{ serviceButtonLabel }}
+        </BaseButton>
 
-          <div class="stage-badges">
-            <span class="stage-badge primary">{{ modeBadge }}</span>
-            <span class="stage-badge">{{ statusBadge }}</span>
-          </div>
+        <div class="stage-badges">
+          <BaseBadge tone="accent" uppercase>{{ modeBadge }}</BaseBadge>
+          <BaseBadge :tone="statusTone" uppercase>{{ statusBadge }}</BaseBadge>
         </div>
-      </div>
+      </template>
+    </PageHeader>
 
+    <div class="stage-shell">
       <div class="stage-grid">
         <article class="recorder-panel" :class="{ active: isRecording }">
           <div class="panel-aura"></div>
-
-          <div class="panel-summary">
-            <span class="panel-summary-item">{{ modeBadge }}</span>
-            <span class="panel-summary-item">{{ sessionStatusShort }}</span>
-          </div>
 
           <div class="panel-core">
             <button
@@ -106,8 +103,12 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRecorder } from '@/composables/useRecorder'
+import { deriveStreamingProviderLabel } from '@/composables/recorder/streamProtocol.mjs'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
+import BaseBadge from '@/components/common/BaseBadge.vue'
+import BaseButton from '@/components/common/BaseButton.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
 
 const {
   isRecording,
@@ -127,6 +128,11 @@ const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const serviceActionPending = ref(false)
 
+// 真流式 provider 的展示名（Qwen 本地 / 豆包在线），文案不再写死 Qwen
+const streamingProviderLabel = computed(() => (
+  deriveStreamingProviderLabel(settingsStore.settings.asr_provider)
+))
+
 const showServiceButton = computed(() => true)
 const serviceLoading = computed(() => (
   serviceActionPending.value || settingsStore.runtimeStatus.model_service_loading
@@ -135,6 +141,13 @@ const serviceReady = computed(() => settingsStore.runtimeStatus.model_service_re
 const serviceRunning = computed(() => settingsStore.runtimeStatus.model_service_running)
 const serviceSupported = computed(() => settingsStore.runtimeStatus.model_service_supported)
 const streamingAvailable = computed(() => settingsStore.runtimeStatus.streaming_available)
+// 在线 provider（豆包）：流式不可用时缺的是凭据，不是「模型没开」，
+// 按钮文案要给用户正确的下一步（去设置页填 Token）
+const streamingNeedsCredentials = computed(() => (
+  isStreamingModeEnabled.value &&
+  !streamingAvailable.value &&
+  settingsStore.runtimeStatus.model_service_mode === 'online'
+))
 const serviceButtonDisabled = computed(() => (
   serviceLoading.value || isRecording.value || isTranscribing.value
 ))
@@ -146,6 +159,7 @@ const buttonText = computed(() => {
   if (isRecording.value) return '结束录音'
   if (serviceLoading.value) return '模型加载中'
   if (!serviceSupported.value) return '当前模式不支持开启模型'
+  if (streamingNeedsCredentials.value) return '请先配置 ASR 密钥'
   if (isStreamingModeEnabled.value && serviceReady.value && !streamingAvailable.value) return '当前环境暂不支持流式'
   if (recordingButtonDisabled.value) return '请先开启模型'
   return '开始录音'
@@ -159,7 +173,7 @@ const serviceButtonLabel = computed(() => {
 })
 
 const modeBadge = computed(() => {
-  if (isStreamingModeEnabled.value) return 'Qwen 真流式'
+  if (isStreamingModeEnabled.value) return streamingProviderLabel.value
   if (isMultiModeEnabled.value) return '多段准实时'
   return '单段录音'
 })
@@ -174,6 +188,13 @@ const statusBadge = computed(() => {
   if (isRecording.value) return '录音中'
   if (isTranscribing.value) return '处理中'
   return '就绪'
+})
+
+// 状态徽章的语义色：录音=错误红（醒目）、转写=警告黄、就绪=成功绿
+const statusTone = computed(() => {
+  if (isRecording.value) return 'err'
+  if (isTranscribing.value) return 'warn'
+  return 'ok'
 })
 
 const formattedDuration = computed(() => {
@@ -203,7 +224,7 @@ const panelStatus = computed(() => {
 
 const panelHint = computed(() => {
   if (isStreamingModeEnabled.value) {
-    return '真流式模式会持续发送 16k PCM 音频，并实时刷新 Qwen 转写结果。'
+    return `真流式模式会持续发送 16k PCM 音频，并实时刷新${streamingProviderLabel.value}转写结果。`
   }
 
   if (isMultiModeEnabled.value) {
@@ -247,13 +268,17 @@ const segmentCountText = computed(() => {
 
 const transcriptPlaceholder = computed(() => {
   if (isStreamingModeEnabled.value) {
+    // 不可用时优先把后端给出的可读原因摆出来（在线 provider 通常是「未配置 Access Token」）
+    if (!streamingAvailable.value && settingsStore.runtimeStatus.streaming_error) {
+      return settingsStore.runtimeStatus.streaming_error
+    }
     if (serviceReady.value && !streamingAvailable.value) {
-      return settingsStore.runtimeStatus.streaming_error || '当前环境暂不支持流式录音，请切换单段或多段模式。'
+      return '当前环境暂不支持流式录音，请切换单段或多段模式。'
     }
     if (isRecording.value) {
-      return 'Qwen 真流式模式已启用，这里会持续刷新当前转写文本。'
+      return `${streamingProviderLabel.value}模式已启用，这里会持续刷新当前转写文本。`
     }
-    return '切换到 Qwen 真流式模式后，这里会显示连续更新的实时文本。'
+    return `切换到${streamingProviderLabel.value}模式后，这里会显示连续更新的实时文本。`
   }
 
   if (isMultiModeEnabled.value) {
@@ -268,7 +293,7 @@ const transcriptPlaceholder = computed(() => {
 })
 
 const liveIndicatorText = computed(() => {
-  if (isRecording.value && isStreamingModeEnabled.value) return 'QWEN STREAM'
+  if (isRecording.value && isStreamingModeEnabled.value) return 'LIVE STREAM'
   if (isRecording.value && isMultiModeEnabled.value) return 'LIVE AI'
   if (isRecording.value) return 'RECORDING'
   if (isTranscribing.value) return 'PROCESSING'
@@ -342,132 +367,45 @@ watch(
 <style scoped>
 .recorder-stage {
   width: 100%;
-  margin-bottom: 20px;
+  margin-bottom: var(--s-6);
 }
 
 .stage-shell {
   position: relative;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  padding: 18px;
-  background: var(--bg-secondary);
-  box-shadow: var(--shadow-md);
-}
-
-.stage-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.stage-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.stage-heading {
-  min-width: 0;
-}
-
-.stage-title {
-  margin: 0;
-  font-size: clamp(1.05rem, 2vw, 1.35rem);
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  color: var(--text-primary);
-  line-height: 1.2;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  padding: var(--s-4);
+  background: var(--bg-surface);
+  box-shadow: var(--edge-hi);
 }
 
 .stage-badges {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--s-2);
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
-.service-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition:
-    border-color 180ms ease,
-    color 180ms ease,
-    background 180ms ease,
-    transform 180ms ease;
-}
-
-.service-toggle:hover:not(:disabled) {
-  transform: translateY(-1px);
-  border-color: rgba(201, 162, 39, 0.28);
-  color: var(--text-primary);
-}
-
-.service-toggle:disabled {
-  opacity: 0.72;
-  cursor: not-allowed;
-}
-
-.service-toggle.active {
-  color: var(--accent);
-  border-color: rgba(201, 162, 39, 0.32);
-  background: rgba(201, 162, 39, 0.08);
-}
-
+/* 服务开关：在原语基线上保留胶囊 + 状态点 */
 .service-toggle-dot {
   width: 8px;
   height: 8px;
-  border-radius: 999px;
-  background: rgba(161, 161, 170, 0.85);
-  box-shadow: 0 0 0 4px rgba(113, 113, 122, 0.08);
+  border-radius: var(--r-full);
+  background: var(--gray-300);
+  box-shadow: 0 0 0 4px var(--line-soft);
 }
 
-.service-toggle.active .service-toggle-dot {
+.service-toggle.is-active .service-toggle-dot {
   background: var(--accent);
-  box-shadow: 0 0 0 4px rgba(201, 162, 39, 0.12);
-}
-
-.service-toggle.loading .service-toggle-dot {
-  background: var(--accent);
-  animation: blinkDot 1.2s ease-in-out infinite;
-}
-
-.stage-badge {
-  padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-  background: var(--bg-elevated);
-}
-
-.stage-badge.primary {
-  color: var(--accent);
-  background: var(--accent-dim);
-  border-color: rgba(201, 162, 39, 0.3);
+  box-shadow: 0 0 0 4px var(--accent-dim);
 }
 
 .stage-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
-  gap: 14px;
+  gap: var(--s-3);
   align-items: stretch;
 }
 
@@ -476,55 +414,35 @@ watch(
   position: relative;
   overflow: hidden;
   min-height: 340px;
-  border-radius: var(--radius-lg);
+  border-radius: var(--r-lg);
 }
 
 .recorder-panel {
   display: flex;
   flex-direction: column;
-  padding: 18px;
-  border: 1px solid var(--border);
-  background:
-    linear-gradient(180deg, rgba(31, 31, 35, 0.98), rgba(24, 24, 27, 0.98));
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  background: var(--grad-card);
 }
 
 .recorder-panel.active {
   box-shadow:
-    inset 0 0 0 1px rgba(201, 162, 39, 0.2),
-    0 10px 22px rgba(0, 0, 0, 0.22);
-  border-color: rgba(201, 162, 39, 0.24);
+    inset 0 0 0 1px var(--accent-tint),
+    var(--e-hover);
+  border-color: var(--accent-line);
 }
 
 .panel-aura {
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at center, rgba(201, 162, 39, 0.08), transparent 62%);
+  background: radial-gradient(circle at center, var(--accent-halo), transparent 62%);
   opacity: 0;
-  transition: opacity 220ms ease;
+  transition: opacity var(--t-base) var(--ease);
   pointer-events: none;
 }
 
 .recorder-panel.active .panel-aura {
   opacity: 1;
-}
-
-.panel-summary {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-
-.panel-summary-item {
-  padding: 4px 9px;
-  border-radius: 999px;
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  font-size: 11px;
-  font-weight: 700;
 }
 
 .panel-core {
@@ -535,7 +453,7 @@ watch(
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 12px 0 6px;
+  padding: var(--s-3) 0 var(--s-1);
 }
 
 .recorder-toggle {
@@ -546,67 +464,71 @@ watch(
   justify-content: center;
   width: 104px;
   height: 104px;
-  border: 1px solid rgba(201, 162, 39, 0.2);
-  border-radius: 999px;
-  color: var(--text-primary);
+  border: 1px solid var(--accent-tint);
+  border-radius: var(--r-full);
+  color: var(--text-1);
   background:
-    radial-gradient(circle at 30% 30%, rgba(201, 162, 39, 0.24), rgba(31, 31, 35, 0.96) 72%);
+    radial-gradient(circle at 30% 30%, var(--accent-tint), var(--bg-raise) 72%);
   box-shadow:
-    0 10px 24px rgba(0, 0, 0, 0.24),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    var(--e-hover),
+    var(--edge-hi);
   cursor: pointer;
   transition:
-    transform 180ms ease,
-    box-shadow 180ms ease,
-    border-color 180ms ease,
-    color 180ms ease;
+    transform var(--t-base) var(--ease),
+    box-shadow var(--t-base) var(--ease),
+    border-color var(--t-base) var(--ease),
+    color var(--t-base) var(--ease);
 }
 
-.recorder-toggle:hover {
-  transform: translateY(-2px) scale(1.01);
-  border-color: rgba(201, 162, 39, 0.34);
-  color: var(--accent);
+.recorder-toggle:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: var(--accent-line);
+  color: var(--accent-hi);
 }
 
 .recorder-toggle:disabled {
   cursor: not-allowed;
   opacity: 0.55;
   transform: none;
-  box-shadow:
-    0 10px 24px rgba(0, 0, 0, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: var(--e-1);
 }
 
 .recorder-toggle:disabled:hover {
   transform: none;
-  border-color: rgba(201, 162, 39, 0.2);
-  color: var(--text-primary);
+  border-color: var(--accent-tint);
+  color: var(--text-1);
 }
 
-.recorder-toggle:active {
-  transform: scale(0.97);
+.recorder-toggle:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.recorder-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
 }
 
 .toggle-ring {
   position: absolute;
   inset: -10px;
-  border: 1px solid rgba(113, 113, 122, 0.22);
+  border: 1px solid var(--line-strong);
   border-radius: inherit;
   opacity: 0.5;
-  transition: transform 180ms ease, opacity 180ms ease;
+  transition: transform var(--t-base) var(--ease), opacity var(--t-base) var(--ease);
 }
 
 .recorder-toggle.active {
   color: var(--accent);
-  border-color: rgba(201, 162, 39, 0.42);
+  border-color: var(--accent-line-strong);
   box-shadow:
-    0 0 0 8px rgba(201, 162, 39, 0.08),
-    0 14px 30px rgba(0, 0, 0, 0.28);
+    0 0 0 8px var(--accent-halo),
+    var(--e-hover);
 }
 
 .recorder-toggle.active .toggle-ring {
   transform: scale(1.04);
   opacity: 1;
+  border-color: var(--accent-line);
 }
 
 .recorder-toggle svg {
@@ -618,38 +540,42 @@ watch(
   display: flex;
   align-items: end;
   justify-content: center;
-  gap: 6px;
+  gap: var(--s-1);
   width: 100%;
   max-width: 220px;
   height: 44px;
-  margin-top: 14px;
+  margin-top: var(--s-3);
 }
 
 .waveform-bar {
   width: 3px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(161, 161, 170, 0.42), rgba(201, 162, 39, 0.92));
-  transition: height 120ms ease, opacity 120ms ease;
+  border-radius: var(--r-full);
+  background: linear-gradient(180deg, var(--gray-400), var(--accent));
+  transition: height var(--t-fast) var(--ease), opacity var(--t-fast) var(--ease);
 }
 
 .panel-meta {
   position: relative;
   z-index: 1;
-  margin-top: 14px;
+  margin-top: var(--s-3);
   text-align: center;
 }
 
+/* 计时器是这一屏的视觉主角：等宽数字 + 收紧字距，
+   读数变化时不会左右跳动。 */
 .panel-time {
   display: block;
-  font-size: clamp(1.8rem, 3vw, 2.5rem);
-  font-weight: 800;
-  letter-spacing: -0.06em;
-  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: clamp(var(--fs-2xl), 3vw, 2.75rem);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
 }
 
 .panel-status {
-  margin: 8px 0 4px;
-  font-size: 10px;
+  margin: var(--s-2) 0 var(--s-1);
+  font-size: var(--fs-cap);
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -659,25 +585,24 @@ watch(
 .panel-hint {
   margin: 0;
   max-width: 320px;
-  color: var(--text-muted);
-  font-size: 12px;
+  color: var(--text-3);
+  font-size: var(--fs-cap);
   line-height: 1.55;
 }
 
 .live-panel {
   display: flex;
   flex-direction: column;
-  padding: 18px;
-  border: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(24, 24, 27, 0.98), rgba(17, 17, 19, 0.98));
-  backdrop-filter: blur(16px);
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  background: var(--grad-card);
 }
 
 .live-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--s-2);
 }
 
 .live-heading {
@@ -686,77 +611,76 @@ watch(
 
 .live-title {
   margin: 0;
-  font-size: 0.98rem;
+  font-size: var(--fs-md);
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: var(--text-primary);
+  color: var(--text-1);
 }
 
 .live-indicator {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 9px;
+  gap: var(--s-2);
+  font-size: var(--fs-cap);
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--text-3);
 }
 
 .live-dot {
   width: 8px;
   height: 8px;
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: var(--accent);
-  box-shadow: 0 0 12px rgba(201, 162, 39, 0.35);
+  box-shadow: 0 0 12px var(--accent-glow);
   animation: blinkDot 1.6s ease-in-out infinite;
 }
 
 .live-content {
   flex: 1;
-  margin: 14px 0 12px;
-  padding: 16px;
-  border-radius: 14px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
+  margin: var(--s-3) 0;
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--bg-base);
+  border: 1px solid var(--line);
   overflow: auto;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  box-shadow: var(--edge-hi);
 }
 
 .live-transcript,
 .live-placeholder {
   margin: 0;
-  font-size: clamp(0.92rem, 1.4vw, 1rem);
-  line-height: 1.66;
+  font-size: var(--fs-base);
+  line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .live-transcript {
-  color: var(--text-primary);
+  color: var(--text-1);
 }
 
 .live-placeholder {
-  color: var(--text-muted);
+  color: var(--text-3);
 }
 
 .live-footer {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
+  gap: var(--s-2);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line);
 }
 
 .live-footer-item {
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  padding: 4px 9px;
-  border-radius: 999px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: var(--fs-cap);
+  font-weight: 500;
+  padding: 3px var(--s-2);
+  border-radius: var(--r-full);
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
 }
 
 @keyframes blinkDot {
@@ -766,6 +690,12 @@ watch(
   }
   50% {
     opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot {
+    animation: none;
   }
 }
 
@@ -782,19 +712,17 @@ watch(
 
 @media (max-width: 720px) {
   .stage-shell {
-    padding: 16px;
-    border-radius: 18px;
+    padding: var(--s-3);
+    border-radius: var(--r-lg);
   }
 
-  .stage-header,
-  .stage-actions,
   .live-header {
     flex-direction: column;
     align-items: flex-start;
   }
 
   .recorder-panel {
-    padding: 16px;
+    padding: var(--s-3);
   }
 
   .recorder-toggle {
@@ -808,20 +736,15 @@ watch(
   }
 
   .panel-time {
-    font-size: 1.9rem;
+    font-size: var(--fs-2xl);
   }
 
   .live-content {
-    padding: 16px;
+    padding: var(--s-3);
   }
 }
 
 @media (max-width: 560px) {
-  .stage-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .stage-badges {
     justify-content: flex-start;
   }
@@ -831,7 +754,7 @@ watch(
   }
 
   .live-footer {
-    gap: 8px;
+    gap: var(--s-1);
   }
 }
 </style>

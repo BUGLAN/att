@@ -1,9 +1,6 @@
-﻿<template>
+<template>
   <div class="settings-page">
-    <header class="header settings-header">
-      <h1>设置</h1>
-      <p class="subtitle">配置你的录音、提示词和 LLM 服务</p>
-    </header>
+    <PageHeader title="设置" subtitle="配置你的录音、提示词和 LLM 服务" />
 
     <section class="settings-section">
         <div class="settings-group">
@@ -14,10 +11,11 @@
               <span class="setting-label">ASR Provider</span>
               <span class="setting-desc">切换转写实现层。切换后会自动卸载当前模型服务，需重新开启模型。</span>
             </div>
-            <select v-model="form.asr_provider" class="setting-select">
+            <BaseSelect v-model="form.asr_provider">
               <option value="whisper">Whisper / faster-whisper</option>
               <option value="qwen_asr">Qwen3-ASR</option>
-            </select>
+              <option value="doubao_asr">豆包语音（火山引擎 · 在线流式）</option>
+            </BaseSelect>
           </div>
 
           <div v-if="showWhisperSettings" class="setting-item">
@@ -25,13 +23,13 @@
               <span class="setting-label">Whisper 模型</span>
               <span class="setting-desc">模型越大识别越准，但速度也会更慢。</span>
             </div>
-            <select v-model="form.whisper_model" class="setting-select">
+            <BaseSelect v-model="form.whisper_model">
               <option value="tiny">tiny</option>
               <option value="base">base</option>
               <option value="small">small</option>
               <option value="medium">medium</option>
               <option value="large-v3">large-v3</option>
-            </select>
+            </BaseSelect>
           </div>
 
           <div v-if="showWhisperSettings" class="setting-item">
@@ -39,11 +37,11 @@
               <span class="setting-label">Whisper 设备</span>
               <span class="setting-desc">选择用于 Whisper 推理的设备。</span>
             </div>
-            <select v-model="form.whisper_device" class="setting-select">
+            <BaseSelect v-model="form.whisper_device">
               <option value="auto">自动</option>
               <option value="cuda">CUDA</option>
               <option value="cpu">CPU</option>
-            </select>
+            </BaseSelect>
           </div>
 
           <div v-if="showQwenSettings" class="setting-item">
@@ -51,7 +49,7 @@
               <span class="setting-label">Qwen3-ASR 模型</span>
               <span class="setting-desc">支持 Hugging Face 模型名或本地模型目录。</span>
             </div>
-            <input v-model.trim="form.qwen_asr_model" class="setting-input" type="text" placeholder="Qwen/Qwen3-ASR-1.7B">
+            <BaseInput v-model.trim="form.qwen_asr_model" type="text" placeholder="Qwen/Qwen3-ASR-1.7B" />
           </div>
 
           <div v-if="showQwenSettings" class="setting-item">
@@ -59,11 +57,11 @@
               <span class="setting-label">Qwen 推理设备</span>
               <span class="setting-desc">`auto` 会优先尝试 CUDA，否则回退到 CPU。</span>
             </div>
-            <select v-model="form.qwen_asr_device" class="setting-select">
+            <BaseSelect v-model="form.qwen_asr_device">
               <option value="auto">自动</option>
               <option value="cuda:0">CUDA:0</option>
               <option value="cpu">CPU</option>
-            </select>
+            </BaseSelect>
           </div>
 
           <div v-if="showQwenSettings" class="setting-item">
@@ -71,12 +69,12 @@
               <span class="setting-label">Qwen dtype</span>
               <span class="setting-desc">默认自动推断；显存紧张时可手动调整。</span>
             </div>
-            <select v-model="form.qwen_asr_dtype" class="setting-select">
+            <BaseSelect v-model="form.qwen_asr_dtype">
               <option value="auto">自动</option>
               <option value="bfloat16">bfloat16</option>
               <option value="float16">float16</option>
               <option value="float32">float32</option>
-            </select>
+            </BaseSelect>
           </div>
 
           <div v-if="showQwenSettings" class="setting-item">
@@ -84,7 +82,7 @@
               <span class="setting-label">最大输出 token</span>
               <span class="setting-desc">限制单次生成长度，避免极端长音频时输出失控。</span>
             </div>
-            <input v-model.number="form.qwen_asr_max_new_tokens" class="setting-input" type="number" min="32" max="2048" step="32">
+            <BaseInput v-model.number="form.qwen_asr_max_new_tokens" type="number" min="32" max="2048" step="32" />
           </div>
 
           <div v-if="showQwenSettings" class="setting-item">
@@ -103,7 +101,7 @@
               <span class="setting-label">音频长度上限</span>
               <span class="setting-desc">用于记录 Qwen3-ASR 的单次音频设计上限，当前先保留为配置项。</span>
             </div>
-            <input v-model.number="form.qwen_asr_max_audio_seconds" class="setting-input" type="number" min="5" max="600" step="5">
+            <BaseInput v-model.number="form.qwen_asr_max_audio_seconds" type="number" min="5" max="600" step="5" />
           </div>
 
           <div v-if="showQwenSettings && form.qwen_asr_return_timestamps" class="setting-item">
@@ -122,7 +120,67 @@
               <span class="setting-label">强制对齐器模型</span>
               <span class="setting-desc">默认使用 `Qwen/Qwen3-ForcedAligner-0.6B`，也可改为本地目录。</span>
             </div>
-            <input v-model.trim="form.qwen_asr_forced_aligner_model" class="setting-input" type="text" placeholder="Qwen/Qwen3-ForcedAligner-0.6B">
+            <BaseInput v-model.trim="form.qwen_asr_forced_aligner_model" type="text" placeholder="Qwen/Qwen3-ForcedAligner-0.6B" />
+          </div>
+
+          <!-- 豆包语音（火山引擎 · 在线流式）：Access Token 只写不读，后端加密落盘 -->
+          <div v-if="showDoubaoSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">Access Token</span>
+              <span class="setting-desc">
+                {{ form.doubao_asr_api_key_set ? '已保存（留空表示不修改）' : '火山语音技术控制台的 Access Token，注意与方舟大模型 key 不通用。' }}
+              </span>
+            </div>
+            <BaseInput
+              v-model.trim="form.doubao_asr_api_key"
+              type="password"
+              autocomplete="new-password"
+              placeholder="请输入 Access Token"
+            />
+          </div>
+
+          <div v-if="showDoubaoSettings && form.doubao_asr_api_key_set" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">清除已保存的 Token</span>
+              <span class="setting-desc">开启后保存设置会删除已加密存储的 Access Token。</span>
+            </div>
+            <label class="toggle-switch">
+              <input v-model="form.doubao_asr_api_key_clear" type="checkbox">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div v-if="showDoubaoSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">Resource ID</span>
+              <span class="setting-desc">必须与账号实际开通的产品一致，否则握手直接 403。ASR 1.0 用 bigasr，2.0 用 seedasr。</span>
+            </div>
+            <BaseSelect v-model="form.doubao_asr_resource_id">
+              <option value="volc.seedasr.sauc.duration">volc.seedasr.sauc.duration（ASR 2.0 · 时长）</option>
+              <option value="volc.seedasr.sauc.concurrent">volc.seedasr.sauc.concurrent（ASR 2.0 · 并发）</option>
+              <option value="volc.bigasr.sauc.duration">volc.bigasr.sauc.duration（ASR 1.0 · 时长）</option>
+              <option value="volc.bigasr.sauc.concurrent">volc.bigasr.sauc.concurrent（ASR 1.0 · 并发）</option>
+            </BaseSelect>
+          </div>
+
+          <div v-if="showDoubaoSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">接入点</span>
+              <span class="setting-desc">双向流式 WebSocket 地址，默认无需修改。</span>
+            </div>
+            <BaseInput
+              v-model.trim="form.doubao_asr_endpoint"
+              type="text"
+              placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+            />
+          </div>
+
+          <div v-if="showDoubaoSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">强制断句静音时长</span>
+              <span class="setting-desc">毫秒。0 表示跟随服务端语义分段；设为 200–1000 可让句子更早定稿，实时字幕更跟手。</span>
+            </div>
+            <BaseInput v-model.number="form.doubao_asr_end_window_size" type="number" min="0" max="10000" step="100" />
           </div>
         </div>
 
@@ -135,11 +193,11 @@
               <span class="setting-desc">支持单段录音、多段录音与流式录音。</span>
             </div>
             <div class="setting-actions-inline setting-actions-block">
-              <select v-model="form.recording_mode" class="setting-select">
+              <BaseSelect v-model="form.recording_mode">
               <option value="single">单段录音</option>
               <option value="multi">多段录音</option>
               <option value="streaming">流式录音</option>
-              </select>
+              </BaseSelect>
             </div>
           </div>
 
@@ -149,7 +207,9 @@
               <span class="setting-desc">仅在流式录音模式下生效，用来说明当前后端是否可直接进入流式识别。</span>
             </div>
             <div class="setting-runtime-card" :class="{ unavailable: !streamingRuntimeAvailable }">
-              <span class="setting-runtime-pill">{{ streamingRuntimeAvailable ? '可用' : '不可用' }}</span>
+              <BaseBadge :tone="streamingRuntimeAvailable ? 'ok' : 'neutral'" uppercase>
+                {{ streamingRuntimeAvailable ? '可用' : '不可用' }}
+              </BaseBadge>
               <span class="setting-runtime-text">{{ streamingRuntimeSummary }}</span>
             </div>
           </div>
@@ -159,7 +219,7 @@
               <span class="setting-label">静音分段阈值</span>
               <span class="setting-desc">静音持续超过该秒数时自动切段。</span>
             </div>
-            <input v-model.number="form.silence_threshold" class="setting-input" type="number" min="0.5" max="5" step="0.5">
+            <BaseInput v-model.number="form.silence_threshold" type="number" min="0.5" max="5" step="0.5" />
           </div>
 
           <div class="setting-item">
@@ -167,12 +227,12 @@
               <span class="setting-label">麦克风设备</span>
               <span class="setting-desc">选择录音使用的输入设备。</span>
             </div>
-            <select v-model="form.audio_input_device" class="setting-select">
+            <BaseSelect v-model="form.audio_input_device">
               <option value="default">系统默认</option>
               <option v-for="device in audioInputDevices" :key="device.deviceId" :value="device.deviceId">
                 {{ device.label || `麦克风 ${device.deviceId.slice(0, 8)}` }}
               </option>
-            </select>
+            </BaseSelect>
           </div>
 
           <div class="setting-item">
@@ -214,13 +274,15 @@
               <span class="setting-desc">直接读取 `prompts` 目录中的提示词文件，默认优先使用“通用优化”。</span>
             </div>
             <div class="setting-actions-inline">
-              <select v-model="selectedPresetId" class="setting-select" :disabled="!builtinPresets.length">
+              <BaseSelect v-model="selectedPresetId" :disabled="!builtinPresets.length">
                 <option v-if="!builtinPresets.length" value="">未发现 prompts/*.txt</option>
                 <option v-for="preset in builtinPresets" :key="preset.id" :value="preset.id">
                   {{ preset.name }}
                 </option>
-              </select>
-              <button class="btn" type="button" :disabled="!builtinPresets.length" @click="openPresetModal">查看提示词</button>
+              </BaseSelect>
+              <BaseButton variant="outline" :disabled="!builtinPresets.length" @click="openPresetModal">
+                查看提示词
+              </BaseButton>
             </div>
           </div>
 
@@ -230,7 +292,7 @@
               <span class="setting-desc">点击输入框后按下组合键。现在由桌面端监听热键，长按后开始录音，松开结束；支持 `Win+Alt` 这类无主键组合。</span>
             </div>
             <div class="hotkey-input-wrapper">
-              <input
+              <BaseInput
                 :value="hotkeyDisplay"
                 class="hotkey-input"
                 :class="{ listening: isCapturingHotkey }"
@@ -238,8 +300,15 @@
                 readonly
                 placeholder="点击录入快捷键"
                 @click="startHotkeyCapture"
-              >
-              <button class="hotkey-reset-btn" type="button" @click="resetHotkey">↺</button>
+              />
+              <BaseButton variant="ghost" icon title="恢复默认快捷键" @click="resetHotkey">
+                <template #icon>
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M4 10.5A8 8 0 1 1 6.6 17" />
+                    <path d="M4 5v5.5h5.5" />
+                  </svg>
+                </template>
+              </BaseButton>
             </div>
           </div>
         </div>
@@ -252,10 +321,10 @@
               <span class="setting-label">重复触发行为</span>
               <span class="setting-desc">再次触发时，可选择直接切换开关，或只保持悬浮窗显示。</span>
             </div>
-            <select v-model="form.clipboard_overlay_retrigger_action" class="setting-select">
+            <BaseSelect v-model="form.clipboard_overlay_retrigger_action">
               <option value="toggle">再次触发关闭</option>
               <option value="show_only">再次触发仅保持显示</option>
-            </select>
+            </BaseSelect>
           </div>
 
           <div class="setting-item">
@@ -263,10 +332,10 @@
               <span class="setting-label">回车行为</span>
               <span class="setting-desc">选择条目后按 Enter，可仅复制，或复制后自动回填到当前焦点输入框。</span>
             </div>
-            <select v-model="form.clipboard_overlay_enter_behavior" class="setting-select">
+            <BaseSelect v-model="form.clipboard_overlay_enter_behavior">
               <option value="copy_and_paste">复制并回填</option>
               <option value="copy_only">仅复制</option>
-            </select>
+            </BaseSelect>
           </div>
 
           <div class="setting-item">
@@ -301,13 +370,59 @@
             <span class="setting-desc">选择用于文本优化的默认模型服务。</span>
           </div>
           <div class="setting-actions-inline">
-            <select v-model="selectedLLMConfigId" class="setting-select">
+            <BaseSelect v-model="selectedLLMConfigId">
               <option value="">未设置</option>
               <option v-for="config in llmConfigs" :key="config.id" :value="config.id">
                 {{ config.name }}
               </option>
-            </select>
-            <button class="btn" type="button" @click="openLLMModal">管理配置</button>
+            </BaseSelect>
+            <BaseButton variant="outline" @click="openLLMModal">管理配置</BaseButton>
+          </div>
+        </div>
+      </div>
+
+      <!-- Agent 对话：使用默认 LLM 配置进行多轮问答（docs/todo.md 第 ⑥ 条） -->
+      <div class="settings-group">
+        <h3 class="settings-group-title">Agent 对话</h3>
+
+        <div class="setting-item setting-item-agent">
+          <div class="setting-info">
+            <span class="setting-label">与 Agent 对话</span>
+            <span class="setting-desc">直接使用上面选定的「默认 LLM 配置」进行多轮对话；Enter 发送，Shift+Enter 换行。</span>
+          </div>
+          <div class="setting-control setting-control-agent">
+            <AgentChatPanel />
+          </div>
+        </div>
+      </div>
+
+      <!-- 诊断区：把原先常驻侧边栏的调试信息（WS 客户端数、模型服务状态）折叠到这里 -->
+      <div class="settings-group">
+        <h3 class="settings-group-title">诊断</h3>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">后端连接</span>
+            <span class="setting-desc">WebSocket 与后端服务的实时连接状态。</span>
+          </div>
+          <div class="setting-actions-inline">
+            <BaseBadge :tone="appStore.isConnected ? 'ok' : 'err'">
+              {{ appStore.isConnected ? '已连接' : '未连接' }}
+            </BaseBadge>
+            <BaseBadge tone="neutral" mono>{{ appStore.connectedClients }} 个客户端</BaseBadge>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">运行环境</span>
+            <span class="setting-desc">后端上报的运行时环境与模型服务状态。</span>
+          </div>
+          <div class="setting-actions-inline">
+            <BaseBadge tone="neutral">{{ runtimeEnvironment }}</BaseBadge>
+            <BaseBadge :tone="settingsStore.runtimeStatus.model_service_ready ? 'ok' : 'warn'">
+              {{ settingsStore.runtimeStatus.model_service_ready ? '模型已开启' : '模型未开启' }}
+            </BaseBadge>
           </div>
         </div>
       </div>
@@ -322,6 +437,12 @@ import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useSettings, usePresets, useLLMConfig } from '@/composables/useSettings'
 import { useElectron } from '@/composables/useElectron'
+import BaseBadge from '@/components/common/BaseBadge.vue'
+import BaseButton from '@/components/common/BaseButton.vue'
+import BaseInput from '@/components/common/BaseInput.vue'
+import BaseSelect from '@/components/common/BaseSelect.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
+import AgentChatPanel from '@/components/settings/AgentChatPanel.vue'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
@@ -346,9 +467,12 @@ const lastSavedPresetId = ref('')
 
 const builtinPresets = computed(() => presets.value.filter((preset) => preset.is_builtin))
 const isSyncing = computed(() => syncDepth.value > 0)
-const showWhisperSettings = computed(() => form.value.asr_provider !== 'qwen_asr')
+const showWhisperSettings = computed(() => form.value.asr_provider === 'whisper')
 const showQwenSettings = computed(() => form.value.asr_provider === 'qwen_asr')
+const showDoubaoSettings = computed(() => form.value.asr_provider === 'doubao_asr')
 const streamingRuntimeAvailable = computed(() => settingsStore.runtimeStatus.qwen_streaming_available === true)
+// 诊断区展示：后端上报的运行时环境
+const runtimeEnvironment = computed(() => settingsStore.runtimeStatus.runtime_environment || 'unknown')
 const streamingRuntimeSummary = computed(() => {
   const runtimeEnvironment = settingsStore.runtimeStatus.runtime_environment || 'unknown'
   const backend = settingsStore.runtimeStatus.qwen_streaming_backend
@@ -473,6 +597,13 @@ function normalizeSettings(value = {}) {
     qwen_asr_use_forced_aligner: value.qwen_asr_use_forced_aligner ?? false,
     qwen_asr_forced_aligner_model: value.qwen_asr_forced_aligner_model || 'Qwen/Qwen3-ForcedAligner-0.6B',
     qwen_asr_max_audio_seconds: value.qwen_asr_max_audio_seconds ?? 30,
+    // 豆包语音：明文 Token 只存在于表单内存里，初始值恒为空
+    doubao_asr_api_key: '',
+    doubao_asr_api_key_clear: false,
+    doubao_asr_api_key_set: value.doubao_asr_api_key_set ?? false,
+    doubao_asr_resource_id: value.doubao_asr_resource_id || 'volc.seedasr.sauc.duration',
+    doubao_asr_endpoint: value.doubao_asr_endpoint || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
+    doubao_asr_end_window_size: value.doubao_asr_end_window_size ?? 0,
     pause_audio_on_recording: value.pause_audio_on_recording ?? true,
     auto_optimize: value.auto_optimize ?? false,
     auto_copy_to_clipboard: value.auto_copy_to_clipboard ?? true,
@@ -490,7 +621,7 @@ function normalizeSettings(value = {}) {
 
 function buildSettingsPayload() {
   const enableQwenTimestamps = !!form.value.qwen_asr_return_timestamps
-  return {
+  const payload = {
     asr_provider: form.value.asr_provider,
     asr_language: form.value.asr_language,
     whisper_model: form.value.whisper_model,
@@ -503,6 +634,9 @@ function buildSettingsPayload() {
     qwen_asr_use_forced_aligner: enableQwenTimestamps && form.value.qwen_asr_use_forced_aligner,
     qwen_asr_forced_aligner_model: form.value.qwen_asr_forced_aligner_model,
     qwen_asr_max_audio_seconds: form.value.qwen_asr_max_audio_seconds,
+    doubao_asr_resource_id: form.value.doubao_asr_resource_id,
+    doubao_asr_endpoint: form.value.doubao_asr_endpoint,
+    doubao_asr_end_window_size: form.value.doubao_asr_end_window_size,
     pause_audio_on_recording: form.value.pause_audio_on_recording,
     auto_optimize: form.value.auto_optimize,
     auto_copy_to_clipboard: form.value.auto_copy_to_clipboard,
@@ -516,6 +650,18 @@ function buildSettingsPayload() {
     silence_threshold: form.value.silence_threshold,
     silence_level: form.value.silence_level
   }
+
+  // 明文 Token 只在「用户确实输入了」时才提交：
+  // 空串代表「本次不修改」，后端会保留已保存的密钥（否则整份快照会把密钥清掉）。
+  if (form.value.doubao_asr_api_key) {
+    payload.doubao_asr_api_key = form.value.doubao_asr_api_key
+  }
+
+  if (form.value.doubao_asr_api_key_clear) {
+    payload.doubao_asr_api_key_clear = true
+  }
+
+  return payload
 }
 
 function serializeSettingsPayload(payload) {
@@ -636,7 +782,12 @@ async function handleSave() {
 
   try {
     await saveSettings(payload, { silent: true })
-    lastSavedSettingsSnapshot.value = snapshot
+
+    // 提交后立刻清掉表单里的明文 Token，并重算快照：
+    // 否则下一次保存会把「带 Token 的快照」与「已清空的表单」判成变更，反复提交。
+    form.value.doubao_asr_api_key = ''
+    form.value.doubao_asr_api_key_clear = false
+    lastSavedSettingsSnapshot.value = serializeSettingsPayload(buildSettingsPayload())
 
     const inputSyncResult = await syncInputSettings({
       hotkey: payload.hotkey
@@ -777,3 +928,21 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleHotkeyKeydown, true)
 })
 </script>
+
+<style scoped>
+/* Agent 对话需要整行宽度：单独把这一行改成单列栅格，其余设置项保持原两列布局 */
+.setting-item-agent {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.setting-control-agent {
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.setting-control-agent :deep(.agent-chat) {
+  flex: 1 1 auto;
+  width: 100%;
+}
+</style>

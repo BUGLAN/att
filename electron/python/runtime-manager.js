@@ -1,6 +1,15 @@
 const { spawn } = require('child_process')
 const path = require('path')
 const http = require('http')
+const fs = require('fs')
+
+let electronApp = null
+try {
+  // 允许在没有 Electron 运行时（例如 Node 单测）下加载本模块
+  ;({ app: electronApp } = require('electron'))
+} catch (error) {
+  electronApp = null
+}
 
 class PythonManager {
   constructor() {
@@ -85,8 +94,55 @@ class PythonManager {
       : path.join(process.resourcesPath, 'python', 'bin', 'python3')
   }
 
+  /**
+   * 判断当前是否运行在开发态（仓库内运行）。
+   * 打包态（app.isPackaged === true）优先判定，避免安装目录内存在 app/ 时误判成开发态。
+   */
+  isDevelopmentRuntime() {
+    if (electronApp && electronApp.isPackaged === true) {
+      return false
+    }
+
+    return process.env.NODE_ENV === 'development'
+  }
+
+  /**
+   * 判断当前是否运行在「已打包」的安装态。
+   */
+  isPackagedRuntime() {
+    if (electronApp && typeof electronApp.isPackaged === 'boolean') {
+      return electronApp.isPackaged
+    }
+
+    return !this.isDevelopmentRuntime()
+  }
+
+  /**
+   * 解析安装态应使用的数据目录：<userData>/data。
+   * 开发态返回 null，表示不注入 DATA_DIR，后端继续使用仓库内 data/。
+   */
+  getPackagedDataDir() {
+    if (!this.isPackagedRuntime()) {
+      return null
+    }
+
+    if (!electronApp || typeof electronApp.getPath !== 'function') {
+      return null
+    }
+
+    const dataDir = path.join(electronApp.getPath('userData'), 'data')
+
+    try {
+      fs.mkdirSync(dataDir, { recursive: true })
+    } catch (error) {
+      console.error(`[Python] 创建用户数据目录失败：${dataDir}`, error)
+    }
+
+    return dataDir
+  }
+
   getRuntimeRoot() {
-    if (process.env.NODE_ENV === 'development') {
+    if (this.isDevelopmentRuntime()) {
       return path.join(__dirname, '..', '..')
     }
 
@@ -222,6 +278,12 @@ class PythonManager {
       PYTHONPATH: process.env.PYTHONPATH
         ? `${runtimeRoot}${path.delimiter}${process.env.PYTHONPATH}`
         : runtimeRoot
+    }
+
+    // 仅安装态注入 DATA_DIR：开发态保持仓库内 data/ 不变（用户真实数据在那里）
+    const packagedDataDir = this.getPackagedDataDir()
+    if (packagedDataDir) {
+      env.DATA_DIR = packagedDataDir
     }
 
     this.process = this.spawnBackendProcess(backendCommand, backendArgs, {

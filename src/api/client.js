@@ -1,4 +1,4 @@
-﻿/**
+/**
  * HTTP API client
  * 直接访问 Python FastAPI 后端，不经过 IPC 中转。
  */
@@ -28,36 +28,99 @@ export async function getBaseUrl() {
   return `http://127.0.0.1:${port}/api`
 }
 
+// 默认请求超时：普通 CRUD 30s；慢接口（LLM 优化 / 连接测试）单独放宽
+const DEFAULT_TIMEOUT_MS = 30000
+const SLOW_TIMEOUT_MS = 180000
+const UPLOAD_TIMEOUT_MS = 300000
+
+/**
+ * 从错误响应体里提取可读的中文错误信息。
+ * FastAPI 的 422 校验错误里 detail 是对象数组，直接 new Error(detail) 会得到 "[object Object]"。
+ */
+function extractErrorMessage(errorData, response) {
+  const detail = errorData?.detail
+
+  if (typeof detail === 'string' && detail) {
+    return detail
+  }
+
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) => {
+        if (typeof item === 'string') {
+          return item
+        }
+
+        const location = Array.isArray(item?.loc)
+          ? item.loc.filter((segment) => segment !== 'body').join('.')
+          : ''
+        const message = item?.msg || ''
+
+        if (location && message) {
+          return `${location}: ${message}`
+        }
+        return message
+      })
+      .filter(Boolean)
+
+    if (parts.length) {
+      return parts.join('；')
+    }
+  }
+
+  if (detail && typeof detail === 'object') {
+    return detail.message || JSON.stringify(detail)
+  }
+
+  if (typeof errorData?.message === 'string' && errorData.message) {
+    return errorData.message
+  }
+
+  return `HTTP ${response.status}: ${response.statusText}`
+}
+
 async function request(method, endpoint, options = {}) {
   const baseUrl = await getBaseUrl()
   const url = `${baseUrl}${endpoint}`
+  const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
 
   const fetchOptions = {
     method,
     headers: {
       'Content-Type': 'application/json',
       ...options.headers
-    }
+    },
+    signal: controller.signal
   }
 
   if (options.body && method !== 'GET') {
     fetchOptions.body = JSON.stringify(options.body)
   }
 
-  const response = await fetch(url, fetchOptions)
+  let response
+  try {
+    response = await fetch(url, fetchOptions)
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`请求超时（超过 ${Math.round(timeout / 1000)} 秒未响应）`)
+    }
+    throw new Error(`无法连接后端服务：${error?.message || error}`)
+  } finally {
+    clearTimeout(timer)
+  }
 
   if (!response.ok) {
-    let errorMessage = `HTTP ${response.status}: ${response.statusText}`
+    let errorMessage
+
     try {
-      const errorData = await response.json()
-      if (errorData.detail) {
-        errorMessage = errorData.detail
-      } else if (errorData.message) {
-        errorMessage = errorData.message
-      }
+      errorMessage = extractErrorMessage(await response.json(), response)
     } catch (error) {
-      // Ignore parse failures and use the default message.
+      // 解析失败时回退到状态码文案
+      errorMessage = `HTTP ${response.status}: ${response.statusText}`
     }
+
     throw new Error(errorMessage)
   }
 
@@ -70,20 +133,31 @@ async function uploadForm(endpoint, fileField, blob, filename) {
   const formData = new FormData()
   formData.append(fileField, blob, filename)
 
-  const response = await fetch(url, {
-    method: 'POST',
-    body: formData
-  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS)
+
+  let response
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal
+    })
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`上传超时（超过 ${Math.round(UPLOAD_TIMEOUT_MS / 1000)} 秒未完成）`)
+    }
+    throw new Error(`上传失败：${error?.message || error}`)
+  } finally {
+    clearTimeout(timer)
+  }
 
   if (!response.ok) {
     let errorMessage = `HTTP ${response.status}: ${response.statusText}`
     try {
-      const errorData = await response.json()
-      if (errorData.detail) {
-        errorMessage = errorData.detail
-      }
+      errorMessage = extractErrorMessage(await response.json(), response)
     } catch (error) {
-      // Ignore parse failures and use the default message.
+      // 解析失败时保留状态码文案
     }
     throw new Error(errorMessage)
   }
@@ -100,7 +174,7 @@ export const api = {
   async uploadSessionSegment(sessionId, blob, filename = 'segment.webm') {
     return uploadForm(`/sessions/${sessionId}/segments`, 'file', blob, filename)
   },
-  mergeSession: (sessionId) => request('POST', `/sessions/${sessionId}/merge`),
+  mergeSession: (sessionId) => request('POST', `/sessions/${sessionId}/merge`, { timeout: SLOW_TIMEOUT_MS }),
   deleteSession: (sessionId) => request('DELETE', `/sessions/${sessionId}`),
 
   getRecords: () => request('GET', '/records'),
@@ -120,7 +194,7 @@ export const api = {
   getRecordStatus: (id) => request('GET', `/records/${id}/status`),
   updateRecord: (id, data) => request('PUT', `/records/${id}`, { body: data }),
   deleteRecord: (id) => request('DELETE', `/records/${id}`),
-  optimizeRecord: (id) => request('POST', `/records/${id}/optimize`),
+  optimizeRecord: (id) => request('POST', `/records/${id}/optimize`, { timeout: SLOW_TIMEOUT_MS }),
 
   async getClipboardItems(params = {}) {
     const searchParams = new URLSearchParams()
@@ -181,6 +255,11 @@ export const api = {
   runAIExplain: (data) => request('POST', '/ai-actions/explain', { body: data }),
   runAISummarize: (data) => request('POST', '/ai-actions/summarize', { body: data }),
   runAIRewrite: (data) => request('POST', '/ai-actions/rewrite', { body: data }),
+  // Agent 多轮对话：messages 为 [{ role: 'user' | 'assistant', content }]
+  runAIChat: (messages) => request('POST', '/ai-actions/chat', {
+    body: { messages },
+    timeout: SLOW_TIMEOUT_MS
+  }),
 
   async exportRecord(id, format = 'txt') {
     const baseUrl = await getBaseUrl()
@@ -197,6 +276,7 @@ export const api = {
   getHealth: (probeRuntime = false) => request('GET', `/health${probeRuntime ? '?probe_runtime=true' : ''}`),
   getStreamingServiceStatus: () => request('GET', '/model-service'),
   startStreamingService: (waitUntilReady = true) => request('POST', '/model-service/start', {
+    timeout: SLOW_TIMEOUT_MS,
     body: {
       wait_until_ready: waitUntilReady
     }
@@ -211,7 +291,7 @@ export const api = {
       : request('POST', '/llm/configs', { body: config })
   ),
   deleteLLMConfig: (id) => request('DELETE', `/llm/configs/${id}`),
-  testLLMConfig: (id) => request('POST', `/llm/configs/${id}/test`),
+  testLLMConfig: (id) => request('POST', `/llm/configs/${id}/test`, { timeout: SLOW_TIMEOUT_MS }),
   setDefaultLLMConfig: (id) => request('PUT', `/llm/configs/${id}/default`),
   getLLMProviders: () => request('GET', '/llm/providers'),
   getLLMProviderModels: (provider) => request('GET', `/llm/providers/${provider}/models`),

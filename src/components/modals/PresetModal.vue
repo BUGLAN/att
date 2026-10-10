@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <Modal title="预设管理" modal-name="preset">
     <PresetManager
       :presets="builtinPresets"
@@ -8,7 +8,7 @@
     />
 
     <template #footer>
-      <button class="btn btn-secondary" type="button" @click="close">关闭</button>
+      <BaseButton variant="outline" @click="close">关闭</BaseButton>
     </template>
   </Modal>
 </template>
@@ -18,6 +18,7 @@ import { computed, onMounted } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import Modal from '@/components/common/Modal.vue'
+import BaseButton from '@/components/common/BaseButton.vue'
 import PresetManager from '@/components/settings/PresetManager.vue'
 import { usePresets } from '@/composables/useSettings'
 

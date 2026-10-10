@@ -7,57 +7,68 @@
           <h1 class="overlay-title">最近记录</h1>
         </div>
         <div class="overlay-header-actions">
-          <button
-            class="overlay-icon-button"
-            :class="{ active: pinned }"
-            type="button"
+          <BaseButton
+            variant="ghost"
+            icon
+            size="sm"
+            :active="pinned"
             :title="pinned ? '取消钉住' : '钉住悬浮窗'"
             @click="emit('pin', !pinned)"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M8.5 4.5h7l-1 5 3 3v1h-4v5l-1.5 1.5-1.5-1.5v-5h-4v-1l3-3-1-5Z"
-                fill="currentColor"
-              />
-            </svg>
-          </button>
-          <button class="overlay-icon-button" type="button" title="关闭" @click="emit('close')">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M6.53 5.47a.75.75 0 0 1 1.06 0L12 9.88l4.41-4.41a.75.75 0 1 1 1.06 1.06L13.06 11l4.41 4.41a.75.75 0 0 1-1.06 1.06L12 12.06l-4.41 4.41a.75.75 0 1 1-1.06-1.06L10.94 11 6.53 6.59a.75.75 0 0 1 0-1.12Z"
-                fill="currentColor"
-              />
-            </svg>
-          </button>
+            <template #icon>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M8.5 4.5h7l-1 5 3 3v1h-4v5l-1.5 1.5-1.5-1.5v-5h-4v-1l3-3-1-5Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </template>
+          </BaseButton>
+          <BaseButton variant="ghost" icon size="sm" title="关闭" @click="emit('close')">
+            <template #icon>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M6.53 5.47a.75.75 0 0 1 1.06 0L12 9.88l4.41-4.41a.75.75 0 1 1 1.06 1.06L13.06 11l4.41 4.41a.75.75 0 0 1-1.06 1.06L12 12.06l-4.41 4.41a.75.75 0 1 1-1.06-1.06L10.94 11 6.53 6.59a.75.75 0 0 1 0-1.12Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </template>
+          </BaseButton>
         </div>
       </header>
 
       <div class="overlay-filter-row">
-        <button
+        <BaseButton
           v-for="filter in OVERLAY_CLIPBOARD_FILTERS"
           :key="filter.value"
-          class="overlay-filter-button"
-          :class="{ active: selectedFilter === filter.value }"
-          type="button"
+          size="sm"
+          pill
+          :active="selectedFilter === filter.value"
           @click="selectedFilter = filter.value"
         >
           {{ filter.label }}
-        </button>
+        </BaseButton>
       </div>
 
       <div class="overlay-search">
-        <input
-          ref="searchInput"
+        <BaseInput
           v-model="query"
-          class="overlay-search-input"
           type="text"
           placeholder="查找剪贴板记录..."
-        >
+        />
       </div>
 
       <main class="overlay-list" role="listbox" :aria-activedescendant="activeItemId">
-        <div v-if="isLoading" class="overlay-empty">正在加载...</div>
-        <div v-else-if="!items.length" class="overlay-empty">暂无可用记录</div>
+        <div v-if="isLoading" class="overlay-loading">
+          <Skeleton :lines="3" inline />
+        </div>
+        <EmptyState
+          v-else-if="!items.length"
+          class="overlay-empty-state"
+          size="sm"
+          title="暂无可用记录"
+          description="复制任意文本或图片后会自动出现在这里。"
+        />
         <div
           v-for="(item, index) in items"
           v-else
@@ -80,20 +91,23 @@
               <span v-if="item.item_type">{{ typeLabel(item.item_type) }}</span>
             </span>
           </span>
-          <button
-            class="overlay-favorite-button"
-            :class="{ active: item.is_favorite }"
-            type="button"
+          <BaseButton
+            variant="ghost"
+            icon
+            size="sm"
+            :active="item.is_favorite"
             :title="item.is_favorite ? '取消收藏' : '收藏'"
             @click.stop="handleFavoriteToggle(item)"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="m12 3.75 2.55 5.17 5.7.83-4.13 4.03.98 5.67L12 16.78 6.9 19.45l.97-5.67-4.12-4.03 5.7-.83L12 3.75Z"
-                fill="currentColor"
-              />
-            </svg>
-          </button>
+            <template #icon>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="m12 3.75 2.55 5.17 5.7.83-4.13 4.03.98 5.67L12 16.78 6.9 19.45l.97-5.67-4.12-4.03 5.7-.83L12 3.75Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </template>
+          </BaseButton>
         </div>
       </main>
 
@@ -126,6 +140,10 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { useElectron } from '@/composables/useElectron'
+import BaseButton from '@/components/common/BaseButton.vue'
+import BaseInput from '@/components/common/BaseInput.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
+import Skeleton from '@/components/common/Skeleton.vue'
 import '@/styles/clipboard-overlay.css'
 import {
   OVERLAY_CLIPBOARD_FILTERS,
@@ -160,7 +178,6 @@ const items = ref([])
 const isLoading = ref(false)
 const selectedIndex = ref(0)
 const hasKeyboardSelection = ref(false)
-const searchInput = ref(null)
 const panelRef = ref(null)
 const hoveredPreview = ref(null)
 const hoveredPreviewStyle = ref({ top: '120px' })
@@ -174,11 +191,16 @@ const settings = ref({
 let searchTimer = null
 const activeItem = computed(() => items.value[selectedIndex.value] || null)
 const activeItemId = computed(() => activeItem.value ? `clipboard-item-${activeItem.value.id}` : undefined)
-const footerHint = computed(() => (
-  settings.value.clipboard_overlay_enter_behavior === 'copy_only'
+const footerHint = computed(() => {
+  // 钉住时点击不再关闭浮层，提示语需要同步，避免误导（docs/todo.md 第 ② 条）
+  if (props.pinned) {
+    return '已钉住：点击只复制不关闭 | Enter 复制并回填 | Esc 关闭'
+  }
+
+  return settings.value.clipboard_overlay_enter_behavior === 'copy_only'
     ? 'Enter 复制 | Esc 关闭'
     : 'Enter 复制并回填 | Esc 关闭'
-))
+})
 const previewUnavailable = computed(() => {
   if (!hoveredPreview.value) {
     return false
@@ -227,8 +249,10 @@ function relativeTime(isoString) {
 
 function focusSearch() {
   nextTick(() => {
-    searchInput.value?.focus()
-    searchInput.value?.select()
+    // BaseInput 根节点即原生 input，这里直接用 DOM 查询，避免依赖组件实例 API
+    const element = panelRef.value?.querySelector('.overlay-search input')
+    element?.focus?.()
+    element?.select?.()
   })
 }
 
@@ -317,7 +341,8 @@ async function handleItemClick(item) {
   try {
     await copyItem(item)
 
-    if (settings.value.clipboard_overlay_close_on_click_copy) {
+    // 钉住（pinned）时点击只复制、不关闭浮层，对应 docs/todo.md 第 ② 条
+    if (settings.value.clipboard_overlay_close_on_click_copy && !props.pinned) {
       emit('close')
     }
   } catch (error) {
@@ -462,3 +487,22 @@ onUnmounted(() => {
   removeAllListeners('clipboard:changed')
 })
 </script>
+
+<style scoped>
+/* 浮层列表内的骨架屏与空态：贴合浮层的紧凑留白 */
+.overlay-loading {
+  padding: 12px;
+}
+
+.overlay-list .overlay-empty-state {
+  margin: 12px;
+  border-color: var(--line-soft-strong);
+  background: var(--line-soft);
+}
+
+/* 浮层里的图标按钮全部使用实心图标，需要覆盖原语的描边式 svg 规则 */
+.overlay-panel :deep(.ui-btn__icon) svg {
+  fill: currentColor;
+  stroke: none;
+}
+</style>

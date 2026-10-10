@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div
     class="record-item"
     :class="{ 'select-mode': selectMode, modified: record.is_modified }"
@@ -15,9 +15,25 @@
     >
 
     <div class="record-audio">
-      <button class="audio-play-btn" :class="{ playing: isPlaying }" type="button" @click.stop="$emit('toggle-audio')">
-        {{ isPlaying ? '⏸' : '▶' }}
-      </button>
+      <BaseButton
+        variant="ghost"
+        icon
+        class="record-play-btn"
+        style="--ui-icon-size: 40px; --ui-btn-radius: var(--r-full)"
+        :class="{ playing: isPlaying }"
+        :title="isPlaying ? '暂停试听' : '播放录音'"
+        @click.stop="$emit('toggle-audio')"
+      >
+        <template #icon>
+          <svg v-if="isPlaying" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect x="7" y="5" width="4" height="14" rx="1" />
+            <rect x="13" y="5" width="4" height="14" rx="1" />
+          </svg>
+          <svg v-else viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M8 5.5v13l11-6.5-11-6.5Z" />
+          </svg>
+        </template>
+      </BaseButton>
     </div>
 
     <div class="record-content">
@@ -32,42 +48,55 @@
       </div>
 
       <div class="record-status-group">
-        <span v-if="record.status === 'transcribing'" class="record-status-badge transcribing">
+        <BaseBadge v-if="record.status === 'transcribing'" tone="accent">
           <span class="spinner-small"></span>
           转写中
-        </span>
-        <span v-else-if="record.status === 'optimizing'" class="record-status-badge optimizing">
+        </BaseBadge>
+        <BaseBadge v-else-if="record.status === 'optimizing'" tone="warn">
           <span class="spinner-small"></span>
           优化中
-        </span>
-        <span v-else-if="record.status === 'failed'" class="record-status-badge failed">失败</span>
-        <span v-else-if="record.is_modified" class="record-status-badge modified">已编辑</span>
-        <span v-else-if="record.optimized_text" class="record-status-badge optimized">已优化</span>
+        </BaseBadge>
+        <BaseBadge v-else-if="record.status === 'failed'" tone="err">失败</BaseBadge>
+        <BaseBadge v-else-if="record.is_modified" tone="info">已编辑</BaseBadge>
+        <BaseBadge v-else-if="record.optimized_text" tone="warn">已优化</BaseBadge>
 
-        <button
+        <BaseButton
           v-if="!selectMode && !record.optimized_text && (record.status === 'transcribed' || record.status === 'failed')"
-          class="btn-optimize-inline"
-          type="button"
+          variant="outline"
+          size="sm"
           @click.stop="$emit('optimize')"
-        >优化</button>
+        >
+          优化
+        </BaseButton>
 
-        <button
+        <BaseButton
           v-if="!selectMode && (record.optimized_text || record.raw_text)"
-          class="btn-copy-inline"
-          type="button"
+          variant="ghost"
+          size="sm"
           @click.stop="$emit('copy')"
-        >复制</button>
+        >
+          复制
+        </BaseButton>
 
-        <button
+        <BaseButton
           v-if="!selectMode"
-          class="btn-favorite-inline"
-          :class="{ favorited: record.is_favorite }"
-          type="button"
+          variant="ghost"
+          size="sm"
+          icon
+          class="record-favorite-btn"
+          :active="record.is_favorite"
           :title="record.is_favorite ? '取消收藏' : '收藏记录'"
           @click.stop="$emit('toggle-favorite')"
         >
-          {{ record.is_favorite ? '★' : '☆' }}
-        </button>
+          <template #icon>
+            <svg v-if="record.is_favorite" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="m12 3.75 2.55 5.17 5.7.83-4.13 4.03.98 5.67L12 16.78 6.9 19.45l.97-5.67-4.12-4.03 5.7-.83L12 3.75Z" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="m12 3.75 2.55 5.17 5.7.83-4.13 4.03.98 5.67L12 16.78 6.9 19.45l.97-5.67-4.12-4.03 5.7-.83L12 3.75Z" />
+            </svg>
+          </template>
+        </BaseButton>
       </div>
     </div>
   </div>
@@ -75,6 +104,8 @@
 
 <script setup>
 import { computed } from 'vue'
+import BaseBadge from '@/components/common/BaseBadge.vue'
+import BaseButton from '@/components/common/BaseButton.vue'
 
 const props = defineProps({
   record: {
@@ -145,3 +176,31 @@ function formatTime(timestamp) {
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 </script>
+
+<style scoped>
+/* 试听按钮：在幽灵按钮基线上保留圆形描边外观（尺寸由 --ui-icon-size 注入） */
+.record-audio .record-play-btn {
+  border: 1px solid var(--line);
+  background: var(--bg-raise);
+  color: var(--text-2);
+}
+
+.record-audio .record-play-btn:hover:not(:disabled) {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.record-audio .record-play-btn.playing {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* 实心图标（播放/暂停、实心星）需要覆盖原语的描边式 svg 规则 */
+.record-audio .record-play-btn :deep(svg),
+.record-status-group .record-favorite-btn.is-active :deep(svg) {
+  fill: currentColor;
+  stroke: none;
+}
+</style>

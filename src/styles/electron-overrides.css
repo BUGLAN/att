@@ -7,10 +7,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: rgba(17, 17, 19, 0.92);
+  background: var(--surface-float);
   backdrop-filter: blur(16px);
-  border-bottom: 1px solid rgba(63, 63, 70, 0.65);
-  z-index: 60;
+  border-bottom: 1px solid var(--line);
+  z-index: var(--z-titlebar);
   padding-left: max(12px, env(titlebar-area-x, 0px));
 }
 
@@ -36,8 +36,8 @@
 .title-bar-brand .logo-text {
   opacity: 1;
   width: auto;
-  color: rgba(228, 228, 231, 0.9);
-  font-size: 1rem;
+  color: var(--text-2);
+  font-size: var(--fs-md);
   letter-spacing: 0.03em;
 }
 
@@ -61,13 +61,13 @@
 }
 
 .title-bar-btn:hover {
-  background: rgba(63, 63, 70, 0.45);
-  color: var(--text-primary);
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .title-bar-btn.close:hover {
-  background: rgba(248, 113, 113, 0.22);
-  color: #fff1f2;
+  background: var(--err-tint);
+  color: var(--gray-50);
 }
 
 .title-bar-btn span {
@@ -88,29 +88,6 @@
   flex-wrap: wrap;
 }
 
-.btn-favorite-inline {
-  min-width: 28px;
-  height: 24px;
-  padding: 0 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.btn-favorite-inline:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.btn-favorite-inline.favorited {
-  color: var(--accent);
-  border-color: rgba(201, 162, 39, 0.45);
-  background: rgba(201, 162, 39, 0.1);
-}
-
 .settings-records-group {
   display: flex;
   flex-direction: column;
@@ -127,31 +104,33 @@
 .settings-records-subtitle {
   margin-top: 6px;
   color: var(--text-muted);
-  font-size: 0.8125rem;
+  font-size: var(--fs-sm);
 }
 
 .settings-records-toolbar {
   display: flex;
   gap: var(--space-sm);
   flex-wrap: wrap;
+  align-items: center;
 }
 
-.settings-records-search {
+/* 记录集工具栏：搜索框占满剩余宽度，下拉保持内容宽度 */
+.settings-records-toolbar > .settings-records-search {
   flex: 1 1 280px;
   min-width: 220px;
-  padding: var(--space-sm) var(--space-md);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
-  font-family: var(--font-display);
-  font-size: 0.875rem;
 }
 
-.settings-records-search:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-dim);
+.settings-records-toolbar > .settings-records-select {
+  flex: 0 0 auto;
+  min-width: 150px;
+}
+
+/* 加载态骨架占位卡 */
+.settings-records-skeleton {
+  padding: var(--space-md);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
 }
 
 .settings-records-list {
@@ -166,17 +145,20 @@
   gap: var(--space-md);
   min-height: 190px;
   padding: var(--space-md);
-  background: linear-gradient(180deg, rgba(31, 31, 35, 0.92), rgba(17, 17, 19, 0.96));
-  border: 1px solid rgba(63, 63, 70, 0.7);
+  background: var(--grad-card);
+  border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    transform var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .settings-record-card:hover {
   transform: translateY(-2px);
-  border-color: rgba(201, 162, 39, 0.3);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+  border-color: var(--accent-line);
+  box-shadow: var(--e-hover);
 }
 
 .settings-record-card-head,
@@ -195,37 +177,8 @@
 
 .settings-record-time,
 .settings-record-kind {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-}
-
-.settings-record-status {
-  padding: 3px 8px;
-  border-radius: var(--radius-full);
-  font-size: 0.6875rem;
-  color: var(--text-secondary);
-  background: rgba(63, 63, 70, 0.45);
-  border: 1px solid rgba(82, 82, 91, 0.65);
-}
-
-.settings-record-status.transcribed,
-.settings-record-status.optimized {
-  color: var(--accent);
-  background: rgba(201, 162, 39, 0.12);
-  border-color: rgba(201, 162, 39, 0.3);
-}
-
-.settings-record-status.failed {
-  color: var(--danger);
-  background: rgba(248, 113, 113, 0.12);
-  border-color: rgba(248, 113, 113, 0.28);
-}
-
-.settings-record-status.transcribing,
-.settings-record-status.optimizing {
-  color: #fbbf24;
-  background: rgba(251, 191, 36, 0.12);
-  border-color: rgba(251, 191, 36, 0.28);
+  font-size: var(--fs-cap);
+  color: var(--text-3);
 }
 
 .settings-record-favorite {
@@ -246,8 +199,8 @@
 
 .settings-record-favorite.favorited {
   color: var(--accent);
-  border-color: rgba(201, 162, 39, 0.45);
-  background: rgba(201, 162, 39, 0.12);
+  border-color: var(--accent-line-strong);
+  background: var(--accent-faint);
 }
 
 .settings-record-text {
@@ -276,7 +229,7 @@
 .records-pagination-status {
   min-width: 96px;
   text-align: center;
-  font-size: 0.8125rem;
+  font-size: var(--fs-sm);
   color: var(--text-secondary);
 }
 
@@ -299,9 +252,9 @@
     justify-content: space-between;
   }
 
-  .settings-records-search,
-  .settings-records-toolbar .setting-select,
-  .settings-records-toolbar .btn {
+  .settings-records-toolbar > .settings-records-search,
+  .settings-records-toolbar > .settings-records-select {
     width: 100%;
+    flex: 1 1 auto;
   }
 }

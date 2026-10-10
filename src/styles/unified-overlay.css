@@ -1,3 +1,10 @@
+/* ============================================================
+   统一浮层窗口（SelectionPanel / ClipboardPanel 共用的外壳）
+   ------------------------------------------------------------
+   字体与颜色一律取自 src/styles/tokens.css，
+   不再自定义 private 字体栈（原为写死的 Segoe UI 栈）。
+   ============================================================ */
+
 html,
 body,
 #app {
@@ -9,7 +16,8 @@ body,
 }
 
 body {
-  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--font-sans);
+  color: var(--text-1);
   -webkit-font-smoothing: antialiased;
 }
 

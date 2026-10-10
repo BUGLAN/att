@@ -1,4 +1,4 @@
-﻿import { defineStore } from 'pinia'
+import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useElectron } from '@/composables/useElectron'
 
@@ -119,21 +119,24 @@ export const useSettingsStore = defineStore('settings', () => {
     qwen_asr_use_forced_aligner: false,
     qwen_asr_forced_aligner_model: 'Qwen/Qwen3-ForcedAligner-0.6B',
     qwen_asr_max_audio_seconds: 30,
+    // 火山引擎豆包双向流式 ASR（在线识别）
+    // 注意：明文 Access Token 不进前端默认值/本地状态，只以「是否已配置」的形式展示；
+    // 用户在设置页输入后由后端加密落盘（doubao_asr_api_key_encrypted）。
+    doubao_asr_api_key_set: false,
+    doubao_asr_resource_id: 'volc.seedasr.sauc.duration',
+    doubao_asr_endpoint: 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
+    doubao_asr_end_window_size: 0,
     pause_audio_on_recording: true,
     auto_optimize: false,
     auto_copy_to_clipboard: true,
     audio_input_device: 'default',
     hotkey: getDefaultHotkey(),
-    clipboard_overlay_trigger: 'mouse_middle',
+    // 已下线的 clipboard_overlay_trigger 与 selection_toolbar_* 不再提供前端默认值：
+    // 后端同样不再返回这些键，未知键由 GET/PUT /api/settings 静默丢弃
     clipboard_overlay_retrigger_action: 'toggle',
     clipboard_overlay_enter_behavior: 'copy_and_paste',
     clipboard_overlay_auto_focus_search: true,
     clipboard_overlay_close_on_click_copy: true,
-    selection_toolbar_enabled: true,
-    selection_toolbar_auto_add_to_wordbook: true,
-    selection_toolbar_show_examples: true,
-    selection_toolbar_trigger_delay_ms: 220,
-    selection_toolbar_fallback_to_clipboard: true,
     recording_mode: 'single',
     silence_threshold: 1.5,
     silence_level: -40,

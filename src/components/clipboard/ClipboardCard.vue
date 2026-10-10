@@ -5,35 +5,43 @@
     @mouseenter="handlePreviewHover"
   >
     <div class="clipboard-card-action-bar">
-      <button
-        class="icon-button"
-        :class="{ active: item.is_pinned }"
+      <BaseButton
+        variant="ghost"
+        icon
+        class="clipboard-icon-btn"
+        style="--ui-icon-size: 34px; --ui-btn-radius: var(--r-full)"
+        :active="item.is_pinned"
         :disabled="itemActionState.pin"
-        type="button"
         :title="item.is_pinned ? '取消置顶' : '置顶'"
         @click.stop="emit('toggle-pin', item)"
       >
-        <svg viewBox="0 0 24 24" fill="none">
-          <path d="M8.5 4.5h7l-1 5 3 3v1h-4v5l-1.5 1.5-1.5-1.5v-5h-4v-1l3-3-1-5Z" />
-        </svg>
-      </button>
-      <button
-        class="icon-button"
-        :class="{ active: item.is_favorite }"
+        <template #icon>
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M8.5 4.5h7l-1 5 3 3v1h-4v5l-1.5 1.5-1.5-1.5v-5h-4v-1l3-3-1-5Z" />
+          </svg>
+        </template>
+      </BaseButton>
+      <BaseButton
+        variant="ghost"
+        icon
+        class="clipboard-icon-btn"
+        style="--ui-icon-size: 34px; --ui-btn-radius: var(--r-full)"
+        :active="item.is_favorite"
         :disabled="itemActionState.favorite"
-        type="button"
         :title="item.is_favorite ? '取消收藏' : '收藏'"
         @click.stop="emit('toggle-favorite', item)"
       >
-        <svg viewBox="0 0 24 24" fill="none">
-          <path d="m12 3.75 2.55 5.17 5.7.83-4.13 4.03.98 5.67L12 16.78 6.9 19.45l.97-5.67-4.12-4.03 5.7-.83L12 3.75Z" />
-        </svg>
-      </button>
+        <template #icon>
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="m12 3.75 2.55 5.17 5.7.83-4.13 4.03.98 5.67L12 16.78 6.9 19.45l.97-5.67-4.12-4.03 5.7-.83L12 3.75Z" />
+          </svg>
+        </template>
+      </BaseButton>
     </div>
 
     <div class="clipboard-card-top">
       <div class="clipboard-card-meta">
-        <span class="clipboard-chip">{{ typeLabel }}</span>
+        <BaseBadge tone="accent" uppercase>{{ typeLabel }}</BaseBadge>
         <span class="clipboard-time">{{ relativeTime }}</span>
       </div>
     </div>
@@ -64,8 +72,8 @@
     <footer class="clipboard-card-footer">
       <span class="clipboard-size">{{ sizeLabel }}</span>
       <div class="clipboard-card-actions">
-        <button class="text-button" type="button" @click.stop="emit('copy', item)">复制</button>
-        <button class="text-button danger" type="button" @click.stop="emit('delete', item)">删除</button>
+        <BaseButton variant="ghost" size="sm" @click.stop="emit('copy', item)">复制</BaseButton>
+        <BaseButton variant="danger" size="sm" @click.stop="emit('delete', item)">删除</BaseButton>
       </div>
     </footer>
   </article>
@@ -74,6 +82,8 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { api } from '@/api/client'
+import BaseBadge from '@/components/common/BaseBadge.vue'
+import BaseButton from '@/components/common/BaseButton.vue'
 import {
   getClipboardDisplayTitle,
   getClipboardSummaryText,
@@ -221,14 +231,18 @@ function blobToDataUrl(blob) {
 .clipboard-card {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: var(--s-4);
   min-height: 240px;
-  padding: 22px;
-  background:
-    linear-gradient(180deg, rgba(53, 53, 52, 0.28), rgba(28, 27, 27, 0.94)),
-    rgba(42, 42, 42, 0.82);
-  border-radius: var(--radius-lg);
-  transition: transform var(--transition-base), background var(--transition-base), box-shadow var(--transition-base);
+  padding: var(--s-6);
+  /* 原为暖灰 rgba(28,27,27)/rgba(42,42,42) 叠加，改取共享冷灰色阶 */
+  background: var(--grad-raise);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  transition:
+    transform var(--t-base) var(--ease),
+    background var(--t-base) var(--ease),
+    border-color var(--t-base) var(--ease),
+    box-shadow var(--t-base) var(--ease);
   position: relative;
   overflow: hidden;
 }
@@ -241,28 +255,28 @@ function blobToDataUrl(blob) {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(135deg, rgba(255, 197, 87, 0.06), transparent 45%);
+  /* 明暗档位取自唯一金色（--accent）的同一色相 */
+  background: var(--grad-sheen);
   opacity: 0;
-  transition: opacity var(--transition-base);
+  transition: opacity var(--t-base) var(--ease);
   pointer-events: none;
 }
 
 .clipboard-card-action-bar {
   position: absolute;
-  top: 16px;
-  right: 16px;
+  top: var(--s-4);
+  right: var(--s-4);
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--s-2);
   z-index: 30;
 }
 
 .clipboard-card:hover {
   transform: translateY(-3px);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.36);
-  background:
-    linear-gradient(180deg, rgba(64, 64, 63, 0.38), rgba(28, 27, 27, 0.96)),
-    rgba(42, 42, 42, 0.92);
+  border-color: var(--accent-line);
+  box-shadow: var(--e-hover);
+  background: var(--grad-raise-hi);
 }
 
 .clipboard-card:hover::after {
@@ -270,7 +284,8 @@ function blobToDataUrl(blob) {
 }
 
 .clipboard-card.pinned {
-  box-shadow: inset 2px 0 0 rgba(255, 197, 87, 0.92);
+  border-color: var(--accent-line);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .clipboard-card-top,
@@ -278,7 +293,7 @@ function blobToDataUrl(blob) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: var(--s-3);
   position: relative;
   z-index: 5;
 }
@@ -291,46 +306,34 @@ function blobToDataUrl(blob) {
 .clipboard-card-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
-}
-
-.clipboard-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(255, 197, 87, 0.12);
-  color: var(--accent);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  gap: var(--s-2);
 }
 
 .clipboard-time,
 .clipboard-size {
-  color: var(--text-muted);
-  font-size: 0.75rem;
+  color: var(--text-3);
+  font-size: var(--fs-cap);
 }
 
 .clipboard-card-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--s-3);
   flex: 1;
   position: relative;
   z-index: 4;
 }
 
 .clipboard-card-title {
-  font-size: 1.02rem;
+  font-size: var(--fs-lg);
   line-height: 1.4;
-  color: var(--text-primary);
+  color: var(--text-1);
   overflow-wrap: anywhere;
 }
 
 .clipboard-card-summary {
-  color: var(--text-secondary);
-  font-size: 0.9rem;
+  color: var(--text-2);
+  font-size: var(--fs-base);
   line-height: 1.7;
   display: -webkit-box;
   -webkit-line-clamp: 6;
@@ -344,39 +347,40 @@ function blobToDataUrl(blob) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--s-2);
   margin-top: auto;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.035);
-  font-size: 0.75rem;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--line-soft);
+  font-size: var(--fs-cap);
 }
 
 .clipboard-card-image-tip {
-  color: var(--accent);
+  color: var(--accent-hi);
 }
 
 .clipboard-card-image-meta {
-  color: var(--text-muted);
+  color: var(--text-3);
 }
 
 .clipboard-card-image-hover {
   position: absolute;
   top: 64px;
-  right: 16px;
-  bottom: 16px;
-  left: 16px;
+  right: var(--s-4);
+  bottom: var(--s-4);
+  left: var(--s-4);
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border-radius: 18px;
-  background: rgba(12, 11, 11, 0.94);
-  border: 1px solid rgba(255, 197, 87, 0.18);
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border-radius: var(--r-lg);
+  background: var(--bg-base);
+  border: 1px solid var(--accent-line);
+  box-shadow: var(--e-4);
   opacity: 0;
   pointer-events: none;
   transform: translateY(8px);
-  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  transition: opacity var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
   z-index: 12;
   overflow: hidden;
 }
@@ -387,8 +391,8 @@ function blobToDataUrl(blob) {
 }
 
 .clipboard-card-image-hover-title {
-  font-size: 0.78rem;
-  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  color: var(--text-1);
   line-height: 1.5;
 }
 
@@ -396,10 +400,10 @@ function blobToDataUrl(blob) {
   display: grid;
   place-items: center;
   flex: 1;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text-muted);
-  font-size: 0.82rem;
+  border-radius: var(--r-md);
+  background: var(--line-soft);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
 }
 
 .clipboard-card-image {
@@ -408,66 +412,13 @@ function blobToDataUrl(blob) {
   min-height: 0;
   max-height: 100%;
   object-fit: contain;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--r-md);
+  background: var(--line-soft);
 }
 
-.icon-button,
-.text-button {
-  -webkit-appearance: none;
-  appearance: none;
-  border: none;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.icon-button {
-  width: 34px;
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text-muted);
-}
-
-.icon-button:hover,
-.icon-button.active {
-  background: rgba(255, 197, 87, 0.12);
-  color: var(--accent);
-}
-
-.icon-button:disabled,
-.text-button:disabled {
-  opacity: 0.55;
-  cursor: wait;
-}
-
-.icon-button svg {
-  width: 16px;
-  height: 16px;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.text-button {
-  padding: 8px 12px;
-  border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text-secondary);
-  font-size: 0.78rem;
-}
-
-.text-button:hover {
-  background: rgba(255, 197, 87, 0.12);
-  color: var(--accent);
-}
-
-.text-button.danger:hover {
-  background: rgba(248, 113, 113, 0.16);
-  color: var(--danger);
+/* 卡片上的图标按钮：34px 圆形，尺寸通过原语的 CSS 变量注入 */
+.clipboard-card-action-bar .clipboard-icon-btn {
+  background: var(--line-soft);
+  color: var(--text-3);
 }
 </style>

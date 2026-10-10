@@ -1,0 +1,232 @@
+/* ============================================================
+   设计令牌（Design Tokens）—— ATT 全前端唯一令牌来源
+   ------------------------------------------------------------
+   引入顺序：本文件必须由每个渲染入口最先引入
+     src/main.js / src/floating.js / src/unified-overlay.js
+   约束：
+   1. 任何窗口 / 组件都不再私自定义 :root 色值，一律引用此处令牌；
+   2. 金色只有一套（--accent 家族），禁止再出现 #ffc557 / #f3b460；
+   3. 文字三级在深色底上全部 ≥ 4.5:1（WCAG AA 正文标准）。
+   ============================================================ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---------- 1. 原始灰阶（primitive，仅本文件与兼容别名使用） ---------- */
+  --gray-950: #0a0a0b;
+  --gray-900: #111113;
+  --gray-850: #18181b;
+  --gray-800: #1f1f23;
+  --gray-700: #2d2d32;
+  --gray-600: #3f3f46;
+  --gray-500: #52525b;
+  --gray-400: #71717a;
+  --gray-300: #a1a1aa;
+  --gray-200: #d4d4d8;
+  --gray-100: #e4e4e7;
+  --gray-50: #f4f4f5;
+
+  /* ---------- 2. 语义表面三级色阶：底 → 面 → 卡 → 抬升 → 悬停 ---------- */
+  --bg-base: var(--gray-950);      /* 窗口最底：主窗口 body */
+  --bg-surface: var(--gray-900);   /* 面板 / 侧边栏 */
+  --bg-card: var(--gray-850);      /* 卡片 */
+  --bg-raise: var(--gray-800);     /* 抬升控件：输入框、按钮 */
+  --bg-hover: var(--gray-700);     /* 悬停 */
+  --bg-hover-strong: var(--gray-600); /* 悬停（更亮一档，用于卡片悬停渐变） */
+  --line: var(--gray-800);         /* 常规描边 */
+  --line-strong: var(--gray-700);  /* 强描边 / 分隔 */
+  --line-soft: rgba(255, 255, 255, 0.06);        /* 半透明面板上的柔描边 */
+  --line-soft-strong: rgba(255, 255, 255, 0.10); /* 半透明面板上的强描边 */
+  /* 浮层与悬浮窗不再各带私有底色：
+     统一浮层直接用上面的 --bg-card / --bg-base，悬浮窗用半透明表面色 */
+  --surface-float: rgba(20, 20, 23, 0.78);
+
+  /* 半透明白：玻璃面板上的填充与悬停。不引入新色相，只调亮度，
+     让浮层在同一套灰阶里继续分层。 */
+  --white-veil: rgba(255, 255, 255, 0.03);        /* 内高光 / 极淡底 */
+  --white-tint: rgba(255, 255, 255, 0.05);        /* 半透明表面悬停 */
+  --white-tint-strong: rgba(255, 255, 255, 0.09); /* 半透明表面按下 / 选中 */
+
+  /* 遮罩（scrim）：弹窗与浮层背后的压暗层。全应用只用这几档，
+     不再出现 0.72 / 0.8 / 0.16 等随手写的透明度。
+     veil 档用于"面板内部的压暗分区"（表头、工具栏、页脚），
+     只比表面暗一点点，不参与层次分割。 */
+  --scrim: rgba(0, 0, 0, 0.78);      /* 弹窗背后的主遮罩 */
+  --scrim-soft: rgba(0, 0, 0, 0.55); /* 轻遮罩：全屏级压暗 */
+  --scrim-veil: rgba(0, 0, 0, 0.16); /* 面板内分区压暗：表头 / 页脚 */
+
+  /* ---------- 3. 文字三级（括号内为实测对比度，底 = --bg-base #0a0a0b） ---------- */
+  --text-1: #f4f4f5;   /* 18.00:1 主文字 */
+  --text-2: #9d9da6;   /* 7.36:1  次文字（原 #71717a = 4.09:1） */
+  --text-3: #8b8b96;   /* 5.87:1  弱文字 / 说明（原 #52525b = 2.56:1，不达 AA） */
+
+  /* ---------- 4. 唯一强调色：一整套金色 ----------
+     金色只允许取以下档位，组件不得再手写 rgba(201,162,39,·)。
+     档位按语义命名（而不是按透明度数字），避免出现 0.18 / 0.20
+     这类"看起来差不多"的随意值把同一套金稀释成十几种。 */
+  --accent: #c9a227;      /* 唯一金：7.32:1 on --bg-card */
+  --accent-hi: #dcb63a;   /* 亮金：hover / 高亮文本，9.11:1 on --bg-card */
+  --accent-ink: #1a1400;  /* 金底上的深色文字：7.59:1 on --accent */
+  --accent-veil: rgba(201, 162, 39, 0.06);        /* 极淡：大面积氛围 / 卡片光泽 */
+  --accent-faint: rgba(201, 162, 39, 0.10);       /* 淡：图标底 / 内高光 */
+  --accent-soft: rgba(201, 162, 39, 0.14);        /* 淡底：渐变起点 */
+  --accent-dim: rgba(201, 162, 39, 0.15);         /* 选中底：导航 / 卡片选中 */
+  --accent-tint: rgba(201, 162, 39, 0.22);        /* 图标底 / 内描边 */
+  --accent-line: rgba(201, 162, 39, 0.30);        /* 金色描边（常规） */
+  --accent-line-strong: rgba(201, 162, 39, 0.42); /* 金色描边（激活 / 悬停） */
+  --accent-glow: rgba(201, 162, 39, 0.40);        /* 金色外发光 */
+  --accent-halo: rgba(201, 162, 39, 0.08);        /* 按钮 / 卡片外环 */
+
+  /* ---------- 5. 语义色（唯一来源，禁止再写 #f59e0b / #38bdf8 等） ---------- */
+  --ok: #4ade80;
+  --warn: #f5a524;
+  --err: #f87171;
+  --info: #60a5fa;
+  --ok-soft: rgba(74, 222, 128, 0.12);
+  --warn-soft: rgba(245, 165, 36, 0.12);
+  --err-soft: rgba(248, 113, 113, 0.12);
+  --info-soft: rgba(96, 165, 250, 0.12);
+  /* 语义色的描边 / 加强底：与 --accent-line 同构，
+     让"成功/警告/错误/信息"的卡片态不必各写一组 rgba。 */
+  --ok-line: rgba(74, 222, 128, 0.28);
+  --warn-line: rgba(245, 165, 36, 0.28);
+  --err-line: rgba(248, 113, 113, 0.28);
+  --info-line: rgba(96, 165, 250, 0.28);
+  --ok-tint: rgba(74, 222, 128, 0.18);
+  --warn-tint: rgba(245, 165, 36, 0.18);
+  --err-tint: rgba(248, 113, 113, 0.18);
+  --info-tint: rgba(96, 165, 250, 0.18);
+  --ok-line-soft: rgba(74, 222, 128, 0.35);
+  --err-line-soft: rgba(248, 113, 113, 0.35);
+  --danger-glow: rgba(248, 113, 113, 0.30);
+
+  /* ---------- 6. 间距（8 基数）/ 圆角四级 / 字号七级 ---------- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-12: 48px;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-full: 9999px;
+
+  --fs-cap: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 24px;
+  --fs-2xl: 32px;
+
+  /* ---------- 7. 阴影三级 + 描边高光 + 统一焦点环 ---------- */
+  --e-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --e-2: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --e-3: 0 8px 32px rgba(0, 0, 0, 0.6);
+  --e-4: 0 18px 44px rgba(0, 0, 0, 0.5);   /* 悬浮卡 / 图片预览 */
+  --e-hover: 0 16px 40px rgba(0, 0, 0, 0.28); /* 卡片悬停抬升 */
+  --edge-hi: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --focus-ring: 0 0 0 2px var(--accent);
+  --focus-halo: 0 0 0 2px var(--accent-dim);
+
+  /* ---------- 7b. 表面渐变：卡片不再手写 linear-gradient ----------
+     两档由暗到亮的垂直渐变，给"抬升的卡"一层极弱的光照方向，
+     让深色面板有上亮下暗的实体感，而不是纯色贴片。 */
+  --grad-card: linear-gradient(180deg, var(--gray-850), var(--gray-900));
+  --grad-raise: linear-gradient(180deg, var(--gray-800), var(--gray-850));
+  --grad-raise-hi: linear-gradient(180deg, var(--gray-700), var(--gray-800)); /* 抬升表面的悬停档 */
+  --grad-accent: linear-gradient(180deg, var(--accent-soft), var(--bg-raise));
+  --grad-sheen: linear-gradient(135deg, var(--accent-veil), transparent 45%);
+
+  /* ---------- 8. z-index 层级（唯一体系） ---------- */
+  --z-content: 1;
+  --z-titlebar: 60;
+  --z-nav: 100;
+  --z-overlay: 400;
+  --z-modal: 600;
+  --z-toast: 700;
+  --z-popup: 800;
+  --z-noise: 9999;
+
+  /* ---------- 9. 动效：三档时长 + 统一缓动 ---------- */
+  --t-fast: 150ms;
+  --t-base: 250ms;
+  --t-slow: 400ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---------- 10. 字体栈：纯系统字体，离线可用（不依赖远程字体） ---------- */
+  --font-sans: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: Consolas, 'Cascadia Mono', 'SF Mono', 'Menlo', 'Courier New', monospace;
+
+  /* ---------- 11. 统一滚动条 ---------- */
+  --scroll-size: 10px;
+  --scroll-size-thin: 6px;
+  --scroll-track: rgba(17, 17, 19, 0.72);
+  --scroll-thumb: rgba(161, 161, 170, 0.34);
+  --scroll-thumb-hover: rgba(201, 162, 39, 0.72);
+
+  /* ---------- 12. 旧名兼容别名（保证既有组件无需改名即享受同一套令牌） ---------- */
+  --bg-primary: var(--bg-base);
+  --bg-secondary: var(--bg-surface);
+  --bg-elevated: var(--bg-raise);
+  --border: var(--line);
+  --border-light: var(--line-strong);
+
+  --text-primary: var(--text-1);
+  --text-secondary: var(--text-2);
+  --text-muted: var(--text-3);
+
+  --success: var(--ok);
+  --danger: var(--err);
+
+  --space-xs: var(--s-1);
+  --space-sm: var(--s-2);
+  --space-md: var(--s-4);
+  --space-lg: var(--s-6);
+  --space-xl: var(--s-8);
+  --space-2xl: var(--s-12);
+
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --radius-xl: var(--r-xl);
+  --radius-full: var(--r-full);
+
+  --shadow-sm: var(--e-1);
+  --shadow-md: var(--e-2);
+  --shadow-lg: var(--e-3);
+  --shadow-glow: 0 0 40px var(--accent-glow);
+  --shadow-danger: 0 0 40px var(--danger-glow);
+
+  --transition-fast: var(--t-fast) var(--ease);
+  --transition-base: var(--t-base) var(--ease);
+  --transition-slow: var(--t-slow) var(--ease);
+
+  --font-display: var(--font-sans);
+
+  --titlebar-height: 44px;
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 60px;
+}
+
+/* ============================================================
+   动效降级（prefers-reduced-motion）
+   ------------------------------------------------------------
+   放在 tokens.css 而不是各窗口样式里：三个渲染入口都引入本文件，
+   这里是全应用唯一的共享基础层，写一处即可覆盖主窗口 / 悬浮窗 /
+   统一浮层，避免再出现"同一规则复制三份"的分裂。
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

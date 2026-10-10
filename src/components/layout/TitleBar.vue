@@ -2,7 +2,7 @@
   <header class="title-bar">
     <div class="title-bar-drag" @dblclick="windowControl.maximize()">
       <div class="title-bar-brand">
-        <span class="logo-icon">ATT</span>
+        <LogoMark :size="30" alt="ATT" />
         <span class="logo-text">Audio To Text</span>
       </div>
     </div>
@@ -27,6 +27,7 @@
 
 <script setup>
 import { useElectron } from '@/composables/useElectron'
+import LogoMark from '@/components/common/LogoMark.vue'
 
 const { windowControl } = useElectron()
 </script>

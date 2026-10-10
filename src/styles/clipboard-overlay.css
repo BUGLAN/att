@@ -1,15 +1,12 @@
-:root {
-  color-scheme: dark;
-  --overlay-bg: rgba(26, 24, 22, 0.96);
-  --overlay-bg-strong: rgba(19, 18, 17, 0.98);
-  --overlay-border: rgba(255, 197, 87, 0.12);
-  --overlay-border-muted: rgba(255, 255, 255, 0.06);
-  --overlay-text: #f2ece4;
-  --overlay-muted: #b8aea0;
-  --overlay-accent: #ffc557;
-  --overlay-accent-soft: rgba(255, 197, 87, 0.14);
-  --overlay-shadow: rgba(0, 0, 0, 0.55);
-}
+/* ============================================================
+   统一浮层（统一 overlay 窗口内的剪贴板面板）
+   ------------------------------------------------------------
+   说明：本文件不再自定义 :root。
+   原私有暖棕调色板（--overlay-*，暖黑 #1a1816 / #1b1917 + 亮金 #ffc557）
+   与主窗口的冷灰 + 暗金是两套语言，同窗口切换模式还会整窗换色。
+   现在全部改用 src/styles/tokens.css 的同一套令牌：
+   底/面/卡取冷灰色阶，金色取唯一的 --accent 家族。
+   ============================================================ */
 
 * {
   box-sizing: border-box;
@@ -22,8 +19,8 @@ body {
   height: 100%;
   overflow: hidden;
   background: transparent;
-  color: var(--overlay-text);
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--text-1);
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -48,9 +45,9 @@ input {
   width: 100%;
   height: 100%;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   overflow: hidden;
-  background: #1b1917;
+  background: var(--bg-card);
   box-shadow: none;
   backdrop-filter: none;
   display: grid;
@@ -62,8 +59,8 @@ input {
   align-items: center;
   justify-content: space-between;
   padding: 18px 18px 14px;
-  background: rgba(0, 0, 0, 0.16);
-  border-bottom: 1px solid var(--overlay-border-muted);
+  background: var(--scrim-veil);
+  border-bottom: 1px solid var(--line-soft);
   -webkit-app-region: drag;
   cursor: move;
 }
@@ -83,13 +80,13 @@ input {
 }
 
 .overlay-title-icon {
-  color: var(--overlay-accent);
-  font-size: 14px;
+  color: var(--accent-hi);
+  font-size: var(--fs-base);
 }
 
 .overlay-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 700;
   letter-spacing: 0.02em;
 }
@@ -99,44 +96,13 @@ input {
   -webkit-app-region: no-drag;
 }
 
-.overlay-icon-button {
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: var(--overlay-muted);
-  cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
-  -webkit-app-region: no-drag;
-}
-
-.overlay-icon-button:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--overlay-text);
-}
-
-.overlay-icon-button.active {
-  background: rgba(255, 197, 87, 0.14);
-  color: var(--overlay-accent);
-}
-
-.overlay-icon-button svg {
-  width: 14px;
-  height: 14px;
-  display: block;
-}
-
 .overlay-filter-row {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 8px 18px 10px;
-  background: rgba(0, 0, 0, 0.08);
-  border-bottom: 1px solid var(--overlay-border-muted);
+  background: var(--white-veil);
+  border-bottom: 1px solid var(--line-soft);
   -webkit-app-region: no-drag;
   overflow-x: auto;
   scrollbar-width: none;
@@ -146,70 +112,38 @@ input {
   display: none;
 }
 
-.overlay-filter-button {
-  -webkit-appearance: none;
-  appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--overlay-muted);
-  cursor: pointer;
-  font-size: 11px;
-  line-height: 1;
-  white-space: nowrap;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
-}
-
-.overlay-filter-button:hover,
-.overlay-filter-button.active {
-  background: rgba(255, 197, 87, 0.1);
-  border-color: rgba(255, 197, 87, 0.18);
-  color: var(--overlay-accent);
-}
-
 .overlay-search {
   padding: 10px 18px 12px;
-  background: rgba(0, 0, 0, 0.08);
-  border-bottom: 1px solid var(--overlay-border-muted);
+  background: var(--white-veil);
+  border-bottom: 1px solid var(--line-soft);
   -webkit-app-region: no-drag;
 }
 
-.overlay-search-input {
-  width: 100%;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 10px;
-  padding: 11px 14px;
-  background: rgba(10, 10, 10, 0.45);
-  color: var(--overlay-text);
-  outline: none;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-.overlay-search-input::placeholder {
-  color: rgba(184, 174, 160, 0.6);
-}
-
-.overlay-search-input:focus {
-  border-color: rgba(255, 197, 87, 0.28);
-  box-shadow: 0 0 0 3px rgba(255, 197, 87, 0.08);
-}
-
+/* 与主窗口密集列表共用同一套细滚动条令牌 */
 .overlay-list {
   min-height: 0;
   overflow-y: auto;
   padding: 8px 0;
   -webkit-app-region: no-drag;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 
 .overlay-list::-webkit-scrollbar {
-  width: 6px;
+  width: var(--scroll-size-thin);
+}
+
+.overlay-list::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .overlay-list::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(255, 197, 87, 0.18);
+  border-radius: var(--r-full);
+  background: var(--scroll-thumb);
+}
+
+.overlay-list::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
 }
 
 .overlay-item {
@@ -218,36 +152,45 @@ input {
   gap: 12px;
   border: 0;
   border-left: 2px solid transparent;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   padding: 12px;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+  transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
 }
 
 .overlay-item:hover,
 .overlay-item.active {
-  background: rgba(255, 255, 255, 0.045);
-  border-left-color: var(--overlay-accent);
+  background: var(--white-tint);
+  border-left-color: var(--accent);
 }
 
 .overlay-item.active {
   transform: translateX(2px);
 }
 
+.overlay-item:active {
+  background: var(--white-tint-strong);
+}
+
+.overlay-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .overlay-item-icon {
   width: 34px;
   height: 34px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--overlay-accent-soft);
-  color: var(--overlay-accent);
-  font-size: 12px;
+  background: var(--accent-dim);
+  color: var(--accent-hi);
+  font-size: var(--fs-cap);
   font-weight: 700;
 }
 
@@ -261,9 +204,9 @@ input {
 
 .overlay-item-title {
   width: 100%;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
-  color: var(--overlay-text);
+  color: var(--text-1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -271,35 +214,8 @@ input {
 
 .overlay-item-meta {
   gap: 10px;
-  font-size: 11px;
-  color: var(--overlay-muted);
-}
-
-.overlay-favorite-button {
-  width: 28px;
-  height: 28px;
-  flex: none;
-  border: 0;
-  border-radius: 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: rgba(184, 174, 160, 0.76);
-  cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
-}
-
-.overlay-favorite-button:hover,
-.overlay-favorite-button.active {
-  background: rgba(255, 197, 87, 0.1);
-  color: var(--overlay-accent);
-}
-
-.overlay-favorite-button svg {
-  width: 15px;
-  height: 15px;
-  display: block;
+  font-size: var(--fs-cap);
+  color: var(--text-3);
 }
 
 .overlay-image-preview {
@@ -307,39 +223,39 @@ input {
   right: 14px;
   width: 214px;
   padding: 10px;
-  border: 1px solid rgba(255, 197, 87, 0.18);
-  border-radius: 14px;
-  background: rgba(15, 14, 13, 0.96);
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-lg);
+  background: var(--bg-base);
+  box-shadow: var(--e-4);
   pointer-events: none;
   z-index: 4;
 }
 
 .overlay-image-preview-header,
 .overlay-image-preview-meta {
-  font-size: 11px;
+  font-size: var(--fs-cap);
   line-height: 1.5;
 }
 
 .overlay-image-preview-header {
-  color: var(--overlay-text);
+  color: var(--text-1);
   font-weight: 600;
   margin-bottom: 8px;
 }
 
 .overlay-image-preview-meta {
   margin-top: 8px;
-  color: var(--overlay-muted);
+  color: var(--text-3);
 }
 
 .overlay-image-preview-empty {
   display: grid;
   place-items: center;
   min-height: 148px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--overlay-muted);
-  font-size: 12px;
+  border-radius: var(--r-md);
+  background: var(--white-veil);
+  color: var(--text-3);
+  font-size: var(--fs-cap);
 }
 
 .overlay-image-preview-image {
@@ -347,31 +263,23 @@ input {
   width: 100%;
   max-height: 192px;
   object-fit: contain;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.overlay-empty {
-  height: 100%;
-  display: grid;
-  place-items: center;
-  color: var(--overlay-muted);
-  font-size: 13px;
+  border-radius: var(--r-md);
+  background: var(--white-veil);
 }
 
 .overlay-footer {
   justify-content: space-between;
   gap: 12px;
   padding: 14px 18px;
-  border-top: 1px solid var(--overlay-border-muted);
-  background: rgba(0, 0, 0, 0.12);
-  font-size: 11px;
-  color: var(--overlay-muted);
+  border-top: 1px solid var(--line-soft);
+  background: var(--scrim-veil);
+  font-size: var(--fs-cap);
+  color: var(--text-3);
   -webkit-app-region: no-drag;
 }
 
 .overlay-status {
-  color: var(--overlay-accent);
+  color: var(--accent-hi);
   letter-spacing: 0.12em;
   font-weight: 700;
 }

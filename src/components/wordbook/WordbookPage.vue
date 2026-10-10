@@ -1,87 +1,83 @@
 <template>
   <section class="wordbook-page">
-    <header class="wordbook-hero">
-      <div class="wordbook-hero-copy">
-        <span class="wordbook-kicker">AI SELECTION CENTER</span>
-        <h1 class="wordbook-title">生词本</h1>
-        <p class="wordbook-subtitle">自动沉淀所有查过的外语单词、短语和句子，让零摩擦划词变成可检索、可积累的长期资产。</p>
-      </div>
-
-      <div class="wordbook-hero-stats">
-        <div class="hero-stat">
-          <span class="hero-stat-label">今日新增</span>
-          <strong>{{ stats.today }}</strong>
-        </div>
-        <div class="hero-stat">
-          <span class="hero-stat-label">累计词条</span>
-          <strong>{{ stats.total }}</strong>
-        </div>
-        <div class="hero-stat">
-          <span class="hero-stat-label">收藏词条</span>
-          <strong>{{ stats.favorites }}</strong>
-        </div>
-      </div>
-    </header>
+    <PageHeader
+      variant="hero"
+      title="生词本"
+      kicker="AI SELECTION CENTER"
+      subtitle="自动沉淀所有查过的外语单词、短语和句子，让零摩擦划词变成可检索、可积累的长期资产。"
+      :stats="[
+        { label: '今日新增', value: stats.today },
+        { label: '累计词条', value: stats.total },
+        { label: '收藏词条', value: stats.favorites }
+      ]"
+    />
 
     <section class="wordbook-toolbar">
       <div class="wordbook-search">
-        <svg viewBox="0 0 24 24" fill="none">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <circle cx="11" cy="11" r="6" />
           <path d="m16 16 4 4" />
         </svg>
-        <input v-model.trim="query" type="search" placeholder="搜索单词、短语、释义或上下文...">
+        <BaseInput v-model.trim="query" bare type="search" placeholder="搜索单词、短语、释义或上下文..." />
       </div>
 
       <div class="wordbook-filters">
-        <button
+        <BaseButton
           v-for="filter in filters"
           :key="filter.value"
-          class="filter-button"
-          :class="{ active: selectedType === filter.value }"
-          type="button"
+          size="sm"
+          pill
+          :active="selectedType === filter.value"
           @click="selectedType = filter.value"
         >
           {{ filter.label }}
-        </button>
+        </BaseButton>
       </div>
 
       <div class="wordbook-actions">
-        <button class="ghost-button" type="button" :disabled="isLoading" @click="refreshCurrentView">刷新</button>
-        <button class="ghost-button" :class="{ active: favoriteOnly }" type="button" @click="favoriteOnly = !favoriteOnly">
+        <BaseButton variant="outline" size="sm" pill :disabled="isLoading" @click="refreshCurrentView">
+          刷新
+        </BaseButton>
+        <BaseButton size="sm" pill :active="favoriteOnly" @click="favoriteOnly = !favoriteOnly">
           {{ favoriteOnly ? '仅看收藏中' : '筛选收藏' }}
-        </button>
+        </BaseButton>
       </div>
     </section>
 
     <section class="wordbook-summary-row">
-      <div class="summary-pill">总查询 {{ stats.queried_total || 0 }} 次</div>
-      <div class="summary-pill muted">最近持续扩充中</div>
+      <BaseBadge tone="accent" size="md" pill>总查询 {{ stats.queried_total || 0 }} 次</BaseBadge>
+      <BaseBadge tone="neutral" size="md" pill>最近持续扩充中</BaseBadge>
     </section>
 
-    <section v-if="isLoading" class="wordbook-empty">
-      正在加载生词本...
+    <section v-if="isLoading" class="wordbook-loading">
+      <div v-for="index in 6" :key="index" class="wordbook-loading-card">
+        <Skeleton :lines="4" inline />
+      </div>
     </section>
 
-    <section v-else-if="!items.length" class="wordbook-empty">
-      <strong>还没有生词条目</strong>
-      <p>等划词动作中心接入后，这里会自动沉淀你查过的单词、短语和句子。</p>
-    </section>
+    <EmptyState
+      v-else-if="!items.length"
+      size="lg"
+      title="还没有生词条目"
+      description="等划词动作中心接入后，这里会自动沉淀你查过的单词、短语和句子。"
+    />
 
     <section v-else class="wordbook-grid">
       <article v-for="item in items" :key="item.id" class="wordbook-card">
         <header class="wordbook-card-header">
           <div>
-            <span class="wordbook-entry-type">{{ typeLabel(item.entry_type) }}</span>
+            <BaseBadge tone="accent" pill>{{ typeLabel(item.entry_type) }}</BaseBadge>
             <h3>{{ item.normalized_text }}</h3>
           </div>
-          <button
-            class="favorite-button"
-            :class="{ active: item.is_favorite }"
-            type="button"
+          <BaseButton
+            size="sm"
+            pill
+            :active="item.is_favorite"
+            :aria-pressed="item.is_favorite ? 'true' : 'false'"
             @click="toggleFavorite(item)"
           >
             {{ item.is_favorite ? '已收藏' : '收藏' }}
-          </button>
+          </BaseButton>
         </header>
 
         <p class="wordbook-translation">{{ item.translation }}</p>
@@ -106,6 +102,12 @@
 import { onMounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useElectron } from '@/composables/useElectron'
+import BaseBadge from '@/components/common/BaseBadge.vue'
+import BaseButton from '@/components/common/BaseButton.vue'
+import BaseInput from '@/components/common/BaseInput.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
+import Skeleton from '@/components/common/Skeleton.vue'
 
 const appStore = useAppStore()
 const { api } = useElectron()
@@ -169,7 +171,7 @@ async function refreshCurrentView() {
     stats.value = nextStats
   } catch (error) {
     console.error('[Wordbook] Failed to load entries:', error)
-    appStore.showToast('加载生词本失败')
+    appStore.showToast('加载生词本失败', { tone: 'error' })
   } finally {
     isLoading.value = false
   }
@@ -181,10 +183,10 @@ async function toggleFavorite(item) {
       is_favorite: !item.is_favorite
     })
     await refreshCurrentView()
-    appStore.showToast(item.is_favorite ? '已取消收藏' : '已加入收藏')
+    appStore.showToast(item.is_favorite ? '已取消收藏' : '已加入收藏', { tone: 'success' })
   } catch (error) {
     console.error('[Wordbook] Failed to toggle favorite:', error)
-    appStore.showToast('更新收藏状态失败')
+    appStore.showToast('更新收藏状态失败', { tone: 'error' })
   }
 }
 
@@ -200,247 +202,134 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* 页面级 padding 归零：外层 .container 已提供统一留白 */
 .wordbook-page {
   width: 100%;
-  max-width: 1280px;
-  padding: 36px 32px 48px;
-}
-
-.wordbook-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 24px;
-  align-items: end;
-  padding: 28px 30px;
-  margin-bottom: 24px;
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at top right, rgba(112, 197, 141, 0.16), transparent 34%),
-    linear-gradient(180deg, rgba(28, 27, 27, 0.9), rgba(19, 19, 19, 0.98));
-}
-
-.wordbook-kicker {
-  display: inline-flex;
-  margin-bottom: 10px;
-  color: #8ed4a2;
-  font-family: 'Space Mono', var(--font-mono);
-  font-size: 0.74rem;
-  letter-spacing: 0.18em;
-}
-
-.wordbook-title {
-  font-family: 'Instrument Sans', var(--font-display);
-  font-size: clamp(2rem, 3.2vw, 3rem);
-  line-height: 1.05;
-  margin-bottom: 10px;
-}
-
-.wordbook-subtitle {
-  max-width: 760px;
-  color: var(--text-secondary);
-  font-size: 0.98rem;
-  line-height: 1.8;
-}
-
-.wordbook-hero-stats {
-  display: flex;
-  gap: 14px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.hero-stat {
-  min-width: 110px;
-  padding: 16px 18px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.hero-stat-label {
-  display: block;
-  color: var(--text-muted);
-  font-size: 0.76rem;
-  letter-spacing: 0.08em;
-  margin-bottom: 8px;
-}
-
-.hero-stat strong {
-  font-size: 1.4rem;
+  max-width: 100%;
 }
 
 .wordbook-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) auto auto;
-  gap: 16px;
+  gap: var(--s-4);
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: var(--s-4);
 }
 
 .wordbook-search {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 14px;
-  height: 52px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  gap: var(--s-2);
+  height: 44px;
+  padding: 0 var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-raise);
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
 }
 
-.wordbook-search input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: inherit;
-  font: inherit;
-}
-
-.wordbook-search input:focus {
-  outline: none;
+/* 统一焦点环：不再把 outline 直接删掉，作用在包裹层上 */
+.wordbook-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-halo);
 }
 
 .wordbook-search svg {
   width: 18px;
   height: 18px;
-  stroke: var(--text-secondary);
+  flex-shrink: 0;
+  stroke: var(--text-3);
   stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.wordbook-search :deep(.ui-input) {
+  font-size: var(--fs-base);
 }
 
 .wordbook-filters,
 .wordbook-actions {
   display: flex;
-  gap: 10px;
+  gap: var(--s-2);
   flex-wrap: wrap;
-}
-
-.filter-button,
-.ghost-button,
-.favorite-button {
-  padding: 10px 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
-  color: inherit;
-  cursor: pointer;
-}
-
-.filter-button.active,
-.ghost-button.active,
-.favorite-button.active {
-  background: rgba(142, 212, 162, 0.16);
-  border-color: rgba(142, 212, 162, 0.34);
 }
 
 .wordbook-summary-row {
   display: flex;
-  gap: 12px;
+  gap: var(--s-3);
   flex-wrap: wrap;
-  margin-bottom: 24px;
+  margin-bottom: var(--s-6);
 }
 
-.summary-pill {
-  padding: 10px 14px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.summary-pill.muted {
-  color: var(--text-secondary);
-}
-
-.wordbook-empty {
-  padding: 56px 24px;
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  text-align: center;
-  color: var(--text-secondary);
-}
-
-.wordbook-empty strong {
-  display: block;
-  margin-bottom: 10px;
-  color: var(--text-primary);
-}
-
+.wordbook-loading,
 .wordbook-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 18px;
+  gap: var(--s-4);
+}
+
+.wordbook-loading-card {
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-card);
 }
 
 .wordbook-card {
-  padding: 18px;
-  border-radius: 22px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03));
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-card);
+  box-shadow: var(--edge-hi);
 }
 
 .wordbook-card-header {
   display: flex;
   justify-content: space-between;
-  gap: 14px;
-  align-items: start;
+  gap: var(--s-3);
+  align-items: flex-start;
 }
 
 .wordbook-card-header h3 {
-  margin-top: 6px;
-  font-size: 1.3rem;
-}
-
-.wordbook-entry-type {
-  display: inline-flex;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(142, 212, 162, 0.16);
-  color: #b8ecc6;
-  font-size: 0.76rem;
+  margin-top: var(--s-1);
+  font-size: var(--fs-lg);
 }
 
 .wordbook-translation {
-  margin-top: 16px;
-  font-size: 1.06rem;
-  color: var(--text-primary);
+  margin-top: var(--s-4);
+  font-size: var(--fs-md);
+  color: var(--text-1);
 }
 
 .wordbook-explanations {
-  margin-top: 14px;
-  padding-left: 18px;
-  color: var(--text-secondary);
+  margin-top: var(--s-3);
+  padding-left: var(--s-4);
+  color: var(--text-2);
   line-height: 1.7;
 }
 
 .wordbook-context {
-  margin-top: 14px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text-secondary);
+  margin-top: var(--s-3);
+  padding: var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--bg-raise);
+  color: var(--text-2);
   line-height: 1.7;
 }
 
 .wordbook-card-footer {
   display: flex;
-  gap: 12px;
+  gap: var(--s-3);
   flex-wrap: wrap;
-  margin-top: 16px;
-  color: var(--text-muted);
-  font-size: 0.82rem;
+  margin-top: var(--s-4);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
 }
 
 @media (max-width: 960px) {
   .wordbook-toolbar {
     grid-template-columns: 1fr;
-  }
-
-  .wordbook-hero {
-    grid-template-columns: 1fr;
-  }
-
-  .wordbook-hero-stats {
-    justify-content: flex-start;
   }
 }
 </style>

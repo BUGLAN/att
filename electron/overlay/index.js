@@ -43,16 +43,22 @@ class UnifiedOverlayManager {
     this.ignoreBlurUntil = 0
   }
 
-  createWindow() {
+  createWindow(mode = this.currentMode || OVERLAY_MODE.selection) {
     if (this.window) {
       return this.window
     }
 
-    const selectionConfig = MODE_CONFIG[OVERLAY_MODE.selection]
+    // 关键修复：窗口必须按**目标模式**的尺寸创建。
+    // 旧实现固定用 selection 尺寸（420x320）创建，之后在隐藏状态下 setBounds 改成
+    // clipboard 尺寸（380x560）；Windows 上这类透明无边框窗口会在首次 show() 时
+    // 播放一次尺寸过渡动画，视觉上就是「缩小又弹大」的闪烁。
+    // docs/overlay-flicker-fix.md 记录的五次失败尝试全部只调整了显示时机，
+    // 没有检查过「创建尺寸 ≠ 目标尺寸」这一点。
+    const initialConfig = this.getModeConfig(mode)
     const isDev = this.isDevelopmentRuntime()
     this.window = new this.BrowserWindow({
-      width: selectionConfig.width,
-      height: selectionConfig.height,
+      width: initialConfig.width,
+      height: initialConfig.height,
       show: false,
       frame: false,
       transparent: true,
@@ -65,7 +71,9 @@ class UnifiedOverlayManager {
       movable: true,
       skipTaskbar: true,
       focusable: true,
-      hasShadow: true,
+      // 透明窗口 + DWM 投影是 Windows 上 show() 动画/边缘残影的另一个已知来源，
+      // 悬浮层本身已有自绘描边与阴影，关闭系统投影视觉上无损失。
+      hasShadow: false,
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
@@ -201,6 +209,19 @@ class UnifiedOverlayManager {
       return
     }
 
+    // 尺寸/位置完全一致时直接跳过：避免多余的窗口管理操作触发系统动画。
+    // （窗口已在 createWindow 阶段按目标模式尺寸创建，这里通常只需要移动位置。）
+    const current = typeof this.window.getBounds === 'function' ? this.window.getBounds() : null
+    if (
+      current &&
+      current.x === bounds.x &&
+      current.y === bounds.y &&
+      current.width === bounds.width &&
+      current.height === bounds.height
+    ) {
+      return
+    }
+
     this.programmaticMoveLock += 1
     this.window.setBounds(bounds)
 
@@ -244,7 +265,7 @@ class UnifiedOverlayManager {
       return false
     }
 
-    const window = this.createWindow()
+    const window = this.createWindow(OVERLAY_MODE.selection)
     const activation = this.buildActivation(OVERLAY_MODE.selection, {
       ...payload,
       text
@@ -266,7 +287,7 @@ class UnifiedOverlayManager {
   }
 
   openClipboard(payload = {}) {
-    const window = this.createWindow()
+    const window = this.createWindow(OVERLAY_MODE.clipboard)
     const activation = this.buildActivation(OVERLAY_MODE.clipboard, payload)
 
     this.currentMode = OVERLAY_MODE.clipboard

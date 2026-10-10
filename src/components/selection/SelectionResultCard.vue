@@ -46,45 +46,47 @@ const titleText = computed(() => props.result.source_text || 'AI 动作结果')
 </script>
 
 <style scoped>
+/* 原为浅色卡片（rgba(255,250,242,.96) + 棕色系文字）被塞进深色浮层，
+   是亮色系残留；现改为深色语义，颜色全部取自 tokens.css。 */
 .result-card {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  padding: 16px;
-  border-radius: 18px;
-  background: rgba(255, 250, 242, 0.96);
-  border: 1px solid rgba(128, 90, 40, 0.12);
-  color: #1f1711;
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  color: var(--text-1);
   -webkit-app-region: no-drag;
 }
 
 .result-header {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--s-3);
   align-items: start;
 }
 
 .result-kicker {
   display: inline-flex;
   padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(205, 145, 72, 0.14);
-  color: #805b28;
-  font-size: 0.72rem;
+  border-radius: var(--r-full);
+  background: var(--accent-dim);
+  color: var(--accent-hi);
+  font-size: var(--fs-cap);
   text-transform: uppercase;
 }
 
 .result-title {
   margin-top: 8px;
-  font-size: 1.15rem;
+  font-size: var(--fs-lg);
   line-height: 1.3;
 }
 
 .result-saved {
-  color: #73593b;
-  font-size: 0.8rem;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
 }
 
 .result-body {
@@ -93,28 +95,28 @@ const titleText = computed(() => props.result.source_text || 'AI 动作结果')
   overflow-y: auto;
   padding-right: 4px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(128, 90, 40, 0.28) transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 
 .result-translation,
 .result-answer {
   margin-top: 14px;
   line-height: 1.7;
-  color: #2d231b;
+  color: var(--text-1);
 }
 
 .result-list {
   margin-top: 14px;
   padding-left: 18px;
   line-height: 1.7;
-  color: #5f4e3e;
+  color: var(--text-2);
 }
 
 .result-examples {
-  margin-top: 14px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(128, 90, 40, 0.06);
+  margin-top: var(--s-3);
+  padding: var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--line-soft);
 }
 
 .result-examples strong {
@@ -127,7 +129,7 @@ const titleText = computed(() => props.result.source_text || 'AI 动作结果')
 }
 
 .result-body::-webkit-scrollbar {
-  width: 6px;
+  width: var(--scroll-size-thin);
 }
 
 .result-body::-webkit-scrollbar-track {
@@ -135,11 +137,11 @@ const titleText = computed(() => props.result.source_text || 'AI 动作结果')
 }
 
 .result-body::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(128, 90, 40, 0.24);
+  border-radius: var(--r-full);
+  background: var(--scroll-thumb);
 }
 
 .result-body::-webkit-scrollbar-thumb:hover {
-  background: rgba(128, 90, 40, 0.34);
+  background: var(--scroll-thumb-hover);
 }
 </style>
