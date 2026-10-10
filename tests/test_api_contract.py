@@ -2,9 +2,11 @@
 
 本文件锁定 `app.main:app` 实际暴露的端点集合：
 
-1. `BUSINESS_ENDPOINTS` 是**功能减法之后**的业务端点基线（49 条：47 条 HTTP + 2 条 WebSocket）。
+1. `BUSINESS_ENDPOINTS` 是**功能减法之后**的业务端点基线（44 条：42 条 HTTP + 2 条 WebSocket）。
    2026-10 功能减法删除了统一浮层 / 生词本 / AI 动作（含 Agent 对话），
    对应的 `/api/wordbook/*` 5 条与 `/api/ai-actions/*` 5 条端点随之移除；
+   预设写接口（POST/PUT/DELETE /api/prompts*）与无调用方的 GET 单条 / preview
+   一并移除（预设是只读的，唯一真相源是 prompts/*.txt）。
 2. FastAPI 自动生成的文档路由（/docs、/redoc、/openapi.json 及其 HEAD）与根入口 "/"
    单独登记，避免它们被悄悄塞进「忽略名单」而掩盖端点变更；
 3. `API_ROUTER_ENDPOINTS` 锁定聚合层 `app.api.routes.router` 暴露的全部端点，
@@ -26,12 +28,12 @@ from app.records.models import RecordStatus
 
 # ==================== 基线 ====================
 
-# 业务端点基线：功能减法后共 49 条（47 条 HTTP + 2 条 WebSocket）。
-# 已删除：/api/wordbook/*（生词本）5 条、/api/ai-actions/*（AI 动作 + Agent 对话）5 条。
+# 业务端点基线：功能减法后共 44 条（42 条 HTTP + 2 条 WebSocket）。
+# 已删除：/api/wordbook/*（生词本）5 条、/api/ai-actions/*（AI 动作 + Agent 对话）5 条、
+# /api/prompts 写接口与无调用方的单条/预览 5 条（预设只读，真相源是 prompts/*.txt）。
 BUSINESS_ENDPOINTS = frozenset({
     ("DELETE", "/api/clipboard/items/{item_id}"),
     ("DELETE", "/api/llm/configs/{config_id}"),
-    ("DELETE", "/api/prompts/{preset_id}"),
     ("DELETE", "/api/records/{record_id}"),
     ("DELETE", "/api/sessions/{session_id}"),
     ("GET", "/api/clipboard/items"),
@@ -45,7 +47,6 @@ BUSINESS_ENDPOINTS = frozenset({
     ("GET", "/api/llm/providers/{provider}/models"),
     ("GET", "/api/model-service"),
     ("GET", "/api/prompts"),
-    ("GET", "/api/prompts/{preset_id}"),
     ("GET", "/api/records"),
     ("GET", "/api/records/search"),
     ("GET", "/api/records/{record_id}"),
@@ -61,8 +62,6 @@ BUSINESS_ENDPOINTS = frozenset({
     ("POST", "/api/llm/configs/{config_id}/test"),
     ("POST", "/api/model-service/start"),
     ("POST", "/api/model-service/stop"),
-    ("POST", "/api/prompts"),
-    ("POST", "/api/prompts/{preset_id}/preview"),
     ("POST", "/api/records/{record_id}/optimize"),
     ("POST", "/api/sessions"),
     ("POST", "/api/sessions/{session_id}/merge"),
@@ -73,18 +72,16 @@ BUSINESS_ENDPOINTS = frozenset({
     ("PUT", "/api/llm/configs/{config_id}"),
     ("PUT", "/api/llm/configs/{config_id}/default"),
     ("PUT", "/api/prompts/default"),
-    ("PUT", "/api/prompts/{preset_id}"),
     ("PUT", "/api/records/{record_id}"),
     ("PUT", "/api/settings"),
     ("WS", "/api/asr/stream"),
     ("WS", "/api/ws"),
 })
 
-# 拆分后由 app/api/routes.py（薄聚合层）暴露的 42 条端点：
-# 音频+记录 10、会话 5、WebSocket 2、设置 2、健康检查+模型服务 7、提示词 7、LLM 9。
+# 拆分后由 app/api/routes.py（薄聚合层）暴露的 37 条端点：
+# 音频+记录 10、会话 5、WebSocket 2、设置 2、健康检查+模型服务 7、提示词 2、LLM 9。
 API_ROUTER_ENDPOINTS = frozenset({
     ("DELETE", "/api/llm/configs/{config_id}"),
-    ("DELETE", "/api/prompts/{preset_id}"),
     ("DELETE", "/api/records/{record_id}"),
     ("DELETE", "/api/sessions/{session_id}"),
     ("GET", "/api/health"),
@@ -94,7 +91,6 @@ API_ROUTER_ENDPOINTS = frozenset({
     ("GET", "/api/llm/providers/{provider}/models"),
     ("GET", "/api/model-service"),
     ("GET", "/api/prompts"),
-    ("GET", "/api/prompts/{preset_id}"),
     ("GET", "/api/records"),
     ("GET", "/api/records/search"),
     ("GET", "/api/records/{record_id}"),
@@ -109,8 +105,6 @@ API_ROUTER_ENDPOINTS = frozenset({
     ("POST", "/api/llm/configs/{config_id}/test"),
     ("POST", "/api/model-service/start"),
     ("POST", "/api/model-service/stop"),
-    ("POST", "/api/prompts"),
-    ("POST", "/api/prompts/{preset_id}/preview"),
     ("POST", "/api/records/{record_id}/optimize"),
     ("POST", "/api/sessions"),
     ("POST", "/api/sessions/{session_id}/merge"),
@@ -120,7 +114,6 @@ API_ROUTER_ENDPOINTS = frozenset({
     ("PUT", "/api/llm/configs/{config_id}"),
     ("PUT", "/api/llm/configs/{config_id}/default"),
     ("PUT", "/api/prompts/default"),
-    ("PUT", "/api/prompts/{preset_id}"),
     ("PUT", "/api/records/{record_id}"),
     ("PUT", "/api/settings"),
     ("WS", "/api/asr/stream"),
@@ -170,9 +163,9 @@ def _collect(route_holder) -> list[tuple[str, str]]:
 # ==================== 端点集合契约 ====================
 
 
-def test_baseline_size_is_49():
-    """基线自身自检：49 条业务端点（47 条 HTTP + 2 个 WebSocket）。"""
-    assert len(BUSINESS_ENDPOINTS) == 49
+def test_baseline_size_is_44():
+    """基线自身自检：44 条业务端点（42 条 HTTP + 2 个 WebSocket）。"""
+    assert len(BUSINESS_ENDPOINTS) == 44
     assert len([item for item in BUSINESS_ENDPOINTS if item[0] == "WS"]) == 2
 
 
@@ -191,15 +184,19 @@ def test_application_endpoint_set_matches_baseline():
     assert added == [], f"新增未登记端点: {added}"
 
 
-def test_business_endpoints_are_still_49_after_subtraction():
-    """业务端点（排除文档路由与根入口）仍恰好是 49 条。"""
+def test_business_endpoints_are_still_44_after_subtraction():
+    """业务端点（排除文档路由与根入口）仍恰好是 44 条。"""
     business = set(_collect(app)) - DOC_ENDPOINTS - ROOT_ENDPOINTS
 
     assert business == BUSINESS_ENDPOINTS
-    assert len(business) == 49
-    # 已下线功能（生词本 / AI 动作）的端点必须彻底消失
+    assert len(business) == 44
+    # 已下线功能（生词本 / AI 动作 / 预设写接口）的端点必须彻底消失
     assert not any(path.startswith("/api/wordbook") for _, path in business)
     assert not any(path.startswith("/api/ai-actions") for _, path in business)
+    assert not any(
+        method in {"POST", "PUT", "DELETE"} and path.startswith("/api/prompts") and path != "/api/prompts/default"
+        for method, path in business
+    )
 
 
 def test_api_aggregator_router_exposes_all_registered_endpoints():

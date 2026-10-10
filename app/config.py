@@ -2,7 +2,6 @@
 Application configuration management using Pydantic Settings
 """
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
 from typing import Optional
 from pathlib import Path
 import logging
@@ -281,8 +280,6 @@ class Settings(BaseSettings):
     qwen_streaming_backend: str = "auto"
     qwen_streaming_base_url: str = ""
     qwen_streaming_timeout_seconds: float = 30.0
-    qwen_streaming_gpu_memory_utilization: float = 0.85
-    qwen_streaming_max_model_len: int = 16384
 
     # 火山引擎豆包双向流式 ASR（在线识别）
     # Access Token 的落盘形态是 data/settings.json 里的加密字段，这里只作为环境变量兜底
@@ -304,14 +301,8 @@ class Settings(BaseSettings):
 
     # Processing
     max_upload_size: int = 500 * 1024 * 1024  # 500MB
-    chunk_duration: int = 30  # seconds
-
-    # Audio Processing
-    supported_formats: set = Field(
-        default={'wav', 'mp3', 'm4a', 'flac', 'ogg', 'webm'}
-    )
-    target_sample_rate: int = 16000
-    target_channels: int = 1
+    # 注：chunk_duration / supported_formats / target_sample_rate / target_channels
+    # 曾是零读取的死字段（真实生效的是 AudioProcessor 的类常量），已在功能减法中删除。
 
     @property
     def data_path(self) -> Path:

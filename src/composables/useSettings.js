@@ -1,4 +1,4 @@
-﻿import { computed } from 'vue'
+import { computed } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
 
@@ -52,31 +52,6 @@ export function usePresets() {
     await settingsStore.loadPresets()
   }
 
-  async function savePreset(preset) {
-    try {
-      const result = await settingsStore.savePreset(preset)
-      appStore.showToast('预设已保存')
-      return result
-    } catch (error) {
-      appStore.showToast('保存预设失败')
-      throw error
-    }
-  }
-
-  async function deletePreset(id) {
-    try {
-      await settingsStore.deletePreset(id)
-      appStore.showToast('预设已删除')
-    } catch (error) {
-      appStore.showToast('删除预设失败')
-      throw error
-    }
-  }
-
-  async function previewPreset(id, text) {
-    return settingsStore.previewPreset(id, text)
-  }
-
   async function setDefaultPreset(id, options = {}) {
     const { silent = false } = options
     try {
@@ -95,9 +70,6 @@ export function usePresets() {
     defaultPreset,
     defaultPresetId,
     loadPresets,
-    savePreset,
-    deletePreset,
-    previewPreset,
     setDefaultPreset
   }
 }

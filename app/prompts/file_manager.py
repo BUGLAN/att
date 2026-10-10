@@ -1,11 +1,15 @@
 """
-Prompt preset manager backed only by prompts/*.txt files.
+Prompt preset manager backed only by prompts/*.txt.
+
+预设是只读的：唯一真相源是 prompts/*.txt 文件，改预设 = 改文件。
+历史上提供过的 create/update/delete 会主动抛 ValueError（恒 400），
+已随写接口一并删除，避免「接口看着齐全、一写就失败」的僵尸契约。
 """
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from app.prompts.models import PromptCategory, PromptPreset, PromptPresetCreate, PromptPresetUpdate
+from app.prompts.models import PromptCategory, PromptPreset
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -97,19 +101,6 @@ class PromptManager:
             return template.format(text=text)
 
         return f"{template.rstrip()}\n\n{text}".strip()
-
-    def create(self, create_data: PromptPresetCreate) -> PromptPreset:
-        raise ValueError("只支持 prompts 目录中的提示词文件")
-
-    def update(self, preset_id: str, update_data: PromptPresetUpdate) -> Optional[PromptPreset]:
-        if preset_id not in self._presets:
-            return None
-        raise ValueError("只支持 prompts 目录中的提示词文件")
-
-    def delete(self, preset_id: str) -> bool:
-        if preset_id not in self._presets:
-            return False
-        raise ValueError("只支持 prompts 目录中的提示词文件")
 
 
 prompt_manager = PromptManager()

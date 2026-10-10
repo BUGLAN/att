@@ -64,10 +64,6 @@ export function useElectron() {
     getLLMProviders: () => httpApi.getLLMProviders(),
     getLLMProviderModels: (provider) => httpApi.getLLMProviderModels(provider),
     getPresets: () => httpApi.getPresets(),
-    getPreset: (id) => httpApi.getPreset(id),
-    savePreset: (preset) => httpApi.savePreset(preset),
-    deletePreset: (id) => httpApi.deletePreset(id),
-    previewPreset: (id, text) => httpApi.previewPreset(id, text),
     setDefaultPreset: (id) => httpApi.setDefaultPreset(id)
   }
 

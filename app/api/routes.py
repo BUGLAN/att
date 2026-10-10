@@ -36,7 +36,7 @@ from app.config import (
     user_settings,
 )
 from app.llm.optimizer import TextOptimizer
-from app.prompts import PromptManager, PromptPresetCreate, PromptPresetUpdate, prompt_manager
+from app.prompts import PromptManager, prompt_manager
 from app.records.manager import RecordManager
 from app.records.models import ExportFormat, Record, RecordStatus
 from app.records.session_manager import session_manager
@@ -107,10 +107,7 @@ async def close_streaming_session_manager() -> None:
 
 # 请求模型（原 routes.py 顶层定义，现在随子路由迁移）
 from app.api.routers.llm import get_llm_manager  # noqa: E402
-from app.api.routers.prompts import (  # noqa: E402
-    PromptPreviewRequest,
-    SetDefaultPromptRequest,
-)
+from app.api.routers.prompts import SetDefaultPromptRequest  # noqa: E402
 from app.api.routers.records import RecordUpdateRequest  # noqa: E402
 from app.api.routers.sessions import _handle_websocket_message  # noqa: E402
 from app.api.routers.settings import StreamingServiceRequest  # noqa: E402
@@ -151,7 +148,6 @@ __all__ = [
     "settings",
     "user_settings",
     "RecordUpdateRequest",
-    "PromptPreviewRequest",
     "SetDefaultPromptRequest",
     "StreamingServiceRequest",
     "get_prompt_manager",
@@ -174,8 +170,6 @@ __all__ = [
     "session_manager",
     "prompt_manager",
     "PromptManager",
-    "PromptPresetCreate",
-    "PromptPresetUpdate",
     "Record",
     "RecordStatus",
     "ExportFormat",

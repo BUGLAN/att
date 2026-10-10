@@ -28,19 +28,3 @@ class PromptPreset(BaseModel):
     is_builtin: bool = False          # 是否内置预设
     created_at: datetime
     updated_at: Optional[datetime] = None
-
-
-class PromptPresetCreate(BaseModel):
-    """Model for creating a new preset."""
-    name: str
-    description: Optional[str] = None
-    category: PromptCategory = PromptCategory.CUSTOM
-    prompt_template: str
-
-
-class PromptPresetUpdate(BaseModel):
-    """Model for updating an existing preset."""
-    name: Optional[str] = None
-    description: Optional[str] = None
-    category: Optional[PromptCategory] = None
-    prompt_template: Optional[str] = None

@@ -264,15 +264,8 @@ export const api = {
   getLLMProviders: () => request('GET', '/llm/providers'),
   getLLMProviderModels: (provider) => request('GET', `/llm/providers/${provider}/models`),
 
+  // 预设是只读的（唯一真相源是 prompts/*.txt）：只保留列出与设默认两个接口
   getPresets: () => request('GET', '/prompts'),
-  getPreset: (id) => request('GET', `/prompts/${id}`),
-  savePreset: (preset) => (
-    preset.id
-      ? request('PUT', `/prompts/${preset.id}`, { body: preset })
-      : request('POST', '/prompts', { body: preset })
-  ),
-  deletePreset: (id) => request('DELETE', `/prompts/${id}`),
-  previewPreset: (id, text) => request('POST', `/prompts/${id}/preview`, { body: { text } }),
   setDefaultPreset: (id) => request('PUT', '/prompts/default', { body: { preset_id: id } }),
 
   async getWebSocketUrl() {

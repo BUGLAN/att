@@ -448,21 +448,8 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  async function savePreset(preset) {
-    const result = await api.savePreset(preset)
-    await loadPresets()
-    return result
-  }
-
-  async function deletePreset(id) {
-    await api.deletePreset(id)
-    await loadPresets()
-  }
-
-  async function previewPreset(id, text) {
-    return api.previewPreset(id, text)
-  }
-
+  // 预设是只读的（唯一真相源是 prompts/*.txt）：这里只保留加载与设默认；
+  // 历史上的 save/delete/preview 封装对应后端已删除的写接口，一并移除
   async function setDefaultPreset(id) {
     await api.setDefaultPreset(id)
     defaultPresetId.value = id
@@ -537,9 +524,6 @@ export const useSettingsStore = defineStore('settings', () => {
     stopStreamingService,
     saveSettings,
     loadPresets,
-    savePreset,
-    deletePreset,
-    previewPreset,
     setDefaultPreset,
     loadLLMConfigs,
     loadLLMProviders,
