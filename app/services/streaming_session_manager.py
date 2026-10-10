@@ -18,6 +18,7 @@ from app.stt.models import ASRProviderType
 from app.stt.factory import get_asr_provider_config
 from app.stt.providers.doubao_asr_provider import DoubaoStreamingProvider
 from app.stt.providers.qwen_streaming_runtime_provider import QwenStreamingProvider
+from app.services.websocket import manager as ws_manager
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -25,6 +26,15 @@ logger = get_logger(__name__)
 STREAM_SAMPLE_RATE = 16000
 STREAM_CHANNELS = 1
 STREAM_SAMPLE_WIDTH = 2
+
+
+def _log_background_task_error(task: "asyncio.Task") -> None:
+    """后台优化任务的兜底回调：任务自身已捕获业务异常，这里只兜真正的意外错误。"""
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.warning("流式录音后台优化任务异常退出", error=str(error))
 
 
 @dataclass
@@ -180,9 +190,21 @@ class StreamingSessionManager:
 
         duration = session.sample_count / STREAM_SAMPLE_RATE
         if not final_text:
+            # 空文本是正常业务结果（极短点击 / 没有有效语音），不走错误通道：
+            # 音频不留档，回 record=null 让前端做「未识别到内容」的轻提示。
             if session.wav_path.exists():
                 session.wav_path.unlink()
-            raise ValueError("未识别到有效语音文本")
+            logger.info(
+                "流式录音未识别到有效语音文本",
+                session_id=session_id,
+                duration=duration
+            )
+            return {
+                "record": None,
+                "raw_text": "",
+                "language": session.language,
+                "duration": duration
+            }
 
         record = await self.record_manager.create_record(
             audio_path=str(session.wav_path),
@@ -199,21 +221,14 @@ class StreamingSessionManager:
         }
 
         if user_settings.get("auto_optimize", False):
-            try:
-                optimize_result = await self.optimizer.optimize(
-                    final_text,
-                    preset_id=user_settings.get("default_preset_id")
-                )
-                record = await self.record_manager.update_record(
-                    record.id,
-                    optimized_text=optimize_result.optimized_text,
-                    status=RecordStatus.OPTIMIZED
-                )
-                if record:
-                    payload["record"] = record.to_dict()
-                    payload["optimized_text"] = optimize_result.optimized_text
-            except Exception as error:
-                logger.warning("流式录音自动优化失败", record_id=record.id, error=str(error))
+            # 优化必须留在收尾关键路径之外：LLM provider 无超时（SDK 默认 600s），
+            # 内联 await 会让前端在「正在完成流式转写」卡最长 10 分钟。
+            # 这里先立即返回 transcribed 记录，优化放后台任务执行，
+            # 完成后经全局 WS 广播 optimization_completed（与单段录音路径一致）。
+            optimize_task = asyncio.create_task(
+                self._optimize_in_background(record.id, final_text)
+            )
+            optimize_task.add_done_callback(_log_background_task_error)
 
         logger.info(
             "完成流式录音会话",
@@ -222,6 +237,59 @@ class StreamingSessionManager:
             duration=duration
         )
         return payload
+
+    async def _optimize_in_background(self, record_id: str, final_text: str) -> None:
+        """后台执行流式录音的自动优化，完成后广播 optimization_completed。"""
+        try:
+            optimize_result = await self.optimizer.optimize(
+                final_text,
+                preset_id=user_settings.get("default_preset_id")
+            )
+            record = await self.record_manager.update_record(
+                record_id,
+                optimized_text=optimize_result.optimized_text,
+                status=RecordStatus.OPTIMIZED
+            )
+            if record:
+                await ws_manager.broadcast({
+                    "type": "optimization_completed",
+                    "data": {
+                        "record_id": record.id,
+                        "optimized_text": optimize_result.optimized_text
+                    },
+                    "timestamp": datetime.now().isoformat()
+                })
+            logger.info("流式录音自动优化完成", record_id=record_id)
+        except Exception as error:
+            logger.warning("流式录音自动优化失败", record_id=record_id, error=str(error))
+            # 与单段模式对齐：失败把记录复位为 transcribed 并广播失败事件
+            try:
+                await self.record_manager.update_record(
+                    record_id,
+                    status=RecordStatus.TRANSCRIBED
+                )
+            except Exception as reset_error:
+                logger.warning(
+                    "流式录音优化失败后复位记录状态失败",
+                    record_id=record_id,
+                    error=str(reset_error)
+                )
+            try:
+                await ws_manager.broadcast({
+                    "type": "optimization_failed",
+                    "data": {
+                        "record_id": record_id,
+                        "error": str(error),
+                        "status": RecordStatus.TRANSCRIBED.value
+                    },
+                    "timestamp": datetime.now().isoformat()
+                })
+            except Exception as broadcast_error:
+                logger.warning(
+                    "推送流式优化失败事件失败",
+                    record_id=record_id,
+                    error=str(broadcast_error)
+                )
 
     async def cancel_session(self, session_id: str) -> None:
         async with self._lock:
