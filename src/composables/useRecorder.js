@@ -1437,11 +1437,21 @@ async function stopStreamingRecording({ fromStart = false } = {}) {
 
   livePhase.value = 'finalizing'
   sessionStatusText.value = '正在完成流式转写'
+
+  // 尾包必须赶在 cleanupStreamingAudio() 之前冲刷：后者内部的 resetStreamingBuffer() 会清空
+  // 积压队列，顺序反了则每次停止都会丢掉不足一个 STREAM_FLUSH_SAMPLES 块的尾部（最多 ≈200ms，
+  // 与"开头丢字"对称的缺陷）。这里到 cleanup 之间没有 await，工作线程不可能再塞进新样本。
+  const socketReadyForFinish = Boolean(
+    streamingSocket && streamingSocket.readyState === WebSocket.OPEN
+  )
+  if (socketReadyForFinish) {
+    sendStreamingSamples(true)
+  }
+
   cleanupStreamingAudio()
   stopMediaTracks()
 
-  if (streamingSocket && streamingSocket.readyState === WebSocket.OPEN) {
-    sendStreamingSamples(true)
+  if (socketReadyForFinish) {
     streamingSocket.send(JSON.stringify(streamProtocol.deriveStreamFinishPayload()))
     armFinishWatchdog()
     return
@@ -1450,6 +1460,8 @@ async function stopStreamingRecording({ fromStart = false } = {}) {
   // socket 尚未就绪（还卡在连接/采集阶段）就松手：本次启动直接放弃。
   // 置放弃标志让仍在飞行的 startStreamingRecording 后半段不要进入录音状态；
   // 此时后端会话尚未建立（stream_ready 未回），没有任何需要保存的内容。
+  // 前置条件：上面的 cleanupStreamingAudio() / stopMediaTracks() 必须保持无条件执行，
+  // 本分支才能不重复收口——调整顺序时务必一起改。
   streamingAwaitingFinish = false
   streamingStartAborted = true
   cleanupStreamingSocket()
