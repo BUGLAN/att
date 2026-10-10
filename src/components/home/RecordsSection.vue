@@ -23,6 +23,7 @@
         @select="toggleSelection(record.id)"
         @edit="openEditModal(record)"
         @copy="copyText(record)"
+        @export="(format) => exportRecord(record, format)"
         @toggle-audio="toggleAudio(record.id)"
         @optimize="optimizeRecord(record.id)"
         @toggle-favorite="toggleFavorite(record)"
@@ -83,6 +84,7 @@ const {
   copyText,
   toggleFavorite,
   optimizeRecord,
+  exportRecord,
   toggleSelectMode,
   toggleSelection,
   selectAll,

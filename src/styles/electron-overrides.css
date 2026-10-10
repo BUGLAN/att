@@ -218,6 +218,18 @@
   margin-left: auto;
 }
 
+/* 卡片底部动作区：复制 + 两个导出按钮 */
+.settings-record-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-left: auto;
+}
+
+.settings-record-actions .settings-record-copy {
+  margin-left: 0;
+}
+
 .records-pagination {
   display: flex;
   align-items: center;

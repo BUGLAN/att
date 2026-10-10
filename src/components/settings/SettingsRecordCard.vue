@@ -31,14 +31,45 @@
 
     <div class="settings-record-foot">
       <span class="settings-record-kind">{{ record.optimized_text ? '优化文本' : '原始文本' }}</span>
-      <BaseButton
-        variant="outline"
-        size="sm"
-        class="settings-record-copy"
-        @click.stop="$emit('copy')"
-      >
-        复制
-      </BaseButton>
+      <div class="settings-record-actions">
+        <BaseButton
+          variant="outline"
+          size="sm"
+          class="settings-record-copy"
+          @click.stop="$emit('copy')"
+        >
+          复制
+        </BaseButton>
+        <BaseButton
+          variant="ghost"
+          size="sm"
+          icon
+          title="导出 TXT"
+          @click.stop="$emit('export', 'txt')"
+        >
+          <template #icon>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 4v10" />
+              <path d="m8 10.5 4 4 4-4" />
+              <path d="M5 19h14" />
+            </svg>
+          </template>
+        </BaseButton>
+        <BaseButton
+          variant="ghost"
+          size="sm"
+          icon
+          title="导出 JSON"
+          @click.stop="$emit('export', 'json')"
+        >
+          <template #icon>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M9 5c-2 0-3 1-3 3v2c0 1.2-.7 2-2 2 1.3 0 2 .8 2 2v2c0 2 1 3 3 3" />
+              <path d="M15 5c2 0 3 1 3 3v2c0 1.2.7 2 2 2-1.3 0-2 .8-2 2v2c0 2-1 3-3 3" />
+            </svg>
+          </template>
+        </BaseButton>
+      </div>
     </div>
   </article>
 </template>
@@ -55,7 +86,7 @@ const props = defineProps({
   }
 })
 
-defineEmits(['toggle-favorite', 'copy', 'open'])
+defineEmits(['toggle-favorite', 'copy', 'export', 'open'])
 
 const displayText = computed(() => {
   return props.record.optimized_text || props.record.raw_text || '暂无文本内容'

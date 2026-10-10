@@ -79,6 +79,39 @@
         </BaseButton>
 
         <BaseButton
+          v-if="!selectMode && (record.optimized_text || record.raw_text)"
+          variant="ghost"
+          size="sm"
+          icon
+          title="导出 TXT"
+          @click.stop="$emit('export', 'txt')"
+        >
+          <template #icon>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 4v10" />
+              <path d="m8 10.5 4 4 4-4" />
+              <path d="M5 19h14" />
+            </svg>
+          </template>
+        </BaseButton>
+
+        <BaseButton
+          v-if="!selectMode && (record.optimized_text || record.raw_text)"
+          variant="ghost"
+          size="sm"
+          icon
+          title="导出 JSON"
+          @click.stop="$emit('export', 'json')"
+        >
+          <template #icon>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M9 5c-2 0-3 1-3 3v2c0 1.2-.7 2-2 2 1.3 0 2 .8 2 2v2c0 2 1 3 3 3" />
+              <path d="M15 5c2 0 3 1 3 3v2c0 1.2.7 2 2 2-1.3 0-2 .8-2 2v2c0 2-1 3-3 3" />
+            </svg>
+          </template>
+        </BaseButton>
+
+        <BaseButton
           v-if="!selectMode"
           variant="ghost"
           size="sm"
@@ -126,7 +159,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'edit', 'copy', 'toggle-audio', 'optimize', 'toggle-favorite'])
+const emit = defineEmits(['select', 'edit', 'copy', 'export', 'toggle-audio', 'optimize', 'toggle-favorite'])
 
 const displayText = computed(() => {
   return props.record.optimized_text || props.record.raw_text || '处理中...'

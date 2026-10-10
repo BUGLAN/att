@@ -1,7 +1,8 @@
-﻿import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRecordsStore } from '@/stores/records'
 import { useAppStore } from '@/stores/app'
 import { useElectron } from './useElectron'
+import { buildExportFilename, downloadFromUrl } from '@/utils/exportDownload.mjs'
 
 // 当前播放的音频对象
 const currentAudio = ref(null)
@@ -81,18 +82,11 @@ export function useRecords() {
     }
   }
 
-  async function exportRecord(id, format = 'txt') {
+  async function exportRecord(record, format = 'txt') {
     try {
-      const url = await recordsStore.exportRecord(id, format)
-      const link = document.createElement('a')
-      link.href = url
-      link.target = '_blank'
-      link.rel = 'noopener'
-      link.download = `record.${format}`
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      appStore.showToast('已开始导出')
+      const url = await recordsStore.exportRecord(record.id, format)
+      downloadFromUrl(url, buildExportFilename(record, format))
+      appStore.showToast(`已导出 ${format.toUpperCase()} 文件`)
       return url
     } catch (error) {
       appStore.showToast('导出失败')

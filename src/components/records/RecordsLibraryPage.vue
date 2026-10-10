@@ -51,6 +51,7 @@
             :key="record.id"
             :record="record"
             @copy="handleRecordCopy(record)"
+            @export="(format) => handleRecordExport(record, format)"
             @open="openRecord(record)"
             @toggle-favorite="handleToggleFavorite(record)"
           />
@@ -85,6 +86,7 @@ import { onMounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useRecordsStore } from '@/stores/records'
 import { useElectron } from '@/composables/useElectron'
+import { buildExportFilename, downloadFromUrl } from '@/utils/exportDownload.mjs'
 import SettingsRecordCard from '@/components/settings/SettingsRecordCard.vue'
 import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
@@ -158,6 +160,18 @@ async function handleRecordCopy(record) {
 
   await clipboard.writeText(text)
   appStore.showToast('文本已复制到剪贴板', { tone: 'success' })
+}
+
+// 导出 TXT / JSON：复用全局下载工具，文件名由记录信息构造
+async function handleRecordExport(record, format) {
+  try {
+    const url = await recordsStore.exportRecord(record.id, format)
+    downloadFromUrl(url, buildExportFilename(record, format))
+    appStore.showToast(`已导出 ${format.toUpperCase()} 文件`, { tone: 'success' })
+  } catch (error) {
+    console.error('Failed to export record:', error)
+    appStore.showToast('导出失败', { tone: 'error' })
+  }
 }
 
 async function handleToggleFavorite(record) {
