@@ -1,12 +1,18 @@
 """基于 JSON 的生词本管理器。"""
-import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import aiofiles
-
+from app.repositories.json_store import (
+    get_async_lock,
+    read_json_lenient_async,
+    write_json_atomic_async,
+)
+from app.repositories.paths import is_safe_identifier
 from app.wordbook.models import WordbookEntry, WordbookEntryType
+
+logger = logging.getLogger(__name__)
 
 
 class WordbookManager:
@@ -22,23 +28,35 @@ class WordbookManager:
         self.wordbook_path.mkdir(parents=True, exist_ok=True)
 
     def _get_entry_file(self, entry_id: str) -> Path:
+        """条目文件路径（ID 必须是单层安全文件名，防止路径穿越）。"""
+        if not is_safe_identifier(entry_id):
+            raise ValueError(f"非法 wordbook entry_id（含路径分隔符或穿越写法）：{entry_id!r}")
         return self.wordbook_path / f"{entry_id}.json"
 
     def _normalize_text(self, text: str) -> str:
         return (text or "").replace("\r\n", "\n").strip()
 
     async def _load_json(self, entry_id: str) -> Optional[dict]:
-        file_path = self._get_entry_file(entry_id)
+        """读取条目 JSON；非法 ID 或损坏文件按不存在处理。"""
+        try:
+            file_path = self._get_entry_file(entry_id)
+        except ValueError as error:
+            logger.warning("拒绝非法 wordbook entry_id: %s", error)
+            return None
+
         if not file_path.exists():
             return None
 
-        async with aiofiles.open(file_path, "r", encoding="utf-8") as file:
-            return json.loads(await file.read())
+        data = await read_json_lenient_async(file_path, default=None)
+        if data is None:
+            logger.warning("生词条目文件无法解析，按不存在处理: %s", file_path)
+            return None
+        return data
 
     async def _save_json(self, entry: WordbookEntry) -> None:
+        """原子写条目 JSON（调用方需自行持有资源锁）。"""
         entry.updated_at = datetime.now()
-        async with aiofiles.open(self._get_entry_file(entry.id), "w", encoding="utf-8") as file:
-            await file.write(json.dumps(entry.to_dict(), ensure_ascii=False, indent=2))
+        await write_json_atomic_async(self._get_entry_file(entry.id), entry.to_dict())
 
     async def _find_duplicate_entry(
         self,
@@ -64,6 +82,34 @@ class WordbookManager:
 
         return None
 
+    def _build_entry(
+        self,
+        source_text: str,
+        normalized_text: str,
+        language: str,
+        entry_type: WordbookEntryType,
+        translation: str,
+        explanations: Optional[list[str]],
+        examples: Optional[list[str]],
+        source_app: str,
+        source_context: str,
+        metadata: Optional[dict],
+    ) -> WordbookEntry:
+        """纯构造条目对象（不落盘）。"""
+
+        return WordbookEntry(
+            source_text=self._normalize_text(source_text),
+            normalized_text=self._normalize_text(normalized_text),
+            language=(language or "unknown").strip() or "unknown",
+            entry_type=entry_type,
+            translation=self._normalize_text(translation),
+            explanations=list(explanations or []),
+            examples=list(examples or []),
+            source_app=(source_app or "").strip(),
+            source_context=self._normalize_text(source_context),
+            metadata=metadata or {},
+        )
+
     async def create_entry(
         self,
         source_text: str,
@@ -79,20 +125,21 @@ class WordbookManager:
     ) -> WordbookEntry:
         """创建新条目。"""
 
-        entry = WordbookEntry(
-            source_text=self._normalize_text(source_text),
-            normalized_text=self._normalize_text(normalized_text),
-            language=(language or "unknown").strip() or "unknown",
-            entry_type=entry_type,
-            translation=self._normalize_text(translation),
-            explanations=list(explanations or []),
-            examples=list(examples or []),
-            source_app=(source_app or "").strip(),
-            source_context=self._normalize_text(source_context),
-            metadata=metadata or {},
-        )
-        await self._save_json(entry)
-        return entry
+        async with get_async_lock(self.wordbook_path):
+            entry = self._build_entry(
+                source_text,
+                normalized_text,
+                language,
+                entry_type,
+                translation,
+                explanations,
+                examples,
+                source_app,
+                source_context,
+                metadata,
+            )
+            await self._save_json(entry)
+            return entry
 
     async def capture_entry(
         self,
@@ -110,39 +157,44 @@ class WordbookManager:
         """写入条目；命中重复时只累加查询次数。"""
 
         resolved_text = self._normalize_text(normalized_text or source_text)
-        duplicate = await self._find_duplicate_entry(resolved_text, language or "unknown", entry_type)
-        if duplicate:
-            duplicate.query_count = max(1, int(duplicate.query_count or 1)) + 1
-            duplicate.source_text = self._normalize_text(source_text) or duplicate.source_text
-            duplicate.translation = self._normalize_text(translation) or duplicate.translation
-            if explanations:
-                duplicate.explanations = list(explanations)
-            if examples:
-                duplicate.examples = list(examples)
-            if source_app:
-                duplicate.source_app = source_app.strip()
-            if source_context:
-                duplicate.source_context = self._normalize_text(source_context)
-            if metadata:
-                duplicate.metadata = {
-                    **(duplicate.metadata or {}),
-                    **metadata,
-                }
-            await self._save_json(duplicate)
-            return duplicate
 
-        return await self.create_entry(
-            source_text=source_text,
-            normalized_text=resolved_text,
-            language=language,
-            entry_type=entry_type,
-            translation=translation,
-            explanations=explanations,
-            examples=examples,
-            source_app=source_app,
-            source_context=source_context,
-            metadata=metadata,
-        )
+        # 「查重 + 写入」整体持锁
+        async with get_async_lock(self.wordbook_path):
+            duplicate = await self._find_duplicate_entry(resolved_text, language or "unknown", entry_type)
+            if duplicate:
+                duplicate.query_count = max(1, int(duplicate.query_count or 1)) + 1
+                duplicate.source_text = self._normalize_text(source_text) or duplicate.source_text
+                duplicate.translation = self._normalize_text(translation) or duplicate.translation
+                if explanations:
+                    duplicate.explanations = list(explanations)
+                if examples:
+                    duplicate.examples = list(examples)
+                if source_app:
+                    duplicate.source_app = source_app.strip()
+                if source_context:
+                    duplicate.source_context = self._normalize_text(source_context)
+                if metadata:
+                    duplicate.metadata = {
+                        **(duplicate.metadata or {}),
+                        **metadata,
+                    }
+                await self._save_json(duplicate)
+                return duplicate
+
+            entry = self._build_entry(
+                source_text,
+                resolved_text,
+                language,
+                entry_type,
+                translation,
+                explanations,
+                examples,
+                source_app,
+                source_context,
+                metadata,
+            )
+            await self._save_json(entry)
+            return entry
 
     async def get_entry(self, entry_id: str) -> Optional[WordbookEntry]:
         """读取单条词条。"""
@@ -201,23 +253,25 @@ class WordbookManager:
     ) -> Optional[WordbookEntry]:
         """更新已有条目。"""
 
-        entry = await self.get_entry(entry_id)
-        if not entry:
-            return None
+        # 读-改-写整体持锁
+        async with get_async_lock(self.wordbook_path):
+            entry = await self.get_entry(entry_id)
+            if not entry:
+                return None
 
-        if translation is not None:
-            entry.translation = self._normalize_text(translation)
-        if explanations is not None:
-            entry.explanations = list(explanations)
-        if examples is not None:
-            entry.examples = list(examples)
-        if is_favorite is not None:
-            entry.is_favorite = is_favorite
-        if metadata is not None:
-            entry.metadata = metadata
+            if translation is not None:
+                entry.translation = self._normalize_text(translation)
+            if explanations is not None:
+                entry.explanations = list(explanations)
+            if examples is not None:
+                entry.examples = list(examples)
+            if is_favorite is not None:
+                entry.is_favorite = is_favorite
+            if metadata is not None:
+                entry.metadata = metadata
 
-        await self._save_json(entry)
-        return entry
+            await self._save_json(entry)
+            return entry
 
     async def get_stats(self) -> dict:
         """返回词库统计。"""

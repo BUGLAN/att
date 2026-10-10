@@ -8,6 +8,7 @@ Qwen3-ASR 真流式桥接服务
 """
 import os
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,6 +153,7 @@ class QwenStreamingRuntime:
         self._model_class = None
         self._model = None
         self._loading = False
+        self._engine_warmed = False
         self._effective_gpu_memory_utilization = self.gpu_memory_utilization
         self._sessions: dict[str, RemoteStreamingSession] = {}
 
@@ -199,8 +201,50 @@ class QwenStreamingRuntime:
         return self._model
 
     def preload(self) -> dict:
-        self.load_model()
+        """预加载模型并完成引擎预热。
+
+        注意：仅调用 load_model 是不够的——vLLM 的 CUDA 图捕获与算子编译发生在
+        首次推理时，实测首个音频块会因此耗时 32 秒左右。若不在预热阶段吃掉这段开销，
+        它会完整地落在用户的第一次录音上（表现为「一开口就卡住几十秒」）。
+        """
+        model = self.load_model()
+        self._warmup_engine(model)
         return self.health()
+
+    def _warmup_engine(self, model) -> None:
+        """用一小段静音触发一次真实流式推理，把首次编译开销提前到预热阶段。"""
+        if self._engine_warmed:
+            return
+
+        if os.getenv("QWEN_STREAMING_WARMUP", "1") == "0":
+            logger.info("已按 QWEN_STREAMING_WARMUP=0 跳过引擎预热")
+            return
+
+        logger.info("开始流式引擎预热（首次推理包含编译开销，可能耗时数十秒）")
+        started = time.perf_counter()
+
+        try:
+            silence = np.zeros(int(DEFAULT_SAMPLE_RATE * 0.5), dtype=np.int16)
+            state = model.init_streaming_state(
+                context="",
+                language=None,
+                unfixed_chunk_num=self.unfixed_chunk_num,
+                unfixed_token_num=self.unfixed_token_num,
+                chunk_size_sec=self.chunk_size_sec,
+            )
+            model.streaming_transcribe(silence, state)
+            model.finish_streaming_transcribe(state)
+        except Exception as error:
+            # 预热失败不应让服务不可用：记录告警，真正推理时仍会自行编译
+            logger.warning("流式引擎预热失败，首次推理仍会有编译开销", error=str(error))
+            return
+
+        self._engine_warmed = True
+        logger.info(
+            "流式引擎预热完成",
+            elapsed_seconds=round(time.perf_counter() - started, 2),
+        )
+
 
     def _resolve_gpu_memory_utilization(self) -> float:
         configured = self.gpu_memory_utilization
@@ -297,6 +341,7 @@ class QwenStreamingRuntime:
         resolved_model_path = _resolve_model_name_or_path(self.model_name, self.cache_dir)
         return {
             "ready": self._model is not None,
+            "engine_warmed": self._engine_warmed,
             "model_name": self.model_name,
             "resolved_model_path": resolved_model_path,
             "loaded": self._model is not None,

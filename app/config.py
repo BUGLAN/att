@@ -1,20 +1,43 @@
 """
 Application configuration management using Pydantic Settings
 """
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 from typing import Optional
 from pathlib import Path
-import json
+import logging
 import os
 import platform
+
+from app.repositories.json_store import (
+    ensure_dict,
+    get_thread_lock,
+    read_json_lenient,
+    write_json_atomic,
+)
+
+logger = logging.getLogger(__name__)
 
 
 VALID_HOTKEY_MODIFIERS = {"cmd", "alt", "ctrl", "shift", "win"}
 VALID_HOTKEY_KEYS = set("abcdefghijklmnopqrstuvwxyz0123456789")
-VALID_CLIPBOARD_TRIGGER_MODES = {"mouse_middle", "mouse_left_right_chord"}
 VALID_CLIPBOARD_RETRIGGER_ACTIONS = {"toggle", "show_only"}
 VALID_CLIPBOARD_ENTER_BEHAVIORS = {"copy_and_paste", "copy_only"}
+
+# 已下线功能的僵尸配置键：第 1 轮已删除「划词工具栏」与「桌面鼠标触发」两条链路，
+# 这里集中登记，确保它们不再出现在默认值、归一化结果与 PUT 白名单中。
+#
+# 注意：selection_toolbar_show_examples / selection_toolbar_auto_add_to_wordbook
+# **不在**此列 —— 旧「划词工具栏」虽然删了，但统一悬浮层里的「划词面板」
+# （src/components/overlay/SelectionPanel.vue）仍在读取这两个键来控制
+# 「显示示例」与「自动加入生词本」。一旦把它们当作僵尸键剥离，
+# 面板会因 `undefined !== false` 而回落到 true，静默改写用户已设为 false 的偏好。
+RETIRED_SETTINGS_KEYS = frozenset({
+    "selection_toolbar_enabled",
+    "selection_toolbar_trigger_delay_ms",
+    "selection_toolbar_fallback_to_clipboard",
+    "clipboard_overlay_trigger",
+})
 
 
 def is_windows_host() -> bool:
@@ -124,7 +147,6 @@ def is_valid_hotkey(hotkey: dict) -> bool:
 def get_default_clipboard_overlay_settings() -> dict:
     """Return default clipboard overlay settings."""
     return {
-        "clipboard_overlay_trigger": "mouse_middle",
         "clipboard_overlay_retrigger_action": "toggle",
         "clipboard_overlay_enter_behavior": "copy_and_paste",
         "clipboard_overlay_auto_focus_search": True,
@@ -136,13 +158,12 @@ def normalize_clipboard_overlay_settings(payload: Optional[dict]) -> dict:
     """Normalize clipboard overlay settings against supported values."""
     defaults = get_default_clipboard_overlay_settings()
     source = payload or {}
-    normalized = dict(source)
-
-    trigger = source.get("clipboard_overlay_trigger")
-    normalized["clipboard_overlay_trigger"] = (
-        trigger if trigger in VALID_CLIPBOARD_TRIGGER_MODES
-        else defaults["clipboard_overlay_trigger"]
-    )
+    # 丢弃已下线功能的残留键：兼容含残留键的旧 settings.json，读到不报错也不会写回
+    normalized = {
+        key: value
+        for key, value in source.items()
+        if key not in RETIRED_SETTINGS_KEYS
+    }
 
     retrigger_action = source.get("clipboard_overlay_retrigger_action")
     normalized["clipboard_overlay_retrigger_action"] = (
@@ -190,20 +211,27 @@ class UserSettings:
         "qwen_asr_use_forced_aligner": False,
         "qwen_asr_forced_aligner_model": "Qwen/Qwen3-ForcedAligner-0.6B",
         "qwen_asr_max_audio_seconds": 30,
+        # 火山引擎豆包双向流式 ASR（在线识别）
+        # 注意：Access Token 明文不落盘，只以 doubao_asr_api_key_encrypted 形式写入，
+        # 因此这里没有 doubao_asr_api_key 的默认值（它只作为 PUT 的写入字段存在）。
+        "doubao_asr_resource_id": "volc.seedasr.sauc.duration",
+        "doubao_asr_endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
+        "doubao_asr_end_window_size": 0,
         "pause_audio_on_recording": True,
         "auto_optimize": False,
         "auto_copy_to_clipboard": True,  # 自动复制转码文本到剪贴板
         "hotkey": None,  # Will be set dynamically based on platform
-        "clipboard_overlay_trigger": "mouse_middle",
         "clipboard_overlay_retrigger_action": "toggle",
         "clipboard_overlay_enter_behavior": "copy_and_paste",
         "clipboard_overlay_auto_focus_search": True,
         "clipboard_overlay_close_on_click_copy": True,
-        "selection_toolbar_enabled": True,
-        "selection_toolbar_auto_add_to_wordbook": True,
+        # 划词面板（统一悬浮层的 selection 模式）仍在使用的两个键：
+        # 旧「划词工具栏」已下线，但面板本身是活的，不能当作僵尸键删除。
+        # 若将来要下线，必须先改 SelectionPanel.vue 的读取逻辑，否则行为会静默变成 true。
         "selection_toolbar_show_examples": True,
-        "selection_toolbar_trigger_delay_ms": 220,
-        "selection_toolbar_fallback_to_clipboard": True,
+        "selection_toolbar_auto_add_to_wordbook": True,
+        # 已下线功能（划词工具栏开关 / 触发延迟 / 剪贴板鼠标触发）不再提供默认值，
+        # 见文件顶部 RETIRED_SETTINGS_KEYS
         # Recording mode settings
         "recording_mode": "single",     # single / multi / streaming
         "silence_threshold": 1.5,       # 静音阈值（秒）
@@ -215,36 +243,39 @@ class UserSettings:
 
     def __init__(self, settings_path: Path):
         self.settings_path = settings_path
+        # 读-改-写串行化：settings.json 是唯一真相源，同一时刻只允许一个写序列
+        self._lock = get_thread_lock(settings_path)
         self._settings = self._load()
 
     def _load(self) -> dict:
-        """Load settings from file or create default."""
-        if self.settings_path.exists():
-            try:
-                with open(self.settings_path, 'r', encoding='utf-8') as f:
-                    loaded = json.load(f)
-                    # Merge with defaults to ensure all keys exist
-                    settings = {**self.DEFAULT_SETTINGS, **loaded}
-                    # Normalize to a registerable hotkey on load.
-                    if not is_valid_hotkey(settings.get("hotkey")):
-                        settings["hotkey"] = get_default_hotkey()
-                    settings = normalize_clipboard_overlay_settings(settings)
-                    return settings
-            except (json.JSONDecodeError, IOError):
-                settings = self.DEFAULT_SETTINGS.copy()
-                settings["hotkey"] = get_default_hotkey()
-                settings = normalize_clipboard_overlay_settings(settings)
-                return settings
-        settings = self.DEFAULT_SETTINGS.copy()
-        settings["hotkey"] = get_default_hotkey()
-        settings = normalize_clipboard_overlay_settings(settings)
-        return settings
+        """Load settings from file or create default.
+
+        形状容错：文件内容为 `null` / `[]` / `"str"`（顶层非对象）时按空对象处理，
+        绝不让 import 期抛 TypeError 把后端直接卡死在启动阶段。
+        """
+        loaded = read_json_lenient(self.settings_path, default=None)
+
+        if loaded is None and self.settings_path.exists():
+            logger.warning(
+                "settings.json 无法解析或为空，已回落到默认设置: %s",
+                self.settings_path,
+            )
+
+        payload = ensure_dict(loaded, logger=logger, source=self.settings_path)
+
+        # Merge with defaults to ensure all keys exist
+        settings = {**self.DEFAULT_SETTINGS, **payload}
+
+        # Normalize to a registerable hotkey on load.
+        if not is_valid_hotkey(settings.get("hotkey")):
+            settings["hotkey"] = get_default_hotkey()
+
+        return normalize_clipboard_overlay_settings(settings)
 
     def _save(self) -> None:
-        """Save settings to file."""
-        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.settings_path, 'w', encoding='utf-8') as f:
-            json.dump(self._settings, f, indent=2, ensure_ascii=False)
+        """Save settings to file（原子写，保持 indent=2 / ensure_ascii=False）。"""
+        with self._lock:
+            write_json_atomic(self.settings_path, self._settings)
 
     def get(self, key: str, default=None):
         """Get a setting value."""
@@ -252,13 +283,15 @@ class UserSettings:
 
     def set(self, key: str, value) -> None:
         """Set a setting value and save."""
-        self._settings[key] = value
-        self._save()
+        with self._lock:
+            self._settings[key] = value
+            self._save()
 
     def update(self, updates: dict) -> None:
         """Update multiple settings and save."""
-        self._settings.update(updates)
-        self._save()
+        with self._lock:
+            self._settings.update(updates)
+            self._save()
 
     def get_all(self) -> dict:
         """Get all settings."""
@@ -300,6 +333,17 @@ class Settings(BaseSettings):
     qwen_streaming_timeout_seconds: float = 30.0
     qwen_streaming_gpu_memory_utilization: float = 0.85
     qwen_streaming_max_model_len: int = 16384
+
+    # 火山引擎豆包双向流式 ASR（在线识别）
+    # Access Token 的落盘形态是 data/settings.json 里的加密字段，这里只作为环境变量兜底
+    doubao_asr_api_key: str = ""
+    doubao_asr_resource_id: str = "volc.seedasr.sauc.duration"
+    doubao_asr_endpoint: str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+    doubao_asr_connect_timeout_seconds: float = 10.0
+    doubao_asr_chunk_ms: int = 200
+    # 0 = 不设置强制断句，跟随服务端语义分段；>0 时按该静音时长（毫秒）输出 definite
+    doubao_asr_end_window_size: int = 0
+    doubao_asr_force_to_speech_time: int = 0
 
     # DeepSeek API
     deepseek_api_key: str = ""
@@ -355,9 +399,11 @@ class Settings(BaseSettings):
         """Path for WAV audio files"""
         return self.data_path / "audio" / "records"
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # Pydantic 2 风格配置：迁移自 v1 的 class Config，消除弃用告警
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
 
 
 # Global settings instance

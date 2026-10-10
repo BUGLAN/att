@@ -16,6 +16,7 @@ from app.records.manager import RecordManager
 from app.records.models import RecordStatus
 from app.stt.models import ASRProviderType
 from app.stt.factory import get_asr_provider_config
+from app.stt.providers.doubao_asr_provider import DoubaoStreamingProvider
 from app.stt.providers.qwen_streaming_runtime_provider import QwenStreamingProvider
 from app.utils.logging import get_logger
 
@@ -40,7 +41,7 @@ class ManagedStreamingSession:
 
 
 class StreamingSessionManager:
-    """管理 Qwen 真流式会话"""
+    """管理真流式会话（按当前 ASR provider 分派：Qwen 本地/远端桥接 或 豆包在线）"""
 
     def __init__(
         self,
@@ -53,13 +54,29 @@ class StreamingSessionManager:
         self._sessions: dict[str, ManagedStreamingSession] = {}
         self._lock = asyncio.Lock()
 
-    def _get_provider(self) -> QwenStreamingProvider:
+    def _get_provider(self):
         if self._provider is not None:
             return self._provider
 
         config = get_asr_provider_config()
+
+        if config.provider == ASRProviderType.DOUBAO_ASR:
+            self._provider = DoubaoStreamingProvider(
+                api_key=config.doubao_asr.get("api_key", ""),
+                resource_id=config.doubao_asr.get("resource_id", ""),
+                endpoint=config.doubao_asr.get("endpoint", ""),
+                connect_timeout_seconds=config.doubao_asr.get("connect_timeout_seconds", 10.0),
+                chunk_ms=config.doubao_asr.get("chunk_ms", 200),
+                end_window_size=config.doubao_asr.get("end_window_size", 0),
+                force_to_speech_time=config.doubao_asr.get("force_to_speech_time", 0),
+            )
+            return self._provider
+
         if config.provider != ASRProviderType.QWEN_ASR:
-            raise RuntimeError("当前 ASR provider 不是 qwen_asr，无法启用真流式")
+            raise RuntimeError(
+                f"当前 ASR provider 为 {config.provider.value}，不支持真流式录音；"
+                "请在设置中切换为 Qwen3-ASR 或豆包语音"
+            )
 
         self._provider = QwenStreamingProvider(
             model_name=config.qwen_asr["model_name"],

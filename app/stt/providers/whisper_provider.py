@@ -1,5 +1,5 @@
 ﻿"""
-Whisper provider 瀹炵幇
+Whisper provider 实现
 """
 import asyncio
 import platform
@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 
 
 class WhisperProvider(ASRProvider):
-    """faster-whisper 灏佽"""
+    """faster-whisper 封装"""
 
     CHINESE_CONFIG = {
         "language": "zh",
@@ -49,7 +49,7 @@ class WhisperProvider(ASRProvider):
 
         if self.device == "auto" and platform.processor() == "arm":
             self.device = "coreml"
-            logger.info("妫€娴嬪埌 Apple Silicon锛屽垏鎹㈠埌 Core ML 鍏煎妯″紡")
+            logger.info("检测到 Apple Silicon，切换到 Core ML 兼容模式")
 
         self._model: Optional[WhisperModel] = None
 
@@ -112,7 +112,7 @@ class WhisperProvider(ASRProvider):
             resolved_model_source = self._resolve_model_source()
             is_local_model = resolved_model_source != self.model_size
             logger.info(
-                "鍔犺浇 Whisper 妯″瀷",
+                "加载 Whisper 模型",
                 model=self.model_size,
                 resolved_model_source=resolved_model_source,
                 local_model=is_local_model
@@ -135,7 +135,7 @@ class WhisperProvider(ASRProvider):
                 )
 
             logger.info(
-                "Whisper 妯″瀷鍔犺浇瀹屾垚",
+                "Whisper 模型加载完成",
                 model=resolved_model_source,
                 device=self.device,
                 load_time=f"{time.time() - start_time:.2f}s"
@@ -196,7 +196,7 @@ class WhisperProvider(ASRProvider):
         )
 
         logger.info(
-            "Whisper 杞啓瀹屾垚",
+            "Whisper 转写完成",
             audio_path=str(audio_path),
             duration=duration,
             processing_time=f"{processing_time:.2f}s",

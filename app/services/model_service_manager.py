@@ -6,7 +6,7 @@ import contextlib
 from typing import Optional
 
 from app.config import user_settings
-from app.services.qwen_streaming_service_manager import qwen_streaming_service_manager
+from app.services.streaming_bridge_target import get_streaming_bridge_target
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -67,9 +67,9 @@ class ModelServiceManager:
                 if runtime_capabilities.model_service_mode == "managed_streaming_bridge":
                     self._provider_ready = False
                     self._provider_loading = False
-                    await qwen_streaming_service_manager.start(wait_until_ready=True)
+                    await get_streaming_bridge_target().start(wait_until_ready=True)
                 else:
-                    await qwen_streaming_service_manager.stop()
+                    await get_streaming_bridge_target().stop()
                     await self._warmup_standard_provider()
             except Exception as error:
                 self._last_error = str(error)
@@ -88,7 +88,7 @@ class ModelServiceManager:
                 await self._start_task
         self._start_task = None
 
-        await qwen_streaming_service_manager.stop()
+        await get_streaming_bridge_target().stop()
 
         if self._asr_provider is not None:
             await self._asr_provider.close()
@@ -100,12 +100,14 @@ class ModelServiceManager:
 
     async def status(self) -> dict:
         runtime_capabilities = await self._get_runtime_capabilities()
-        streaming_status = await qwen_streaming_service_manager.status()
+        streaming_status = await get_streaming_bridge_target().status()
         loading = self._start_task is not None and not self._start_task.done()
         provider_type = getattr(self._asr_provider, "provider_type", None)
         model_name = getattr(self._asr_provider, "model_name", None)
         mode = self._current_mode()
         using_streaming_bridge = runtime_capabilities.model_service_mode == "managed_streaming_bridge"
+        # 在线 provider（豆包）：没有本地模型要加载，凭据配齐即为就绪
+        using_online_provider = runtime_capabilities.model_service_mode == "online"
         streaming_available = runtime_capabilities.streaming_available
         streaming_error = runtime_capabilities.streaming_reason
 
@@ -116,24 +118,28 @@ class ModelServiceManager:
             health_payload = streaming_status.get("health") or {}
             streaming_available = bool(health_payload.get("ready") and health_payload.get("loaded"))
             streaming_error = health_payload.get("error") or error or runtime_capabilities.streaming_reason
+        elif using_online_provider:
+            ready = bool(runtime_capabilities.online_ready)
+            running = ready
+            error = runtime_capabilities.model_service_reason or self._last_error
         else:
             ready = self._provider_ready
             running = self._provider_ready or self._provider_loading
             error = self._last_error
 
         health = streaming_status.get("health") if using_streaming_bridge else {
-            "ready": self._provider_ready,
-            "loaded": self._provider_ready,
+            "ready": ready if using_online_provider else self._provider_ready,
+            "loaded": ready if using_online_provider else self._provider_ready,
             "loading": self._provider_loading,
             "backend": provider_type,
             "model_name": model_name,
-            "error": self._last_error,
+            "error": error if using_online_provider else self._last_error,
             "streaming_available": streaming_available,
             "streaming_backend": runtime_capabilities.streaming_backend,
         }
 
         return {
-            "managed": True,
+            "managed": bool(streaming_status.get("managed", True)),
             "provider_type": provider_type,
             "model_name": model_name,
             "recording_mode": mode,

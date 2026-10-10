@@ -1,12 +1,17 @@
 """
 Record manager for JSON-based storage
 """
-import json
-import aiofiles
-from pathlib import Path
-from datetime import datetime
-from typing import Optional, List
 import logging
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional
+
+from app.repositories.json_store import (
+    get_async_lock,
+    read_json_lenient_async,
+    write_json_atomic_async,
+)
+from app.repositories.paths import is_safe_identifier, is_within_directory
 
 from .models import Record, RecordStatus
 
@@ -28,24 +33,41 @@ class RecordManager:
         logger.info(f"RecordManager initialized: records={self.records_path}, audio={self.audio_path}")
 
     def _get_record_file(self, record_id: str) -> Path:
-        """Get JSON file path for a record"""
+        """Get JSON file path for a record
+
+        record_id 只允许单层安全文件名：含分隔符（含 %5C 解码后的反斜杠）或穿越写法
+        一律拒绝，避免 `DELETE /api/records/..%5C..%5Ctmp%5Cx` 之类的越界删除。
+        """
+        if not is_safe_identifier(record_id):
+            raise ValueError(f"非法 record_id（含路径分隔符或穿越写法）：{record_id!r}")
         return self.records_path / f"{record_id}.json"
 
+    def _is_safe_audio_path(self, audio_path: str) -> bool:
+        """判断音频路径是否位于本管理器的 data/audio/records/ 内。"""
+        return is_within_directory(audio_path, self.audio_path)
+
     async def _load_json(self, record_id: str) -> Optional[dict]:
-        """Load JSON data for a record"""
-        file_path = self._get_record_file(record_id)
+        """Load JSON data for a record（非法 ID 或损坏文件按不存在处理）"""
+        try:
+            file_path = self._get_record_file(record_id)
+        except ValueError as error:
+            logger.warning(f"拒绝非法 record_id: {error}")
+            return None
+
         if not file_path.exists():
             return None
-        async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
-            content = await f.read()
-            return json.loads(content)
+
+        data = await read_json_lenient_async(file_path, default=None)
+        if data is None:
+            logger.warning(f"记录文件无法解析，按不存在处理: {file_path}")
+            return None
+        return data
 
     async def _save_json(self, record: Record) -> None:
-        """Save record to JSON file"""
+        """Save record to JSON file（原子写，调用方需自行持有资源锁）"""
         file_path = self._get_record_file(record.id)
         record.updated_at = datetime.now()
-        async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
-            await f.write(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+        await write_json_atomic_async(file_path, record.to_dict())
 
     async def create_record(
         self,
@@ -69,7 +91,8 @@ class RecordManager:
             is_modified=is_modified,
             is_favorite=is_favorite
         )
-        await self._save_json(record)
+        async with get_async_lock(self.records_path):
+            await self._save_json(record)
         logger.info(f"Created record: {record.id}")
         return record
 
@@ -109,29 +132,75 @@ class RecordManager:
         status: Optional[RecordStatus] = None,
         processing_time: Optional[float] = None,
         is_modified: Optional[bool] = None,
-        is_favorite: Optional[bool] = None
+        is_favorite: Optional[bool] = None,
+        expected_revision: Optional[int] = None
     ) -> Optional[Record]:
-        """Update a record"""
-        record = await self.get_record(record_id)
-        if not record:
-            return None
+        """Update a record
 
-        if raw_text is not None:
-            record.raw_text = raw_text
-        if optimized_text is not None:
-            record.optimized_text = optimized_text
-        if status is not None:
-            record.status = status
-        if processing_time is not None:
-            record.processing_time = processing_time
-        if is_modified is not None:
-            record.is_modified = is_modified
-        if is_favorite is not None:
-            record.is_favorite = is_favorite
+        :param expected_revision: 可选的乐观锁版本号。传入时会与当前记录的
+            ``revision`` 比对，不一致则返回 ``None``（调用方应转成 409）；
+            传入 ``None``（默认）表示不校验，保持既有行为不变。
+        """
+        # 读-改-写整体持锁：避免并发更新互相覆盖（静默丢更新）
+        async with get_async_lock(self.records_path):
+            record = await self.get_record(record_id)
+            if not record:
+                return None
 
-        record.updated_at = datetime.now()
-        await self._save_json(record)
-        return record
+            # 乐观锁：即使有第二个写者（如 Docker 容器绕过单写者锁），
+            # 也只会得到明确的冲突，而不是静默丢更新。
+            if expected_revision is not None and record.revision != expected_revision:
+                # 注意：本模块用的是标准 logging（不是 structlog），
+                # 只支持 %-风格的位置参数，不能传关键字参数，否则会抛 TypeError。
+                logger.warning(
+                    "记录版本冲突，已拒绝更新: record_id=%s expected=%s actual=%s",
+                    record_id,
+                    expected_revision,
+                    record.revision,
+                )
+                return None
+
+            if raw_text is not None:
+                record.raw_text = raw_text
+            if optimized_text is not None:
+                record.optimized_text = optimized_text
+            if status is not None:
+                record.status = status
+            if processing_time is not None:
+                record.processing_time = processing_time
+            if is_modified is not None:
+                record.is_modified = is_modified
+            if is_favorite is not None:
+                record.is_favorite = is_favorite
+
+            # 每次成功写入自增版本号
+            record.revision += 1
+
+            await self._save_json(record)
+            return record
+
+    async def set_error_message(self, record_id: str, message: str) -> None:
+        """写入/清除记录的错误信息（走原子写 + 资源锁）。
+
+        用途：优化或转写失败时把原因持久化到记录 JSON。
+        旧实现只通过 502/WebSocket 传递失败原因，用户重启后就看不到历史，
+        这里补上「失败原因可追溯」的存储位（``Record.error`` 字段）。
+
+        - ``message`` 为空串表示清除错误；
+        - 记录不存在或 ``record_id`` 非法时静默返回，不抛异常；
+        - 读-改-写整体持 ``records_path`` 资源锁，避免与其他更新互相覆盖。
+
+        :param record_id: 记录 ID（必须是单层安全文件名）
+        :param message: 错误原因文本；空串表示清除
+        """
+        async with get_async_lock(self.records_path):
+            record = await self.get_record(record_id)
+            if not record:
+                logger.warning(f"设置错误信息失败，记录不存在: {record_id}")
+                return
+
+            record.error = message or ""
+            await self._save_json(record)
 
     async def search_records(
         self,
@@ -176,28 +245,46 @@ class RecordManager:
         return filtered[:limit]
 
     async def delete_record(self, record_id: str) -> bool:
-        """Delete a record and its associated audio file"""
-        record = await self.get_record(record_id)
-        if not record:
+        """Delete a record and its associated audio file
+
+        安全约束：record_id 必须是单层安全文件名；audio_path 只有解析后落在
+        data/audio/records/ 内才会被 unlink，越界路径一律跳过并记 warning。
+        """
+        try:
+            self._get_record_file(record_id)
+        except ValueError as error:
+            logger.warning(f"拒绝越界删除记录: {error}")
             return False
 
-        # Delete audio file
-        if record.audio_path:
-            audio_file = Path(record.audio_path)
-            if audio_file.exists():
-                audio_file.unlink()
-                logger.info(f"Deleted audio file: {audio_file}")
+        async with get_async_lock(self.records_path):
+            record = await self.get_record(record_id)
+            if not record:
+                return False
 
-        # Delete JSON file
-        json_file = self._get_record_file(record_id)
-        if json_file.exists():
-            json_file.unlink()
-            logger.info(f"Deleted record: {record_id}")
+            # Delete audio file
+            if record.audio_path:
+                if self._is_safe_audio_path(record.audio_path):
+                    audio_file = Path(record.audio_path)
+                    if audio_file.exists() and audio_file.is_file():
+                        audio_file.unlink()
+                        logger.info(f"Deleted audio file: {audio_file}")
+                else:
+                    logger.warning(
+                        f"audio_path 越界，已跳过删除: record_id={record_id}, audio_path={record.audio_path!r}"
+                    )
 
-        return True
+            # Delete JSON file
+            json_file = self._get_record_file(record_id)
+            if json_file.exists():
+                json_file.unlink()
+                logger.info(f"Deleted record: {record_id}")
+
+            return True
 
     def get_audio_file_path(self, record_id: str) -> Path:
         """Get the expected audio file path for a record"""
+        if not is_safe_identifier(record_id):
+            raise ValueError(f"非法 record_id（含路径分隔符或穿越写法）：{record_id!r}")
         return self.audio_path / f"{record_id}.wav"
 
     def get_audio_url(self, record_id: str) -> str:

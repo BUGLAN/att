@@ -1,11 +1,11 @@
 """
 Data models for records management
 """
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, List
 from enum import Enum
-import uuid
+from typing import List, Optional
 
 
 class RecordStatus(str, Enum):
@@ -92,6 +92,12 @@ class Record:
     processing_time: float = 0.0  # Transcription processing time in seconds
     is_modified: bool = False  # Whether text has been manually edited
     is_favorite: bool = False  # Whether the record is favorited
+    # 失败原因（优化/转写），持久化到 JSON；老数据没有该字段时默认空串，
+    # 因此不需要批量改写已存在的记录文件。
+    error: str = ""
+    # 版本号（乐观锁）：每次成功写入自增，用于检测「读-改-写」期间是否被他人改动。
+    # 老数据没有该字段时视为 0，同样不需要批量改写。
+    revision: int = 0
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON storage"""
@@ -106,7 +112,9 @@ class Record:
             "status": self.status.value,
             "processing_time": self.processing_time,
             "is_modified": self.is_modified,
-            "is_favorite": self.is_favorite
+            "is_favorite": self.is_favorite,
+            "error": self.error,
+            "revision": self.revision
         }
 
     @classmethod
@@ -123,7 +131,11 @@ class Record:
             status=RecordStatus(data.get("status", "pending")),
             processing_time=data.get("processing_time", 0.0),
             is_modified=data.get("is_modified", False),
-            is_favorite=data.get("is_favorite", False)
+            is_favorite=data.get("is_favorite", False),
+            # 双向兼容：老 JSON 无 "error" 字段时按空串处理
+            error=data.get("error") or "",
+            # 双向兼容：老 JSON 无 "revision" 字段时按 0 处理
+            revision=int(data.get("revision") or 0)
         )
 
 

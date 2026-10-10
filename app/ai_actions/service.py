@@ -11,6 +11,14 @@ from app.wordbook.models import WordbookEntryType
 logger = get_logger(__name__)
 
 
+class LLMNotConfiguredError(RuntimeError):
+    """默认 LLM provider 不可用（未配置 / 缺少 API Key）。
+
+    继承 ``RuntimeError``，保证既有的 ``pytest.raises(RuntimeError)`` 断言不受影响；
+    路由层据此返回可读的中文 502 提示，而不是 500 裸抛。
+    """
+
+
 ACTION_PROMPTS = {
     AIActionType.TRANSLATE: """你是桌面端 AI 划词助手。请把输入文本翻译为简体中文，并返回 JSON。
 
@@ -71,6 +79,15 @@ ENTRY_TYPE_MAP = {
     "sentence": WordbookEntryType.SENTENCE,
 }
 
+# 多轮对话在单条 prompt 里的角色标签（provider 只接受「文本 + 模板」两参数，
+# 因此把历史轮次拼接成带角色前缀的文本，而不是另起一套 messages provider 体系）。
+CHAT_ROLE_LABELS = {
+    "user": "用户",
+    "assistant": "助手",
+}
+
+CHAT_SUPPORTED_ROLES = tuple(CHAT_ROLE_LABELS.keys())
+
 
 class AIActionService:
     """负责执行划词后的 AI 动作。"""
@@ -82,7 +99,7 @@ class AIActionService:
     def _require_default_provider(self):
         provider = self.llm_gateway.get_default_provider()
         if not provider:
-            raise RuntimeError("未配置默认 LLM provider")
+            raise LLMNotConfiguredError("未配置默认 LLM provider")
         return provider
 
     def _parse_json_output(self, raw_output: str) -> dict:
@@ -95,6 +112,64 @@ class AIActionService:
         except json.JSONDecodeError:
             logger.warning("AI 动作输出不是合法 JSON，回退为 answer 文本", raw_output=text)
             return {"answer": text}
+
+    def normalize_chat_messages(self, messages) -> list[dict]:
+        """校验并归一化多轮对话消息（支持 pydantic 模型或 dict）。"""
+
+        normalized: list[dict] = []
+
+        for index, message in enumerate(messages or []):
+            if isinstance(message, dict):
+                role = message.get("role")
+                content = message.get("content")
+            else:
+                role = getattr(message, "role", None)
+                content = getattr(message, "content", None)
+
+            resolved_role = str(role or "").strip().lower()
+            resolved_content = str(content or "").strip()
+
+            if resolved_role not in CHAT_SUPPORTED_ROLES:
+                raise ValueError(f"第 {index + 1} 条消息的 role 必须是 user 或 assistant")
+            if not resolved_content:
+                raise ValueError(f"第 {index + 1} 条消息的 content 不能为空")
+
+            normalized.append({"role": resolved_role, "content": resolved_content})
+
+        if not normalized:
+            raise ValueError("messages 不能为空，至少需要一条用户消息")
+
+        return normalized
+
+    def build_chat_transcript(self, messages) -> str:
+        """把多轮消息拼接成单条 prompt 文本，保留完整的上下文顺序。"""
+
+        return "\n".join(
+            f"{CHAT_ROLE_LABELS[message['role']]}：{message['content']}"
+            for message in self.normalize_chat_messages(messages)
+        )
+
+    async def chat(self, messages, metadata: Optional[dict] = None) -> dict:
+        """执行多轮对话，复用默认 LLM provider 与既有 CHAT prompt。"""
+
+        normalized = self.normalize_chat_messages(messages)
+        provider = self._require_default_provider()
+        transcript = self.build_chat_transcript(normalized)
+
+        raw_output = await provider.optimize(transcript, ACTION_PROMPTS[AIActionType.CHAT])
+        payload = self._parse_json_output(raw_output)
+
+        # 模型可能返回 JSON（answer 字段），也可能直接返回纯文本；两者都归一到 answer。
+        answer = str(payload.get("answer") or "").strip() or str(raw_output or "").strip()
+
+        return {
+            "action_type": AIActionType.CHAT.value,
+            "answer": answer,
+            "explanations": list(payload.get("explanations") or []),
+            "source_text": transcript,
+            "messages": normalized,
+            "metadata": metadata or {},
+        }
 
     async def run_action(
         self,

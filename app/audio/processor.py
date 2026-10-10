@@ -519,22 +519,3 @@ class AudioProcessor:
         )
 
         return output_path, metadata
-
-    async def cleanup_temp_files(self, chunk_ids: List[str]) -> None:
-        """
-        Clean up temporary audio files after processing
-
-        Args:
-            chunk_ids: List of chunk IDs to clean up
-        """
-        for chunk_id in chunk_ids:
-            chunk_path = self.storage_path / f"{chunk_id}.wav"
-            if chunk_path.exists():
-                chunk_path.unlink()
-                logger.debug("Cleaned up temp file", path=str(chunk_path))
-
-    async def cleanup_file(self, file_path: Path) -> None:
-        """Clean up a single file"""
-        if file_path.exists():
-            file_path.unlink()
-            logger.debug("Cleaned up file", path=str(file_path))

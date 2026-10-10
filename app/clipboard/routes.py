@@ -96,6 +96,10 @@ async def get_clipboard_item_image(item_id: str):
     if not image_path:
         raise HTTPException(status_code=404, detail="Clipboard image not found")
 
+    # 纵深防御：即使上层解析逻辑被绕过，这里也不允许把 data/clipboard/images/ 之外的文件发出去
+    if not clipboard_manager.is_allowed_image_path(image_path):
+        raise HTTPException(status_code=404, detail="Clipboard image not found")
+
     return FileResponse(str(image_path))
 
 

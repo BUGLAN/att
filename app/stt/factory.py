@@ -4,7 +4,27 @@ ASR provider 工厂
 from app.config import settings, user_settings
 from app.stt.base import ASRProvider
 from app.stt.models import ASRConfigError, ASRProviderConfig, ASRProviderType
-from app.stt.providers import QwenASRProvider, WhisperProvider
+from app.stt.providers import DoubaoASRProvider, QwenASRProvider, WhisperProvider
+from app.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+def resolve_doubao_api_key(source: dict) -> str:
+    """解析豆包 Access Token：加密落盘的用户设置优先，其次环境变量。
+
+    明文只在这里进内存，随后只用于握手头；解密失败不抛错（录音链路不因配置损坏不可用）。
+    """
+    encrypted = str(source.get("doubao_asr_api_key_encrypted") or "")
+    if encrypted:
+        try:
+            from app.utils.encryption import get_encryption
+
+            return get_encryption().decrypt(encrypted) or ""
+        except Exception as error:
+            logger.warning("解密豆包 Access Token 失败，回退环境变量", error=str(error))
+
+    return str(source.get("doubao_asr_api_key") or settings.doubao_asr_api_key or "")
 
 
 def get_asr_provider_config(runtime_settings: dict | None = None) -> ASRProviderConfig:
@@ -26,6 +46,13 @@ def get_asr_provider_config(runtime_settings: dict | None = None) -> ASRProvider
         "qwen_streaming_backend": settings.qwen_streaming_backend,
         "qwen_streaming_base_url": settings.qwen_streaming_base_url,
         "qwen_streaming_timeout_seconds": settings.qwen_streaming_timeout_seconds,
+        "doubao_asr_api_key": settings.doubao_asr_api_key,
+        "doubao_asr_resource_id": settings.doubao_asr_resource_id,
+        "doubao_asr_endpoint": settings.doubao_asr_endpoint,
+        "doubao_asr_connect_timeout_seconds": settings.doubao_asr_connect_timeout_seconds,
+        "doubao_asr_chunk_ms": settings.doubao_asr_chunk_ms,
+        "doubao_asr_end_window_size": settings.doubao_asr_end_window_size,
+        "doubao_asr_force_to_speech_time": settings.doubao_asr_force_to_speech_time,
         **user_settings.get_all()
     }
 
@@ -65,6 +92,24 @@ def get_asr_provider_config(runtime_settings: dict | None = None) -> ASRProvider
             "streaming_timeout_seconds": float(
                 source.get("qwen_streaming_timeout_seconds", settings.qwen_streaming_timeout_seconds)
             )
+        },
+        doubao_asr={
+            "api_key": resolve_doubao_api_key(source),
+            "resource_id": source.get("doubao_asr_resource_id", settings.doubao_asr_resource_id),
+            "endpoint": source.get("doubao_asr_endpoint", settings.doubao_asr_endpoint),
+            "connect_timeout_seconds": float(
+                source.get(
+                    "doubao_asr_connect_timeout_seconds",
+                    settings.doubao_asr_connect_timeout_seconds,
+                )
+            ),
+            "chunk_ms": int(source.get("doubao_asr_chunk_ms", settings.doubao_asr_chunk_ms)),
+            "end_window_size": int(
+                source.get("doubao_asr_end_window_size", settings.doubao_asr_end_window_size)
+            ),
+            "force_to_speech_time": int(
+                source.get("doubao_asr_force_to_speech_time", settings.doubao_asr_force_to_speech_time)
+            )
         }
     )
 
@@ -76,5 +121,8 @@ def create_asr_provider(config: ASRProviderConfig) -> ASRProvider:
 
     if config.provider == ASRProviderType.QWEN_ASR:
         return QwenASRProvider(**config.qwen_asr)
+
+    if config.provider == ASRProviderType.DOUBAO_ASR:
+        return DoubaoASRProvider(**config.doubao_asr)
 
     raise ASRConfigError(f"未实现的 ASR provider: {config.provider.value}")

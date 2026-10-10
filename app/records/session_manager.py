@@ -2,7 +2,6 @@
 Recording Session Manager
 Manages multi-segment recording sessions
 """
-import json
 import shutil
 import wave
 from datetime import datetime
@@ -17,6 +16,12 @@ from app.records.models import (
     RecordStatus
 )
 from app.config import settings
+from app.repositories.json_store import (
+    get_async_lock,
+    read_json_lenient_async,
+    write_json_atomic_async,
+)
+from app.repositories.paths import is_safe_identifier, is_within_directory
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -27,6 +32,8 @@ class SessionManager:
 
     def __init__(self, data_dir: Optional[str] = None):
         self.data_dir = Path(data_dir or settings.data_path) / "sessions"
+        # 会话音频（含合并结果）统一存放目录，删除时以此为安全边界
+        self.audio_dir = self.data_dir.parent / "audio" / "records"
         self._ensure_data_dir()
 
     def _ensure_data_dir(self) -> None:
@@ -34,8 +41,14 @@ class SessionManager:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_session_file(self, session_id: str) -> Path:
-        """Get session file path."""
+        """Get session file path（session_id 必须是单层安全文件名）。"""
+        if not is_safe_identifier(session_id):
+            raise ValueError(f"非法 session_id（含路径分隔符或穿越写法）：{session_id!r}")
         return self.data_dir / f"{session_id}.json"
+
+    def _is_safe_audio_path(self, audio_path: str) -> bool:
+        """音频删除范围限定在 data/audio/records/ 内。"""
+        return is_within_directory(audio_path, self.audio_dir)
 
     async def create_session(self) -> RecordingSession:
         """Create a new recording session."""
@@ -45,20 +58,29 @@ class SessionManager:
             created_at=datetime.now()
         )
 
-        await self._save_session(session)
+        async with get_async_lock(self.data_dir):
+            await self._save_session(session)
 
         logger.info("Created recording session", session_id=session.id)
         return session
 
     async def get_session(self, session_id: str) -> Optional[RecordingSession]:
         """Get session by ID."""
-        file_path = self._get_session_file(session_id)
+        try:
+            file_path = self._get_session_file(session_id)
+        except ValueError as error:
+            logger.warning("拒绝非法 session_id", error=str(error))
+            return None
+
         if not file_path.exists():
             return None
 
+        data = await read_json_lenient_async(file_path, default=None)
+        if data is None:
+            logger.error("会话文件无法解析", session_id=session_id)
+            return None
+
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
             return RecordingSession.from_dict(data)
         except Exception as e:
             logger.error(
@@ -69,11 +91,10 @@ class SessionManager:
             return None
 
     async def _save_session(self, session: RecordingSession) -> None:
-        """Save session to file."""
+        """Save session to file（原子写；调用方需自行持有资源锁）。"""
         file_path = self._get_session_file(session.id)
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(session.to_dict(), f, ensure_ascii=False, indent=2)
+            await write_json_atomic_async(file_path, session.to_dict())
         except Exception as e:
             logger.error(
                 "Failed to save session",
@@ -89,25 +110,27 @@ class SessionManager:
         duration: float
     ) -> AudioSegment:
         """Add a segment to the session."""
-        session = await self.get_session(session_id)
-        if not session:
-            raise ValueError(f"Session not found: {session_id}")
+        # 读-改-写整体持锁，避免并发加片段互相覆盖
+        async with get_async_lock(self.data_dir):
+            session = await self.get_session(session_id)
+            if not session:
+                raise ValueError(f"Session not found: {session_id}")
 
-        segment = AudioSegment(
-            id=str(uuid.uuid4()),
-            session_id=session_id,
-            sequence=len(session.segments),
-            audio_path=audio_path,
-            duration=duration,
-            start_time=datetime.now(),
-            end_time=datetime.now(),
-            status=RecordStatus.PENDING
-        )
+            segment = AudioSegment(
+                id=str(uuid.uuid4()),
+                session_id=session_id,
+                sequence=len(session.segments),
+                audio_path=audio_path,
+                duration=duration,
+                start_time=datetime.now(),
+                end_time=datetime.now(),
+                status=RecordStatus.PENDING
+            )
 
-        session.segments.append(segment)
-        session.total_duration += duration
+            session.segments.append(segment)
+            session.total_duration += duration
 
-        await self._save_session(session)
+            await self._save_session(session)
 
         logger.info(
             "Added segment to session",
@@ -126,23 +149,24 @@ class SessionManager:
         **kwargs
     ) -> Optional[AudioSegment]:
         """Update segment status and text."""
-        session = await self.get_session(session_id)
-        if not session:
+        async with get_async_lock(self.data_dir):
+            session = await self.get_session(session_id)
+            if not session:
+                return None
+
+            for segment in session.segments:
+                if segment.id == segment_id:
+                    for key, value in kwargs.items():
+                        if hasattr(segment, key):
+                            setattr(segment, key, value)
+
+                    await self._save_session(session)
+                    return segment
+
             return None
 
-        for segment in session.segments:
-            if segment.id == segment_id:
-                for key, value in kwargs.items():
-                    if hasattr(segment, key):
-                        setattr(segment, key, value)
-
-                await self._save_session(session)
-                return segment
-
-        return None
-
     def _build_merged_audio(self, session: RecordingSession) -> str:
-        """将多段录音拼接成一份可播放的 WAV 文件。"""
+        """将多段录音拼接成一份可播放的 WAV 文件（无有效片段时返回空字符串）。"""
         valid_segments = []
         for segment in sorted(session.segments, key=lambda item: item.sequence):
             audio_path = Path(segment.audio_path)
@@ -152,7 +176,7 @@ class SessionManager:
         if not valid_segments:
             return ""
 
-        output_path = settings.audio_records_path / f"{session.id}.wav"
+        output_path = self.audio_dir / f"{session.id}.wav"
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         if len(valid_segments) == 1:
@@ -192,20 +216,25 @@ class SessionManager:
 
     async def complete_session(self, session_id: str) -> Optional[RecordingSession]:
         """Mark session as completed."""
-        session = await self.get_session(session_id)
-        if not session:
-            return None
+        async with get_async_lock(self.data_dir):
+            session = await self.get_session(session_id)
+            if not session:
+                return None
 
-        session.status = "completed"
-        session.completed_at = datetime.now()
+            session.status = "completed"
+            session.completed_at = datetime.now()
 
-        # Merge all segment texts
-        session.merged_text = "\n\n".join(
-            seg.raw_text for seg in session.segments if seg.raw_text
-        )
-        session.merged_audio_path = self._build_merged_audio(session)
+            # Merge all segment texts
+            session.merged_text = "\n\n".join(
+                seg.raw_text for seg in session.segments if seg.raw_text
+            )
 
-        await self._save_session(session)
+            # 只有真的生成了合并音频才写路径：写空字符串会让音频接口把 "." 当文件读（500）
+            merged_audio_path = self._build_merged_audio(session)
+            if merged_audio_path:
+                session.merged_audio_path = merged_audio_path
+
+            await self._save_session(session)
 
         logger.info(
             "Completed recording session",
@@ -217,36 +246,55 @@ class SessionManager:
         return session
 
     async def delete_session(self, session_id: str) -> bool:
-        """Delete a session and its audio files."""
-        file_path = self._get_session_file(session_id)
+        """Delete a session and its audio files（音频删除限定在 data/audio/records/ 内）。"""
+        try:
+            file_path = self._get_session_file(session_id)
+        except ValueError as error:
+            logger.warning("拒绝越界删除会话", error=str(error))
+            return False
+
         if not file_path.exists():
             return False
 
-        try:
-            # Delete audio files
-            session = await self.get_session(session_id)
-            if session:
-                for segment in session.segments:
-                    audio_path = Path(segment.audio_path)
-                    if audio_path.exists():
-                        audio_path.unlink()
-                if session.merged_audio_path:
-                    merged_audio_path = Path(session.merged_audio_path)
-                    if merged_audio_path.exists():
-                        merged_audio_path.unlink()
+        async with get_async_lock(self.data_dir):
+            try:
+                # Delete audio files
+                session = await self.get_session(session_id)
+                if session:
+                    for segment in session.segments:
+                        self._unlink_audio_if_safe(segment.audio_path, session_id)
+                    if session.merged_audio_path:
+                        self._unlink_audio_if_safe(session.merged_audio_path, session_id)
 
-            # Delete session file
-            file_path.unlink()
+                # Delete session file
+                file_path.unlink()
 
-            logger.info("Deleted session", session_id=session_id)
-            return True
-        except Exception as e:
-            logger.error(
-                "Failed to delete session",
+                logger.info("Deleted session", session_id=session_id)
+                return True
+            except Exception as e:
+                logger.error(
+                    "Failed to delete session",
+                    session_id=session_id,
+                    error=str(e)
+                )
+                return False
+
+    def _unlink_audio_if_safe(self, audio_path: str, session_id: str) -> None:
+        """仅在路径位于 data/audio/records/ 内且确实是文件时才删除。"""
+        if not audio_path:
+            return
+
+        if not self._is_safe_audio_path(audio_path):
+            logger.warning(
+                "会话音频路径越界，已跳过删除",
                 session_id=session_id,
-                error=str(e)
+                audio_path=audio_path
             )
-            return False
+            return
+
+        candidate = Path(audio_path)
+        if candidate.exists() and candidate.is_file():
+            candidate.unlink()
 
 
 # Global instance

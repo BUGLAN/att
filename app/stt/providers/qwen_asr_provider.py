@@ -1,5 +1,5 @@
 ﻿"""
-Qwen3-ASR provider 瀹炵幇
+Qwen3-ASR provider 实现
 """
 import asyncio
 import time
@@ -165,7 +165,7 @@ class QwenASRProvider(ASRProvider):
             from qwen_asr import Qwen3ASRModel
         except ImportError as error:
             raise ASRProviderError(
-                "Qwen3-ASR 渚濊禆鏈畨瑁咃紝璇峰厛鎵ц `pip install qwen-asr>=0.0.6`"
+                "Qwen3-ASR 依赖未安装，请先执行 `pip install qwen-asr>=0.0.6`"
             ) from error
 
         self._torch = torch
@@ -255,7 +255,7 @@ class QwenASRProvider(ASRProvider):
             resolved_model_path = self._resolve_local_model_path(self._model_name)
             is_local_model = resolved_model_path != self._model_name
             logger.info(
-                "鍔犺浇 Qwen3-ASR 妯″瀷",
+                "加载 Qwen3-ASR 模型",
                 model=self._model_name,
                 resolved_model_path=resolved_model_path,
                 local_model=is_local_model,
@@ -270,7 +270,7 @@ class QwenASRProvider(ASRProvider):
                 **self._build_model_kwargs()
             )
             logger.info(
-                "Qwen3-ASR 妯″瀷鍔犺浇瀹屾垚",
+                "Qwen3-ASR 模型加载完成",
                 model=resolved_model_path,
                 load_time=f"{time.time() - start_time:.2f}s"
             )
@@ -430,7 +430,7 @@ class QwenASRProvider(ASRProvider):
         )
 
         logger.info(
-            "Qwen3-ASR 杞啓瀹屾垚",
+            "Qwen3-ASR 转写完成",
             audio_path=str(audio_path),
             duration=duration,
             processing_time=f"{processing_time:.2f}s",

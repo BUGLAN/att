@@ -205,7 +205,7 @@ class QwenLocalVLLMStreamingProvider(StreamingASRProvider):
 
 
 class QwenRemoteStreamingSession(StreamingASRSession):
-    """杩滅妗ユ帴 Qwen 娴佸紡浼氳瘽"""
+    """远端桥接 Qwen 流式会话"""
 
     def __init__(
         self,
@@ -223,7 +223,7 @@ class QwenRemoteStreamingSession(StreamingASRSession):
             response = self._client.request(method, path, **kwargs)
             response.raise_for_status()
         except httpx.HTTPError as error:
-            raise ASRProviderError(f"杩滅 Qwen 娴佸紡鏈嶅姟璇锋眰澶辫触: {error}") from error
+            raise ASRProviderError(f"远端 Qwen 流式服务请求失败: {error}") from error
 
         try:
             return response.json()
@@ -262,7 +262,7 @@ class QwenRemoteStreamingSession(StreamingASRSession):
         try:
             self._request_json("DELETE", f"/api/session/{self._session_id}")
         except ASRProviderError:
-            logger.warning("鍙栨秷杩滅 Qwen 娴佸紡浼氳瘽澶辫触", session_id=self._session_id)
+            logger.warning("取消远端 Qwen 流式会话失败", session_id=self._session_id)
         finally:
             self.close()
 
@@ -275,7 +275,7 @@ class QwenRemoteStreamingSession(StreamingASRSession):
 
 
 class QwenRemoteBridgeStreamingProvider(StreamingASRProvider):
-    """杩滅妗ユ帴 Qwen 娴佸紡 provider"""
+    """远端桥接 Qwen 流式 provider"""
 
     def __init__(
         self,
@@ -309,9 +309,9 @@ class QwenRemoteBridgeStreamingProvider(StreamingASRProvider):
                 response.raise_for_status()
                 payload = response.json()
         except httpx.HTTPError as error:
-            raise ASRProviderError(f"鏃犳硶杩炴帴杩滅 Qwen 娴佸紡鏈嶅姟: {error}") from error
+            raise ASRProviderError(f"无法连接远端 Qwen 流式服务: {error}") from error
         except ValueError as error:
-            raise ASRProviderError("杩滅 Qwen 娴佸紡鏈嶅姟鍋ュ悍妫€鏌ヨ繑鍥炰簡鏃犳晥 JSON") from error
+            raise ASRProviderError("远端 Qwen 流式服务健康检查返回了无效 JSON") from error
 
         return {
             "available": bool(payload.get("ready", True)),
@@ -324,7 +324,7 @@ class QwenRemoteBridgeStreamingProvider(StreamingASRProvider):
     async def check_availability(self) -> dict:
         result = await asyncio.to_thread(self._health_check_sync)
         if not result["available"]:
-            raise ASRProviderError("杩滅 Qwen 娴佸紡鏈嶅姟灏氭湭灏辩华")
+            raise ASRProviderError("远端 Qwen 流式服务尚未就绪")
         return result
 
     def _create_session_sync(self, language: str, context: str) -> StreamingASRSession:
@@ -364,7 +364,7 @@ class QwenRemoteBridgeStreamingProvider(StreamingASRProvider):
         try:
             return await asyncio.to_thread(self._create_session_sync, language, context)
         except httpx.HTTPError as error:
-            raise ASRProviderError(f"鍒涘缓杩滅 Qwen 娴佸紡浼氳瘽澶辫触: {error}") from error
+            raise ASRProviderError(f"创建远端 Qwen 流式会话失败: {error}") from error
         except ValueError as error:
             raise ASRProviderError("远端 Qwen 流式服务返回了无效 JSON") from error
 

@@ -10,21 +10,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from app.ai_actions.routes import init_ai_action_service
+from app.ai_actions.routes import router as ai_action_router
 from app.ai_actions.service import AIActionService
+from app.api.routers.llm import router as llm_router
+from app.api.routers.prompts import router as prompts_router
+from app.api.routers.records import router as records_router
+from app.api.routers.sessions import router as sessions_router
+from app.api.routers.settings import router as settings_router
 from app.api.routes import close_streaming_session_manager, init_processors
 from app.audio.processor import AudioProcessor
 from app.clipboard.manager import ClipboardManager
 from app.clipboard.routes import init_clipboard_manager
+from app.clipboard.routes import router as clipboard_router
 from app.config import settings
 from app.llm.gateway import get_gateway
 from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
-from app.wordbook.manager import WordbookManager
-from app.wordbook.routes import init_wordbook_manager
+from app.repositories.housekeeping import run_startup_housekeeping
+from app.repositories.writer_lock import acquire_writer_lock, release_writer_lock
 from app.services.model_service_manager import model_service_manager
 from app.services.qwen_streaming_service_manager import qwen_streaming_service_manager
 from app.stt.factory import create_asr_provider, get_asr_provider_config
 from app.utils.logging import get_logger, setup_logging
+from app.wordbook.manager import WordbookManager
+from app.wordbook.routes import init_wordbook_manager
+from app.wordbook.routes import router as wordbook_router
 
 logger = get_logger(__name__)
 
@@ -69,36 +79,51 @@ async def lifespan(app: FastAPI):
         debug=settings.debug,
     )
 
-    audio_processor = AudioProcessor()
-    asr_provider = create_asr_provider(get_asr_provider_config())
-    optimizer = TextOptimizer()
-    record_manager = RecordManager(settings.data_path)
-    clipboard_manager = ClipboardManager(settings.data_path)
-    wordbook_manager = WordbookManager(settings.data_path)
-    ai_action_service = AIActionService(get_gateway(), wordbook_manager)
+    # 单写者约束：JSON 文件存储不支持多进程同时写入同一份 data/。
+    # 冲突时抛中文 RuntimeError，让启动直接失败，而不是静默丢数据。
+    acquire_writer_lock(settings.data_path)
 
-    await record_manager.initialize()
-    await clipboard_manager.initialize()
-    await wordbook_manager.initialize()
+    try:
+        audio_processor = AudioProcessor()
+        asr_provider = create_asr_provider(get_asr_provider_config())
+        optimizer = TextOptimizer()
+        record_manager = RecordManager(settings.data_path)
+        clipboard_manager = ClipboardManager(settings.data_path)
+        wordbook_manager = WordbookManager(settings.data_path)
+        ai_action_service = AIActionService(get_gateway(), wordbook_manager)
 
-    init_processors(audio_processor, asr_provider, optimizer, record_manager)
-    init_clipboard_manager(clipboard_manager)
-    init_wordbook_manager(wordbook_manager)
-    init_ai_action_service(ai_action_service)
-    model_service_manager.configure(asr_provider)
+        await record_manager.initialize()
+        await clipboard_manager.initialize()
+        await wordbook_manager.initialize()
 
-    await maybe_preload_asr_provider(asr_provider)
+        # 启动期数据卫生扫描：**永远只读**（只发现并写日志，不受 ATT_HOUSEKEEPING_APPLY 影响）。
+        # 真正的清理必须显式执行 scripts/housekeeping.py --apply。
+        await run_startup_housekeeping(settings.data_path)
 
-    logger.info("All processors initialized")
+        init_processors(audio_processor, asr_provider, optimizer, record_manager)
+        init_clipboard_manager(clipboard_manager)
+        init_wordbook_manager(wordbook_manager)
+        init_ai_action_service(ai_action_service)
+        model_service_manager.configure(asr_provider)
 
-    yield
+        await maybe_preload_asr_provider(asr_provider)
 
-    logger.info("Shutting down Audio-to-Text API")
-    await close_streaming_session_manager()
-    await model_service_manager.shutdown()
-    await qwen_streaming_service_manager.shutdown()
-    await asr_provider.close()
-    await optimizer.close()
+        logger.info("All processors initialized")
+    except BaseException:
+        # 启动中途失败也要释放写者锁，避免把锁文件留给下一次启动去接管
+        release_writer_lock()
+        raise
+
+    try:
+        yield
+    finally:
+        logger.info("Shutting down Audio-to-Text API")
+        await close_streaming_session_manager()
+        await model_service_manager.shutdown()
+        await qwen_streaming_service_manager.shutdown()
+        await asr_provider.close()
+        await optimizer.close()
+        release_writer_lock()
 
 
 app = FastAPI(
@@ -125,18 +150,26 @@ Audio-to-Text API with AI-powered optimization.
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    # 显式白名单：Electron 打包后页面是 file://（Origin: null），
+    # 开发期是 Vite 的 :8090；其余来源（含任意 https 站点）一律不返回 CORS 头。
+    allow_origins=[
+        "http://localhost:8090",
+        "http://127.0.0.1:8090",
+        "null",
+    ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    # 本地无鉴权接口不能带凭证，避免任意网页跨域读取本地数据
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-from app.api.routes import router as api_router
-from app.ai_actions.routes import router as ai_action_router
-from app.clipboard.routes import router as clipboard_router
-from app.wordbook.routes import router as wordbook_router
-
-app.include_router(api_router)
+# API 路由按资源逐个挂载（app/api/routes.py 里的聚合 router 仍保留，供测试与旧引用使用）
+app.include_router(records_router)
+app.include_router(sessions_router)
+app.include_router(settings_router)
+app.include_router(prompts_router)
+app.include_router(llm_router)
 app.include_router(ai_action_router)
 app.include_router(clipboard_router)
 app.include_router(wordbook_router)
