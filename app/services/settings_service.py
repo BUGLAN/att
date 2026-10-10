@@ -22,7 +22,7 @@ from typing import Optional
 from pydantic import ValidationError
 
 from app.api.schemas import UserSettingsUpdate, format_validation_error
-from app.config import is_valid_hotkey, normalize_clipboard_overlay_settings
+from app.config import is_valid_hotkey, strip_retired_settings
 from app.prompts import PromptManager, prompt_manager
 from app.stt.base import ASRProvider
 from app.stt.factory import create_asr_provider, get_asr_provider_config
@@ -56,15 +56,6 @@ DOUBAO_SECRET_STORED_KEY = "doubao_asr_api_key_encrypted"
 DOUBAO_SECRET_WRITE_KEY = "doubao_asr_api_key"
 DOUBAO_SECRET_CLEAR_KEY = "doubao_asr_api_key_clear"
 DOUBAO_SECRET_FLAG_KEY = "doubao_asr_api_key_set"
-
-# 浮层相关的可修复键（枚举值会随版本变化而失效）
-CLIPBOARD_OVERLAY_KEYS = {
-    # 已下线的 clipboard_overlay_trigger 不再参与归一化，故不在此登记
-    "clipboard_overlay_retrigger_action",
-    "clipboard_overlay_enter_behavior",
-    "clipboard_overlay_auto_focus_search",
-    "clipboard_overlay_close_on_click_copy",
-}
 
 
 class SettingsValidationError(Exception):
@@ -173,14 +164,14 @@ def build_settings_response(*, user_settings) -> dict:
     stored_settings = user_settings.get_all()
     # 纯归一化（persist=False）：不再由归一化函数内部隐式落盘
     payload = normalize_preset_settings(stored_settings, user_settings=user_settings)
-    normalized_payload = normalize_clipboard_overlay_settings(payload)
+    normalized_payload = strip_retired_settings(payload)
 
     # 判断依据：
     # 1) 磁盘中不存在该键（首次运行 / 新增设置项）→ 需要初始化；
     # 2) 磁盘值与归一化结果不同，且该键属于「可能失效」的键
-    #    （提示词预设 id 会因 prompts/*.txt 变化而失效，浮层枚举值同理）→ 需要修复。
+    #    （提示词预设 id 会因 prompts/*.txt 变化而失效）→ 需要修复。
     # 其它键（模型、设备、开关等）只按原值返回，写入一律留给 PUT /api/settings。
-    repairable_keys = CLIPBOARD_OVERLAY_KEYS | {"default_preset_id", "last_used_preset_id"}
+    repairable_keys = {"default_preset_id", "last_used_preset_id"}
     initialization_updates = {
         key: value
         for key, value in normalized_payload.items()
@@ -244,7 +235,7 @@ async def apply_settings_update(
         raise SettingsValidationError("No valid settings provided")
 
     merged_settings = {**user_settings.get_all(), **filtered}
-    normalized_settings = normalize_clipboard_overlay_settings(
+    normalized_settings = strip_retired_settings(
         normalize_preset_settings(merged_settings, user_settings=user_settings)
     )
     filtered = {key: normalized_settings[key] for key in filtered.keys()}
@@ -291,5 +282,5 @@ async def apply_settings_update(
         result.provider_rebuilt = True
 
     payload = normalize_preset_settings(user_settings.get_all(), user_settings=user_settings)
-    result.payload = mask_doubao_secret(normalize_clipboard_overlay_settings(payload))
+    result.payload = mask_doubao_secret(strip_retired_settings(payload))
     return result

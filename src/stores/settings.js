@@ -131,12 +131,8 @@ export const useSettingsStore = defineStore('settings', () => {
     auto_copy_to_clipboard: true,
     audio_input_device: 'default',
     hotkey: getDefaultHotkey(),
-    // 已下线的 clipboard_overlay_trigger 与 selection_toolbar_* 不再提供前端默认值：
-    // 后端同样不再返回这些键，未知键由 GET/PUT /api/settings 静默丢弃
-    clipboard_overlay_retrigger_action: 'toggle',
-    clipboard_overlay_enter_behavior: 'copy_and_paste',
-    clipboard_overlay_auto_focus_search: true,
-    clipboard_overlay_close_on_click_copy: true,
+    // 统一浮层已下线：clipboard_overlay_* 键一并移除，
+    // 后端把这些键登记进 RETIRED_SETTINGS_KEYS，旧 settings.json 里的残留值会被丢弃
     recording_mode: 'single',
     silence_threshold: 1.5,
     silence_level: -40,

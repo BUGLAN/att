@@ -228,12 +228,10 @@ def test_get_settings_repairs_stale_preset_once(settings_env):
 
 
 def test_get_settings_repairs_all_stale_values_in_single_write(settings_env):
-    """失效的预设 id 与非法浮层枚举同时存在时，只允许一次落盘（旧实现会分两次写）。"""
+    """失效的预设 id 同时存在时，只允许一次落盘（旧实现会分两次写）。"""
     client, user_settings = settings_env
     user_settings.set("default_preset_id", "preset-does-not-exist")
     user_settings.set("last_used_preset_id", "preset-does-not-exist")
-    # 用仍在用的浮层枚举键制造非法值：clipboard_overlay_trigger 已彻底下线，不再可写
-    user_settings.set("clipboard_overlay_retrigger_action", "not_a_valid_action")
 
     writes = []
     original_update = user_settings.update
@@ -255,7 +253,7 @@ def test_get_settings_repairs_all_stale_values_in_single_write(settings_env):
     assert response.status_code == 200
     # 一次写盘修复全部失效值
     assert writes_first == 1
-    assert {"default_preset_id", "last_used_preset_id", "clipboard_overlay_retrigger_action"} <= set(writes_payload[0])
+    assert {"default_preset_id", "last_used_preset_id"} <= set(writes_payload[0])
     # 修复落盘绝不能把已下线的僵尸键带回去
     assert RETIRED_SETTINGS_KEYS.isdisjoint(writes_payload[0])
     # 归一化后再次 GET 必须是纯读
@@ -278,8 +276,6 @@ def test_get_settings_keeps_response_shape(settings_env):
         "auto_optimize",
         "auto_copy_to_clipboard",
         "hotkey",
-        "clipboard_overlay_retrigger_action",
-        "clipboard_overlay_close_on_click_copy",
         "recording_mode",
         "silence_threshold",
         "silence_level",
@@ -299,8 +295,14 @@ def test_retired_keys_are_silently_dropped_by_update_model():
     parsed = UserSettingsUpdate.model_validate({
         "auto_optimize": True,
         "clipboard_overlay_trigger": "mouse_middle",
+        "clipboard_overlay_retrigger_action": "toggle",
+        "clipboard_overlay_enter_behavior": "copy_and_paste",
+        "clipboard_overlay_auto_focus_search": True,
+        "clipboard_overlay_close_on_click_copy": True,
         "selection_toolbar_enabled": True,
         "selection_toolbar_trigger_delay_ms": 500,
+        "selection_toolbar_show_examples": True,
+        "selection_toolbar_auto_add_to_wordbook": True,
     })
     dumped = parsed.model_dump(exclude_unset=True)
 
@@ -315,11 +317,10 @@ def test_legacy_settings_file_with_retired_keys_is_tolerated(monkeypatch, temp_d
         json.dumps(
             {
                 "auto_optimize": True,
-                # 仍在用的浮层键保留，并故意放一个非法枚举值验证归一化没被改坏
+                # 统一浮层删除后，clipboard_overlay_* / selection_toolbar_* 全部退役
+                "clipboard_overlay_trigger": "not_a_valid_trigger",
                 "clipboard_overlay_retrigger_action": "not_a_valid_action",
                 "clipboard_overlay_close_on_click_copy": False,
-                # 6 个已下线的僵尸键
-                "clipboard_overlay_trigger": "not_a_valid_trigger",
                 "selection_toolbar_enabled": False,
                 "selection_toolbar_auto_add_to_wordbook": False,
                 "selection_toolbar_show_examples": False,
@@ -345,10 +346,8 @@ def test_legacy_settings_file_with_retired_keys_is_tolerated(monkeypatch, temp_d
     payload = response.json()
     for key in RETIRED_SETTINGS_KEYS:
         assert key not in payload
-    # 仍在使用的键必须保持原有归一化行为
+    # 仍在使用的键必须保持原有行为
     assert payload["auto_optimize"] is True
-    assert payload["clipboard_overlay_retrigger_action"] == "toggle"
-    assert payload["clipboard_overlay_close_on_click_copy"] is False
 
     # 任何一次正常写入都不得把僵尸键带回磁盘
     put_response = client.put("/api/settings", json={"auto_optimize": False})

@@ -9,9 +9,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from app.ai_actions.routes import init_ai_action_service
-from app.ai_actions.routes import router as ai_action_router
-from app.ai_actions.service import AIActionService
 from app.api.routers.llm import router as llm_router
 from app.api.routers.prompts import router as prompts_router
 from app.api.routers.records import router as records_router
@@ -32,9 +29,6 @@ from app.services.model_service_manager import model_service_manager
 from app.services.qwen_streaming_service_manager import qwen_streaming_service_manager
 from app.stt.factory import create_asr_provider, get_asr_provider_config
 from app.utils.logging import get_logger, setup_logging
-from app.wordbook.manager import WordbookManager
-from app.wordbook.routes import init_wordbook_manager
-from app.wordbook.routes import router as wordbook_router
 
 logger = get_logger(__name__)
 
@@ -89,12 +83,9 @@ async def lifespan(app: FastAPI):
         optimizer = TextOptimizer()
         record_manager = RecordManager(settings.data_path)
         clipboard_manager = ClipboardManager(settings.data_path)
-        wordbook_manager = WordbookManager(settings.data_path)
-        ai_action_service = AIActionService(get_gateway(), wordbook_manager)
 
         await record_manager.initialize()
         await clipboard_manager.initialize()
-        await wordbook_manager.initialize()
 
         # 启动期数据卫生扫描：**永远只读**（只发现并写日志，不受 ATT_HOUSEKEEPING_APPLY 影响）。
         # 真正的清理必须显式执行 scripts/housekeeping.py --apply。
@@ -102,8 +93,6 @@ async def lifespan(app: FastAPI):
 
         init_processors(audio_processor, asr_provider, optimizer, record_manager)
         init_clipboard_manager(clipboard_manager)
-        init_wordbook_manager(wordbook_manager)
-        init_ai_action_service(ai_action_service)
         model_service_manager.configure(asr_provider)
 
         await maybe_preload_asr_provider(asr_provider)
@@ -170,9 +159,7 @@ app.include_router(sessions_router)
 app.include_router(settings_router)
 app.include_router(prompts_router)
 app.include_router(llm_router)
-app.include_router(ai_action_router)
 app.include_router(clipboard_router)
-app.include_router(wordbook_router)
 
 project_root = Path(__file__).parent.parent
 dist_dir = project_root / "dist"

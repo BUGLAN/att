@@ -32,7 +32,6 @@ from app.audio.processor import AudioProcessor
 from app.config import (
     get_runtime_environment,
     is_valid_hotkey,
-    normalize_clipboard_overlay_settings,
     settings,
     user_settings,
 )
@@ -184,5 +183,4 @@ __all__ = [
     "format_validation_error",
     "get_runtime_environment",
     "is_valid_hotkey",
-    "normalize_clipboard_overlay_settings",
 ]

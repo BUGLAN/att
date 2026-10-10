@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 // Node 测试统一执行器（任务 T3：质量门禁）
 //
-// 背景：tests/ 下有两个手写 main() 的用例脚本（test_unified_overlay_manager.js、
-// test_selection_toolbar_manager.js）会在结束时主动调用 process.exit(0)，
-// 直接使用 `node --test tests/*.js` 会被它们提前截断测试收集与汇总输出。
+// 背景：tests/ 下的用例脚本会在结束时主动调用 process.exit(0)，
+// 直接使用 `node --test tests/*.js` 会被提前截断测试收集与汇总输出。
 // 因此这里改为「逐个文件串行 spawn 一个 node 进程」，最后一个文件跑完再统一汇总，
 // 只要有任一文件失败就以非 0 退出码结束，可直接作为 CI 门禁。
 //
 // 用法：
 //   node scripts/run-node-tests.mjs                 # 跑 tests/ 下全部 *.js 与 *.mjs
-//   node scripts/run-node-tests.mjs overlay         # 只跑文件名包含 overlay 的用例
+//   node scripts/run-node-tests.mjs recorder        # 只跑文件名包含 recorder 的用例
 //   NODE_TEST_TIMEOUT_MS=60000 node scripts/...     # 自定义单文件超时（默认 120 秒）
 
 import { spawn } from 'node:child_process'

@@ -71,18 +71,10 @@ class UserSettingsUpdate(BaseModel):
     auto_optimize: Optional[bool] = None
     auto_copy_to_clipboard: Optional[bool] = None
     hotkey: Optional[dict] = None
-    # 划词面板（统一悬浮层 selection 模式）仍在使用的两个键：
-    # 旧的「划词工具栏」窗口已下线，但 SelectionPanel.vue 仍读取它们，
-    # 因此这里必须保留为可写键，不能当成僵尸键删除。
-    selection_toolbar_show_examples: Optional[bool] = None
-    selection_toolbar_auto_add_to_wordbook: Optional[bool] = None
-    # 真正已下线的键（clipboard_overlay_trigger / selection_toolbar_enabled /
-    # selection_toolbar_trigger_delay_ms / selection_toolbar_fallback_to_clipboard）
-    # 不再声明：未声明的键由 extra="ignore" 静默丢弃，旧渲染进程整份提交也不会写回。
-    clipboard_overlay_retrigger_action: Optional[str] = None
-    clipboard_overlay_enter_behavior: Optional[str] = None
-    clipboard_overlay_auto_focus_search: Optional[bool] = None
-    clipboard_overlay_close_on_click_copy: Optional[bool] = None
+    # 已下线功能的键（划词工具栏 / 剪贴板鼠标触发 / 统一浮层全套 clipboard_overlay_*、
+    # selection_toolbar_*）不再声明：未声明的键由 extra="ignore" 静默丢弃，
+    # 旧渲染进程整份提交也不会写回；旧 settings.json 的残留值由
+    # strip_retired_settings 统一剥离。
 
     # 录音模式与静音参数
     recording_mode: Optional[RecordingModeName] = None

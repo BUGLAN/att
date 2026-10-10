@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div
     class="app-container"
     :class="{
@@ -33,10 +33,6 @@
         <ClipboardPage />
       </div>
 
-      <div v-show="currentPage === 'wordbook'" class="container page-view">
-        <WordbookPage />
-      </div>
-
       <div v-show="currentPage === 'settings'" class="container page-view">
         <SettingsPage />
       </div>
@@ -65,7 +61,6 @@ import RecordsSection from '@/components/home/RecordsSection.vue'
 import ClipboardPage from '@/components/clipboard/ClipboardPage.vue'
 import RecordsLibraryPage from '@/components/records/RecordsLibraryPage.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
-import WordbookPage from '@/components/wordbook/WordbookPage.vue'
 
 import RecordEditModal from '@/components/modals/RecordEditModal.vue'
 import PresetModal from '@/components/modals/PresetModal.vue'
@@ -79,10 +74,9 @@ import { useTrayIcon } from '@/composables/useTrayIcon'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
-const { connect, addMessageHandler, removeMessageHandler } = useGlobalWebSocket()
+const { connect } = useGlobalWebSocket()
 const {
   isElectron,
-  clipboardOverlay,
   onPasteText,
   onNavigateSettings,
   onDesktopPermissionRequired,
@@ -103,40 +97,6 @@ const modals = computed(() => appStore.modals)
 const shellStyles = computed(() => ({
   '--sidebar-width': `${currentSidebarWidth.value}px`
 }))
-
-function handleGlobalMessage(message) {
-  if (message.type !== 'clipboard_overlay_command' || message.action !== 'trigger') {
-    return
-  }
-
-  if (isElectron) {
-    debugLog('renderer.app', 'Ignored websocket clipboard overlay trigger in Electron runtime', {
-      message
-    })
-    return
-  }
-
-  debugLog('renderer.app', 'Received clipboard overlay trigger message', {
-    message,
-    settings: {
-      clipboard_overlay_retrigger_action: settingsStore.settings.clipboard_overlay_retrigger_action,
-      clipboard_overlay_auto_focus_search: settingsStore.settings.clipboard_overlay_auto_focus_search
-    }
-  })
-
-  const payload = {
-    focusSearch: settingsStore.settings.clipboard_overlay_auto_focus_search ?? true
-  }
-
-  if (settingsStore.settings.clipboard_overlay_retrigger_action === 'show_only') {
-    debugLog('renderer.app', 'Using clipboard overlay show', payload)
-    clipboardOverlay.show(payload)
-    return
-  }
-
-  debugLog('renderer.app', 'Using clipboard overlay toggle', payload)
-  clipboardOverlay.toggle(payload)
-}
 
 onMounted(async () => {
   onPasteText(() => {
@@ -167,12 +127,10 @@ onMounted(async () => {
     console.error('[Desktop] Failed to sync settings on startup:', error)
   }
 
-  addMessageHandler(handleGlobalMessage)
   connect()
 })
 
 onUnmounted(() => {
-  removeMessageHandler(handleGlobalMessage)
   removeAllListeners('paste-text')
   removeAllListeners('navigate:settings')
   removeAllListeners('desktop:permission-required')

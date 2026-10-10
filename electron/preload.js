@@ -1,16 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
-const OVERLAY_CHANNELS = {
-  openSelection: 'overlay:open-selection',
-  openClipboard: 'overlay:open-clipboard',
-  hide: 'overlay:hide',
-  pin: 'overlay:pin',
-  ready: 'overlay:ready',
-  activate: 'overlay:activate',
-  pinnedChanged: 'overlay:pinned-changed',
-  actionComplete: 'overlay:action-complete'
-}
-
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   getPort: () => ipcRenderer.invoke('backend:port'),
@@ -33,12 +22,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   hideFloatingWindow: () => ipcRenderer.send('floating:hide'),
   toggleFloatingWindow: () => ipcRenderer.send('floating:toggle'),
   updateFloatingWindowState: (payload) => ipcRenderer.send('floating:update-state', payload),
-  openSelectionOverlay: (payload) => ipcRenderer.send(OVERLAY_CHANNELS.openSelection, payload),
-  openClipboardOverlay: (payload) => ipcRenderer.send(OVERLAY_CHANNELS.openClipboard, payload),
-  hideOverlay: () => ipcRenderer.send(OVERLAY_CHANNELS.hide),
-  setOverlayPinned: (payload) => ipcRenderer.send(OVERLAY_CHANNELS.pin, payload),
-  notifyOverlayReady: () => ipcRenderer.send(OVERLAY_CHANNELS.ready),
-  notifyOverlayActionComplete: (payload) => ipcRenderer.send(OVERLAY_CHANNELS.actionComplete, payload),
   debugLog: (scope, message, details) => ipcRenderer.send('debug:log', { scope, message, details }),
   openSettingsPage: () => ipcRenderer.send('main:open-settings'),
   onHotkeyPress: (callback) => {
@@ -52,12 +35,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onNavigateSettings: (callback) => {
     ipcRenderer.on('navigate:settings', () => callback())
-  },
-  onOverlayActivate: (callback) => {
-    ipcRenderer.on(OVERLAY_CHANNELS.activate, (event, payload) => callback(payload))
-  },
-  onOverlayPinnedChanged: (callback) => {
-    ipcRenderer.on(OVERLAY_CHANNELS.pinnedChanged, (event, payload) => callback(payload))
   },
   onClipboardChanged: (callback) => {
     ipcRenderer.on('clipboard:changed', (event, payload) => callback(payload))

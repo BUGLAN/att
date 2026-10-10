@@ -1,7 +1,7 @@
 # ATT 质量门禁（任务 T3：P2 质量门禁）
 #
 # 本仓库此前没有任何 CI（报告 §六：CI ❌ 不存在、无 lint/format、无 npm test），
-# 导致 test_unified_overlay_manager.js 这个红灯红了约 6 个月无人发现。
+# 历史上曾有测试用例红灯约 6 个月无人发现。
 # 本 workflow 的目标是「最小可用门禁」，各 job 的取舍如下：
 #
 #   frontend      必跑、快速（约 2-3 分钟）：npm ci + Node 串行测试 + vite 构建。

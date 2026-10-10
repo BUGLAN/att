@@ -2,7 +2,7 @@
    设计令牌（Design Tokens）—— ATT 全前端唯一令牌来源
    ------------------------------------------------------------
    引入顺序：本文件必须由每个渲染入口最先引入
-     src/main.js / src/floating.js / src/unified-overlay.js
+     src/main.js / src/floating.js
    约束：
    1. 任何窗口 / 组件都不再私自定义 :root 色值，一律引用此处令牌；
    2. 金色只有一套（--accent 家族），禁止再出现 #ffc557 / #f3b460；

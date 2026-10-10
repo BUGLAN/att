@@ -95,3 +95,53 @@ test('desktop settings UI removes dead mouse-trigger configuration after desktop
     '主进程不应继续保留桌面端鼠标触发的残留同步或调度逻辑'
   )
 })
+
+test('unified overlay is fully removed from electron shell and renderer', () => {
+  const mainProcessSource = fs.readFileSync(path.join(repoRoot, 'electron', 'main.js'), 'utf8')
+  const preloadSource = fs.readFileSync(path.join(repoRoot, 'electron', 'preload.js'), 'utf8')
+  const appSource = fs.readFileSync(path.join(repoRoot, 'src', 'App.vue'), 'utf8')
+  const useElectronSource = fs.readFileSync(path.join(repoRoot, 'src', 'composables', 'useElectron.js'), 'utf8')
+  const viteConfigSource = fs.readFileSync(path.join(repoRoot, 'vite.config.js'), 'utf8')
+
+  assert.doesNotMatch(
+    mainProcessSource,
+    /UnifiedOverlayManager|OVERLAY_CHANNELS|overlayManager/,
+    '主进程不应再引用统一浮层的任何管理器或通道'
+  )
+
+  assert.doesNotMatch(
+    preloadSource,
+    /OVERLAY_CHANNELS|Overlay/,
+    'preload 不应再暴露任何浮层 API'
+  )
+
+  assert.doesNotMatch(
+    appSource,
+    /clipboard_overlay_command|clipboardOverlay/,
+    'App.vue 不应再处理浮层触发消息'
+  )
+
+  assert.doesNotMatch(
+    useElectronSource,
+    /openClipboardOverlay|openSelectionOverlay|onOverlayActivate|onOverlayPinnedChanged/,
+    'useElectron 不应再封装任何浮层调用'
+  )
+
+  assert.doesNotMatch(
+    viteConfigSource,
+    /unified-overlay/,
+    'vite 构建入口不应再包含统一浮层页面'
+  )
+
+  assert.equal(
+    fs.existsSync(path.join(repoRoot, 'electron', 'overlay')),
+    false,
+    'electron/overlay 目录应已删除'
+  )
+
+  assert.equal(
+    fs.existsSync(path.join(repoRoot, 'src', 'components', 'overlay')),
+    false,
+    'src/components/overlay 目录应已删除'
+  )
+})

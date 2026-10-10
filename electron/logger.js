@@ -2,7 +2,7 @@ const fs = require('fs')
 const path = require('path')
 
 const logDir = path.join(__dirname, '..', 'logs')
-const logFile = path.join(logDir, 'electron-overlay.log')
+const logFile = path.join(logDir, 'electron.log')
 
 function serializeDetails(details) {
   if (details == null) {
@@ -16,7 +16,8 @@ function serializeDetails(details) {
   }
 }
 
-function logElectronOverlay(scope, message, details) {
+// Electron 主进程通用日志：后端进程、桌面代理、剪贴板监控、托盘等共用一份文件
+function logElectron(scope, message, details) {
   try {
     fs.mkdirSync(logDir, { recursive: true })
     fs.appendFileSync(
@@ -25,11 +26,11 @@ function logElectronOverlay(scope, message, details) {
       'utf8'
     )
   } catch (error) {
-    console.error('[ElectronOverlayLogger] Failed to write log:', error)
+    console.error('[ElectronLogger] Failed to write log:', error)
   }
 }
 
 module.exports = {
-  logElectronOverlay,
-  electronOverlayLogFile: logFile
+  logElectron,
+  electronLogFile: logFile
 }

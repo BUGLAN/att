@@ -2,7 +2,7 @@ const { clipboard } = require('electron')
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
-const { logElectronOverlay } = require('../logger')
+const { logElectron } = require('../logger')
 
 const POLL_INTERVAL_MS = 800
 const INTERNAL_WRITE_TTL_MS = 5000
@@ -39,7 +39,7 @@ class ClipboardMonitor {
       reason,
       expiresAt: Date.now() + INTERNAL_WRITE_TTL_MS
     })
-    logElectronOverlay('clipboard-monitor', 'Marked internal clipboard write', {
+    logElectron('clipboard-monitor', 'Marked internal clipboard write', {
       reason,
       textLength: normalized.length
     })
@@ -66,13 +66,13 @@ class ClipboardMonitor {
     fs.mkdirSync(this.imageOutputDir, { recursive: true })
     this.timer = setInterval(() => {
       this.checkClipboard().catch((error) => {
-        logElectronOverlay('clipboard-monitor', 'Clipboard poll failed', {
+        logElectron('clipboard-monitor', 'Clipboard poll failed', {
           error: error.message
         })
       })
     }, POLL_INTERVAL_MS)
 
-    logElectronOverlay('clipboard-monitor', 'Clipboard monitor started', {
+    logElectron('clipboard-monitor', 'Clipboard monitor started', {
       pollIntervalMs: POLL_INTERVAL_MS,
       baselineLength: this.lastObservedText.length
     })
@@ -86,7 +86,7 @@ class ClipboardMonitor {
     clearInterval(this.timer)
     this.timer = null
     this.internalWrites = []
-    logElectronOverlay('clipboard-monitor', 'Clipboard monitor stopped')
+    logElectron('clipboard-monitor', 'Clipboard monitor stopped')
   }
 
   async checkClipboard() {
@@ -121,7 +121,7 @@ class ClipboardMonitor {
 
     const internalWrite = this.consumeInternalWrite(normalized)
     if (internalWrite) {
-      logElectronOverlay('clipboard-monitor', 'Skipped internal clipboard update', {
+      logElectron('clipboard-monitor', 'Skipped internal clipboard update', {
         reason: internalWrite.reason,
         textLength: normalized.length
       })
@@ -129,7 +129,7 @@ class ClipboardMonitor {
     }
 
     if (this.requestInFlight) {
-      logElectronOverlay('clipboard-monitor', 'Skipped clipboard capture while request in flight', {
+      logElectron('clipboard-monitor', 'Skipped clipboard capture while request in flight', {
         textLength: normalized.length
       })
       return
@@ -141,7 +141,7 @@ class ClipboardMonitor {
   async captureText(content) {
     const port = this.getBackendPort?.()
     if (!port) {
-      logElectronOverlay('clipboard-monitor', 'Skipped clipboard capture because backend port is unavailable')
+      logElectron('clipboard-monitor', 'Skipped clipboard capture because backend port is unavailable')
       return
     }
 
@@ -164,7 +164,7 @@ class ClipboardMonitor {
       }
 
       const payload = await response.json()
-      logElectronOverlay('clipboard-monitor', 'Captured clipboard text', {
+      logElectron('clipboard-monitor', 'Captured clipboard text', {
         id: payload.id,
         itemType: payload.item_type,
         contentLength: content.length
@@ -172,7 +172,7 @@ class ClipboardMonitor {
 
       this.onCaptured?.(payload)
     } catch (error) {
-      logElectronOverlay('clipboard-monitor', 'Failed to capture clipboard text', {
+      logElectron('clipboard-monitor', 'Failed to capture clipboard text', {
         error: error.message,
         contentLength: content.length
       })
@@ -184,7 +184,7 @@ class ClipboardMonitor {
   async captureImage({ buffer, imageHash, size }) {
     const port = this.getBackendPort?.()
     if (!port) {
-      logElectronOverlay('clipboard-monitor', 'Skipped clipboard image capture because backend port is unavailable')
+      logElectron('clipboard-monitor', 'Skipped clipboard image capture because backend port is unavailable')
       return
     }
 
@@ -228,7 +228,7 @@ class ClipboardMonitor {
       }
 
       const payload = await response.json()
-      logElectronOverlay('clipboard-monitor', 'Captured clipboard image', {
+      logElectron('clipboard-monitor', 'Captured clipboard image', {
         id: payload.id,
         imageHash,
         width: size.width,
@@ -237,7 +237,7 @@ class ClipboardMonitor {
 
       this.onCaptured?.(payload)
     } catch (error) {
-      logElectronOverlay('clipboard-monitor', 'Failed to capture clipboard image', {
+      logElectron('clipboard-monitor', 'Failed to capture clipboard image', {
         error: error.message,
         imageHash
       })

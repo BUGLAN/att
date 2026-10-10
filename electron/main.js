@@ -6,10 +6,8 @@ const { PythonManager: PythonRuntimeManager } = require('./python/runtime-manage
 const { DesktopAudioController } = require('./audio/controller')
 const { TrayManager } = require('./tray/index')
 const { FloatingWindowManager } = require('./floatingWindow')
-const { UnifiedOverlayManager } = require('./overlay')
-const { OVERLAY_CHANNELS } = require('./overlay/constants')
 const { ClipboardMonitor } = require('./clipboardMonitor')
-const { logElectronOverlay, electronOverlayLogFile } = require('./logger')
+const { logElectron, electronLogFile } = require('./logger')
 const { DesktopSettingsStore } = require('./desktop/settings')
 const { DesktopAgentManager } = require('./desktopAgent/manager')
 const { isDevelopmentRuntime } = require('./utils/runtime')
@@ -22,19 +20,13 @@ let audioController = null
 let desktopAgentManager = null
 let desktopSettingsStore = null
 let floatingWindowManager = null
-let overlayManager = null
 let clipboardMonitor = null
 let isQuitting = false
 let pendingDesktopPermissionRequired = null
 let pendingDesktopAgentError = null
-let lastClipboardOverlayCommand = {
-  channel: null,
-  timestamp: 0
-}
 const pasteHelperPath = path.join(__dirname, 'python', 'paste_helper.py')
 
 const isDev = isDevelopmentRuntime()
-const CLIPBOARD_OVERLAY_COMMAND_DEDUP_MS = 180
 const DEV_SERVER_URL = 'http://localhost:8090'
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
@@ -53,29 +45,6 @@ function resolveClipboardImagePath(imagePath) {
   }
 
   return path.join(__dirname, '..', 'data', 'clipboard', normalizedPath)
-}
-
-function shouldSuppressClipboardOverlayCommand(channel, payload = {}) {
-  const now = Date.now()
-  const sameChannel = lastClipboardOverlayCommand.channel === channel
-  const withinWindow = (now - lastClipboardOverlayCommand.timestamp) <= CLIPBOARD_OVERLAY_COMMAND_DEDUP_MS
-
-  if (sameChannel && withinWindow) {
-    logElectronOverlay('main', 'Suppressed duplicate clipboard overlay command', {
-      channel,
-      payload,
-      lastTimestamp: lastClipboardOverlayCommand.timestamp,
-      now,
-      dedupWindowMs: CLIPBOARD_OVERLAY_COMMAND_DEDUP_MS
-    })
-    return true
-  }
-
-  lastClipboardOverlayCommand = {
-    channel,
-    timestamp: now
-  }
-  return false
 }
 
 function sendToMainWindow(channel, payload) {
@@ -119,7 +88,7 @@ function hasReadyDesktopAgent() {
 }
 
 async function createWindow() {
-  logElectronOverlay('main', 'Creating main window')
+  logElectron('main', 'Creating main window')
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -162,7 +131,7 @@ async function createWindow() {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
-  logElectronOverlay('main', 'Main window loaded', {
+  logElectron('main', 'Main window loaded', {
     isDev
   })
 
@@ -176,7 +145,7 @@ async function createWindow() {
 }
 
 async function showMainWindow({ navigateToSettings = false } = {}) {
-  logElectronOverlay('main', 'Showing main window', {
+  logElectron('main', 'Showing main window', {
     navigateToSettings
   })
 
@@ -241,34 +210,34 @@ async function startDesktopAgent() {
       pythonRuntimeManager.spawnBackendProcess(pythonPath, args, options)
     ),
     log: (message, details) => {
-      logElectronOverlay('desktop-agent', message, details)
+      logElectron('desktop-agent', message, details)
     }
   })
 
   desktopAgentManager.on('ready', (payload) => {
-    logElectronOverlay('main', 'Desktop agent ready', payload)
+    logElectron('main', 'Desktop agent ready', payload)
     mainWindow?.webContents.send('desktop:agent-ready', payload)
   })
   desktopAgentManager.on('hotkey:press', (payload) => {
-    logElectronOverlay('main', 'Desktop agent hotkey press', payload)
+    logElectron('main', 'Desktop agent hotkey press', payload)
     mainWindow?.webContents.send('hotkey:press', payload)
   })
   desktopAgentManager.on('hotkey:release', (payload) => {
-    logElectronOverlay('main', 'Desktop agent hotkey release', payload)
+    logElectron('main', 'Desktop agent hotkey release', payload)
     mainWindow?.webContents.send('hotkey:release', payload)
   })
   desktopAgentManager.on('permission:required', (payload) => {
-    logElectronOverlay('main', 'Desktop agent permission required', payload)
+    logElectron('main', 'Desktop agent permission required', payload)
     cacheDesktopAgentEvent('desktop:permission-required', payload)
     sendToMainWindow('desktop:permission-required', payload)
   })
   desktopAgentManager.on('agent:error', (payload) => {
-    logElectronOverlay('main', 'Desktop agent error', payload)
+    logElectron('main', 'Desktop agent error', payload)
     cacheDesktopAgentEvent('desktop:agent-error', payload)
     sendToMainWindow('desktop:agent-error', payload)
   })
   desktopAgentManager.on('exit', (payload) => {
-    logElectronOverlay('main', 'Desktop agent exited', payload)
+    logElectron('main', 'Desktop agent exited', payload)
     desktopAgentManager = null
 
     if (payload.expected || isQuitting) {
@@ -304,12 +273,11 @@ function setupTray() {
 
 function notifyClipboardChanged(payload = {}) {
   mainWindow?.webContents.send('clipboard:changed', payload)
-  overlayManager?.notifyDataChanged(payload)
 }
 
 function setupIPC() {
-  logElectronOverlay('main', 'Setting up IPC handlers', {
-    logFile: electronOverlayLogFile
+  logElectron('main', 'Setting up IPC handlers', {
+    logFile: electronLogFile
   })
 
   ipcMain.handle('backend:port', () => {
@@ -537,38 +505,8 @@ function setupIPC() {
     floatingWindowManager?.updateState(payload)
   })
 
-  ipcMain.on(OVERLAY_CHANNELS.openClipboard, (event, payload = {}) => {
-    if (shouldSuppressClipboardOverlayCommand('clipboard-overlay:show', payload)) {
-      return
-    }
-
-    logElectronOverlay('main', 'Received overlay:open-clipboard', payload)
-    overlayManager?.openClipboard(payload)
-  })
-
-  ipcMain.on(OVERLAY_CHANNELS.openSelection, (event, payload = {}) => {
-    logElectronOverlay('main', 'Received overlay:open-selection', payload)
-    overlayManager?.openSelection(payload)
-  })
-
-  ipcMain.on(OVERLAY_CHANNELS.hide, () => {
-    overlayManager?.hide('renderer-hide')
-  })
-
-  ipcMain.on(OVERLAY_CHANNELS.pin, (event, payload = {}) => {
-    overlayManager?.setPinned(payload.pinned === true)
-  })
-
-  ipcMain.on(OVERLAY_CHANNELS.ready, () => {
-    overlayManager?.markRendererReady()
-  })
-
-  ipcMain.on(OVERLAY_CHANNELS.actionComplete, (event, payload = {}) => {
-    overlayManager?.handleActionComplete(payload)
-  })
-
   ipcMain.on('debug:log', (event, payload = {}) => {
-    logElectronOverlay(
+    logElectron(
       payload.scope || 'renderer',
       payload.message || 'Renderer debug log',
       payload.details
@@ -583,17 +521,17 @@ function setupIPC() {
 if (hasSingleInstanceLock) {
   app.whenReady().then(async () => {
     try {
-      logElectronOverlay('main', 'App whenReady start', {
+      logElectron('main', 'App whenReady start', {
         isDev
       })
       let desktopSettings = null
       try {
         desktopSettings = await startDesktopAgent()
-        logElectronOverlay('main', 'Desktop agent started', {
+        logElectron('main', 'Desktop agent started', {
           desktopSettings
         })
       } catch (desktopAgentError) {
-        logElectronOverlay('main', 'Desktop agent failed to start', {
+        logElectron('main', 'Desktop agent failed to start', {
           error: desktopAgentError.message,
           stack: desktopAgentError.stack
         })
@@ -604,13 +542,12 @@ if (hasSingleInstanceLock) {
       }
       const port = await startBackend()
       console.log('Backend started on port', port)
-      logElectronOverlay('main', 'Backend started', {
+      logElectron('main', 'Backend started', {
         port
       })
 
       floatingWindowManager = new FloatingWindowManager()
       floatingWindowManager.preload()
-      overlayManager = new UnifiedOverlayManager()
       clipboardMonitor = new ClipboardMonitor({
         getBackendPort: () => pythonManager?.port,
         onCaptured: (payload) => {
@@ -621,15 +558,15 @@ if (hasSingleInstanceLock) {
         }
       })
       clipboardMonitor.start()
-      logElectronOverlay('main', 'Window managers initialized')
+      logElectron('main', 'Window managers initialized')
       setupIPC()
       await createWindow()
       setupTray()
       console.log('App ready')
-      logElectronOverlay('main', 'App ready complete')
+      logElectron('main', 'App ready complete')
     } catch (error) {
       console.error('Failed to start app:', error)
-      logElectronOverlay('main', 'Failed to start app', {
+      logElectron('main', 'Failed to start app', {
         error: error.message,
         stack: error.stack
       })
@@ -639,19 +576,17 @@ if (hasSingleInstanceLock) {
 }
 
 app.on('before-quit', () => {
-  logElectronOverlay('main', 'before-quit received')
+  logElectron('main', 'before-quit received')
   isQuitting = true
   trayManager?.destroy()
   floatingWindowManager?.destroy()
-  overlayManager?.destroy()
   clipboardMonitor?.stop()
 })
 
 app.on('will-quit', () => {
-  logElectronOverlay('main', 'will-quit received')
+  logElectron('main', 'will-quit received')
   desktopAgentManager?.stop()
   floatingWindowManager?.destroy()
-  overlayManager?.destroy()
   clipboardMonitor?.stop()
   pythonManager?.stop()
 })
@@ -663,13 +598,13 @@ app.on('window-all-closed', () => {
 })
 
 app.on('activate', () => {
-  logElectronOverlay('main', 'activate received', {
+  logElectron('main', 'activate received', {
     hasMainWindow: mainWindow !== null
   })
   if (mainWindow === null) {
     showMainWindow().catch((error) => {
       console.error('Failed to reactivate main window:', error)
-      logElectronOverlay('main', 'Failed to reactivate main window', {
+      logElectron('main', 'Failed to reactivate main window', {
         error: error.message,
         stack: error.stack
       })
@@ -679,7 +614,7 @@ app.on('activate', () => {
 
   showMainWindow().catch((error) => {
     console.error('Failed to show main window:', error)
-    logElectronOverlay('main', 'Failed to show main window', {
+    logElectron('main', 'Failed to show main window', {
       error: error.message,
       stack: error.stack
     })
@@ -689,7 +624,7 @@ app.on('activate', () => {
 app.on('second-instance', () => {
   showMainWindow().catch((error) => {
     console.error('Failed to show main window for second instance:', error)
-    logElectronOverlay('main', 'Failed to show main window for second instance', {
+    logElectron('main', 'Failed to show main window for second instance', {
       error: error.message,
       stack: error.stack
     })

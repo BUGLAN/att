@@ -314,55 +314,7 @@
         </div>
 
         <div class="settings-group">
-          <h3 class="settings-group-title">剪切板悬浮窗</h3>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">重复触发行为</span>
-              <span class="setting-desc">再次触发时，可选择直接切换开关，或只保持悬浮窗显示。</span>
-            </div>
-            <BaseSelect v-model="form.clipboard_overlay_retrigger_action">
-              <option value="toggle">再次触发关闭</option>
-              <option value="show_only">再次触发仅保持显示</option>
-            </BaseSelect>
-          </div>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">回车行为</span>
-              <span class="setting-desc">选择条目后按 Enter，可仅复制，或复制后自动回填到当前焦点输入框。</span>
-            </div>
-            <BaseSelect v-model="form.clipboard_overlay_enter_behavior">
-              <option value="copy_and_paste">复制并回填</option>
-              <option value="copy_only">仅复制</option>
-            </BaseSelect>
-          </div>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">打开时聚焦搜索框</span>
-              <span class="setting-desc">唤起悬浮窗后自动聚焦搜索框，便于立即筛选历史记录。</span>
-            </div>
-            <label class="toggle-switch">
-              <input v-model="form.clipboard_overlay_auto_focus_search" type="checkbox">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">点击复制后关闭悬浮窗</span>
-              <span class="setting-desc">鼠标单击剪贴板条目时先复制内容，再按该设置决定是否立即关闭悬浮窗。</span>
-            </div>
-            <label class="toggle-switch">
-              <input v-model="form.clipboard_overlay_close_on_click_copy" type="checkbox">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-        </div>
-
-      <div class="settings-group">
-        <h3 class="settings-group-title">LLM 配置</h3>
+          <h3 class="settings-group-title">LLM 配置</h3>
 
         <div class="setting-item">
           <div class="setting-info">
@@ -377,21 +329,6 @@
               </option>
             </BaseSelect>
             <BaseButton variant="outline" @click="openLLMModal">管理配置</BaseButton>
-          </div>
-        </div>
-      </div>
-
-      <!-- Agent 对话：使用默认 LLM 配置进行多轮问答（docs/todo.md 第 ⑥ 条） -->
-      <div class="settings-group">
-        <h3 class="settings-group-title">Agent 对话</h3>
-
-        <div class="setting-item setting-item-agent">
-          <div class="setting-info">
-            <span class="setting-label">与 Agent 对话</span>
-            <span class="setting-desc">直接使用上面选定的「默认 LLM 配置」进行多轮对话；Enter 发送，Shift+Enter 换行。</span>
-          </div>
-          <div class="setting-control setting-control-agent">
-            <AgentChatPanel />
           </div>
         </div>
       </div>
@@ -442,7 +379,6 @@ import BaseButton from '@/components/common/BaseButton.vue'
 import BaseInput from '@/components/common/BaseInput.vue'
 import BaseSelect from '@/components/common/BaseSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
-import AgentChatPanel from '@/components/settings/AgentChatPanel.vue'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
@@ -609,10 +545,6 @@ function normalizeSettings(value = {}) {
     auto_copy_to_clipboard: value.auto_copy_to_clipboard ?? true,
     audio_input_device: value.audio_input_device || 'default',
     hotkey: normalizedHotkey,
-    clipboard_overlay_retrigger_action: value.clipboard_overlay_retrigger_action || 'toggle',
-    clipboard_overlay_enter_behavior: value.clipboard_overlay_enter_behavior || 'copy_and_paste',
-    clipboard_overlay_auto_focus_search: value.clipboard_overlay_auto_focus_search ?? true,
-    clipboard_overlay_close_on_click_copy: value.clipboard_overlay_close_on_click_copy ?? false,
     recording_mode: value.recording_mode || 'single',
     silence_threshold: value.silence_threshold ?? 1.5,
     silence_level: value.silence_level ?? -40
@@ -642,10 +574,6 @@ function buildSettingsPayload() {
     auto_copy_to_clipboard: form.value.auto_copy_to_clipboard,
     audio_input_device: form.value.audio_input_device,
     hotkey: normalizeHotkeyConfig(form.value.hotkey),
-    clipboard_overlay_retrigger_action: form.value.clipboard_overlay_retrigger_action,
-    clipboard_overlay_enter_behavior: form.value.clipboard_overlay_enter_behavior,
-    clipboard_overlay_auto_focus_search: form.value.clipboard_overlay_auto_focus_search,
-    clipboard_overlay_close_on_click_copy: form.value.clipboard_overlay_close_on_click_copy,
     recording_mode: form.value.recording_mode,
     silence_threshold: form.value.silence_threshold,
     silence_level: form.value.silence_level
@@ -928,21 +856,3 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleHotkeyKeydown, true)
 })
 </script>
-
-<style scoped>
-/* Agent 对话需要整行宽度：单独把这一行改成单列栅格，其余设置项保持原两列布局 */
-.setting-item-agent {
-  grid-template-columns: minmax(0, 1fr);
-  align-items: stretch;
-}
-
-.setting-control-agent {
-  align-items: stretch;
-  justify-content: stretch;
-}
-
-.setting-control-agent :deep(.agent-chat) {
-  flex: 1 1 auto;
-  width: 100%;
-}
-</style>

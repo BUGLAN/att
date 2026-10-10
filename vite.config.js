@@ -19,8 +19,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'src/index.html'),
-        floating: resolve(__dirname, 'src/floating.html'),
-        unifiedOverlay: resolve(__dirname, 'src/unified-overlay.html')
+        floating: resolve(__dirname, 'src/floating.html')
       },
       output: {
         manualChunks: {

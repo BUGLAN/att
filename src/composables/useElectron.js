@@ -1,4 +1,4 @@
-﻿import { ref } from 'vue'
+import { ref } from 'vue'
 import { api as httpApi, getBackendPort } from '@/api/client'
 
 const isElectron = typeof window !== 'undefined' && !!window.electronAPI
@@ -53,15 +53,6 @@ export function useElectron() {
     getClipboardItem: (id) => httpApi.getClipboardItem(id),
     updateClipboardItem: (id, data) => httpApi.updateClipboardItem(id, data),
     deleteClipboardItem: (id) => httpApi.deleteClipboardItem(id),
-    getWordbookEntries: (params) => httpApi.getWordbookEntries(params),
-    getWordbookStats: () => httpApi.getWordbookStats(),
-    createWordbookEntry: (payload) => httpApi.createWordbookEntry(payload),
-    getWordbookEntry: (id) => httpApi.getWordbookEntry(id),
-    updateWordbookEntry: (id, data) => httpApi.updateWordbookEntry(id, data),
-    runAITranslate: (payload) => httpApi.runAITranslate(payload),
-    runAIExplain: (payload) => httpApi.runAIExplain(payload),
-    runAISummarize: (payload) => httpApi.runAISummarize(payload),
-    runAIRewrite: (payload) => httpApi.runAIRewrite(payload),
     getSettings: () => httpApi.getSettings(),
     saveSettings: (settings) => httpApi.saveSettings(settings),
     getLLMConfigs: () => httpApi.getLLMConfigs(),
@@ -98,48 +89,7 @@ export function useElectron() {
     updateState: (payload) => globalThis.window?.electronAPI?.updateFloatingWindowState(toPlainObject(payload))
   }
 
-  // 兼容别名：旧的独立剪贴板悬浮窗已删除，这里只剩「打开统一浮层」这一条入口，
-  // 仍被 src/App.vue 的浏览器回退分支引用，故保留；hide/togglePinned/startNativeDrag
-  // 已确认全仓无引用（对应旧窗口的隐藏、置顶与原生拖拽），本轮删除。
-  const clipboardOverlay = {
-    show: (payload = {}) => {
-      const plainPayload = toPlainObject(payload)
-      debugLog('renderer.useElectron', 'Calling clipboardOverlay.show', plainPayload)
-      globalThis.window?.electronAPI?.openClipboardOverlay?.(plainPayload)
-    },
-    toggle: (payload = {}) => {
-      const plainPayload = toPlainObject(payload)
-      debugLog('renderer.useElectron', 'Calling clipboardOverlay.toggle', plainPayload)
-      globalThis.window?.electronAPI?.openClipboardOverlay?.(plainPayload)
-    }
-  }
-
-  const overlay = {
-    openSelection: (payload = {}) => {
-      const plainPayload = toPlainObject(payload)
-      debugLog('renderer.useElectron', 'Calling overlay.openSelection', plainPayload)
-      globalThis.window?.electronAPI?.openSelectionOverlay?.(plainPayload)
-    },
-    openClipboard: (payload = {}) => {
-      const plainPayload = toPlainObject(payload)
-      debugLog('renderer.useElectron', 'Calling overlay.openClipboard', plainPayload)
-      globalThis.window?.electronAPI?.openClipboardOverlay?.(plainPayload)
-    },
-    hide: () => {
-      debugLog('renderer.useElectron', 'Calling overlay.hide')
-      globalThis.window?.electronAPI?.hideOverlay?.()
-    },
-    setPinned: (pinned) => {
-      debugLog('renderer.useElectron', 'Calling overlay.setPinned', { pinned })
-      globalThis.window?.electronAPI?.setOverlayPinned?.({ pinned })
-    },
-    notifyReady: () => {
-      globalThis.window?.electronAPI?.notifyOverlayReady?.()
-    },
-    notifyActionComplete: (payload = {}) => {
-      globalThis.window?.electronAPI?.notifyOverlayActionComplete?.(toPlainObject(payload))
-    }
-  }
+  // 统一浮层已整体下线：两组浮层封装与对应的两个事件监听一并删除。
 
   const clipboard = {
     readText: async () => {
@@ -221,10 +171,6 @@ export function useElectron() {
     globalThis.window?.electronAPI?.onNavigateSettings(callback)
   }
 
-  function onOverlayActivate(callback) {
-    globalThis.window?.electronAPI?.onOverlayActivate?.(callback)
-  }
-
   function onClipboardChanged(callback) {
     globalThis.window?.electronAPI?.onClipboardChanged(callback)
   }
@@ -235,10 +181,6 @@ export function useElectron() {
 
   function onDesktopAgentError(callback) {
     globalThis.window?.electronAPI?.onDesktopAgentError?.(callback)
-  }
-
-  function onOverlayPinnedChanged(callback) {
-    globalThis.window?.electronAPI?.onOverlayPinnedChanged?.(callback)
   }
 
   function openSettingsPage() {
@@ -299,8 +241,6 @@ export function useElectron() {
     windowControl,
     tray,
     floatingWindow,
-    overlay,
-    clipboardOverlay,
     clipboard,
     onRecordStatus,
     onRecordCompleted,
@@ -308,8 +248,6 @@ export function useElectron() {
     onHotkeyRelease,
     onPasteText,
     onNavigateSettings,
-    onOverlayActivate,
-    onOverlayPinnedChanged,
     onClipboardChanged,
     onDesktopPermissionRequired,
     onDesktopAgentError,

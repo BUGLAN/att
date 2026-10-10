@@ -1,19 +1,16 @@
-"""API 契约锚点：路由拆分前后「(HTTP 方法, URL 路径)」集合必须完全一致。
+"""API 契约锚点：「(HTTP 方法, URL 路径)」集合必须与当前产品范围完全一致。
 
-本文件是 `app/api/routes.py` 拆分重构的安全网（前端契约一字不改是本任务的最高优先级）：
+本文件锁定 `app.main:app` 实际暴露的端点集合：
 
-1. `BUSINESS_ENDPOINTS` 是**重构前**从 `app.main:app` 实测得到的 58 条业务端点
-   （56 条 HTTP + 2 条 WebSocket，见任务 task-9），已硬编码为基线；
-   task-13（W3-C2 Agent 对话）**新增** `POST /api/ai-actions/chat` 一条，
-   因此基线为 58 + 1 = 59 条；原有 58 条一条未减，新增端点已在集合内用注释标明；
+1. `BUSINESS_ENDPOINTS` 是**功能减法之后**的业务端点基线（49 条：47 条 HTTP + 2 条 WebSocket）。
+   2026-10 功能减法删除了统一浮层 / 生词本 / AI 动作（含 Agent 对话），
+   对应的 `/api/wordbook/*` 5 条与 `/api/ai-actions/*` 5 条端点随之移除；
 2. FastAPI 自动生成的文档路由（/docs、/redoc、/openapi.json 及其 HEAD）与根入口 "/"
    单独登记，避免它们被悄悄塞进「忽略名单」而掩盖端点变更；
-3. `API_ROUTER_ENDPOINTS` 锁定聚合层 `app.api.routes.router` 暴露的 42 条端点，
-   保证拆分出的子路由全部被 include，且没有重复挂载
-   （chat 挂在 `app.ai_actions.routes`，不经聚合层，故该集合仍为 42 条）；
+3. `API_ROUTER_ENDPOINTS` 锁定聚合层 `app.api.routes.router` 暴露的全部端点，
+   保证拆分出的子路由全部被 include，且没有重复挂载；
 4. 末尾用例锁定 `GET /api/records` 的「裸数组」响应形态
-   （新增 `offset`、默认 `limit` 提到 200 的分页行为见 tests/test_api_records_paging.py，
-   本文件保持「重构前即可跑绿」，只固化拆分前后都必须成立的契约）。
+   （分页行为见 tests/test_api_records_paging.py，本文件只固化端点与响应形态契约）。
 """
 import asyncio
 from datetime import datetime, timedelta
@@ -29,7 +26,8 @@ from app.records.models import RecordStatus
 
 # ==================== 基线 ====================
 
-# 业务端点基线：58 条（重构前） + 1 条（task-13 新增 Agent 对话） = 59 条，原有 58 条不得增删改。
+# 业务端点基线：功能减法后共 49 条（47 条 HTTP + 2 条 WebSocket）。
+# 已删除：/api/wordbook/*（生词本）5 条、/api/ai-actions/*（AI 动作 + Agent 对话）5 条。
 BUSINESS_ENDPOINTS = frozenset({
     ("DELETE", "/api/clipboard/items/{item_id}"),
     ("DELETE", "/api/llm/configs/{config_id}"),
@@ -57,16 +55,6 @@ BUSINESS_ENDPOINTS = frozenset({
     ("GET", "/api/sessions/{session_id}"),
     ("GET", "/api/settings"),
     ("GET", "/api/streaming/service"),
-    ("GET", "/api/wordbook"),
-    ("GET", "/api/wordbook/stats"),
-    ("GET", "/api/wordbook/{entry_id}"),
-    # ===== task-13 新增（Agent 对话，设置页「Agent 对话」分组使用）=====
-    ("POST", "/api/ai-actions/chat"),
-    # ===== 以下为重构前既有 58 条基线，一条都不能少 =====
-    ("POST", "/api/ai-actions/explain"),
-    ("POST", "/api/ai-actions/rewrite"),
-    ("POST", "/api/ai-actions/summarize"),
-    ("POST", "/api/ai-actions/translate"),
     ("POST", "/api/audio/upload"),
     ("POST", "/api/clipboard/items"),
     ("POST", "/api/llm/configs"),
@@ -81,7 +69,6 @@ BUSINESS_ENDPOINTS = frozenset({
     ("POST", "/api/sessions/{session_id}/segments"),
     ("POST", "/api/streaming/service/start"),
     ("POST", "/api/streaming/service/stop"),
-    ("POST", "/api/wordbook"),
     ("PUT", "/api/clipboard/items/{item_id}"),
     ("PUT", "/api/llm/configs/{config_id}"),
     ("PUT", "/api/llm/configs/{config_id}/default"),
@@ -89,7 +76,6 @@ BUSINESS_ENDPOINTS = frozenset({
     ("PUT", "/api/prompts/{preset_id}"),
     ("PUT", "/api/records/{record_id}"),
     ("PUT", "/api/settings"),
-    ("PUT", "/api/wordbook/{entry_id}"),
     ("WS", "/api/asr/stream"),
     ("WS", "/api/ws"),
 })
@@ -184,14 +170,14 @@ def _collect(route_holder) -> list[tuple[str, str]]:
 # ==================== 端点集合契约 ====================
 
 
-def test_baseline_size_is_59():
-    """基线自身自检：59 条业务端点（58 条重构前基线 + 1 条 task-13 新增），含 2 个 WebSocket。"""
-    assert len(BUSINESS_ENDPOINTS) == 59
+def test_baseline_size_is_49():
+    """基线自身自检：49 条业务端点（47 条 HTTP + 2 个 WebSocket）。"""
+    assert len(BUSINESS_ENDPOINTS) == 49
     assert len([item for item in BUSINESS_ENDPOINTS if item[0] == "WS"]) == 2
 
 
 def test_application_endpoint_set_matches_baseline():
-    """app.main:app 的端点集合必须与重构前完全一致（缺失/新增都会红灯）。"""
+    """app.main:app 的端点集合必须与基线完全一致（缺失/新增都会红灯）。"""
     discovered = _collect(app)
 
     duplicated = sorted({item for item in discovered if discovered.count(item) > 1})
@@ -201,28 +187,29 @@ def test_application_endpoint_set_matches_baseline():
     missing = sorted(expected - set(discovered))
     added = sorted(set(discovered) - expected)
 
-    assert missing == [], f"重构后丢失端点（前端契约破坏）: {missing}"
-    assert added == [], f"重构后新增未登记端点: {added}"
+    assert missing == [], f"缺失端点（契约破坏）: {missing}"
+    assert added == [], f"新增未登记端点: {added}"
 
 
-def test_business_endpoints_are_still_59_after_split():
-    """业务端点（排除文档路由与根入口）仍恰好是 59 条（58 条基线一条不少 + chat 1 条）。"""
+def test_business_endpoints_are_still_49_after_subtraction():
+    """业务端点（排除文档路由与根入口）仍恰好是 49 条。"""
     business = set(_collect(app)) - DOC_ENDPOINTS - ROOT_ENDPOINTS
 
     assert business == BUSINESS_ENDPOINTS
-    assert len(business) == 59
-    # 新增端点显式点名，避免以后有人把它连带删掉
-    assert ("POST", "/api/ai-actions/chat") in business
+    assert len(business) == 49
+    # 已下线功能（生词本 / AI 动作）的端点必须彻底消失
+    assert not any(path.startswith("/api/wordbook") for _, path in business)
+    assert not any(path.startswith("/api/ai-actions") for _, path in business)
 
 
-def test_api_aggregator_router_exposes_all_42_endpoints():
-    """app.api.routes.router（被 main.py include 的聚合层）必须恰好暴露 42 条端点。"""
+def test_api_aggregator_router_exposes_all_registered_endpoints():
+    """app.api.routes.router（聚合层）必须恰好暴露 API_ROUTER_ENDPOINTS 登记的全部端点。"""
     entries = _collect(routes.router)
 
     duplicated = sorted({item for item in entries if entries.count(item) > 1})
     assert duplicated == [], f"聚合层重复挂载端点: {duplicated}"
     assert set(entries) == API_ROUTER_ENDPOINTS
-    assert len(entries) == 42
+    assert len(entries) == len(API_ROUTER_ENDPOINTS)
 
 
 # ==================== GET /api/records 响应形态契约 ====================

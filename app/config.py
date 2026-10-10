@@ -21,22 +21,21 @@ logger = logging.getLogger(__name__)
 
 VALID_HOTKEY_MODIFIERS = {"cmd", "alt", "ctrl", "shift", "win"}
 VALID_HOTKEY_KEYS = set("abcdefghijklmnopqrstuvwxyz0123456789")
-VALID_CLIPBOARD_RETRIGGER_ACTIONS = {"toggle", "show_only"}
-VALID_CLIPBOARD_ENTER_BEHAVIORS = {"copy_and_paste", "copy_only"}
 
-# 已下线功能的僵尸配置键：第 1 轮已删除「划词工具栏」与「桌面鼠标触发」两条链路，
-# 这里集中登记，确保它们不再出现在默认值、归一化结果与 PUT 白名单中。
-#
-# 注意：selection_toolbar_show_examples / selection_toolbar_auto_add_to_wordbook
-# **不在**此列 —— 旧「划词工具栏」虽然删了，但统一悬浮层里的「划词面板」
-# （src/components/overlay/SelectionPanel.vue）仍在读取这两个键来控制
-# 「显示示例」与「自动加入生词本」。一旦把它们当作僵尸键剥离，
-# 面板会因 `undefined !== false` 而回落到 true，静默改写用户已设为 false 的偏好。
+# 已下线功能的僵尸配置键：历轮删除「划词工具栏」「桌面鼠标触发」「统一浮层
+# （含划词面板）」后，这里集中登记它们的全部配置键，
+# 确保这些键不再出现在默认值、归一化结果与 PUT 白名单中。
 RETIRED_SETTINGS_KEYS = frozenset({
     "selection_toolbar_enabled",
     "selection_toolbar_trigger_delay_ms",
     "selection_toolbar_fallback_to_clipboard",
+    "selection_toolbar_show_examples",
+    "selection_toolbar_auto_add_to_wordbook",
     "clipboard_overlay_trigger",
+    "clipboard_overlay_retrigger_action",
+    "clipboard_overlay_enter_behavior",
+    "clipboard_overlay_auto_focus_search",
+    "clipboard_overlay_close_on_click_copy",
 })
 
 
@@ -144,54 +143,14 @@ def is_valid_hotkey(hotkey: dict) -> bool:
     return key.lower() in VALID_HOTKEY_KEYS
 
 
-def get_default_clipboard_overlay_settings() -> dict:
-    """Return default clipboard overlay settings."""
-    return {
-        "clipboard_overlay_retrigger_action": "toggle",
-        "clipboard_overlay_enter_behavior": "copy_and_paste",
-        "clipboard_overlay_auto_focus_search": True,
-        "clipboard_overlay_close_on_click_copy": True,
-    }
-
-
-def normalize_clipboard_overlay_settings(payload: Optional[dict]) -> dict:
-    """Normalize clipboard overlay settings against supported values."""
-    defaults = get_default_clipboard_overlay_settings()
+def strip_retired_settings(payload: Optional[dict]) -> dict:
+    """丢弃已下线功能的残留键：兼容含残留键的旧 settings.json，读到不报错也不会写回。"""
     source = payload or {}
-    # 丢弃已下线功能的残留键：兼容含残留键的旧 settings.json，读到不报错也不会写回
-    normalized = {
+    return {
         key: value
         for key, value in source.items()
         if key not in RETIRED_SETTINGS_KEYS
     }
-
-    retrigger_action = source.get("clipboard_overlay_retrigger_action")
-    normalized["clipboard_overlay_retrigger_action"] = (
-        retrigger_action if retrigger_action in VALID_CLIPBOARD_RETRIGGER_ACTIONS
-        else defaults["clipboard_overlay_retrigger_action"]
-    )
-
-    enter_behavior = source.get("clipboard_overlay_enter_behavior")
-    normalized["clipboard_overlay_enter_behavior"] = (
-        enter_behavior if enter_behavior in VALID_CLIPBOARD_ENTER_BEHAVIORS
-        else defaults["clipboard_overlay_enter_behavior"]
-    )
-
-    auto_focus_search = source.get("clipboard_overlay_auto_focus_search")
-    normalized["clipboard_overlay_auto_focus_search"] = (
-        auto_focus_search
-        if isinstance(auto_focus_search, bool)
-        else defaults["clipboard_overlay_auto_focus_search"]
-    )
-
-    close_on_click_copy = source.get("clipboard_overlay_close_on_click_copy")
-    normalized["clipboard_overlay_close_on_click_copy"] = (
-        close_on_click_copy
-        if isinstance(close_on_click_copy, bool)
-        else defaults["clipboard_overlay_close_on_click_copy"]
-    )
-
-    return normalized
 
 
 class UserSettings:
@@ -221,16 +180,7 @@ class UserSettings:
         "auto_optimize": False,
         "auto_copy_to_clipboard": True,  # 自动复制转码文本到剪贴板
         "hotkey": None,  # Will be set dynamically based on platform
-        "clipboard_overlay_retrigger_action": "toggle",
-        "clipboard_overlay_enter_behavior": "copy_and_paste",
-        "clipboard_overlay_auto_focus_search": True,
-        "clipboard_overlay_close_on_click_copy": True,
-        # 划词面板（统一悬浮层的 selection 模式）仍在使用的两个键：
-        # 旧「划词工具栏」已下线，但面板本身是活的，不能当作僵尸键删除。
-        # 若将来要下线，必须先改 SelectionPanel.vue 的读取逻辑，否则行为会静默变成 true。
-        "selection_toolbar_show_examples": True,
-        "selection_toolbar_auto_add_to_wordbook": True,
-        # 已下线功能（划词工具栏开关 / 触发延迟 / 剪贴板鼠标触发）不再提供默认值，
+        # 已下线功能（划词工具栏 / 剪贴板鼠标触发 / 统一浮层）不再提供默认值，
         # 见文件顶部 RETIRED_SETTINGS_KEYS
         # Recording mode settings
         "recording_mode": "single",     # single / multi / streaming
@@ -261,7 +211,7 @@ class UserSettings:
                 self.settings_path,
             )
 
-        payload = ensure_dict(loaded, logger=logger, source=self.settings_path)
+        payload = strip_retired_settings(ensure_dict(loaded, logger=logger, source=self.settings_path))
 
         # Merge with defaults to ensure all keys exist
         settings = {**self.DEFAULT_SETTINGS, **payload}
@@ -270,7 +220,7 @@ class UserSettings:
         if not is_valid_hotkey(settings.get("hotkey")):
             settings["hotkey"] = get_default_hotkey()
 
-        return normalize_clipboard_overlay_settings(settings)
+        return settings
 
     def _save(self) -> None:
         """Save settings to file（原子写，保持 indent=2 / ensure_ascii=False）。"""
