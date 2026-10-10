@@ -63,6 +63,12 @@ let streamingWorkletNode = null
 let streamingPendingSamples = []
 let streamingPendingSampleCount = 0
 let streamingAwaitingFinish = false
+// 采集代次：cleanupStreamingAudio 每次收口时自增。采集与建连并行后，setupStreamingAudioCapture
+// 必须在 await 之后核对它，才能发现「本次启动已被放弃 / 已收尾」，从而回滚自己刚建的节点——
+// 否则采集会晚于收口落地，留下无人清理的 AudioContext + worklet（幽灵采集、内存持续增长）。
+// 前置条件：任何新增的流式收口入口都必须调用 cleanupStreamingAudio()，只关 socket / 只停轨
+// 不会让代次自增，守卫会失效（看门狗与 stream_finished 分支目前安全，仅因 stop 已先收口）。
+let streamingCaptureGeneration = 0
 // 启动放弃标志：连接/采集就绪前用户已松手时置位（见 stopStreamingRecording），
 // startStreamingRecording 在每个 await 之后检查它，避免开启幽灵录音
 let streamingStartAborted = false
@@ -142,8 +148,11 @@ function beginFloatingSession() {
 }
 
 function logRecordingTiming(stage, startedAt) {
-  const elapsed = Math.round(performance.now() - startedAt)
-  console.log(`[RecorderTiming] ${stage} +${elapsed}ms`)
+  const elapsedMs = Math.round(performance.now() - startedAt)
+  // 走主进程 debugLog 落 logs/electron.log：原先的 console.log 只留在渲染进程控制台，
+  // 排查"按下热键到开始采集"这类跨进程时序问题时拿不到任何落盘证据。
+  const { debugLog } = useElectron()
+  debugLog('renderer.recorder', `[RecorderTiming] ${stage}`, { elapsedMs })
 }
 
 function clearDurationTimer() {
@@ -185,6 +194,9 @@ function resetStreamingBuffer() {
 }
 
 function cleanupStreamingAudio() {
+  // 自增采集代次：正在飞行的 setupStreamingAudioCapture 据此发现自己已被收口并回滚
+  streamingCaptureGeneration += 1
+
   if (streamingWorkletNode) {
     streamingWorkletNode.port.onmessage = null
     streamingWorkletNode.disconnect()
@@ -756,6 +768,7 @@ async function ensureModelServiceAvailable() {
 
 async function connectStreamingSocket(language) {
   const { api } = useElectron()
+  const connectStartedAt = performance.now()
 
   streamingConnectionState.value = 'connecting'
   const url = await api.getStreamingWebSocketUrl()
@@ -832,6 +845,7 @@ async function connectStreamingSocket(language) {
             if (!settled) {
               settled = true
               clearTimeout(connectTimer)
+              logRecordingTiming('connect-ready', connectStartedAt)
               resolve(message)
             }
             return
@@ -944,15 +958,32 @@ async function connectStreamingSocket(language) {
 
 async function setupStreamingAudioCapture(targetStream) {
   const workletUrl = new URL('../worklets/pcm-capture-worklet.js', import.meta.url)
+  const captureStartedAt = performance.now()
+  // 记下本次采集的代次：期间任何收口（松手放弃 / 连接失败 / 意外断开 / 组件卸载）
+  // 都会让 cleanupStreamingAudio 把它自增，下面的核对就是靠这个发现"自己已被放弃"。
+  const generation = streamingCaptureGeneration
 
-  streamingAudioContext = new AudioContext({ sampleRate: STREAM_SAMPLE_RATE })
-  if (streamingAudioContext.sampleRate !== STREAM_SAMPLE_RATE) {
-    throw new Error(`当前浏览器返回的采样率为 ${streamingAudioContext.sampleRate}Hz，无法启用真流式`)
+  // 用局部变量持有 AudioContext：并行的收口路径可能已经把模块级引用置空，
+  // 继续用模块变量会在 addModule 之后炸成 null 解引用。
+  const audioContext = new AudioContext({ sampleRate: STREAM_SAMPLE_RATE })
+  streamingAudioContext = audioContext
+
+  if (audioContext.sampleRate !== STREAM_SAMPLE_RATE) {
+    throw new Error(`当前浏览器返回的采样率为 ${audioContext.sampleRate}Hz，无法启用真流式`)
   }
-  await streamingAudioContext.audioWorklet.addModule(workletUrl.href)
 
-  streamingSourceNode = streamingAudioContext.createMediaStreamSource(targetStream)
-  streamingWorkletNode = new AudioWorkletNode(streamingAudioContext, 'pcm-capture-processor')
+  await audioContext.audioWorklet.addModule(workletUrl.href)
+
+  // addModule（首次加载约 50~150ms）期间可能已经完成收口：此刻再连图就会留下
+  // 没人 cleanup 的采集节点，必须自己关掉刚建的 AudioContext 并退出。
+  if (generation !== streamingCaptureGeneration) {
+    audioContext.close().catch(() => {})
+    logRecordingTiming('capture-aborted-after-cleanup', captureStartedAt)
+    return
+  }
+
+  streamingSourceNode = audioContext.createMediaStreamSource(targetStream)
+  streamingWorkletNode = new AudioWorkletNode(audioContext, 'pcm-capture-processor')
   streamingWorkletNode.port.onmessage = (event) => {
     if (!(event.data instanceof Float32Array)) {
       return
@@ -961,10 +992,14 @@ async function setupStreamingAudioCapture(targetStream) {
   }
 
   streamingSourceNode.connect(streamingWorkletNode)
-  const silentGainNode = streamingAudioContext.createGain()
+  const silentGainNode = audioContext.createGain()
   silentGainNode.gain.value = 0
   streamingWorkletNode.connect(silentGainNode)
-  silentGainNode.connect(streamingAudioContext.destination)
+  silentGainNode.connect(audioContext.destination)
+
+  // 正常情况下该标记早于 connect-ready（建连要 0.3~0.7s，挂 worklet 只要 50~150ms），
+  // 两者差值就是"按下后多久开始采集"的直接量化；worklet 模块已缓存时两者会非常接近。
+  logRecordingTiming('capture-started', captureStartedAt)
 }
 
 async function handleShortPressCancellation(syncRecordingState) {
@@ -1284,8 +1319,16 @@ async function startStreamingRecording() {
     )
     sessionStatusText.value = `正在连接${streamingLabel}服务`
 
-    await connectStreamingSocket(context.settingsStore.settings.asr_language || 'zh')
-    await setupStreamingAudioCapture(stream.value)
+    // 采集与建连并行：麦克风在 prepareRecordingEnvironment 里已经打开，这里必须尽早挂上
+    // worklet —— WebAudio 是实时的，不会为稍后才出现的消费者回放采样，所以「按下热键后立刻
+    // 说话」时串行等待建连（实测 0.5~0.7s）的那段语音会永久丢失（开头丢字）。
+    // 并行期间采到的样本只进 streamingPendingSamples，READY 之后由 queueStreamingSamples →
+    // sendStreamingSamples 统一冲刷；协议顺序不变（sendStreamingSamples 有 currentSessionId 守卫，
+    // 音频永远在 stream_ready 之后才上行）。
+    await Promise.all([
+      connectStreamingSocket(context.settingsStore.settings.asr_language || 'zh'),
+      setupStreamingAudioCapture(stream.value)
+    ])
 
     if (pendingStopAfterStart) {
       pendingStopAfterStart = false
