@@ -10,6 +10,7 @@ class ASRProviderType(str, Enum):
     """支持的 ASR provider 类型"""
     WHISPER = "whisper"
     QWEN_ASR = "qwen_asr"
+    DOUBAO_ASR = "doubao_asr"
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,9 @@ class ASRRuntimeCapabilities:
     model_service_supported: bool = True
     model_service_mode: str = "provider"
     model_service_reason: Optional[str] = None
+    # 在线 provider（如豆包）：模型服务没有需要加载的本地模型，
+    # 只要凭据配齐就算「已就绪」，前端不需要用户再点「开启模型」
+    online_ready: bool = False
     streaming_supported: bool = False
     streaming_available: bool = False
     streaming_reason: Optional[str] = None
@@ -42,6 +46,7 @@ class ASRProviderConfig:
     language: str = "zh"
     whisper: dict[str, Any] = field(default_factory=dict)
     qwen_asr: dict[str, Any] = field(default_factory=dict)
+    doubao_asr: dict[str, Any] = field(default_factory=dict)
 
 
 class ASRProviderError(RuntimeError):
