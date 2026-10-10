@@ -11,10 +11,14 @@ dependencies = [
   "websockets>=12.0",
   "pydub>=0.25.1",
   "faster-whisper>=1.0.0",
-  "qwen-asr>=0.0.6; sys_platform == 'win32'",
-  "qwen-asr[vllm]>=0.0.6; sys_platform != 'win32'",
+  "qwen-asr>=0.0.6; sys_platform != 'linux'",
+  "qwen-asr[vllm]>=0.0.6; sys_platform == 'linux'",
   "torch==2.8.0+cu128; sys_platform == 'win32'",
-  "httpx>=0.26.0",
+  # httpx 会读取系统/环境代理（macOS 上经 urllib.getproxies 读系统设置）。
+  # 终端里设了 ALL_PROXY=socks5://... 时，缺少 socksio 会让 httpx 在构造
+  # AsyncClient 时直接抛 ImportError —— 而 TextOptimizer 在启动期构造，
+  # 结果是整个后端起不来。故显式带上 socks extra。
+  "httpx[socks]>=0.26.0",
   "tenacity>=8.2.3",
   "openai>=1.0.0",
   "anthropic>=0.18.0",
