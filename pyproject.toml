@@ -48,3 +48,10 @@ torch = [
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+# pytest 基线配置（任务 T3：质量门禁）
+# 仅新增配置段，未改动 dependencies / dependency-groups，不会引起 uv.lock 变更。
+# 这样直接执行 `uv run python -m pytest`（不带路径）也会自动只收集 tests/。
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]

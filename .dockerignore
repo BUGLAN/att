@@ -1,0 +1,56 @@
+# Docker 构建上下文忽略规则
+# 目的：构建上下文只保留源码与依赖声明，体积最小化，且绝不含业务数据与密钥
+
+# 业务数据与运行期产物（卷挂载提供，绝不进镜像）
+data/
+models/
+logs/
+tmp/
+dist/
+release/
+python-dist/
+
+# 依赖与虚拟环境（容器内自行安装）
+.venv/
+venv/
+node_modules/
+
+# 前端源码与桌面端（后端镜像不需要）
+src/
+electron/
+public/
+index.html
+vite.config.js
+vite.config.mjs
+
+# 版本控制与工作区
+.git/
+.gitignore
+.worktrees/
+.superpowers/
+.watchdog/
+.claude/
+.kilo/
+.omx/
+.agent/
+docs/
+
+# 密钥与本地配置（运行时用 -v 只读挂载）
+.env
+.env.*
+!.env.example
+
+# 日志与缓存
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# 开发期产物
+tests/
+scratch/
+*.md
+!README.md

@@ -135,6 +135,27 @@ function getTargetFlag() {
   return '--linux'
 }
 
+/**
+ * 取 electron-builder 的目标参数。
+ *
+ * ``--nsis`` / ``--portable`` 用来单独重跑某个目标：整套 --win 会先产出
+ * win-unpacked 再打安装包，单独重跑安装包时无需重复解包，便于定位安装器阶段的失败。
+ */
+function getBuilderTargetArgs() {
+  const args = process.argv.slice(2)
+  const targetFlag = getTargetFlag()
+
+  if (args.includes('--nsis')) {
+    return [targetFlag, 'nsis']
+  }
+
+  if (args.includes('--portable')) {
+    return [targetFlag, 'portable']
+  }
+
+  return [targetFlag]
+}
+
 function getManagedInstallations(uvPythonDir) {
   const platformToken = process.platform === 'win32'
     ? 'windows'
@@ -237,6 +258,57 @@ async function prepareBundledPython() {
   ])
 }
 
+/**
+ * 打包后自检：确认产物里「该有的有、不该有的没有」。
+ *
+ * 这条检查是硬闸门——一旦 data/（含 .encryption_key）或 models/ 被打进安装包，
+ * 就等于把解密密钥和密文一起分发（API Key 明文泄漏），必须在打包阶段直接失败。
+ */
+function verifyPackagedResources() {
+  const unpackedDir = path.join(projectRoot, 'release', 'win-unpacked')
+  if (!fs.existsSync(unpackedDir)) {
+    throw new Error(`打包自检失败：未找到 ${unpackedDir}（NSIS/portable 产物应包含 win-unpacked）`)
+  }
+
+  const resourcesDir = path.join(unpackedDir, 'resources')
+  const forbidden = ['data', 'models']
+  const problems = []
+
+  for (const name of forbidden) {
+    const target = path.join(resourcesDir, name)
+    if (fs.existsSync(target)) {
+      problems.push(`resources/${name} 不应存在（安装包不得携带用户数据/模型）`)
+    }
+  }
+
+  const appDir = path.join(resourcesDir, 'app')
+  if (!fs.existsSync(path.join(appDir, 'main.py'))) {
+    problems.push('resources/app/main.py 缺失：后端源码未随包分发')
+  }
+
+  const promptFiles = fs.existsSync(path.join(resourcesDir, 'prompts'))
+    ? fs.readdirSync(path.join(resourcesDir, 'prompts'), { recursive: true })
+      .filter((name) => String(name).toLowerCase().endsWith('.txt'))
+    : []
+  if (promptFiles.length === 0) {
+    problems.push('resources/prompts/ 下没有任何 .txt 提示词预设：打包版会出现零预设')
+  }
+
+  const pythonExe = path.join(resourcesDir, 'python', 'python.exe')
+  const pythonExePosix = path.join(resourcesDir, 'python', 'bin', 'python3')
+  if (!fs.existsSync(pythonExe) && !fs.existsSync(pythonExePosix)) {
+    problems.push('resources/python 下没有 Python 解释器：后端无法启动')
+  }
+
+  if (problems.length > 0) {
+    throw new Error(`打包自检失败：\n  - ${problems.join('\n  - ')}`)
+  }
+
+  log(`打包自检通过：resources/data 与 resources/models 均不存在；`
+    + `提示词预设 ${promptFiles.length} 个；后端源码与 Python 运行时齐备`)
+  return promptFiles.length
+}
+
 async function main() {
   if (!await commandExists('uv')) {
     throw new Error('uv is not available in PATH')
@@ -252,8 +324,11 @@ async function main() {
   await run('npm', ['run', 'build'])
 
   const targetFlag = getTargetFlag()
-  log(`Running electron-builder ${targetFlag}`)
-  await run('npx', ['electron-builder', targetFlag])
+  const builderTargetArgs = getBuilderTargetArgs()
+  log(`Running electron-builder ${builderTargetArgs.join(' ')}`)
+  await run('npx', ['electron-builder', ...builderTargetArgs])
+
+  verifyPackagedResources()
 
   log('Packaging completed. Output is in release/')
 }

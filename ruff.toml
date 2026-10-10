@@ -1,0 +1,24 @@
+# ruff 基线配置（任务 T3：质量门禁）
+#
+# 定位：本轮只固定「最小可用」规则集，先把既存问题数量暴露出来。
+# CI 中的 backend-lint job 使用 continue-on-error = true（非阻塞基线），
+# 待告警收敛后再收紧为阻塞门禁。
+# 说明：本轮不启用 `ruff format` 强制格式化，避免一次性重排 7.8k 行后端代码；
+# 格式检查在 CI 里以「仅提示」方式呈现。
+
+line-length = 120
+target-version = "py312"
+
+[lint]
+# E4/E7/E9：pycodestyle 的语法级问题（缺导入、语句错误、语法错误）
+# F：pyflakes（未定义名称、未使用导入/变量）
+# I：isort 导入顺序
+select = ["E4", "E7", "E9", "F", "I"]
+
+[lint.per-file-ignores]
+# 测试文件允许在夹具或断言之后继续导入，兼容现有用例写法
+"tests/**" = ["E402"]
+
+[lint.isort]
+# 与后端现有的导入分组习惯保持一致
+known-first-party = ["app"]

@@ -1,0 +1,26 @@
+# EditorConfig 基线（任务 T3：质量门禁）
+#
+# 目的：统一各编辑器的缩进、换行与编码，减少无关格式噪音。
+# 换行统一定为 LF：git 索引中现有文件即为 LF（git ls-files --eol 显示 i/lf），
+# 本地工作区因 core.autocrlf=true 呈 CRLF 由 git 自动规范化，不应再由编辑器写回 CRLF。
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.py]
+indent_size = 4
+max_line_length = 120
+
+[*.{js,mjs,cjs,ts,vue,json,yml,yaml,css,html}]
+indent_size = 2
+
+[*.md]
+# Markdown 中行尾空格可用于强制换行，保持原样
+trim_trailing_whitespace = false

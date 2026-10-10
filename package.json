@@ -15,7 +15,10 @@
     "electron:dev:existing-backend": "cross-env ATT_REQUIRE_EXISTING_BACKEND=1 concurrently -k \"vite --strictPort\" \"wait-on http://localhost:8090 && cross-env ATT_REQUIRE_EXISTING_BACKEND=1 NODE_ENV=development electron .\"",
     "electron:build": "vite build && electron-builder",
     "electron:build:win": "vite build && electron-builder --win",
-    "electron:build:mac": "vite build && electron-builder --mac"
+    "electron:build:mac": "vite build && electron-builder --mac",
+    "test": "npm run test:node && npm run test:python",
+    "test:node": "node scripts/run-node-tests.mjs",
+    "test:python": "uv run python -m pytest tests -q"
   },
   "dependencies": {
     "vue": "^3.4.21",
