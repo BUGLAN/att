@@ -280,7 +280,10 @@ class StreamingSessionManager:
                     "data": {
                         "record_id": record_id,
                         "error": str(error),
-                        "status": RecordStatus.TRANSCRIBED.value
+                        "status": RecordStatus.TRANSCRIBED.value,
+                        # 自动优化开启时前端不在 transcribed 阶段粘贴，
+                        # 失败广播带上原文，前端兜底粘贴，保证总有输出
+                        "text": final_text
                     },
                     "timestamp": datetime.now().isoformat()
                 })

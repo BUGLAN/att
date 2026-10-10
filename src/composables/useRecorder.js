@@ -851,9 +851,14 @@ async function connectStreamingSocket(language) {
 
             if (!record) {
               // 后端对「极短点击 / 没有有效语音」回 record=null（音频不留档），
-              // 这是正常业务结果，轻提示收尾即可
+              // 这是正常业务结果，轻提示收尾即可。
+              // 状态必须完整复位：否则 isTranscribing 卡在 true，
+              // 托盘一直显示「转写中」且热键全被吞（历史真实缺陷）。
               livePhase.value = 'completed'
               sessionStatusText.value = '没有识别到语音内容'
+              appStore.setRecording(false)
+              appStore.setTranscribing(false)
+              tray.setIcon('idle')
               completeFloatingSession('complete', '')
               appStore.showToast('没有识别到语音内容')
               streamingAwaitingFinish = false
@@ -878,9 +883,16 @@ async function connectStreamingSocket(language) {
 
             completeFloatingSession('complete', finalText)
 
-            appStore.showToast(
-              statusCopy.deriveCompletionToast('streaming', await maybeCopyText(finalText))
-            )
+            if (useSettingsStore().settings.auto_optimize) {
+              // 自动优化开启时不在 transcribed 阶段粘贴：后台优化完成后
+              // optimization_completed 会粘贴最终文本（与单段模式一致）。
+              // 否则原文、优化文各粘贴一次，输入框出现两遍几乎相同的内容。
+              appStore.showToast('转写完成，正在后台优化')
+            } else {
+              appStore.showToast(
+                statusCopy.deriveCompletionToast('streaming', await maybeCopyText(finalText))
+              )
+            }
 
             streamingAwaitingFinish = false
             cleanupStreamingSocket()
@@ -1768,6 +1780,31 @@ async function handleWebSocketMessage(message) {
     completeFloatingSession('complete', message.data?.optimized_text || '')
     appStore.showToast(
       statusCopy.deriveCompletionToast('optimization', await maybeCopyText(message.data?.optimized_text))
+    )
+    return
+  }
+
+  if (message.type === 'optimization_failed') {
+    const recordId = message.data?.record_id
+    const fallbackText = message.data?.text || ''
+
+    stopPolling()
+    if (recordId) {
+      recordsStore.updateRecordStatus(recordId, { status: message.data?.status || 'transcribed' })
+      appStore.setRecordStatus({ record_id: recordId, status: message.data?.status || 'transcribed' })
+    }
+    appStore.setTranscribing(false)
+    tray.setIcon('idle')
+    if (floatingSessionActive) {
+      completeFloatingSession('complete', fallbackText)
+    }
+
+    // 自动优化模式下 transcribed 阶段没有粘贴过，失败时兜底粘贴原文，
+    // 保证「总有输出」；优化失败的完整原因在记录详情的 error 字段里
+    const copyResult = await maybeCopyText(fallbackText)
+    appStore.showToast(
+      copyResult.pasted ? '优化失败，已粘贴转写文本' : '优化失败，转写文本已保留在记录集中',
+      { tone: 'error' }
     )
     return
   }
