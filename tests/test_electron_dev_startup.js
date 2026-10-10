@@ -18,8 +18,8 @@ test('electron existing-backend dev script keeps vite on strict port', () => {
 
   assert.match(
     script,
-    /wait-on http:\/\/localhost:8090\b/,
-    'electron:dev:existing-backend 必须等待 8090 端口就绪'
+    /wait-on http:\/\/127\.0\.0\.1:8090\b/,
+    'electron:dev:existing-backend 必须等待 8090 端口就绪（显式 IPv4 回环，避免 localhost 双栈解析歧义）'
   )
 })
 

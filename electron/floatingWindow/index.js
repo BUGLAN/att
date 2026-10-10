@@ -5,7 +5,7 @@ const { isDevelopmentRuntime } = require('../utils/runtime')
 const WINDOW_WIDTH = 512
 const WINDOW_HEIGHT = 40
 const WINDOW_BOTTOM_OFFSET = 32
-const DEV_SERVER_URL = 'http://localhost:8090'
+const DEV_SERVER_URL = 'http://127.0.0.1:8090'
 
 function createDefaultState() {
   return {

@@ -27,7 +27,7 @@ let pendingDesktopAgentError = null
 const pasteHelperPath = path.join(__dirname, 'python', 'paste_helper.py')
 
 const isDev = isDevelopmentRuntime()
-const DEV_SERVER_URL = 'http://localhost:8090'
+const DEV_SERVER_URL = 'http://127.0.0.1:8090'
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
 if (!hasSingleInstanceLock) {
