@@ -270,6 +270,6 @@ Invoke-RestMethod "http://127.0.0.1:8000/api/health?probe_runtime=true" |
 | 403 / `Resource ID 与账号开通的产品不匹配` | 按 1.0/2.0 逐个试 `volc.bigasr.sauc.*` / `volc.seedasr.sauc.*` |
 | 开始录音即报「未配置 Access Token」 | 设置页未保存成功；`GET /api/health?probe_runtime=true` 看 `streaming_error` |
 | 灰字定稿很慢 | 把设置页「强制断句静音时长」设为 200–800 ms（对应 `end_window_size`） |
-| 「会话已被服务端关闭（可能是长时间静音）」 | 服务端 VAD 关会话；当前没有自动重连，重开录音即可 |
+| 「会话已被服务端关闭（可能是长时间静音）」 | 服务端 VAD 关会话；**豆包会话本身不做自动重连**（全局 WS 的重连与这条 ASR 连接无关），重开录音即可 |
 | Qwen 流式在 Windows 不可用 | 改用 `remote_bridge` + `scripts/qwen_streaming_service.py`，或切换单段/多段 |
 | 改了 `.env` 的 `ASR_PROVIDER` 没生效 | 设置页/`data/settings.json` 优先级更高，改那里 |

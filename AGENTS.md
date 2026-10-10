@@ -101,16 +101,21 @@ app/          FastAPI：
 
 ## 5. 当前已知缺陷（不要"顺手修一半"）
 
-完整清单见 `docs/已知问题.md`。最影响改动的四条：
+完整清单、证据与「会导致什么」见 `docs/已知问题.md`。最影响改动的四条：
 
-1. 统一浮层无入口（要么补入口，要么整体下线，别只改一半）。
-2. `--win` 打包在 nsis 阶段失败（`release/` 只有 `win-unpacked`）；`win.target` 需要收敛为 `portable` 或先裁剪 `python-dist` 载荷。
+1. 统一浮层无入口（要么补入口，要么整体下线，别只改一半）——**现状等于功能不存在**，
+   且划词翻译不可达 → 生词本永远为空。
+2. `--win` 打包在 nsis 阶段失败（`release/` 只有 `win-unpacked`）——**产不出安装包**；
+   打包版还缺 `scripts/`，本地流式桥接起不来。`win.target` 需收敛为 `portable`
+   或先裁剪 `python-dist` 载荷。
 3. 多段录音最后一片上传失败会卡住：`src/composables/useRecorder.js:599` 的 `recorder.onstop` 没有 catch，
-   `uploadRealtimeSegment` 只有 `try/finally`（`:958`），异常会让 `:1115` 的收尾永不执行。
+   `uploadRealtimeSegment` 只有 `try/finally`（`:958`），异常会让 `:1115` 的收尾永不执行 →
+   **界面永久停在"正在转写"、后续录音无法开始，且这段录音实际丢失**。
    全局 WS 有**固定 3s 重连**（`src/composables/useWebSocket.js:111` 的 `scheduleGlobalReconnect`，
    由 `onclose` 触发，另有 30s 心跳），但无退避、无重试上限、`onerror` 不触发，
-   且多段收尾只由 WS 事件驱动、没有超时降级——后端长时间不可用时仍会卡住。
-4. LLM provider（`app/llm/providers/*.py`）构造客户端时没传 `timeout`，SDK 默认 600s。
+   且收尾只由 WS 事件驱动、没有超时降级。
+4. LLM provider（`app/llm/providers/*.py`）构造客户端时没传 `timeout`，SDK 默认 600s →
+   **优化请求最长挂 10 分钟**，界面一直转圈，记录停在 `optimizing`。
 
 ---
 
