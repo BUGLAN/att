@@ -7,6 +7,7 @@ from anthropic import AsyncAnthropic
 
 from app.llm.base import BaseLLMProvider
 from app.llm.models import LLMConfig, LLMProvider, get_provider_models
+from app.llm.security import redact_secrets
 
 
 class ClaudeProvider(BaseLLMProvider):
@@ -42,7 +43,8 @@ class ClaudeProvider(BaseLLMProvider):
             )
             return {"success": True, "error": None}
         except Exception as exc:
-            return {"success": False, "error": str(exc)}
+            # 上游鉴权失败时会在错误体里回显密钥，返回给前端前必须脱敏（AGENTS.md §3.4）
+            return {"success": False, "error": redact_secrets(exc, [self.api_key])}
 
     def get_available_models(self) -> List[str]:
         """Get available Claude models."""

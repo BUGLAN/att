@@ -37,7 +37,12 @@ class _SuccessOptimizer:
     """模拟优化成功的优化器。"""
 
     async def optimize(self, text, style="default", **kwargs):
-        return SimpleNamespace(optimized_text="优化后的文本", processing_time=0.01)
+        # fallback_reason 必须与真实 OptimizationResult 对齐：路由靠它判断是否降级
+        return SimpleNamespace(
+            optimized_text="优化后的文本",
+            processing_time=0.01,
+            fallback_reason=None
+        )
 
 
 class _RejectingAudioProcessor:

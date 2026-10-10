@@ -67,7 +67,7 @@ class FakeOptimizer:
             await self._gate.wait()
         if self._error is not None:
             raise self._error
-        return SimpleNamespace(optimized_text=f"优化后的{text}")
+        return SimpleNamespace(optimized_text=f"优化后的{text}", fallback_reason=None)
 
 
 class FakeWsManager:

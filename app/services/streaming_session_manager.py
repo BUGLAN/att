@@ -12,6 +12,7 @@ import numpy as np
 
 from app.config import settings, user_settings
 from app.llm.optimizer import TextOptimizer
+from app.llm.security import redact_secrets
 from app.records.manager import RecordManager
 from app.records.models import RecordStatus
 from app.stt.models import ASRProviderType
@@ -259,9 +260,27 @@ class StreamingSessionManager:
                     },
                     "timestamp": datetime.now().isoformat()
                 })
+            if optimize_result.fallback_reason:
+                # 用户配置的 LLM 失败、回退到 .env 内置 key：优化成功但配置没生效。
+                # 流式收尾是异步路径，只能靠 WebSocket 让界面提示用户
+                logger.warning(
+                    "流式录音自动优化已降级到内置 key",
+                    record_id=record_id,
+                    reason=optimize_result.fallback_reason
+                )
+                await ws_manager.broadcast({
+                    "type": "optimization_degraded",
+                    "data": {
+                        "record_id": record_id,
+                        "reason": optimize_result.fallback_reason
+                    },
+                    "timestamp": datetime.now().isoformat()
+                })
             logger.info("流式录音自动优化完成", record_id=record_id)
         except Exception as error:
-            logger.warning("流式录音自动优化失败", record_id=record_id, error=str(error))
+            # 错误文案先脱敏：上游鉴权失败会在错误体里回显密钥（AGENTS.md §3.4）
+            safe_error = redact_secrets(error)
+            logger.warning("流式录音自动优化失败", record_id=record_id, error=safe_error)
             # 与单段模式对齐：失败把记录复位为 transcribed 并广播失败事件
             try:
                 await self.record_manager.update_record(
@@ -279,7 +298,7 @@ class StreamingSessionManager:
                     "type": "optimization_failed",
                     "data": {
                         "record_id": record_id,
-                        "error": str(error),
+                        "error": safe_error,
                         "status": RecordStatus.TRANSCRIBED.value,
                         # 自动优化开启时前端不在 transcribed 阶段粘贴，
                         # 失败广播带上原文，前端兜底粘贴，保证总有输出

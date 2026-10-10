@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 from app.api.deps import runtime_state
 from app.api.uploads import read_upload_within_limit
+from app.llm.security import redact_secrets
 from app.records.models import ExportFormat, RecordStatus
 from app.services import records_service, transcription_service
 from app.services.websocket import manager as ws_manager
@@ -327,16 +328,19 @@ async def optimize_record(
         result = await state.optimizer.optimize(record.raw_text, style=style)
     except Exception as error:
         # 失败必须复位状态：否则记录会永久卡在 optimizing（真实数据已出现 2 条）
+        # 错误文案先脱敏：上游鉴权失败会在错误体里回显密钥，
+        # 它会流入日志、记录 JSON 与前端提示（AGENTS.md §3.4）
+        safe_error = redact_secrets(error)
         reset_status = RecordStatus.TRANSCRIBED if record.raw_text else RecordStatus.FAILED
         await state.record_manager.update_record(record_id, status=reset_status)
         # 把失败原因持久化到记录（Record.error），用户在记录详情里能看到历史错误
-        await state.record_manager.set_error_message(record_id, str(error))
+        await state.record_manager.set_error_message(record_id, safe_error)
         _invalidate_index(state, record_id)
         logger.error(
             "文本优化失败，已复位记录状态",
             record_id=record_id,
             reset_status=reset_status.value,
-            error=str(error),
+            error=safe_error,
             exc_info=True
         )
         # 通过 WebSocket 把错误信息推给前端；
@@ -346,7 +350,7 @@ async def optimize_record(
                 "type": "optimization_failed",
                 "data": {
                     "record_id": record_id,
-                    "error": str(error),
+                    "error": safe_error,
                     "status": reset_status.value
                 },
                 "timestamp": datetime.now().isoformat()
@@ -359,7 +363,7 @@ async def optimize_record(
             )
         raise HTTPException(
             status_code=502,
-            detail=f"文本优化失败：{error}"
+            detail=f"文本优化失败：{safe_error}"
         ) from error
 
     await state.record_manager.update_record(
@@ -371,11 +375,22 @@ async def optimize_record(
     await state.record_manager.set_error_message(record_id, "")
     _invalidate_index(state, record_id)
 
+    if result.fallback_reason:
+        # 用户配置的 LLM 调用失败后回退到 .env 内置 key：优化本身成功了，
+        # 但「配置没生效」必须让用户知道，否则设置页里的 key 配错会被静默掩盖。
+        # 手动优化走同步响应（fallback_reason 字段），不额外广播，避免前端重复提示。
+        logger.warning(
+            "文本优化已降级：回退到内置 key 完成",
+            record_id=record_id,
+            reason=result.fallback_reason
+        )
+
     return {
         "record_id": record_id,
         "original_text": record.raw_text,
         "optimized_text": result.optimized_text,
-        "processing_time": result.processing_time
+        "processing_time": result.processing_time,
+        "fallback_reason": result.fallback_reason
     }
 
 

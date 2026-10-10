@@ -15,6 +15,7 @@ from tenacity import (
 import time
 
 from app.config import settings
+from app.llm.security import redact_secrets
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -64,6 +65,10 @@ class OptimizationResult:
     optimized_text: str
     processing_time: float
     tokens_used: int = 0
+    # 用户在设置里配置的 LLM 调用失败、回退到 .env 内置 key 完成优化时的原因。
+    # 非空即代表本次结果经过降级：调用方必须把它暴露给用户，
+    # 否则「key 配错了」会被静默掩盖成「优化成功」。
+    fallback_reason: Optional[str] = None
 
 
 class TextOptimizer:
@@ -229,6 +234,7 @@ class TextOptimizer:
 
         # Try to use LLM Gateway if config_id is provided or if multi-LLM is available
         resolved_llm_config_id = llm_config_id or _get_default_llm_config_id()
+        fallback_reason: Optional[str] = None
 
         if resolved_llm_config_id:
             try:
@@ -236,30 +242,38 @@ class TextOptimizer:
                 gateway = get_gateway()
                 provider = gateway.get_provider(resolved_llm_config_id)
 
-                if provider:
-                    start_time = time.time()
-                    optimized_text = await provider.optimize(text, prompt)
-                    processing_time = time.time() - start_time
+                if provider is None:
+                    # 配置存在但 provider 建不起来（配置已删除 / 解密失败 / provider 不支持）：
+                    # 与「调用失败」同属「配置没生效」，必须走降级上报，不能静默换用内置 key
+                    raise RuntimeError(f"LLM 配置不可用：{resolved_llm_config_id}")
 
-                    logger.info(
-                        "Text optimized via LLM Gateway",
-                        config_id=resolved_llm_config_id,
-                        original_length=len(text),
-                        optimized_length=len(optimized_text),
-                        processing_time=f"{processing_time:.2f}s"
-                    )
+                start_time = time.time()
+                optimized_text = await provider.optimize(text, prompt)
+                processing_time = time.time() - start_time
 
-                    return OptimizationResult(
-                        original_text=text,
-                        optimized_text=optimized_text,
-                        processing_time=processing_time,
-                        tokens_used=0
-                    )
+                logger.info(
+                    "Text optimized via LLM Gateway",
+                    config_id=resolved_llm_config_id,
+                    original_length=len(text),
+                    optimized_length=len(optimized_text),
+                    processing_time=f"{processing_time:.2f}s"
+                )
+
+                return OptimizationResult(
+                    original_text=text,
+                    optimized_text=optimized_text,
+                    processing_time=processing_time,
+                    tokens_used=0
+                )
             except Exception as e:
+                # 用户配置的 provider 调用失败：记录脱敏后的原因并降级到内置 key。
+                # 原因会随 OptimizationResult 返回给调用方，必须让用户看到，
+                # 否则设置页里配错的 key 会被「优化成功」掩盖。
+                fallback_reason = redact_secrets(e, [self.api_key])
                 logger.warning(
                     "Failed to use LLM Gateway, falling back to legacy",
                     config_id=resolved_llm_config_id,
-                    error=str(e)
+                    error=fallback_reason
                 )
 
         # Fallback to legacy DeepSeek-only implementation
@@ -294,14 +308,16 @@ class TextOptimizer:
             original_length=len(text),
             optimized_length=len(optimized_text),
             processing_time=f"{processing_time:.2f}s",
-            tokens_used=tokens_used
+            tokens_used=tokens_used,
+            degraded=fallback_reason is not None
         )
 
         return OptimizationResult(
             original_text=text,
             optimized_text=optimized_text,
             processing_time=processing_time,
-            tokens_used=tokens_used
+            tokens_used=tokens_used,
+            fallback_reason=fallback_reason
         )
 
     async def batch_optimize(

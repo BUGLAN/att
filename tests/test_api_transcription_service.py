@@ -36,15 +36,20 @@ class _FakeASRProvider:
 
 
 class _FakeOptimizer:
-    """假文本优化器：可配置成功/失败。"""
+    """假文本优化器：可配置成功/失败，以及是否降级到内置 key。"""
 
-    def __init__(self, fail: bool = False):
+    def __init__(self, fail: bool = False, fallback_reason: str | None = None):
         self.fail = fail
+        self.fallback_reason = fallback_reason
 
     async def optimize(self, text, preset_id=None, **kwargs):
         if self.fail:
             raise RuntimeError("模拟优化失败")
-        return SimpleNamespace(optimized_text=f"优化:{text}", processing_time=0.05)
+        return SimpleNamespace(
+            optimized_text=f"优化:{text}",
+            processing_time=0.05,
+            fallback_reason=self.fallback_reason
+        )
 
 
 class _FakeRecordManager:
@@ -161,6 +166,30 @@ def test_auto_optimize_success_reaches_optimized(fake_ws):
         "transcription_completed",
         "optimization_started",
         "optimization_completed",
+    ]
+
+
+def test_auto_optimize_degraded_broadcasts_warning(fake_ws):
+    """配置的 LLM 调用失败、回退到内置 key 时：优化仍算成功，但必须广播
+    optimization_degraded，否则「设置里的 key 没生效」会被静默掩盖。"""
+    manager = _FakeRecordManager()
+
+    asyncio.run(transcription_service.transcribe_audio_background(
+        "rec-degraded",
+        "a.wav",
+        _FakeASRProvider("原始"),
+        manager,
+        _FakeOptimizer(fallback_reason="401 Your api key: *** is invalid"),
+        _Settings(auto_optimize=True, default_preset_id="preset-1"),
+    ))
+
+    assert manager.statuses[-1] == RecordStatus.OPTIMIZED
+    assert fake_ws.events == [
+        "transcription_started",
+        "transcription_completed",
+        "optimization_started",
+        "optimization_completed",
+        "optimization_degraded",
     ]
 
 

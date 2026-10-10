@@ -3,6 +3,7 @@ import { useRecordsStore } from '@/stores/records'
 import { useAppStore } from '@/stores/app'
 import { useElectron } from './useElectron'
 import { buildExportFilename, downloadFromUrl } from '@/utils/exportDownload.mjs'
+import { deriveOptimizationDegradedToast } from './recorder/statusCopy.mjs'
 
 // 当前播放的音频对象
 const currentAudio = ref(null)
@@ -51,8 +52,17 @@ export function useRecords() {
 
   async function optimizeRecord(id) {
     try {
-      await recordsStore.optimizeRecord(id)
-      appStore.showToast('优化完成')
+      const result = await recordsStore.optimizeRecord(id)
+      if (result?.fallback_reason) {
+        // 配置的 LLM 调用失败、回退到 .env 内置 key：优化结果可用，
+        // 但必须提示「配置没生效」，否则配错的 key 会被静默掩盖
+        appStore.showToast(deriveOptimizationDegradedToast(result.fallback_reason), {
+          tone: 'info',
+          duration: 6000
+        })
+      } else {
+        appStore.showToast('优化完成')
+      }
     } catch (error) {
       appStore.showToast('优化失败')
       throw error
