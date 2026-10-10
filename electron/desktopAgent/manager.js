@@ -36,9 +36,16 @@ class DesktopAgentManager extends EventEmitter {
       this.handleStdoutChunk(chunk)
     })
     this.process.stderr.on('data', (chunk) => {
-      this.log('Desktop agent stderr', {
-        message: chunk.toString()
-      })
+      const message = chunk.toString()
+      this.log('Desktop agent stderr', { message })
+      // pynput 在 macOS 缺少辅助功能权限时会向 stderr 输出 "not trusted"
+      // 警告并静默失效，这里兜底转成权限事件，确保界面一定能收到提示
+      if (/not trusted/i.test(message)) {
+        this.emit('permission:required', {
+          capability: 'keyboard',
+          message: '桌面热键监听需要系统辅助功能权限，请在 系统设置 → 隐私与安全性 → 辅助功能 中授权后重启应用'
+        })
+      }
     })
     this.process.on('close', (code) => {
       const expected = this.isStopping

@@ -204,3 +204,36 @@ test('DesktopAgentManager converts spawn errors into agent:error notifications',
   await assert.rejects(startPromise, /spawn blocked/)
   assert.deepEqual(errors, [{ error: 'spawn blocked' }])
 })
+
+test('DesktopAgentManager converts stderr "not trusted" warning into permission:required', async () => {
+  const child = new FakeChildProcess()
+  const manager = new DesktopAgentManager({
+    pythonPath: 'python',
+    scriptPath: 'desktop_agent.py',
+    runtimeRoot: 'E:/repo/att',
+    spawnProcess: () => child
+  })
+
+  const permissions = []
+  manager.on('permission:required', (payload) => permissions.push(payload))
+
+  const startPromise = manager.start()
+  const initRequest = JSON.parse(child.stdin.writes[0].trim())
+  child.stdout.emit('data', `${JSON.stringify({
+    jsonrpc: '2.0',
+    id: initRequest.id,
+    result: { ready: true }
+  })}\n`)
+  await startPromise
+
+  // 模拟 pynput 在 macOS 无辅助功能权限时输出的 stderr 警告
+  child.stderr.emit('data', 'This process is not trusted! Input event monitoring will not be possible until it is added to accessibility clients.\n')
+
+  assert.equal(permissions.length, 1)
+  assert.equal(permissions[0].capability, 'keyboard')
+  assert.match(permissions[0].message, /辅助功能/)
+
+  // 普通 stderr 输出不应重复触发权限事件
+  child.stderr.emit('data', 'some other warning\n')
+  assert.equal(permissions.length, 1)
+})

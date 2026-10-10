@@ -55,6 +55,26 @@ MODIFIER_KEYS = {
 PRESS_GUARD_MS = 250
 
 
+def check_macos_keyboard_trust() -> bool:
+    """检测 macOS 辅助功能权限。
+
+    pynput 在 macOS 上缺少辅助功能权限时不会抛异常，只会向 stderr 打印
+    "not trusted" 警告并静默失效，因此必须在启动监听器前主动检测，
+    否则界面永远收不到权限提示，热键表现为"设置成功但按下无反应"。
+    """
+    if not IS_MACOS:
+        return True
+
+    try:
+        # pyobjc 框架仅随 macOS 上的 pynput 环境存在，延迟导入避免影响其他平台
+        from ApplicationServices import AXIsProcessTrusted
+
+        return bool(AXIsProcessTrusted())
+    except Exception:
+        # 检测能力本身不可用时按已授权处理，避免在异常环境误报权限缺失
+        return True
+
+
 def sort_modifiers(modifiers: list[str]) -> list[str]:
     return sorted(
         modifiers,
@@ -205,6 +225,17 @@ class HotkeyMonitor:
     def start(self) -> None:
         if self.listener is not None:
             return
+
+        if not check_macos_keyboard_trust():
+            # 无辅助功能权限时 pynput 不抛异常而是静默失效，
+            # 必须主动上报，让界面提示用户去系统设置授权
+            self.notifier(
+                "permission.required",
+                {
+                    "capability": "keyboard",
+                    "message": "桌面热键监听需要系统辅助功能权限，请在 系统设置 → 隐私与安全性 → 辅助功能 中授权后重启应用",
+                },
+            )
 
         try:
             self.listener = keyboard.Listener(
