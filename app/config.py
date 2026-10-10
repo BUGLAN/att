@@ -400,9 +400,14 @@ class Settings(BaseSettings):
         return self.data_path / "audio" / "records"
 
     # Pydantic 2 风格配置：迁移自 v1 的 class Config，消除弃用告警
+    # extra="ignore" 是必需的：`.env` 是**全项目共用**的配置文件，除本类字段外还包含
+    # docker-compose（VLLM_IMAGE / ATT_BACKEND_PORT）、桥接脚本（QWEN_STREAMING_MODEL 等）
+    # 读取的键。pydantic-settings 对 env 文件里的未知键默认 extra="forbid"，
+    # 一旦照文档「复制 .env.example 为 .env」就会直接 ValidationError、后端起不来。
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        extra="ignore",
     )
 
 
