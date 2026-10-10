@@ -28,6 +28,24 @@ def temp_dir():
     shutil.rmtree(dir_path, ignore_errors=True)
 
 
+@pytest.fixture(autouse=True)
+def isolate_factory_user_settings(monkeypatch):
+    """测试不得读取开发者本机的 data/settings.json。
+
+    `app.stt.factory` 在 import 期就绑定了 `app.config.user_settings`，而
+    `get_asr_provider_config()` 会把用户设置合并进运行时配置；豆包密钥的优先级又是
+    「用户设置（密文）> runtime 参数 > 环境变量」。本机一旦在设置页保存过 Token，
+    相关断言就会随环境漂移（曾实际踩到），因此这里统一隔离成空实现。
+    """
+    from app.stt import factory as factory_module
+
+    class _EmptyUserSettings:
+        def get_all(self) -> dict:
+            return {}
+
+    monkeypatch.setattr(factory_module, "user_settings", _EmptyUserSettings())
+
+
 @pytest.fixture
 def sample_audio(temp_dir):
     """Create a sample audio file for testing"""

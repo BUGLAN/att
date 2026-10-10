@@ -5,18 +5,37 @@
 2. StreamingSessionManager 会按当前 provider 分派到豆包流式实现（不再硬编码 Qwen）；
 3. 非流式 provider 走流式录音时给出可读错误；
 4. /api/health 的 streaming_available 对在线 provider 直接来自运行时能力。
+
+注意：`get_asr_provider_config()` 会把真实的 `data/settings.json` 合并进配置，
+而豆包密钥的优先级是「用户设置（密文）> runtime 参数 > 环境变量」。
+因此所有调用 factory 的用例都必须先隔离 `user_settings`，
+否则本机一旦在设置页保存过 Token，断言就会随环境变化（曾实际踩到）。
 """
 import pytest
 
 from app.services import streaming_session_manager as manager_module
 from app.services.streaming_session_manager import StreamingSessionManager
+from app.stt import factory as factory_module
 from app.stt.factory import create_asr_provider, get_asr_provider_config
 from app.stt.models import ASRProviderError
 from app.stt.providers.doubao_asr_provider import DoubaoASRProvider, DoubaoStreamingProvider
 from app.stt.providers.whisper_provider import WhisperProvider
 
 
-def test_factory_creates_doubao_provider_from_runtime_settings():
+class _StubUserSettings:
+    """空用户设置：让 factory 只看 runtime 参数与环境变量。"""
+
+    def get_all(self) -> dict:
+        return {}
+
+
+@pytest.fixture
+def isolated_user_settings(monkeypatch):
+    """把 factory 绑定的 user_settings 换成空实现（隔离真实 data/settings.json）。"""
+    monkeypatch.setattr(factory_module, "user_settings", _StubUserSettings())
+
+
+def test_factory_creates_doubao_provider_from_runtime_settings(isolated_user_settings):
     config = get_asr_provider_config(
         {
             "asr_provider": "doubao_asr",
@@ -36,7 +55,7 @@ def test_factory_creates_doubao_provider_from_runtime_settings():
     assert provider.streaming_provider.end_window_size == 600
 
 
-def test_factory_resolves_encrypted_user_setting(monkeypatch, temp_dir):
+def test_factory_resolves_encrypted_user_setting(monkeypatch, temp_dir, isolated_user_settings):
     """用户设置里的密钥是密文，factory 必须解回明文；解密失败则回退环境变量。"""
     from app.utils import encryption as encryption_module
     from app.utils.encryption import APIKeyEncryption
@@ -55,7 +74,7 @@ def test_factory_resolves_encrypted_user_setting(monkeypatch, temp_dir):
     assert config.doubao_asr["api_key"] == "stored-token"
 
 
-def test_streaming_manager_dispatches_to_doubao(monkeypatch):
+def test_streaming_manager_dispatches_to_doubao(monkeypatch, isolated_user_settings):
     monkeypatch.setattr(
         manager_module,
         "get_asr_provider_config",
@@ -75,7 +94,7 @@ def test_streaming_manager_dispatches_to_doubao(monkeypatch):
     assert provider.chunk_samples == 3200  # 200ms @16kHz
 
 
-def test_streaming_manager_rejects_non_streaming_provider(monkeypatch):
+def test_streaming_manager_rejects_non_streaming_provider(monkeypatch, isolated_user_settings):
     monkeypatch.setattr(
         manager_module,
         "get_asr_provider_config",
@@ -124,7 +143,7 @@ def test_health_reports_doubao_streaming_availability(monkeypatch):
     assert "Access Token" in (payload["streaming_error"] or "")
 
 
-def test_whisper_provider_still_created_by_factory():
+def test_whisper_provider_still_created_by_factory(isolated_user_settings):
     provider = create_asr_provider(get_asr_provider_config({"asr_provider": "whisper"}))
 
     assert isinstance(provider, WhisperProvider)
