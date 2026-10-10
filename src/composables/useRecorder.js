@@ -5,7 +5,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useElectron } from './useElectron'
 import { useGlobalWebSocket } from './useWebSocket'
 import { createSilenceDetector } from './useSilenceDetector'
-import { derivePostStopState, deriveStartAbortState } from '@/utils/recordingStopState.mjs'
+import { derivePostStopState, deriveStartAbortState, shouldQueueStopDuringStart } from '@/utils/recordingStopState.mjs'
 // 第 5 轮"安全抽取"出的纯逻辑模块（不依赖 Vue / 浏览器全局对象，可被 Node 直接单测）。
 // 本文件保留全部时序编排：startRecording / stopRecording 主流程、AudioContext、
 // WebSocket 生命周期、热键与悬浮窗同步，只把纯计算与纯判定委托给这些模块。
@@ -1403,7 +1403,9 @@ async function stopStreamingRecording({ fromStart = false } = {}) {
 
   // 启动进行中收到停止请求：排队等 start 完成后消费。
   // fromStart=true 表示已经是「启动完成后消费」的路径，不能再排队（否则死循环）。
-  if (!fromStart && startPending && !appStore.isRecording) {
+  // 注意不能用 isRecording 当判据：prepareRecordingEnvironment 开麦克风之前就把它置真了，
+  // 而启动窗口内它恒为真 → 判据失效会让松手落进下面的放弃分支，最终变成幽灵录音。
+  if (shouldQueueStopDuringStart({ startPending, fromStart })) {
     pendingStopAfterStart = true
     return
   }
@@ -1653,6 +1655,8 @@ function stopSingleRecording() {
   const { tray, syncRecordingState } = useElectron()
   const { sendRecordingStatus } = useGlobalWebSocket()
 
+  // 启动窗口判据这里用 mediaRecorder 状态即可：单段的 recorder 尚未 start 时它必为 null/inactive，
+  // 是"还没开始录"的直接依据，不像 isRecording 那样会被 prepare 提前置真。
   if (startPending && (!mediaRecorder.value || mediaRecorder.value.state === 'inactive')) {
     pendingStopAfterStart = true
     return
@@ -1692,7 +1696,10 @@ function stopMultiRecording() {
   const { tray, syncRecordingState } = useElectron()
   const { sendRecordingStatus } = useGlobalWebSocket()
 
-  if (startPending && !appStore.isRecording) {
+  // 与 stopStreamingRecording 同源：启动窗口内 isRecording 已由 prepare 置真，不能用它当判据，
+  // 否则短按松手会带着 realtimeStopRequested 落进下面的常规停止路径，而 startMultiRecording
+  // 开头的 resetRealtimeState() 又会清掉这个标志 → 会话照建、录音照开（幽灵录音）。
+  if (shouldQueueStopDuringStart({ startPending })) {
     pendingStopAfterStart = true
     return
   }
