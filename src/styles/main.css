@@ -913,6 +913,28 @@ textarea:focus-visible {
     box-shadow: var(--edge-hi);
 }
 
+/* 初始化完成前的占位提示：此阶段表单被禁用，避免改动被静默丢弃 */
+.settings-pending {
+    margin: 0;
+    padding: var(--s-3) var(--s-6);
+    background: var(--bg-elevated, var(--bg-surface));
+    border-bottom: 1px solid var(--line);
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+/* fieldset 只用于「初始化完成前禁用全部控件」，不承担分组视觉，故清掉默认样式 */
+.settings-fieldset {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+}
+
+.settings-fieldset[disabled] {
+    opacity: 0.6;
+}
+
 .settings-group {
     padding: var(--s-6);
     border-bottom: 1px solid var(--line);

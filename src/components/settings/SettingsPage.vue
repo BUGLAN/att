@@ -3,6 +3,10 @@
     <PageHeader title="设置" subtitle="配置你的录音、提示词和 LLM 服务" />
 
     <section class="settings-section">
+      <!-- 初始化完成前禁用全部表单控件：此阶段 watch(form) 的守卫会丢弃改动，
+           用户若在这时勾选开关，改动既不会保存也不会提示（真实踩坑） -->
+      <p v-if="!isInitialized" class="settings-pending">正在读取已保存的设置，稍后即可修改…</p>
+      <fieldset class="settings-fieldset" :disabled="!isInitialized">
         <div class="settings-group">
           <h3 class="settings-group-title">语音识别</h3>
 
@@ -364,6 +368,8 @@
         </div>
       </div>
 
+      </fieldset>
+
     </section>
   </div>
 </template>
@@ -379,6 +385,7 @@ import BaseButton from '@/components/common/BaseButton.vue'
 import BaseInput from '@/components/common/BaseInput.vue'
 import BaseSelect from '@/components/common/BaseSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import { hasPendingSettingsEdits } from './settingsFormSync.mjs'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
@@ -789,6 +796,16 @@ const debouncedSavePreset = debounce(handleDefaultPresetSave, 500)
 
 watch(settings, (value) => {
   runSyncUpdate(() => {
+    // 用户有未提交的改动时不要用服务端值重建表单：
+    // 否则刚改的项会被静默回滚，待保存内容也会被判成「无变化」而丢掉（真实踩坑）
+    if (hasPendingSettingsEdits({
+      initialized: isInitialized.value,
+      draftSnapshot: serializeSettingsPayload(buildSettingsPayload()),
+      savedSnapshot: lastSavedSettingsSnapshot.value
+    })) {
+      return
+    }
+
     normalizeSettings(value)
     lastSavedSettingsSnapshot.value = serializeSettingsPayload(buildSettingsPayload())
   })
@@ -830,7 +847,9 @@ watch(selectedPresetId, () => {
 })
 
 onMounted(async () => {
-  await Promise.all([
+  // 用 allSettled：任意一项初始化失败（健康探测超时、provider 列表异常等）都不能
+  // 让下面的 isInitialized 停在 false —— 那会让此后所有设置保存被守卫静默跳过
+  const initResults = await Promise.allSettled([
     settingsStore.loadSettings(),
     settingsStore.loadRuntimeStatus(true),
     loadPresets(),
@@ -838,6 +857,12 @@ onMounted(async () => {
     loadLLMProviders(),
     loadAudioInputDevices()
   ])
+
+  initResults
+    .filter((result) => result.status === 'rejected')
+    .forEach((result, index) => {
+      console.warn('[Settings] 初始化子步骤失败：', index, result.reason)
+    })
 
   runSyncUpdate(() => {
     normalizeSettings(settings.value)
