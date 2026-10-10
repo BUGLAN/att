@@ -19,8 +19,8 @@ npm run electron:dev:existing-backend # 复用已启动的后端
 npm run build                        # 渲染进程构建
 node scripts/package-electron.js --win   # 打包（见 §5 已知失败）
 
-uv run python -m pytest tests -q     # 后端测试（281 个用例）
-node scripts/run-node-tests.mjs      # 前端纯逻辑测试（15 个文件）
+uv run python -m pytest tests -q     # 后端测试（268 个用例）
+node scripts/run-node-tests.mjs      # 前端纯逻辑测试（16 个文件）
 npm test                             # 上面两条
 ```
 
@@ -33,7 +33,7 @@ Node 测试必须走 `scripts/run-node-tests.mjs`：`tests/` 里有手写 `main(
 ## 2. 架构速查
 
 ```text
-electron/     主进程：后端进程管理、桌面代理(热键/静音)、托盘、悬浮窗、统一浮层、剪贴板监控
+electron/     主进程：后端进程管理、桌面代理(热键/静音)、托盘、悬浮窗、剪贴板监控
 src/          Vue：stores(Pinia) / composables(录音编排) / components(common 原语 → 页面)
 app/          FastAPI：
   api/routers/   HTTP + WS 端点（只做解析与组装，不写业务）
@@ -41,9 +41,12 @@ app/          FastAPI：
   repositories/  JSON 持久化（原子写、单写者锁、索引、路径安全）
   stt/           ASR provider（base=批量、streaming_base=流式、factory=装配）
   llm/           LLM 配置、网关、优化器、多 provider
-  records/ clipboard/ wordbook/ ai_actions/ prompts/   业务域
+  records/ clipboard/ prompts/   业务域
   config.py      Settings(环境变量) + UserSettings(data/settings.json)
 ```
+
+> 2026-10 功能减法：统一浮层、生词本（wordbook）、AI 动作（ai_actions）已整体下线并删除，
+> 不要在改动时引用或"恢复"这些域。
 
 细节见 `docs/架构说明.md`；端点见 `docs/API.md`；配置见 `docs/配置说明.md`。
 
@@ -83,8 +86,8 @@ app/          FastAPI：
 | --- | --- |
 | `data/settings.json` 覆盖 `.env` | `get_asr_provider_config()` 里 `user_settings.get_all()` 后合并，所以改了 `.env` 的 `ASR_PROVIDER` 可能不生效，以设置页/`settings.json` 为准 |
 | 豆包密钥优先级 | 用户设置（密文）> runtime 参数 > `DOUBAO_ASR_API_KEY` 环境变量；`resolve_doubao_api_key()` 先看密文 |
-| `/api/prompts` 写接口恒 400 | `app/prompts/file_manager.py` 的 `create/update/delete` 主动 `raise ValueError`；预设的唯一真相源是 `prompts/*.txt`，改预设要改文件 |
-| 统一浮层没有入口 | `electron/main.js` 的 `overlay:open-clipboard` / `overlay:open-selection` 通道**没有渲染侧调用方**，托盘/快捷键也没有对应项 → 浮层打不开。改浮层前先决定"入口从哪来" |
+| `/api/prompts` 是只读的 | 预设的唯一真相源是 `prompts/*.txt`，改预设要改文件；写端点（POST/PUT/DELETE）已在 2026-10 减法中删除，只剩 GET 列表与 PUT default |
+| 统一浮层已下线 | `electron/overlay/`、`src/components/overlay/`、`overlay:*` IPC 与 `clipboard_overlay_*`/`selection_toolbar_*` 设置键已在 2026-10 减法中删除；`tests/test_desktop_agent_integration.js` 有静态断言，别把这些加回来 |
 | `app/api/routes.py` 的聚合 `router` 不参与生产挂载 | `app/main.py` 逐个 `include_router` 子路由；聚合层只为测试与兼容再导出。别顺手 `include_router(routes.router)`，会重复挂载 |
 | `/api/streaming/service*` 是别名 | 等价于 `/api/model-service*`，前端只用后者 |
 | 健康字段双命名 | `qwen_streaming_*` 是旧名（前端仍读），`streaming_*` / `model_service_*` 是新名，两者同源。删旧名前先全仓检索前端 |
@@ -92,8 +95,8 @@ app/          FastAPI：
 | 在线 provider 不需要「开启模型」 | 豆包走 `model_service_mode="online"`，凭据配齐即 `online_ready=True` |
 | Node 内置 WebSocket 连不上豆包 | undici 的 `new WebSocket(url, options)` 会忽略 headers（实测 401/403）；Python 侧已用 `websockets.sync` + `additional_headers`，别改回 `websocket-client` 之类 |
 | 打包漏 `scripts/` | `electron-builder.yml` 的 `extraResources` 没有 `scripts/`，而后端会 `uvicorn scripts.qwen_streaming_service:app`；补打包清单时记得一起加 |
-| `Settings` 里若干字段零读取 | `supported_formats` / `chunk_duration` / `target_sample_rate` / `target_channels` 无人读（真实生效的是 `AudioProcessor` 类常量）；`MAX_UPLOAD_SIZE` 在限流里生效但 `validate_audio` 用硬编码 500MB |
-| 死代码不要当参考 | `useWebSocket()`（`src/composables/useWebSocket.js`）、`processor.cleanup_temp_files/cleanup_file`、`convert_to_wav`、`chunk_audio` 整条链路、`ASRCapabilityError`、`reset_record_indexes` 等目前**无调用方**，别照抄 |
+| `Settings` 已删死字段 | `supported_formats` / `chunk_duration` / `target_sample_rate` / `target_channels` / `qwen_streaming_gpu_memory_utilization` / `qwen_streaming_max_model_len` 已删除（真实生效的是 `AudioProcessor` 类常量与桥接脚本自身 env）；`MAX_UPLOAD_SIZE` 在限流里生效但 `validate_audio` 用硬编码 500MB |
+| ~~死代码清单~~ | 2026-10 减法已全量清理（`useWebSocket()`、`convert_to_wav`、`chunk_audio` 链路、`ASRCapabilityError`、`reset_record_indexes` 等）；新增死代码时随手删，别攒清单 |
 | 提示词文案不要顺手改 | `src/composables/recorder/statusCopy.mjs` 里真流式那句是"复制**或**粘贴失败"，被 `tests/test_recorder_status_copy.mjs` 锁死；要统一得同时改测试 |
 | `writer.lock` 冲突 | 提示"另一个 ATT 后端进程正在写同一份数据目录"时，先关掉另一个后端/容器，或临时 `ATT_ALLOW_MULTI_WRITER=1`（会丢数据风险） |
 
@@ -101,21 +104,22 @@ app/          FastAPI：
 
 ## 5. 当前已知缺陷（不要"顺手修一半"）
 
-完整清单、证据与「会导致什么」见 `docs/已知问题.md`。最影响改动的四条：
+完整清单、证据与「会导致什么」见 `docs/已知问题.md`。最影响改动的三条：
 
-1. 统一浮层无入口（要么补入口，要么整体下线，别只改一半）——**现状等于功能不存在**，
-   且划词翻译不可达 → 生词本永远为空。
-2. `--win` 打包在 nsis 阶段失败（`release/` 只有 `win-unpacked`）——**产不出安装包**；
+1. `--win` 打包在 nsis 阶段失败（`release/` 只有 `win-unpacked`）——**产不出安装包**；
    打包版还缺 `scripts/`，本地流式桥接起不来。`win.target` 需收敛为 `portable`
    或先裁剪 `python-dist` 载荷。
-3. 多段录音最后一片上传失败会卡住：`src/composables/useRecorder.js:599` 的 `recorder.onstop` 没有 catch，
-   `uploadRealtimeSegment` 只有 `try/finally`（`:958`），异常会让 `:1115` 的收尾永不执行 →
+2. 多段录音最后一片上传失败会卡住：`src/composables/useRecorder.js` 的 `recorder.onstop` 没有 catch，
+   `uploadRealtimeSegment` 只有 `try/finally`，异常会让收尾永不执行 →
    **界面永久停在"正在转写"、后续录音无法开始，且这段录音实际丢失**。
-   全局 WS 有**固定 3s 重连**（`src/composables/useWebSocket.js:111` 的 `scheduleGlobalReconnect`，
+   全局 WS 有**固定 3s 重连**（`src/composables/useWebSocket.js` 的 `scheduleGlobalReconnect`，
    由 `onclose` 触发，另有 30s 心跳），但无退避、无重试上限、`onerror` 不触发，
    且收尾只由 WS 事件驱动、没有超时降级。
-4. LLM provider（`app/llm/providers/*.py`）构造客户端时没传 `timeout`，SDK 默认 600s →
+3. LLM provider（`app/llm/providers/*.py`）构造客户端时没传 `timeout`，SDK 默认 600s →
    **优化请求最长挂 10 分钟**，界面一直转圈，记录停在 `optimizing`。
+
+> 2026-10 减法已解决的旧缺陷（统一浮层无入口、`/api/prompts` 僵尸写接口、死代码、
+> 零引用组件）见 `docs/已知问题.md` 的标注与「已修复」表。
 
 ---
 

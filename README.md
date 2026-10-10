@@ -1,7 +1,7 @@
 # Audio to Text（ATT）
 
-一款 Windows / macOS 桌面语音转文字工具：**录音 → 语音识别 → LLM 优化 → 落库/复制**，
-并附带剪贴板历史、生词本与划词 AI 动作。
+一款 Windows / macOS 桌面**录音笔记**工具：**录音 → 语音识别 → （可选）LLM 优化 → 落库/导出/复制**，
+并附带剪贴板历史。产品定位是「简单的录音笔记」：记录每一次录音，保存音频与文字。
 
 - 语音识别支持**本地离线**（faster-whisper、Qwen3-ASR）与**在线流式**（火山引擎豆包双向流式 ASR）
 - 文本优化走可配置的 LLM（DeepSeek / Claude / OpenAI / 豆包 / 通义千问 / 任意 OpenAI 兼容服务）
@@ -21,9 +21,7 @@
 | 语音识别 | `whisper`（faster-whisper）、`qwen_asr`（Qwen3-ASR）、`doubao_asr`（火山豆包在线流式） |
 | 文本优化 | 多 LLM 配置管理，支持预设提示词；可开启「转写后自动优化」 |
 | 记录库 | 搜索、分页、编辑、收藏、导出（TXT / JSON）、音频回放 |
-| 剪贴板历史 | 自动记录复制的文本与图片，支持卡片动作（复制 / 翻译 / 编辑等） |
-| 生词本 | 保存词条与释义，支持从划词动作写入 |
-| AI 动作 | `translate` / `explain` / `summarize` / `rewrite` / `chat` 五个后端动作 |
+| 剪贴板历史 | 自动记录复制的文本与图片，支持收藏 / 置顶 / 复制 / 图片预览 |
 | 提示词预设 | 内置 5 个预设（会议记录 / 小说创作 / 文案优化 / 程序员模式 / 通用优化） |
 | 桌面集成 | 全局热键、录音时暂停系统音频、托盘菜单、悬浮窗实时字幕 |
 | 数据安全 | JSON 原子写 + 单写者锁；API Key 加密落盘（Fernet） |
@@ -51,7 +49,6 @@ Electron 主进程 (electron/)
   ├─ desktopAgent/            本地 Python 代理：全局热键 + 录音静音
   ├─ tray/                    托盘菜单（记录列表 / 设置 / 退出）
   ├─ floatingWindow/          录音悬浮窗（实时字幕）
-  ├─ overlay/                 统一浮层窗口管理
   └─ clipboardMonitor/        剪贴板轮询与落库
 
 Vue 渲染进程 (src/)
@@ -65,7 +62,7 @@ FastAPI 后端 (app/)
   ├─ repositories/            JSON 持久化：原子写、单写者锁、索引、路径安全
   ├─ stt/                     ASR provider（批量接口 + 流式接口 + 工厂）
   ├─ llm/                     LLM 配置管理、网关、优化器、多 provider 实现
-  ├─ records/ clipboard/ wordbook/ ai_actions/ prompts/  业务域
+  ├─ records/ clipboard/ prompts/  业务域
   └─ config.py                环境变量 Settings + data/settings.json 用户设置
 ```
 
@@ -180,7 +177,7 @@ node scripts/package-electron.js --win
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/使用说明.md](docs/使用说明.md) | 面向用户：三种录音模式、热键、记录库、剪贴板、生词本、设置项逐条说明、FAQ |
+| [docs/使用说明.md](docs/使用说明.md) | 面向用户：三种录音模式、热键、记录库、剪贴板、设置项逐条说明、FAQ |
 | [docs/架构说明.md](docs/架构说明.md) | 三层架构、后端分层、数据流、ASR 抽象、持久化与并发约束、Electron 模块 |
 | [docs/配置说明.md](docs/配置说明.md) | 环境变量全表（含「写了不生效」的坑）、`settings.json` 全量键、优先级、密钥与加密 |
 | [docs/API.md](docs/API.md) | 全部 HTTP 端点 + 两个 WebSocket 的帧格式与状态码约定 |
@@ -193,13 +190,11 @@ node scripts/package-electron.js --win
 
 ## 已知问题（摘要）
 
-完整清单、证据与「会导致什么」见 [docs/已知问题.md](docs/已知问题.md)。最需要知道的四条：
+完整清单、证据与「会导致什么」见 [docs/已知问题.md](docs/已知问题.md)。最需要知道的三条：
 
-1. **统一浮层（剪贴板面板 / 划词面板）在桌面版没有入口** → 功能打不开；连带划词翻译不可达，
-   **生词本永远是空的**；设置页 4 个浮层开关改了没有任何效果。
-2. **`--win` 打包在 nsis 阶段失败** → 产不出安装包（只有 `win-unpacked` 免安装目录）；
+1. **`--win` 打包在 nsis 阶段失败** → 产不出安装包（只有 `win-unpacked` 免安装目录）；
    且 `extraResources` 未包含后端会 spawn 的 `scripts/`，**打包版里 Qwen 流式录音起不来**。
-3. **多段录音的最后一片上传失败会卡住** → 界面永久停在"正在转写"、后续录音无法开始，
+2. **多段录音的最后一片上传失败会卡住** → 界面永久停在"正在转写"、后续录音无法开始，
    只能重启应用，而且**这段录音实际丢失**（临时分片与后端会话泄漏）。
-4. **LLM provider 没有请求超时**（SDK 默认 600s）→ 网络异常时优化挂最多 10 分钟，
+3. **LLM provider 没有请求超时**（SDK 默认 600s）→ 网络异常时优化挂最多 10 分钟，
    界面一直转圈，记录长时间停在 `optimizing`。

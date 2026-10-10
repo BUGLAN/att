@@ -1,23 +1,24 @@
 # API 接口说明
 
 本文档中的全部事实由代码提取，主要来源：`app/main.py`、`app/api/routers/*.py`、
-`app/ai_actions/routes.py`、`app/clipboard/routes.py`、`app/wordbook/routes.py`、
-`app/api/schemas.py`、`app/api/uploads.py`、`app/services/*`。
+`app/clipboard/routes.py`、`app/api/schemas.py`、`app/api/uploads.py`、`app/services/*`。
 
 > 代码与常识不符之处一律以代码为准，并在备注中标注。
+> 2026-10 功能减法：统一浮层 / 生词本（`/api/wordbook/*`）/
+> AI 动作（`/api/ai-actions/*`）/ 提示词写接口相关端点已删除，本文不再收录。
 
 ## 0. 基础信息
 
 | 项 | 事实 | 出处 |
 | --- | --- | --- |
 | 默认监听 | `0.0.0.0:8000`（直接 `python -m app.main` 时）；Electron 用 `ATT_BACKEND_PORT` / `PORT` 决定端口 | `app/main.py:204-208`、`electron/python/manager.js:86` |
-| 路由装配 | `app/main.py:168-175` 逐个 `include_router`：records / sessions / settings / prompts / llm / ai_actions / clipboard / wordbook | `app/main.py:168-175` |
-| 聚合 router | `app/api/routes.py:55` 的聚合 router **不参与生产挂载**，只为测试与兼容再导出（且它只含前 5 个子路由，不含 ai_actions/clipboard/wordbook） | `app/api/routes.py:53-60` |
-| 前缀 | 各子路由自带 `prefix="/api"`；`ai_actions` 为 `/api/ai-actions`，`clipboard` 为 `/api/clipboard`，`wordbook` 为 `/api/wordbook` | `app/ai_actions/routes.py:14` 等 |
+| 路由装配 | `app/main.py` 逐个 `include_router`：records / sessions / settings / prompts / llm / clipboard | `app/main.py` |
+| 聚合 router | `app/api/routes.py` 的聚合 router **不参与生产挂载**，只为测试与兼容再导出（且它只含 records/sessions/settings/prompts/llm 五个子路由，不含 clipboard） | `app/api/routes.py` |
+| 前缀 | 各子路由自带 `prefix="/api"`；`clipboard` 为 `/api/clipboard` | `app/api/routers/*.py` |
 | 静态资源 | `dist/assets` 存在时挂载到 `/assets` | `app/main.py:181-183` |
 | 根路径 | `dist/index.html` 存在则返回该文件，否则返回 `{name, version, docs, health}` JSON | `app/main.py:186-198` |
 | 鉴权 | **无任何鉴权**。跨域隔离靠 CORS 白名单：`http://localhost:8090`、`http://127.0.0.1:8090`、`null` + 正则 `^https?://(localhost\|127\.0\.0\.1)(:\d+)?$`，且 `allow_credentials=False` | `app/main.py:151-165` |
-| 请求校验失败 | 路由内 Pydantic 请求体校验失败由 FastAPI 自动返回 **422**（如 `AIActionRequest.source_text` 的 `min_length=1`、查询参数的 `pattern`/`le`）；而 `PUT /api/settings` 的请求体校验被路由捕获后转成 **400** | `app/ai_actions/routes.py:28`、`app/api/routers/records.py:179`、`app/services/settings_service.py:216-221` |
+| 请求校验失败 | 路由内 Pydantic 请求体校验失败由 FastAPI 自动返回 **422**（如查询参数的 `pattern`/`le`）；而 `PUT /api/settings` 的请求体校验被路由捕获后转成 **400** | `app/api/routers/records.py:179`、`app/services/settings_service.py:216-221` |
 
 ---
 
@@ -173,17 +174,12 @@
 
 | 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| GET | `/api/prompts` | 列出全部预设 | — | `presets`（数组）、`default_preset_id`、`last_used_preset_id` | `app/api/routers/prompts.py:35-49`；注意 `last_used_preset_id` 实际回的是 `default_preset_id` 的归一化结果 |
-| PUT | `/api/prompts/default` | 设为默认预设 | body `{"preset_id": "..."}` | `{status:"updated", default_preset_id}` | `prompts.py:52-70`；预设不存在 → 404 |
-| GET | `/api/prompts/{preset_id}` | 读取单个预设 | path `preset_id` | `PromptPreset` 全字段 | `prompts.py:73-80`；不存在 404 |
-| POST | `/api/prompts` | 新建预设 | body `PromptPresetCreate` | — | **恒 400**（见下方说明） |
-| PUT | `/api/prompts/{preset_id}` | 更新预设 | body `PromptPresetUpdate` | — | **恒 400**（预设不存在时 404） |
-| DELETE | `/api/prompts/{preset_id}` | 删除预设 | path `preset_id` | — | **恒 400**（预设不存在时 404） |
-| POST | `/api/prompts/{preset_id}/preview` | 用测试文本渲染提示词 | body `{"text": "..."}` | `preset_id`、`rendered_prompt` | `prompts.py:120-130`；模板含 `{text}` 时 `format`，否则拼接（`app/prompts/file_manager.py:89-99`） |
+| GET | `/api/prompts` | 列出全部预设 | — | `presets`（数组）、`default_preset_id`、`last_used_preset_id` | `app/api/routers/prompts.py`；注意 `last_used_preset_id` 实际回的是 `default_preset_id` 的归一化结果 |
+| PUT | `/api/prompts/default` | 设为默认预设 | body `{"preset_id": "..."}` | `{status:"updated", default_preset_id}` | `prompts.py`；预设不存在 → 404 |
 
-> **写接口恒 400 的原因**：`PromptManager.create/update/delete` 主动 `raise ValueError("只支持 prompts 目录中的提示词文件")`，
-> 路由捕获后统一转 400（`app/prompts/file_manager.py:101-112`、`prompts.py:90-91, 103-104, 116-117`）。
-> 预设的唯一真相源是仓库根目录 `prompts/*.txt`；预设 id 由文件名派生为 `preset-<文件名去掉扩展名>`（`file_manager.py:17-18, 44-45`）。
+> **预设是只读的**：唯一真相源是仓库根目录 `prompts/*.txt`，预设 id 由文件名派生为
+> `preset-<文件名去掉扩展名>`（`file_manager.py:17-18, 44-45`）。
+> 历史上的 POST/PUT/DELETE 写端点（恒 400）与 GET 单条 / preview 已在功能减法中删除。
 
 ---
 
@@ -205,22 +201,6 @@
 
 ---
 
-## 8. AI 动作（ai-actions）
-
-所有端点都直接复用默认 LLM provider；服务未初始化时 → **503**（`app/ai_actions/routes.py:56-61`）。
-
-| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
-| --- | --- | --- | --- | --- | --- |
-| POST | `/api/ai-actions/chat` | Agent 多轮对话 | `messages[]`（`{role, content}`）、`metadata` | `AIActionService.chat()` 的结果字典 | `routes.py:75-93`；未配置 LLM → **502** + 中文提示；请求体语义错误（空 messages / 非法 role / 空 content）→ **400**；其他异常 → 502 |
-| POST | `/api/ai-actions/translate` | 翻译 | `source_text`（必填，`min_length=1`）、`source_app`、`source_context`、`auto_add_to_wordbook`（默认 `true`）、`metadata` | 动作结果字典 | `routes.py:96-100` |
-| POST | `/api/ai-actions/explain` | 解释 | 同上 | 同上 | `routes.py:103-107` |
-| POST | `/api/ai-actions/summarize` | 总结 | 同上 | 同上 | `routes.py:110-114` |
-| POST | `/api/ai-actions/rewrite` | 改写 | 同上 | 同上 | `routes.py:117-121` |
-
-> 这 4 个动作端点未包 `try/except`：`_run()` 抛出的异常会变成 FastAPI 的 500（与 `/chat` 统一转 502 的策略不同）。
-
----
-
 ## 9. 剪贴板（clipboard）
 
 | 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
@@ -235,40 +215,24 @@
 
 ---
 
-## 10. 生词本（wordbook）
-
-| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
-| --- | --- | --- | --- | --- | --- |
-| GET | `/api/wordbook` | 查询词条 | query `query`、`entry_type`（`word\|phrase\|sentence`）、`favorite_only`、`limit`（1..500，默认 100） | **词条数组** | `app/wordbook/routes.py:47-63`（`prefix` + 空路径） |
-| POST | `/api/wordbook` | 创建或追加词条 | `source_text`、`normalized_text`、`translation`（三者必填 `min_length=1`）、`language`（默认 `unknown`）、`entry_type`（默认 `word`）、`explanations`、`examples`、`source_app`、`source_context`、`metadata` | 词条字典 | `routes.py:66-82` |
-| GET | `/api/wordbook/stats` | 统计 | — | `total`、`today`、`favorites`、`queried_total` | `routes.py:85-89`、`app/wordbook/manager.py:276-286` |
-| GET | `/api/wordbook/{entry_id}` | 读取单条 | path `entry_id` | 词条字典 | `routes.py:92-99`；不存在 404 |
-| PUT | `/api/wordbook/{entry_id}` | 更新词条 | `translation`、`explanations`、`examples`、`is_favorite`、`metadata`（均可选） | 词条字典 | `routes.py:102-116`；不存在 404 |
-
-> 生词本**没有** DELETE 端点（对比剪贴板）。
-
----
-
-## 11. 响应状态码约定
+## 10. 响应状态码约定
 
 | 状态码 | 出现场景 | 代码证据 |
 | --- | --- | --- |
-| **400** | ① 上传无文件名：`No filename provided`；② 音频校验失败（格式不支持 / 时长 < 0.5s / 空文件 / 超过硬编码 500MB）；③ 记录无 `raw_text` 却请求优化：`No text to optimize`；④ 导出 `format` 非 `txt`/`json`；⑤ `PUT /api/settings` 类型/枚举/范围校验失败、无有效键、热键非法；⑥ 提示词 `POST/PUT/DELETE /api/prompts`（恒 400）；⑦ LLM 配置创建/更新异常、未知 provider；⑧ `POST /api/ai-actions/chat` 请求体语义错误 | `records.py:92, 100-101, 319, 396-400`；`sessions.py:82-83`；`settings_service.py:216-244`；`file_manager.py:101-112`；`llm.py:99-100, 117-118, 192-193`；`ai_actions/routes.py:86-88` |
-| **404** | 资源不存在：记录、会话、提示词预设、LLM 配置、剪贴板条目/图片、生词本词条；以及记录音频路径为空或不是普通文件 | `records.py:211, 222, 267, 277, 287, 294, 299, 316, 392`；`sessions.py:60, 76, 125, 203`；`prompts.py:60, 79, 101, 114, 126`；`llm.py:69, 110, 127, 142, 157`；`clipboard/routes.py:88, 97, 101, 118, 127`；`wordbook/routes.py:98, 115` |
+| **400** | ① 上传无文件名：`No filename provided`；② 音频校验失败（格式不支持 / 时长 < 0.5s / 空文件 / 超过硬编码 500MB）；③ 记录无 `raw_text` 却请求优化：`No text to optimize`；④ 导出 `format` 非 `txt`/`json`；⑤ `PUT /api/settings` 类型/枚举/范围校验失败、无有效键、热键非法；⑥ LLM 配置创建/更新异常、未知 provider | `records.py:92, 100-101, 319, 396-400`；`sessions.py:82-83`；`settings_service.py:216-244`；`llm.py:99-100, 117-118` |
+| **404** | 资源不存在：记录、会话、提示词预设、LLM 配置、剪贴板条目/图片；以及记录音频路径为空或不是普通文件 | `records.py:211, 222, 267, 277, 287, 294, 299, 316, 392`；`sessions.py:60, 76, 125, 203`；`prompts.py`；`llm.py:69, 110, 127, 142, 157`；`clipboard/routes.py:88, 97, 101, 118, 127` |
 | **409** | 记录乐观锁冲突：`PUT /api/records/{id}` 传了 `revision`，且该记录仍存在但版本已变（detail：`记录已被其他操作修改，请刷新后重试`） | `records.py:258-266` |
 | **413** | 上传请求体或音频超过 `settings.max_upload_size`（`POST /api/audio/upload`、`POST /api/sessions/{id}/segments`） | `app/api/uploads.py:26-43` |
-| **422** | FastAPI/Pydantic 对**未捕获**的请求体或查询参数校验失败自动返回（如 `AIActionRequest.source_text` 缺失、`search_type` 不在枚举内、`page_size > 200`） | `ai_actions/routes.py:28`、`records.py:179-182`、`clipboard/routes.py:46-49`、`wordbook/routes.py:50-52` |
-| **500** | ① `POST /api/model-service/start|stop` 内部异常；② `PUT /api/settings` 需重建 provider 但 provider 未初始化，或重建过程抛异常（设置已落盘）；③ `/api/ai-actions/{translate,explain,summarize,rewrite}` 未捕获异常 | `settings.py:62, 71`；`settings_service.py:273, 285-288`；`ai_actions/routes.py:64-72, 96-121` |
-| **502** | ① `POST /api/records/{id}/optimize` 优化失败（detail：`文本优化失败：…`，并广播 WS `optimization_failed`）；② `POST /api/ai-actions/chat` 未配置可用 LLM 或上游 LLM 异常 | `records.py:360-363`；`ai_actions/routes.py:83-93` |
-| **503** | AI 动作服务尚未初始化（`ai_action_service is None`） | `ai_actions/routes.py:56-61` |
+| **422** | FastAPI/Pydantic 对**未捕获**的请求体或查询参数校验失败自动返回（如 `search_type` 不在枚举内、`page_size > 200`） | `records.py:179-182`、`clipboard/routes.py:46-49` |
+| **500** | ① `POST /api/model-service/start|stop` 内部异常；② `PUT /api/settings` 需重建 provider 但 provider 未初始化，或重建过程抛异常（设置已落盘） | `settings.py:62, 71`；`settings_service.py:273, 285-288` |
+| **502** | `POST /api/records/{id}/optimize` 优化失败（detail：`文本优化失败：…`，并广播 WS `optimization_failed`） | `records.py:360-363` |
 
 > 说明：文档里未列出的 4xx/5xx 只可能来自 FastAPI 自身（如路由不匹配的 404、方法不允许的 405）。
 
 ---
 
-## 12. 待确认
+## 11. 待确认
 
-- `GET /api/prompts` 的 `last_used_preset_id` 字段回传的是 `default_preset_id` 的归一化值（`prompts.py:48`），
-  但 `PUT /api/prompts/default` 会同时写 `default_preset_id` 与 `last_used_preset_id`（`prompts.py:62-65`）。
+- `GET /api/prompts` 的 `last_used_preset_id` 字段回传的是 `default_preset_id` 的归一化值（`prompts.py`），
+  但 `PUT /api/prompts/default` 会同时写 `default_preset_id` 与 `last_used_preset_id`。
   这是**有意为之还是笔误**，代码中无注释说明，**待确认**。
-- `/api/ai-actions/*` 的动作端点未像 `/chat` 那样统一把上游异常转成 502，**是否为设计意图待确认**。
