@@ -1,19 +1,9 @@
 <template>
   <section class="clipboard-page">
     <PageHeader
-      variant="hero"
-      title="剪切板历史"
-      kicker="DIGITAL OBSIDIAN"
-      subtitle="剪切板记录中心，支持文本、图片、文件与链接的历史整理与悬停预览。"
-      :stats="[
-        { label: '今日记录', value: stats.today },
-        { label: '总条目', value: stats.total }
-      ]"
-    >
-      <template #meta>
-        <BaseBadge tone="accent" size="md" pill>今日记录 {{ stats.today }} 条</BaseBadge>
-      </template>
-    </PageHeader>
+      title="剪切板"
+      subtitle="自动记录复制的文本与图片，支持收藏、置顶、筛选与悬停预览。"
+    />
 
     <section class="clipboard-toolbar">
       <div class="clipboard-search">
@@ -115,7 +105,6 @@ import { useAppStore } from '@/stores/app'
 import { useClipboard } from '@/composables/useClipboard'
 import { useElectron } from '@/composables/useElectron'
 import ClipboardCard from '@/components/clipboard/ClipboardCard.vue'
-import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import BaseInput from '@/components/common/BaseInput.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
