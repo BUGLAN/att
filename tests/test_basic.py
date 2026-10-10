@@ -10,7 +10,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.audio.processor import AudioProcessor
-from app.stt.transcriber import WhisperTranscriber
 from app.records.manager import RecordManager
 from app.config import settings
 
