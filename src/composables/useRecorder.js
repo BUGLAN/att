@@ -203,6 +203,7 @@ function cleanupStreamingAudio() {
 }
 
 function cleanupStreamingSocket() {
+  clearFinishWatchdog()
   if (streamingSocket) {
     streamingSocket.onopen = null
     streamingSocket.onmessage = null
@@ -216,6 +217,43 @@ function cleanupStreamingSocket() {
 
   streamingConnectionState.value = 'idle'
   streamingAwaitingFinish = false
+}
+
+// 收尾看门狗：发出 stream_finish 后后端最长会在 ASR finish（6s 硬超时）内回包，
+// 优化已改为后台任务不再阻塞收尾；15s 仍无回包基本可断定回包永远来不了
+// （后端异常 / 连接已死且 close 未送达）。不收口的话界面会永久停在「正在完成流式转写」。
+const STREAM_FINISH_WATCHDOG_MS = 15000
+let finishWatchdog = null
+
+function clearFinishWatchdog() {
+  if (finishWatchdog) {
+    clearTimeout(finishWatchdog)
+    finishWatchdog = null
+  }
+}
+
+function armFinishWatchdog() {
+  clearFinishWatchdog()
+  finishWatchdog = setTimeout(() => {
+    finishWatchdog = null
+    if (!streamingAwaitingFinish) {
+      return
+    }
+
+    const appStore = useAppStore()
+    const { tray } = useElectron()
+
+    streamingAwaitingFinish = false
+    cleanupStreamingSocket()
+    currentSessionId.value = null
+    appStore.setRecording(false)
+    appStore.setTranscribing(false)
+    tray.setIcon('idle')
+    livePhase.value = 'error'
+    sessionStatusText.value = '流式收尾超时，记录可能仍在后台处理'
+    completeFloatingSession('error', '流式收尾超时')
+    appStore.showToast('流式收尾超时，请稍后到记录集查看结果')
+  }, STREAM_FINISH_WATCHDOG_MS)
 }
 
 /**
@@ -243,6 +281,35 @@ function handleUnexpectedStreamingClose() {
   completeFloatingSession('error', '流式连接已断开')
 
   appStore.showToast('流式转写连接已断开，请重新开始录音')
+}
+
+/**
+ * 收尾等待中连接断开（stream_finished 永远不会到达）时的收口。
+ * 与意外断开不同：此刻录音已停止、音频已推完，记录可能已由后端落库，
+ * 所以文案引导去记录集确认，而不是简单要求重新录音。
+ */
+function handleFinishInterruptedClose() {
+  const appStore = useAppStore()
+  const { tray } = useElectron()
+
+  clearDurationTimer()
+  cleanupStreamingAudio()
+  stopMediaTracks()
+  mediaRecorder.value = null
+  streamingSocket = null
+  startPending = false
+  streamingAwaitingFinish = false
+  clearFinishWatchdog()
+  currentSessionId.value = null
+  appStore.setRecording(false)
+  appStore.setTranscribing(false)
+  tray.setIcon('idle')
+  livePhase.value = 'error'
+  sessionStatusText.value = '流式连接在收尾时中断，请到记录集确认结果'
+
+  completeFloatingSession('error', '流式收尾连接中断')
+
+  appStore.showToast('流式连接在收尾时中断，请稍后到记录集查看结果')
 }
 
 function updateStreamingTranscript(text) {
@@ -730,6 +797,14 @@ async function connectStreamingSocket(language) {
         return
       }
 
+      if (action === streamProtocol.STREAM_CLOSE_ACTIONS.FINISH_INTERRUPTED) {
+        // 收尾等待中连接断开：stream_finished 永远不会再来（后端异常或网络中断），
+        // 记录可能已由后端落库。完整收口解锁界面，提示去记录集确认结果。
+        streamingConnectionState.value = 'error'
+        handleFinishInterruptedClose()
+        return
+      }
+
       if (action === streamProtocol.STREAM_CLOSE_ACTIONS.UNEXPECTED) {
         // 录音过程中意外断开：原实现只改内部状态，导致麦克风继续采集、时长无限增长、
         // 悬浮窗永久置顶显示"正在完成"，必须在此完整收口。
@@ -774,12 +849,23 @@ async function connectStreamingSocket(language) {
             const { tray } = useElectron()
             const { record, finalText } = streamProtocol.deriveStreamFinishedPayload(message)
 
-            if (record) {
-              syncRecordIntoStore(record)
-              appStore.setCurrentRecordId(record.id)
-              appStore.setCurrentRecord(record)
-              appStore.setRecordStatus({ record_id: record.id, status: record.status })
+            if (!record) {
+              // 后端对「极短点击 / 没有有效语音」回 record=null（音频不留档），
+              // 这是正常业务结果，轻提示收尾即可
+              livePhase.value = 'completed'
+              sessionStatusText.value = '没有识别到语音内容'
+              completeFloatingSession('complete', '')
+              appStore.showToast('没有识别到语音内容')
+              streamingAwaitingFinish = false
+              cleanupStreamingSocket()
+              currentSessionId.value = null
+              return
             }
+
+            syncRecordIntoStore(record)
+            appStore.setCurrentRecordId(record.id)
+            appStore.setCurrentRecord(record)
+            appStore.setRecordStatus({ record_id: record.id, status: record.status })
 
             updateStreamingTranscript(finalText)
             livePhase.value = 'completed'
@@ -1183,7 +1269,11 @@ async function startStreamingRecording() {
 
     if (pendingStopAfterStart) {
       pendingStopAfterStart = false
-      await stopStreamingRecording()
+      // fromStart：此处是「启动完成后消费排队停止」的唯一入口，
+      // 必须绕过 stopStreamingRecording 里的 startPending 重入守卫——
+      // 否则守卫会把 pendingStopAfterStart 原样置回，消费永远无效，
+      // 表现为快速点按热键时录音再也起不来。
+      await stopStreamingRecording({ fromStart: true })
       return
     }
 
@@ -1212,12 +1302,14 @@ async function startStreamingRecording() {
   }
 }
 
-async function stopStreamingRecording() {
+async function stopStreamingRecording({ fromStart = false } = {}) {
   const appStore = useAppStore()
   const { tray, syncRecordingState } = useElectron()
   const { sendRecordingStatus } = useGlobalWebSocket()
 
-  if (startPending && !appStore.isRecording) {
+  // 启动进行中收到停止请求：排队等 start 完成后消费。
+  // fromStart=true 表示已经是「启动完成后消费」的路径，不能再排队（否则死循环）。
+  if (!fromStart && startPending && !appStore.isRecording) {
     pendingStopAfterStart = true
     return
   }
@@ -1255,6 +1347,7 @@ async function stopStreamingRecording() {
   if (streamingSocket && streamingSocket.readyState === WebSocket.OPEN) {
     sendStreamingSamples(true)
     streamingSocket.send(JSON.stringify(streamProtocol.deriveStreamFinishPayload()))
+    armFinishWatchdog()
     return
   }
 

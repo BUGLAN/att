@@ -156,11 +156,18 @@ test('deriveStreamCloseAction：录音过程中意外断开 -> 完整收口', ()
   )
 })
 
-test('deriveStreamCloseAction：等待收尾或已复位 -> ignore', () => {
+test('deriveStreamCloseAction：等待收尾时断连 -> finish-interrupted（结果永远到不了，必须收口）', () => {
   assert.equal(
     deriveStreamCloseAction({ settled: true, awaitingFinish: true, connectionState: 'streaming' }),
-    STREAM_CLOSE_ACTIONS.IGNORE
+    STREAM_CLOSE_ACTIONS.FINISH_INTERRUPTED
   )
+  assert.equal(
+    deriveStreamCloseAction({ settled: true, awaitingFinish: true, connectionState: 'connecting' }),
+    STREAM_CLOSE_ACTIONS.FINISH_INTERRUPTED
+  )
+})
+
+test('deriveStreamCloseAction：已复位 -> ignore', () => {
   assert.equal(
     deriveStreamCloseAction({ settled: false, awaitingFinish: false, connectionState: 'idle' }),
     STREAM_CLOSE_ACTIONS.IGNORE

@@ -20,12 +20,15 @@ export const STREAM_MESSAGE_TYPES = Object.freeze({
 export const STREAM_START_TYPE = 'stream_start'
 export const STREAM_FINISH_TYPE = 'stream_finish'
 
-// onclose 的三种迁移动作
+// onclose 的四种迁移动作
 export const STREAM_CLOSE_ACTIONS = Object.freeze({
   // 连接建立阶段就关闭：直接让 connect Promise 失败
   FAIL: 'fail',
   // 录音过程中意外断开：需要完整收口（停麦克风 / 停计时器 / 复位悬浮窗）
   UNEXPECTED: 'unexpected-close',
+  // 收尾等待中连接断开：stream_finished 永远到不了（后端异常 / 网络中断），
+  // 必须立即收口解锁界面，否则会永久停在「正在完成流式转写」
+  FINISH_INTERRUPTED: 'finish-interrupted',
   // 正常收尾或已复位：什么都不做
   IGNORE: 'ignore'
 })
@@ -163,9 +166,10 @@ export function deriveStreamErrorMessage(message) {
 }
 
 /**
- * onclose 时的迁移判定，等价于原实现：
+ * onclose 时的迁移判定：
  *   if (!settled && state === 'connecting') -> fail
- *   else if (!awaitingFinish && state !== 'idle') -> 意外断开收口
+ *   else if (awaitingFinish) -> finish-interrupted（收尾等待中断连，结果永远到不了）
+ *   else if (state !== 'idle') -> 意外断开收口
  *   else -> 忽略
  */
 export function deriveStreamCloseAction({ settled, awaitingFinish, connectionState }) {
@@ -173,7 +177,11 @@ export function deriveStreamCloseAction({ settled, awaitingFinish, connectionSta
     return STREAM_CLOSE_ACTIONS.FAIL
   }
 
-  if (!awaitingFinish && connectionState !== 'idle') {
+  if (awaitingFinish) {
+    return STREAM_CLOSE_ACTIONS.FINISH_INTERRUPTED
+  }
+
+  if (connectionState !== 'idle') {
     return STREAM_CLOSE_ACTIONS.UNEXPECTED
   }
 
