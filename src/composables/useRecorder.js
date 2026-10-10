@@ -63,6 +63,9 @@ let streamingWorkletNode = null
 let streamingPendingSamples = []
 let streamingPendingSampleCount = 0
 let streamingAwaitingFinish = false
+// 启动放弃标志：连接/采集就绪前用户已松手时置位（见 stopStreamingRecording），
+// startStreamingRecording 在每个 await 之后检查它，避免开启幽灵录音
+let streamingStartAborted = false
 const completedPhases = new Set()
 
 function logRecorderHotkey(message, details = {}) {
@@ -1261,6 +1264,11 @@ async function startStreamingRecording() {
   const { appStore, tray } = context
   const { sendRecordingStatus } = useGlobalWebSocket()
 
+  // 启动放弃标志：stopStreamingRecording 在连接/采集就绪前被触发时置位，
+  // 用于关闭「松手竞争窗口」——否则 start 的后半段会把一个用户已经放弃的
+  // 会话正式开启（幽灵录音：无人停止、一直推流、永远停在「转写中」）。
+  streamingStartAborted = false
+
   try {
     activeRecordingMode.value = 'streaming'
     resetRealtimeState()
@@ -1289,6 +1297,22 @@ async function startStreamingRecording() {
       return
     }
 
+    // 松手竞争窗口收口：上面的 await 期间用户已松手、stopStreamingRecording
+    // 已经发出 finish（awaitingFinish）或已经放弃本次连接（startAborted）。
+    // 此刻绝不能再进入录音状态，等 stream_finished / 看门狗完成收尾。
+    if (streamingAwaitingFinish || streamingStartAborted) {
+      logRecorderHotkey('Streaming start aborted: stop arrived during setup', {
+        awaitingFinish: streamingAwaitingFinish,
+        startAborted: streamingStartAborted
+      })
+      if (streamingStartAborted) {
+        // 放弃路径：后端会话可能已建立（ready 晚到），关连接让后端释放会话
+        cleanupStreamingSocket()
+        currentSessionId.value = null
+      }
+      return
+    }
+
     appStore.setRecording(true)
     tray.setIcon('recording')
     sendRecordingStatus({
@@ -1308,9 +1332,24 @@ async function startStreamingRecording() {
     mediaRecorder.value = null
     appStore.setRecording(false)
     completeFloatingSession('error', error.message || '无法启动真流式录音')
+
+    // 用户已在启动阶段松手放弃：这是预期路径（连接被主动关闭后 8s 超时
+    // reject 也会走到这里），静默收口，不要弹错误吓用户
+    if (streamingStartAborted) {
+      return
+    }
+
+    // 后端进程繁忙 / 重启窗口期的 fetch 失败会被浏览器报成英文
+    // "Failed to fetch"，特化成可读中文
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      appStore.showToast('无法连接本地后端服务，请稍后重试')
+      return
+    }
+
     appStore.showToast(error.message || '无法启动真流式录音')
   } finally {
     startPending = false
+    streamingStartAborted = false
   }
 }
 
@@ -1363,11 +1402,15 @@ async function stopStreamingRecording({ fromStart = false } = {}) {
     return
   }
 
+  // socket 尚未就绪（还卡在连接/采集阶段）就松手：本次启动直接放弃。
+  // 置放弃标志让仍在飞行的 startStreamingRecording 后半段不要进入录音状态；
+  // 此时后端会话尚未建立（stream_ready 未回），没有任何需要保存的内容。
   streamingAwaitingFinish = false
+  streamingStartAborted = true
   cleanupStreamingSocket()
   appStore.setTranscribing(false)
   tray.setIcon('idle')
-  appStore.showToast('流式连接已断开，无法完成转写')
+  appStore.showToast('已取消本次录音')
 }
 
 async function startSingleRecording() {
