@@ -178,7 +178,7 @@
           <div v-if="showDoubaoSettings" class="setting-item">
             <div class="setting-info">
               <span class="setting-label">强制断句静音时长</span>
-              <span class="setting-desc">毫秒。0 表示跟随服务端语义分段；设为 200–1000 可让句子更早定稿，实时字幕更跟手。</span>
+              <span class="setting-desc">毫秒。0 表示跟随服务端语义分段；建议 200–800（最大 1000），超出该范围服务端可能拒绝并断开连接。</span>
             </div>
             <BaseInput v-model.number="form.doubao_asr_end_window_size" type="number" min="0" max="10000" step="100" />
           </div>

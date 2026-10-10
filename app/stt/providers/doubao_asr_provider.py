@@ -406,11 +406,18 @@ class DoubaoStreamingSession(StreamingASRSession):
             return self._error
 
         if self._close_code in (None, 1000):
-            # 1000 常见于服务端 VAD 判定长时间静音后正常关闭会话，不是协议错误
+            # 1000 常见于服务端 VAD 判定长时间静音后正常关闭会话，不是协议错误；
+            # 但「建立后一两秒就断」同样会走到这里（可能是参数不被服务端接受），
+            # 所以文案必须带上 code/reason，别把真实原因藏进一句「静音」里。
+            detail = f"（code={self._close_code}"
+            if self._close_reason:
+                detail += f"，reason={self._close_reason}"
+            detail += "）"
             return SaucSessionError(
                 SaucErrorInfo(
                     KIND_NETWORK,
-                    "会话已被服务端关闭（可能是长时间静音）",
+                    f"流式连接被服务端关闭{detail}；录音较久可能是静音超时，"
+                    "刚建连就断请检查「强制断句静音时长」等设置",
                     True,
                     "重新开始录音",
                 )
@@ -456,6 +463,15 @@ class DoubaoStreamingProvider(StreamingASRProvider):
         self.drain_timeout_seconds = float(drain_timeout_seconds)
         self.finish_timeout_seconds = float(finish_timeout_seconds)
         self.finish_quiet_seconds = float(finish_quiet_seconds)
+
+        # 非常规取值预警：火山对 end_window_size 的支持范围以官方文档为准，
+        # 实测 200–800ms 稳定；超出常用范围的值服务端可能直接断连（表现为
+        # 「流式连接被服务端关闭」）。这里只告警不拦截，真实原因由 _closed_error 带出。
+        if 0 < self.end_window_size < 200 or self.end_window_size > 1000:
+            logger.warning(
+                "end_window_size 超出常用取值范围（200–1000ms），服务端可能拒绝该值并直接断连",
+                end_window_size=self.end_window_size,
+            )
 
     @property
     def provider_type(self) -> str:
