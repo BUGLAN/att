@@ -25,6 +25,10 @@
         <RecordsSection />
       </div>
 
+      <div v-show="currentPage === 'transcribe'" class="container page-view">
+        <TranscribePage />
+      </div>
+
       <div v-show="currentPage === 'records'" class="container page-view">
         <RecordsLibraryPage />
       </div>
@@ -60,6 +64,7 @@ import RecorderSection from '@/components/home/RecorderSection.vue'
 import RecordsSection from '@/components/home/RecordsSection.vue'
 import ClipboardPage from '@/components/clipboard/ClipboardPage.vue'
 import RecordsLibraryPage from '@/components/records/RecordsLibraryPage.vue'
+import TranscribePage from '@/components/transcribe/TranscribePage.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
 
 import RecordEditModal from '@/components/modals/RecordEditModal.vue'

@@ -21,6 +21,18 @@
         </span>
         <span v-if="!collapsed" class="nav-text">首页</span>
       </button>
+      <button class="nav-item" :class="{ active: currentPage === 'transcribe' }" type="button" @click="navigateTo('transcribe')">
+        <span class="nav-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M7 3.5h7.5L19 8v12.5H7z" />
+            <path d="M14.5 3.5V8H19" />
+            <path d="M10 11.5v5" />
+            <path d="M13 10v8" />
+            <path d="M16 12.5v3" />
+          </svg>
+        </span>
+        <span v-if="!collapsed" class="nav-text">转文字</span>
+      </button>
       <button class="nav-item" :class="{ active: currentPage === 'records' }" type="button" @click="navigateTo('records')">
         <span class="nav-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">

@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   getPort: () => ipcRenderer.invoke('backend:port'),
+  openMediaFile: () => ipcRenderer.invoke('dialog:open-media-file'),
   readClipboardText: () => ipcRenderer.invoke('clipboard:read-text'),
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   maximizeWindow: () => ipcRenderer.send('window:maximize'),

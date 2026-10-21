@@ -196,6 +196,15 @@ export function useElectron() {
     return globalThis.window.electronAPI.syncRecordingState(toPlainObject(payload))
   }
 
+  // 「转文字」页：系统文件选择对话框。仅 Electron 可用，浏览器环境返回 null。
+  async function openMediaFile() {
+    if (!globalThis.window?.electronAPI?.openMediaFile) {
+      return null
+    }
+    const picked = await globalThis.window.electronAPI.openMediaFile()
+    return typeof picked === 'string' && picked ? picked : null
+  }
+
   return {
     isElectron,
     isReady,
@@ -218,6 +227,7 @@ export function useElectron() {
     getDesktopSettings,
     saveDesktopSettings,
     syncRecordingState,
+    openMediaFile,
     platform: globalThis.window?.electronAPI?.platform || 'web',
     getBackendPort
   }

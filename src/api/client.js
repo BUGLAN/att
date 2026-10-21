@@ -32,6 +32,8 @@ export async function getBaseUrl() {
 const DEFAULT_TIMEOUT_MS = 30000
 const SLOW_TIMEOUT_MS = 180000
 const UPLOAD_TIMEOUT_MS = 300000
+// 文件转写同步请求的读取超时：契约约定短文件给 15 分钟；更长的文件后端直接 202
+const TRANSCRIBE_SYNC_TIMEOUT_MS = 15 * 60 * 1000
 
 /**
  * 从错误响应体里提取可读的中文错误信息。
@@ -237,6 +239,13 @@ export const api = {
     const baseUrl = await getBaseUrl()
     return `${baseUrl}/records/${id}/audio`
   },
+
+  // 本地文件转写：短文件同步 200；长文件 202 {job_id}，再用 getTranscribeJob 轮询
+  transcribeFile: (payload) => request('POST', '/transcribe', {
+    body: payload,
+    timeout: TRANSCRIBE_SYNC_TIMEOUT_MS
+  }),
+  getTranscribeJob: (jobId) => request('GET', `/transcribe/jobs/${encodeURIComponent(jobId)}`),
 
   getSettings: () => request('GET', '/settings'),
   saveSettings: (settings) => request('PUT', '/settings', { body: settings }),

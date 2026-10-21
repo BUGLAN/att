@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, clipboard, nativeImage } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, clipboard, nativeImage } = require('electron')
 const path = require('path')
 const { execFile } = require('child_process')
 const { PythonManager } = require('./python/manager')
@@ -289,6 +289,26 @@ function setupIPC() {
 
   ipcMain.handle('backend:port', () => {
     return pythonManager?.port || 8000
+  })
+
+  // 「转文字」页选择本地音视频文件：返回绝对路径，用户取消返回 null
+  ipcMain.handle('dialog:open-media-file', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择要转写的音视频文件',
+      properties: ['openFile'],
+      filters: [
+        {
+          name: '音视频文件',
+          extensions: ['mp4', 'flv', 'webm', 'mkv', 'mov', 'avi', 'm4v', 'ts',
+            'wav', 'mp3', 'm4a', 'flac', 'ogg', 'opus', 'aac', 'wma', 'amr']
+        },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
+      return null
+    }
+    return result.filePaths[0]
   })
 
   ipcMain.handle('clipboard:write', (event, text) => {
