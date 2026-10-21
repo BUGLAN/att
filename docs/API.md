@@ -11,13 +11,13 @@
 
 | 项 | 事实 | 出处 |
 | --- | --- | --- |
-| 默认监听 | `0.0.0.0:8000`（直接 `python -m app.main` 时）；Electron 用 `ATT_BACKEND_PORT` / `PORT` 决定端口 | `app/main.py:204-208`、`electron/python/manager.js:86` |
-| 路由装配 | `app/main.py` 逐个 `include_router`：records / sessions / settings / prompts / llm / clipboard | `app/main.py` |
+| 默认监听 | `127.0.0.1:8000`（直接 `python -m app.main` 时，仅回环；可用 `BACKEND_HOST` / `ATT_BACKEND_PORT` / `PORT` 覆盖）；Electron 拉起时同样绑定 `127.0.0.1` | `app/main.py`（`__main__`）、`electron/python/manager.js:86,145-182` |
+| 路由装配 | `app/main.py` 逐个 `include_router`：records / sessions / settings / prompts / llm / clipboard / transcribe-file | `app/main.py` |
 | 聚合 router | `app/api/routes.py` 的聚合 router **不参与生产挂载**，只为测试与兼容再导出（且它只含 records/sessions/settings/prompts/llm 五个子路由，不含 clipboard） | `app/api/routes.py` |
 | 前缀 | 各子路由自带 `prefix="/api"`；`clipboard` 为 `/api/clipboard` | `app/api/routers/*.py` |
 | 静态资源 | `dist/assets` 存在时挂载到 `/assets` | `app/main.py:181-183` |
 | 根路径 | `dist/index.html` 存在则返回该文件，否则返回 `{name, version, docs, health}` JSON | `app/main.py:186-198` |
-| 鉴权 | **无任何鉴权**。跨域隔离靠 CORS 白名单：`http://localhost:8090`、`http://127.0.0.1:8090`、`null` + 正则 `^https?://(localhost\|127\.0\.0\.1)(:\d+)?$`，且 `allow_credentials=False` | `app/main.py:151-165` |
+| 鉴权 | **其余端点无任何鉴权**；例外：`/api/transcribe*` 在 `TRANSCRIBE_FILE_API_TOKEN` 非空时要求 `X-ATT-Token` 头（见 §8）。跨域隔离靠 CORS 白名单：`http://localhost:8090`、`http://127.0.0.1:8090`、`null` + 正则 `^https?://(localhost\|127\.0\.0\.1)(:\d+)?$`，且 `allow_credentials=False` | `app/main.py:151-165`、`app/api/routers/transcribe_file.py` |
 | 请求校验失败 | 路由内 Pydantic 请求体校验失败由 FastAPI 自动返回 **422**（如查询参数的 `pattern`/`le`）；而 `PUT /api/settings` 的请求体校验被路由捕获后转成 **400** | `app/api/routers/records.py:179`、`app/services/settings_service.py:216-221` |
 
 ---
@@ -199,6 +199,28 @@
 | GET | `/api/llm/providers/{provider}/models` | 某 provider 的模型列表 | path `provider` | `provider`、`models` | `llm.py:185-193`；未知 provider → 400 |
 
 `LLMProvider` 枚举：`deepseek`、`claude`、`openai`、`doubao`、`qwen`、`custom`（`app/llm/models.py:11-18`）。
+
+---
+
+## 8. 本地文件转写（transcribe-file）
+
+面向外部采集脚本与 App 内「转文字」页的**本地文件 → 文字**接口。与 records 域完全解耦：
+不建记录、不触发 LLM 优化、不发 WebSocket；结果按**文件内容 sha256** 缓存
+（落盘 `data/transcribe_file_cache.json`，LRU 上限 `TRANSCRIBE_FILE_CACHE_SIZE`），同一文件重复请求秒回。
+业务实现在 `app/services/file_transcription_service.py`，路由在 `app/api/routers/transcribe_file.py`。
+
+| 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| POST | `/api/transcribe` | 转写本地音视频文件 | JSON：`path`（必填，本地绝对路径）、`language`（默认 `zh`）、`want_segments`（默认 `false`） | 短文件同步 200：`text`、`duration_seconds`、`engine`、`cached`、`segments`（仅 `want_segments:true`）；长文件 **202**：`{job_id}` | 视频容器（mp4/flv/webm/mkv/mov/avi/m4v/ts）先用 ffmpeg 抽 16kHz 单声道音轨；音频容器直接交 provider |
+| GET | `/api/transcribe/jobs/{job_id}` | 轮询 202 任务 | path `job_id` | `status`（`running\|done\|failed`）、`result`（done 时同 200 响应体）、`error` | 任务状态只存内存，终态保留 30 分钟后清理；未知/过期任务 404 |
+
+行为约定：
+
+- **时长上限**：超过 `TRANSCRIBE_FILE_MAX_DURATION_SECONDS`（默认 7200 秒）返回 **413**；超过 `TRANSCRIBE_FILE_ASYNC_THRESHOLD_SECONDS`（默认 1800 秒）走 202 异步。
+- **并发**：单并发闸门，忙时 **503** + `Retry-After: <秒>`（`TRANSCRIBE_FILE_BUSY_RETRY_AFTER_SECONDS`），不排队堆积内存。
+- **引擎**：强制本地引擎（whisper / qwen_asr）。全局配置指向豆包（在线）时自动回落 whisper，并在日志告警。
+- **鉴权**：`TRANSCRIBE_FILE_API_TOKEN` 非空时要求请求头 `X-ATT-Token` 精确匹配（`secrets.compare_digest`），不匹配 **401**；默认空 = 仅回环监听、不鉴权。
+- **错误码**：404 文件不存在/相对路径；415 扩展名不识别、ffprobe 解码失败、ffmpeg 抽音轨失败；413 超时长上限；503 引擎忙/任务表满；500 其他内部错误（detail 带原因）。
 
 ---
 
