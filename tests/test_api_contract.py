@@ -2,11 +2,12 @@
 
 本文件锁定 `app.main:app` 实际暴露的端点集合：
 
-1. `BUSINESS_ENDPOINTS` 是**功能减法之后**的业务端点基线（44 条：42 条 HTTP + 2 条 WebSocket）。
+1. `BUSINESS_ENDPOINTS` 是**功能减法之后**的业务端点基线（46 条：44 条 HTTP + 2 条 WebSocket）。
    2026-10 功能减法删除了统一浮层 / 生词本 / AI 动作（含 Agent 对话），
    对应的 `/api/wordbook/*` 5 条与 `/api/ai-actions/*` 5 条端点随之移除；
    预设写接口（POST/PUT/DELETE /api/prompts*）与无调用方的 GET 单条 / preview
    一并移除（预设是只读的，唯一真相源是 prompts/*.txt）。
+   2026-10-22 新增本地文件转写接口 /api/transcribe（POST + 任务轮询 GET），基线由 44 扩到 46。
 2. FastAPI 自动生成的文档路由（/docs、/redoc、/openapi.json 及其 HEAD）与根入口 "/"
    单独登记，避免它们被悄悄塞进「忽略名单」而掩盖端点变更；
 3. `API_ROUTER_ENDPOINTS` 锁定聚合层 `app.api.routes.router` 暴露的全部端点，
@@ -28,7 +29,7 @@ from app.records.models import RecordStatus
 
 # ==================== 基线 ====================
 
-# 业务端点基线：功能减法后共 44 条（42 条 HTTP + 2 条 WebSocket）。
+# 业务端点基线：功能减法后共 46 条（44 条 HTTP + 2 条 WebSocket）。
 # 已删除：/api/wordbook/*（生词本）5 条、/api/ai-actions/*（AI 动作 + Agent 对话）5 条、
 # /api/prompts 写接口与无调用方的单条/预览 5 条（预设只读，真相源是 prompts/*.txt）。
 BUSINESS_ENDPOINTS = frozenset({
@@ -56,6 +57,7 @@ BUSINESS_ENDPOINTS = frozenset({
     ("GET", "/api/sessions/{session_id}"),
     ("GET", "/api/settings"),
     ("GET", "/api/streaming/service"),
+    ("GET", "/api/transcribe/jobs/{job_id}"),
     ("POST", "/api/audio/upload"),
     ("POST", "/api/clipboard/items"),
     ("POST", "/api/llm/configs"),
@@ -68,6 +70,7 @@ BUSINESS_ENDPOINTS = frozenset({
     ("POST", "/api/sessions/{session_id}/segments"),
     ("POST", "/api/streaming/service/start"),
     ("POST", "/api/streaming/service/stop"),
+    ("POST", "/api/transcribe"),
     ("PUT", "/api/clipboard/items/{item_id}"),
     ("PUT", "/api/llm/configs/{config_id}"),
     ("PUT", "/api/llm/configs/{config_id}/default"),
@@ -163,9 +166,9 @@ def _collect(route_holder) -> list[tuple[str, str]]:
 # ==================== 端点集合契约 ====================
 
 
-def test_baseline_size_is_44():
-    """基线自身自检：44 条业务端点（42 条 HTTP + 2 个 WebSocket）。"""
-    assert len(BUSINESS_ENDPOINTS) == 44
+def test_baseline_size_is_46():
+    """基线自身自检：46 条业务端点（44 条 HTTP + 2 个 WebSocket）。"""
+    assert len(BUSINESS_ENDPOINTS) == 46
     assert len([item for item in BUSINESS_ENDPOINTS if item[0] == "WS"]) == 2
 
 
@@ -184,12 +187,12 @@ def test_application_endpoint_set_matches_baseline():
     assert added == [], f"新增未登记端点: {added}"
 
 
-def test_business_endpoints_are_still_44_after_subtraction():
-    """业务端点（排除文档路由与根入口）仍恰好是 44 条。"""
+def test_business_endpoints_are_still_46_after_subtraction():
+    """业务端点（排除文档路由与根入口）仍恰好是 46 条。"""
     business = set(_collect(app)) - DOC_ENDPOINTS - ROOT_ENDPOINTS
 
     assert business == BUSINESS_ENDPOINTS
-    assert len(business) == 44
+    assert len(business) == 46
     # 已下线功能（生词本 / AI 动作 / 预设写接口）的端点必须彻底消失
     assert not any(path.startswith("/api/wordbook") for _, path in business)
     assert not any(path.startswith("/api/ai-actions") for _, path in business)

@@ -299,6 +299,13 @@ class Settings(BaseSettings):
     deepseek_temperature: float = 0.3
     deepseek_base_url: str = "https://api.deepseek.com/v1"
 
+    # 本地文件转写接口（POST /api/transcribe，采集层脚本与 App「转文字」页共用）
+    transcribe_file_max_duration_seconds: int = 7200      # 时长上限，超过返回 413（默认 2 小时）
+    transcribe_file_async_threshold_seconds: int = 1800   # 超过该时长改走 202 异步任务（默认 30 分钟）
+    transcribe_file_api_token: str = ""                   # 非空时要求请求头 X-ATT-Token 匹配
+    transcribe_file_busy_retry_after_seconds: int = 30    # 引擎忙（503）时 Retry-After 的秒数
+    transcribe_file_cache_size: int = 200                 # 内容哈希结果缓存的条数上限（LRU）
+
     # Processing
     max_upload_size: int = 500 * 1024 * 1024  # 500MB
     # 注：chunk_duration / supported_formats / target_sample_rate / target_channels
@@ -339,6 +346,11 @@ class Settings(BaseSettings):
     def audio_records_path(self) -> Path:
         """Path for WAV audio files"""
         return self.data_path / "audio" / "records"
+
+    @property
+    def transcribe_file_cache_path(self) -> Path:
+        """文件转写结果缓存（key 为文件内容 sha256，value 为上次响应体）"""
+        return self.data_path / "transcribe_file_cache.json"
 
     # Pydantic 2 风格配置：迁移自 v1 的 class Config，消除弃用告警
     # extra="ignore" 是必需的：`.env` 是**全项目共用**的配置文件，除本类字段外还包含

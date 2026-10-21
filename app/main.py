@@ -14,6 +14,7 @@ from app.api.routers.prompts import router as prompts_router
 from app.api.routers.records import router as records_router
 from app.api.routers.sessions import router as sessions_router
 from app.api.routers.settings import router as settings_router
+from app.api.routers.transcribe_file import router as transcribe_file_router
 from app.api.routes import close_streaming_session_manager, init_processors
 from app.audio.processor import AudioProcessor
 from app.clipboard.manager import ClipboardManager
@@ -160,6 +161,8 @@ app.include_router(settings_router)
 app.include_router(prompts_router)
 app.include_router(llm_router)
 app.include_router(clipboard_router)
+# 本地文件转写接口（外部采集层脚本 + App「转文字」页共用）
+app.include_router(transcribe_file_router)
 
 project_root = Path(__file__).parent.parent
 dist_dir = project_root / "dist"
@@ -186,11 +189,15 @@ async def root():
 
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
 
+    # 仅回环监听：Electron 拉起后端时同样绑定 127.0.0.1（python/manager.js），
+    # 这里保持一致；端口沿用 ATT_BACKEND_PORT 约定，方便与桌面端互通。
     uvicorn.run(
         "app.main:app",
-        host="0.0.0.0",
-        port=8000,
+        host=os.environ.get("BACKEND_HOST", "127.0.0.1"),
+        port=int(os.environ.get("ATT_BACKEND_PORT", os.environ.get("PORT", "8000"))),
         reload=settings.debug,
     )
