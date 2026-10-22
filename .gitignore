@@ -72,6 +72,9 @@ node_modules
 .stitch/
 docs/ui-audit/
 
+# 本地凭证（B站采集脚本登录态，含敏感信息，绝不入库）
+bili-auth.json
+
 release/
 python-dist/
 
