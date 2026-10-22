@@ -213,22 +213,26 @@
 ## 8. 本地文件转写（transcribe-file）
 
 面向外部采集脚本与 App 内「转文字」页的**本地文件 → 文字**接口。与 records 域完全解耦：
-不建记录、不触发 LLM 优化、不发 WebSocket；结果按**文件内容 sha256** 缓存
-（落盘 `data/transcribe_file_cache.json`，LRU 上限 `TRANSCRIBE_FILE_CACHE_SIZE`），同一文件重复请求秒回。
-业务实现在 `app/services/file_transcription_service.py`，路由在 `app/api/routers/transcribe_file.py`。
+不建记录、不发 WebSocket；结果按**文件内容 sha256 + 引擎**缓存（v2 格式按文件聚合、
+引擎分桶、校对变体挂 `{model}@{PROMPT_VERSION}`，落盘 `data/transcribe_file_cache.json`，
+LRU 上限 `TRANSCRIBE_FILE_CACHE_SIZE` 按整文件条目淘汰），同一文件重复请求秒回。
+业务实现在 `app/services/file_transcription_service.py`，LLM 校对管道在
+`app/services/transcribe_proofread.py`，路由在 `app/api/routers/transcribe_file.py`。
+完整设计见 [文件转写-多引擎与LLM校对-设计.md](文件转写-多引擎与LLM校对-设计.md)。
 
 | 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| POST | `/api/transcribe` | 转写本地音视频文件 | JSON：`path`（必填，本地绝对路径）、`language`（默认 `zh`）、`want_segments`（默认 `false`） | 短文件同步 200：`text`、`duration_seconds`、`engine`、`cached`、`segments`（仅 `want_segments:true`）；长文件 **202**：`{job_id}` | 视频容器（mp4/flv/webm/mkv/mov/avi/m4v/ts）先用 ffmpeg 抽 16kHz 单声道音轨；音频容器直接交 provider |
-| GET | `/api/transcribe/jobs/{job_id}` | 轮询 202 任务 | path `job_id` | `status`（`running\|done\|failed`）、`result`（done 时同 200 响应体）、`error` | 任务状态只存内存，终态保留 30 分钟后清理；未知/过期任务 404 |
+| POST | `/api/transcribe` | 转写本地音视频文件 | JSON：`path`（必填，本地绝对路径）、`language`（默认 `zh`）、`want_segments`（默认 `false`）、`engine`（`auto\|whisper\|qwen_asr\|doubao_asr`，默认 `auto`）、`proofread`（默认 `false`）、`proofread_model_id`（可选，缺省默认模型）、`proofread_options`（`batch_segments/batch_chars/context_chars`，可选） | 短文件同步 200：`text`、`duration_seconds`、`engine`、`cached`、`segments`（仅 `want_segments:true`）、`billing`（仅豆包）；`proofread=true` 或长文件 **202**：`{job_id}` | 视频容器先用 ffmpeg 抽 16kHz 单声道音轨（qwen 引擎除 wav 外一律抽轨）；qwen 长文件按 `TRANSCRIBE_FILE_QWEN_CHUNK_SECONDS` 静音分块拼接；豆包超 `TRANSCRIBE_FILE_DOUBAO_SESSION_SECONDS` 分段多会话 |
+| GET | `/api/transcribe/jobs/{job_id}` | 轮询 202 任务 | path `job_id` | `status`（`running\|done\|failed`）、`stage`（`asr\|proofreading\|done`）、`progress`（校对阶段 `{window_done, window_total}`）、`result`（done 时同 200 响应体，校对时含 `raw_text` 与 `proofread` 元数据）、`error` | 任务状态只存内存，终态保留 30 分钟后清理；未知/过期任务 404 |
 
 行为约定：
 
-- **时长上限**：超过 `TRANSCRIBE_FILE_MAX_DURATION_SECONDS`（默认 7200 秒）返回 **413**；超过 `TRANSCRIBE_FILE_ASYNC_THRESHOLD_SECONDS`（默认 1800 秒）走 202 异步。
-- **并发**：单并发闸门，忙时 **503** + `Retry-After: <秒>`（`TRANSCRIBE_FILE_BUSY_RETRY_AFTER_SECONDS`），不排队堆积内存。
-- **引擎**：强制本地引擎（whisper / qwen_asr）。全局配置指向豆包（在线）时自动回落 whisper，并在日志告警。
+- **时长上限**：超过 `TRANSCRIBE_FILE_MAX_DURATION_SECONDS`（默认 7200 秒）返回 **413**；超过 `TRANSCRIBE_FILE_ASYNC_THRESHOLD_SECONDS`（默认 1800 秒）**或 `proofread=true`** 走 202 异步。
+- **并发**：单并发闸门只包 ASR 执行段（校对不占闸门），忙时 **503** + `Retry-After: <秒>`（`TRANSCRIBE_FILE_BUSY_RETRY_AFTER_SECONDS`），不排队堆积内存。
+- **引擎**：`engine=auto`=本地优先（全局配置指向豆包时自动回落 whisper，日志告警）；显式 `doubao_asr` 才走在线（按时长计费，响应带 `billing`；`want_segments` 对豆包只返回整段单 segment）。
+- **LLM 校对**（`proofread=true`）：滑动窗口分批（默认 40 段且 4000 字，段边界；可选前文 200 字重叠）→ 每窗「LLM → 验证（键完全匹配 + 相似度 ≥0.7，短文本 ≥0.3）→ 反馈重试 ≤3」→ 失败批保留原文计入 `proofread.fallback_batches`；网关整体不可用降级 `applied=false` 照常交付 ASR 原文。LLM 走 v2 网关，窗口并发 `TRANSCRIBE_FILE_PROOF_CONCURRENCY`。
 - **鉴权**：`TRANSCRIBE_FILE_API_TOKEN` 非空时要求请求头 `X-ATT-Token` 精确匹配（`secrets.compare_digest`），不匹配 **401**；默认空 = 仅回环监听、不鉴权。
-- **错误码**：404 文件不存在/相对路径；415 扩展名不识别、ffprobe 解码失败、ffmpeg 抽音轨失败；413 超时长上限；503 引擎忙/任务表满；500 其他内部错误（detail 带原因）。
+- **错误码**：404 文件不存在/相对路径/任务号过期；415 扩展名不识别、ffprobe 解码失败、ffmpeg 抽音轨失败；413 超时长上限；**409** 前置配置缺失（显式豆包但凭据未配置 / 开校对但无任何 LLM 模型，不可重试）；503 引擎忙/任务表满；422 engine 非法（Literal 校验）；500 其他内部错误（detail 带原因）。
 
 ---
 
