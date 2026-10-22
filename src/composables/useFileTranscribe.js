@@ -23,7 +23,7 @@ function sleep(ms) {
 }
 
 export function useFileTranscribe() {
-  const { openMediaFile, clipboard } = useElectron()
+  const { openMediaFile, filePathForFile, clipboard } = useElectron()
 
   const filePath = ref('')
   const language = ref('zh')
@@ -50,6 +50,31 @@ export function useFileTranscribe() {
     }
     filePath.value = picked
     return picked
+  }
+
+  /**
+   * 拖拽入口：File 对象 → 本地路径校验 → 直接开始转写。
+   * 拿不到路径（浏览器环境）或类型不支持时只置 error，不发起请求。
+   */
+  async function ingestDroppedFile(file) {
+    if (!file) {
+      return false
+    }
+
+    const path = filePathForFile(file)
+    if (!path) {
+      error.value = '拿不到拖入文件的本地路径：请在 App 内拖入，或改用粘贴路径'
+      return false
+    }
+    if (!isSupportedMediaPath(path)) {
+      error.value = '暂不支持该文件类型：请选择音视频文件（mp4 / flv / webm / wav / mp3 / m4a 等）'
+      return false
+    }
+
+    error.value = ''
+    filePath.value = path
+    await startTranscribe()
+    return true
   }
 
   function pushHistory(entry) {
@@ -168,6 +193,7 @@ export function useFileTranscribe() {
     result,
     history,
     chooseFile,
+    ingestDroppedFile,
     startTranscribe,
     copyResult,
     selectHistoryItem: (item) => {

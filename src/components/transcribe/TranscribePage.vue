@@ -1,5 +1,12 @@
 <template>
-  <section class="tp">
+  <section
+    class="tp"
+    :class="{ 'tp--center': isIdleLayout }"
+    @dragenter.prevent="onDragEnter"
+    @dragover.prevent
+    @dragleave="onDragLeave"
+    @drop.prevent="onDrop"
+  >
     <!-- ============ 页头：眉题 + 大标题，入场纵向错落 ============ -->
     <header class="tp-head tp-reveal" style="--d: 0">
       <p class="tp-eyebrow">
@@ -9,13 +16,23 @@
       </p>
       <h2 class="tp-title">转文字</h2>
       <p class="tp-sub">
-        丢进一个音视频文件，直接换回纯文本。视频自动抽音轨；同一份内容转过的，秒回缓存；长文件自动进后台任务。
+        把音视频文件拖进下面的控制台，直接换回纯文本。视频自动抽音轨；同一份内容转过的，秒回缓存；长文件自动进后台任务。
       </p>
     </header>
 
-    <!-- ============ 控制台：波形 + 文件轨 + 参数 ============ -->
-    <section class="tp-console tp-reveal" style="--d: 1" aria-label="转写控制台">
-      <!-- 波形母题：空闲时是静采样，转写时跳动，完成时归于一线 -->
+    <!-- ============ 控制台 = 投放区：波形 + 文件轨 + 参数 ============ -->
+    <section
+      class="tp-console tp-reveal"
+      :class="{ 'is-dragover': isDragging }"
+      style="--d: 1"
+      aria-label="转写控制台，支持拖入音视频文件"
+    >
+      <!-- 拖拽悬停遮罩 -->
+      <div class="tp-drop-overlay" aria-hidden="true">
+        <span class="tp-drop-word">松手，开始转写</span>
+      </div>
+
+      <!-- 波形母题：空闲时是静采样，转写/拖拽时跳动，完成时归于一线 -->
       <div class="tp-wave" :class="waveMode" aria-hidden="true">
         <span
           v-for="(h, i) in waveBars"
@@ -66,15 +83,15 @@
           <span class="tp-tick-val">分段时间戳</span>
         </label>
 
-        <span class="tp-tick-note">输出：纯文本 · 不入记录集 · 按内容缓存</span>
+        <span class="tp-tick-note">拖拽 / 点选 / 粘贴 · 纯文本 · 不入记录集 · 按内容缓存</span>
       </div>
-
-      <!-- 状态行：等宽 + 块状光标；错误走控制台告警 -->
-      <p v-if="isBusy" class="tp-status" role="status">
-        {{ statusText || '正在转写…' }}<span class="tp-caret" aria-hidden="true"></span>
-      </p>
-      <p v-else-if="error" class="tp-alert" role="alert">{{ error }}</p>
     </section>
+
+    <!-- 状态行：等宽 + 块状光标；错误走控制台告警 -->
+    <p v-if="isBusy" class="tp-status tp-reveal" style="--d: 2" role="status">
+      {{ statusText || '正在转写…' }}<span class="tp-caret" aria-hidden="true"></span>
+    </p>
+    <p v-else-if="error" class="tp-alert tp-reveal" style="--d: 2" role="alert">{{ error }}</p>
 
     <!-- ============ 转写结果：磁带日志 ============ -->
     <article v-if="result" class="tp-ledger tp-reveal" style="--d: 2">
@@ -112,7 +129,8 @@
     <!-- ============ 空态：控制台即空态，只补一行说明 ============ -->
     <p v-else-if="!isBusy && !error" class="tp-idle tp-reveal" style="--d: 2">
       <span class="tp-idle-mark" aria-hidden="true">REC</span>
-      支持 mp4 / flv / webm / mkv / wav / mp3 / m4a / flac / ogg 等常见容器；结果只在这里，不会进入记录集。
+      把文件拖进上面的控制台最省事；也支持 mp4 / flv / webm / mkv / wav / mp3 / m4a / flac / ogg
+      等常见容器。结果只在这里，不会进入记录集。
     </p>
 
     <!-- ============ 历史架：本次会话 ============ -->
@@ -154,6 +172,7 @@ const {
   result,
   history,
   chooseFile,
+  ingestDroppedFile,
   startTranscribe,
   copyResult,
   selectHistoryItem
@@ -167,10 +186,45 @@ const WAVE_SEED = [38, 62, 24, 80, 46, 30, 72, 55, 20, 88, 40, 64, 28, 76, 34, 5
 const waveBars = WAVE_SEED
 
 const waveMode = computed(() => {
-  if (isBusy.value) return 'is-live'
+  if (isBusy.value || isDragging.value) return 'is-live'
   if (result.value) return 'is-done'
   return 'is-idle'
 })
+
+// 空态（无结果/未忙/无报错/无历史）时页面整体垂直居中，避免「一条浮在顶部」
+const isIdleLayout = computed(() =>
+  !result.value && !isBusy.value && !error.value && history.value.length === 0
+)
+
+// ---------- 拖拽投放 ----------
+const dragDepth = ref(0)
+const isDragging = computed(() => dragDepth.value > 0)
+
+function onDragEnter() {
+  dragDepth.value += 1
+}
+
+function onDragLeave() {
+  dragDepth.value = Math.max(0, dragDepth.value - 1)
+}
+
+async function onDrop(event) {
+  dragDepth.value = 0
+  const files = Array.from(event.dataTransfer?.files || [])
+
+  if (!files.length) {
+    return // 拖进来的不是文件（比如一段文本），安静忽略
+  }
+  if (isBusy.value) {
+    appStore.showToast('正在转写中，先等这一条跑完', { tone: 'info' })
+    return
+  }
+  if (files.length > 1) {
+    appStore.showToast('一次转一个：已取第一个文件', { tone: 'info' })
+  }
+
+  await ingestDroppedFile(files[0])
+}
 
 async function handleCopy() {
   try {
@@ -197,8 +251,17 @@ async function handleCopy() {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  max-width: 880px;
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
   padding: var(--tp-pad) var(--tp-pad) 48px;
+}
+
+/* 空态时占满一屏并垂直居中，页面不再「一条浮在顶部」 */
+.tp--center {
+  min-height: 100%;
+  justify-content: center;
+  padding-bottom: 64px;
 }
 
 /* ---------- 入场：纵向错落揭示 ---------- */
@@ -256,13 +319,13 @@ async function handleCopy() {
 
 .tp-sub {
   margin: 0;
-  max-width: 560px;
+  max-width: 620px;
   font-size: var(--fs-sm);
   line-height: 1.8;
   color: var(--text-3);
 }
 
-/* ---------- 控制台卡 ---------- */
+/* ---------- 控制台卡（= 投放区） ---------- */
 .tp-console {
   position: relative;
   display: flex;
@@ -272,6 +335,7 @@ async function handleCopy() {
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   box-shadow: var(--e-2), var(--edge-hi);
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
 }
 
 /* 四角定位标记：像磁带仓的装配角 */
@@ -283,6 +347,7 @@ async function handleCopy() {
   height: 14px;
   border: 1px solid var(--accent-line);
   pointer-events: none;
+  z-index: 3;
 }
 
 .tp-console::before {
@@ -301,9 +366,37 @@ async function handleCopy() {
   border-bottom-right-radius: var(--r-lg);
 }
 
-/* 卡面顶部一层极淡的斜向金光 */
-.tp-console > .tp-wave {
-  margin-top: -2px;
+/* ---------- 拖拽悬停态 ---------- */
+.tp-console.is-dragover {
+  border-color: var(--accent-line-strong);
+  box-shadow: 0 0 0 1px var(--accent-line-strong), var(--accent-glow);
+}
+
+.tp-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-veil);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.tp-drop-word {
+  padding: 10px 22px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  letter-spacing: 0.34em;
+  color: var(--accent-hi);
+  background: var(--bg-card);
+  border: 1px dashed var(--accent-line-strong);
+  border-radius: var(--r-md);
+}
+
+.tp-console.is-dragover .tp-drop-overlay {
+  display: flex;
 }
 
 /* ---------- 波形母题 ---------- */
@@ -336,7 +429,7 @@ async function handleCopy() {
   opacity: 0.85;
 }
 
-/* 转写中：逐根错拍跳动 */
+/* 转写中 / 拖拽悬停：逐根错拍跳动 */
 .tp-wave.is-live .tp-wave-bar {
   background: var(--accent-hi);
   animation: tp-dance 900ms var(--ease) infinite alternate;
@@ -399,6 +492,13 @@ async function handleCopy() {
   color: var(--text-1);
 }
 
+/* bare 形态压掉了 :focus 边框，但文本框聚焦恒命中 :focus-visible，
+   会再画一圈 2px 金色 outline 叠在容器边框内侧——聚焦指示统一由
+   上方 .tp-path:focus-within 的 halo 承担，这里去掉内层的那圈。 */
+.tp-path :deep(input:focus-visible) {
+  outline: none;
+}
+
 .tp-path :deep(input)::placeholder {
   color: var(--text-3);
 }
@@ -432,19 +532,42 @@ async function handleCopy() {
   background: var(--accent-faint);
 }
 
+/* 下拉框：脱离原生渲染（原生白底会砸穿深色主题），自绘金色箭头 */
 .tp-tick-select {
-  padding: 3px 8px;
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 4px 26px 4px 10px;
   font-size: var(--fs-sm);
+  font-family: var(--font-sans);
   color: var(--text-1);
-  background: var(--bg-raise);
+  background-color: var(--bg-raise);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23c9a227' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
   cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease);
+}
+
+.tp-tick-select:hover:not(:disabled) {
+  border-color: var(--accent-line);
 }
 
 .tp-tick-select:focus-visible {
   outline: none;
-  box-shadow: var(--focus-ring);
+  border-color: var(--accent-line-strong);
+  box-shadow: var(--focus-halo);
+}
+
+.tp-tick-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tp-tick-select option {
+  background: var(--bg-card);
+  color: var(--text-1);
 }
 
 .tp-tick--toggle {
@@ -453,6 +576,7 @@ async function handleCopy() {
 
 .tp-tick-box {
   appearance: none;
+  -webkit-appearance: none;
   width: 14px;
   height: 14px;
   border: 1px solid var(--line-strong);
@@ -493,7 +617,8 @@ async function handleCopy() {
 .tp-status {
   display: flex;
   align-items: center;
-  margin: 14px 0 0;
+  margin: 0;
+  padding: 0 4px;
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   color: var(--info);
@@ -517,7 +642,7 @@ async function handleCopy() {
 .tp-alert {
   display: flex;
   align-items: center;
-  margin: 14px 0 0;
+  margin: 0;
   padding: 10px 14px;
   font-size: var(--fs-sm);
   color: var(--err);
@@ -770,6 +895,25 @@ async function handleCopy() {
   font-size: 11px;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 宽屏：放开列宽，波形加高，标题加大 ---------- */
+@media (min-width: 1500px) {
+  .tp {
+    max-width: 1080px;
+  }
+
+  .tp-title {
+    font-size: 52px;
+  }
+
+  .tp-wave {
+    height: 56px;
+  }
+
+  .tp-wave-bar {
+    width: 4px;
+  }
 }
 
 /* ---------- 窄面板兜底 ---------- */

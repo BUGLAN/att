@@ -1,9 +1,17 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   getPort: () => ipcRenderer.invoke('backend:port'),
   openMediaFile: () => ipcRenderer.invoke('dialog:open-media-file'),
+  // 拖拽落下的 File 对象换本地绝对路径（webUtils 是 Electron 29+ 的推荐方式）
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file)
+    } catch (error) {
+      return ''
+    }
+  },
   readClipboardText: () => ipcRenderer.invoke('clipboard:read-text'),
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   maximizeWindow: () => ipcRenderer.send('window:maximize'),
