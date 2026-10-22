@@ -301,7 +301,9 @@ class Settings(BaseSettings):
     transcribe_file_async_threshold_seconds: int = 1800   # 超过该时长改走 202 异步任务（默认 30 分钟）
     transcribe_file_api_token: str = ""                   # 非空时要求请求头 X-ATT-Token 匹配
     transcribe_file_busy_retry_after_seconds: int = 30    # 引擎忙（503）时 Retry-After 的秒数
-    transcribe_file_cache_size: int = 200                 # 内容哈希结果缓存的条数上限（LRU）
+    transcribe_file_cache_size: int = 200                 # 内容哈希结果缓存的条数上限（LRU 按整文件条目）
+    transcribe_file_qwen_chunk_seconds: int = 30          # Qwen 长文件分块窗口（模型设计上限 30s）
+    transcribe_file_doubao_session_seconds: int = 1800    # 豆包单会话时长上限，超长分段（保守默认 30 分钟）
 
     # Processing
     max_upload_size: int = 500 * 1024 * 1024  # 500MB

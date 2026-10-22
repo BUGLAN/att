@@ -820,6 +820,8 @@ class DoubaoASRProvider(ASRProvider):
             language_probability=1.0,
             duration=float(duration),
             processing_time=processing_time,
+            # 服务端回报的计费时长（毫秒 → 秒），文件转写接口透出给调用方对账
+            billing_seconds=max(int(_audio_duration_ms or 0), 0) / 1000.0,
         )
 
 

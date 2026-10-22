@@ -60,6 +60,8 @@ class TranscriptionResult:
     language_probability: float
     duration: float
     processing_time: float
+    # 在线引擎回报的计费时长（秒），本地引擎恒为 0（文件转写接口透出 billing 用）
+    billing_seconds: float = 0.0
 
     @property
     def text(self) -> str:

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import secrets
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -44,6 +45,11 @@ class TranscribeFileRequest(BaseModel):
     path: str = Field(..., description="本地媒体文件绝对路径（音频或视频容器均可）")
     language: str = Field("zh", description="识别语言，默认 zh")
     want_segments: bool = Field(False, description="true 时响应附带分段时间戳")
+    engine: Literal["auto", "whisper", "qwen_asr", "doubao_asr"] = Field(
+        "auto",
+        description="转写引擎：缺省 auto=本地优先（全局配置指向在线引擎时回落 whisper）；"
+                    "用在线豆包必须显式指定 doubao_asr（凭据未配置返回 409）",
+    )
 
 
 @router.post("/transcribe", dependencies=[Depends(_require_token)])
@@ -54,6 +60,7 @@ async def transcribe_local_file(request: TranscribeFileRequest):
             request.path,
             request.language,
             request.want_segments,
+            request.engine,
         )
     except FileTranscribeError as error:
         raise HTTPException(
