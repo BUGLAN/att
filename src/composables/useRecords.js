@@ -1,6 +1,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRecordsStore } from '@/stores/records'
 import { useAppStore } from '@/stores/app'
+import { useOptimizationStreamStore } from '@/stores/optimizationStream'
 import { useElectron } from './useElectron'
 import { buildExportFilename, downloadFromUrl } from '@/utils/exportDownload.mjs'
 
@@ -8,6 +9,8 @@ import { buildExportFilename, downloadFromUrl } from '@/utils/exportDownload.mjs
 const currentAudio = ref(null)
 // 当前播放的记录 ID
 const playingRecordId = ref(null)
+// 手动优化的 AbortController：取消按钮 / 组件卸载时中断 fetch 流
+let activeOptimizationController = null
 
 export function useRecords() {
   const recordsStore = useRecordsStore()
@@ -49,12 +52,74 @@ export function useRecords() {
     }
   }
 
+  function patchOptimizationResult(id, patch) {
+    recordsStore.updateRecordStatus(id, patch)
+    if (!appStore.currentRecordId || appStore.currentRecordId === id) {
+      appStore.setRecordStatus({ record_id: id, ...patch })
+    }
+    if (appStore.currentRecord?.id === id) {
+      appStore.setCurrentRecord({ ...appStore.currentRecord, ...patch })
+    }
+  }
+
   async function optimizeRecord(id) {
+    const optimizationStream = useOptimizationStreamStore()
+
+    // 同一记录重复点击：复用正在跑的流；不同记录则先中断上一条，避免两段文本交错
+    if (optimizationStream.isActive) {
+      if (optimizationStream.recordId === id) {
+        return
+      }
+      activeOptimizationController?.abort()
+      await api.cancelOptimizeRecord(optimizationStream.recordId).catch(() => {})
+    }
+
+    const controller = new AbortController()
+    activeOptimizationController = controller
+    optimizationStream.begin(id, { source: 'manual' })
+    // 不立刻清空旧 optimized_text：流式失败时记录卡仍可回退显示上一次结果
+    patchOptimizationResult(id, { status: 'optimizing' })
+
+    let receivedDelta = false
+    let streamError = null
+    let doneEvent = null
+
     try {
-      const result = await recordsStore.optimizeRecord(id)
-      if (result?.truncated) {
+      await api.optimizeRecordStream(id, {
+        signal: controller.signal,
+        onEvent(event) {
+          if (event.type === 'delta' && event.text) {
+            receivedDelta = true
+            optimizationStream.append(event.text)
+          } else if (event.type === 'done') {
+            doneEvent = event
+          } else if (event.type === 'error') {
+            streamError = new Error(event.error || '优化失败')
+          }
+        }
+      })
+
+      if (streamError) {
+        throw streamError
+      }
+
+      if (!doneEvent) {
+        throw new Error('流式优化未返回最终结果')
+      }
+
+      optimizationStream.finish(doneEvent.optimized_text || '')
+      patchOptimizationResult(id, {
+        status: 'optimized',
+        optimized_text: doneEvent.optimized_text || '',
+        processing_time: doneEvent.processing_time
+      })
+
+      if (doneEvent.degraded) {
+        // 服务端在首条增量前发现上游不支持 stream，已回退一次性优化
+        appStore.showToast('当前上游不支持流式，已自动降级为一次性返回')
+      } else if (doneEvent.truncated) {
         // 输出达到 Max Tokens 上限被截断（思考 token 也计入），文本可能不完整
-        appStore.showToast('优化完成，但输出已达 Max Tokens 上限被截断，可在设置 → LLM 服务里调大', {
+        appStore.showToast('优化完成，但输出已达 Max Tokens 上限被截断，可在设置 → LLM 服务里调优', {
           tone: 'warn',
           duration: 8000
         })
@@ -62,8 +127,66 @@ export function useRecords() {
         appStore.showToast('优化完成')
       }
     } catch (error) {
-      appStore.showToast('优化失败')
+      // 已被下一条记录的手动优化取代：旧请求的错误/取消不能覆盖新状态
+      if (optimizationStream.recordId !== id || activeOptimizationController !== controller) {
+        return
+      }
+
+      const rawText = recordsStore.records.find((item) => item.id === id)?.raw_text || ''
+
+      if (error?.cancelled) {
+        optimizationStream.begin(id, { source: 'manual' })
+        if (rawText) {
+          optimizationStream.append(rawText)
+        }
+        optimizationStream.cancel()
+        patchOptimizationResult(id, { status: 'transcribed' })
+        appStore.showToast('已取消优化，保留原始文本')
+        return
+      }
+
+      // 首条增量之前失败才降级到非流式端点；已经渲染过增量时不再重试，
+      // 否则用户会先看到半段、再看到整段重复文本。
+      if (!receivedDelta && !streamError) {
+        try {
+          const result = await recordsStore.optimizeRecord(id)
+          optimizationStream.begin(id, { source: 'manual' })
+          optimizationStream.append(result?.optimized_text || '')
+          optimizationStream.finish(result?.optimized_text || '')
+          patchOptimizationResult(id, {
+            status: 'optimized',
+            optimized_text: result?.optimized_text || ''
+          })
+          appStore.showToast('优化完成（流式不可用，已自动降级）')
+          return
+        } catch (fallbackError) {
+          error = fallbackError
+        }
+      }
+
+      optimizationStream.begin(id, { source: 'manual' })
+      if (rawText) {
+        optimizationStream.append(rawText)
+      }
+      optimizationStream.fail(error?.message || '优化失败')
+      patchOptimizationResult(id, { status: 'transcribed' })
+      appStore.showToast(error?.message || '优化失败', { tone: 'error' })
       throw error
+    } finally {
+      if (activeOptimizationController === controller) {
+        activeOptimizationController = null
+      }
+    }
+  }
+
+  async function cancelOptimize(id) {
+    const optimizationStream = useOptimizationStreamStore()
+    if (optimizationStream.recordId === id) {
+      activeOptimizationController?.abort()
+    }
+    const result = await api.cancelOptimizeRecord(id).catch(() => null)
+    if (result?.cancelled && optimizationStream.recordId === id) {
+      optimizationStream.cancel()
     }
   }
 
@@ -184,6 +307,7 @@ export function useRecords() {
     deleteRecord,
     deleteSelected,
     optimizeRecord,
+    cancelOptimize,
     copyText,
     toggleFavorite,
     exportRecord,

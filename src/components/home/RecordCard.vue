@@ -37,7 +37,9 @@
     </div>
 
     <div class="record-content">
-      <p class="record-text">{{ displayText }}</p>
+      <p class="record-text">
+        {{ displayText }}<span v-if="showTypingCursor" class="typing-cursor" aria-hidden="true"></span>
+      </p>
     </div>
 
     <div class="record-meta">
@@ -48,7 +50,11 @@
       </div>
 
       <div class="record-status-group">
-        <BaseBadge v-if="record.status === 'transcribing'" tone="accent">
+        <BaseBadge v-if="isStreamingOptimization" tone="warn">
+          <span class="spinner-small"></span>
+          优化中
+        </BaseBadge>
+        <BaseBadge v-else-if="record.status === 'transcribing'" tone="accent">
           <span class="spinner-small"></span>
           转写中
         </BaseBadge>
@@ -70,7 +76,16 @@
         </BaseButton>
 
         <BaseButton
-          v-if="!selectMode && (record.optimized_text || record.raw_text)"
+          v-if="isStreamingOptimization"
+          variant="ghost"
+          size="sm"
+          @click.stop="$emit('cancel-optimize')"
+        >
+          取消
+        </BaseButton>
+
+        <BaseButton
+          v-if="!selectMode && !isStreamingOptimization && (record.optimized_text || record.raw_text)"
           variant="ghost"
           size="sm"
           @click.stop="$emit('copy')"
@@ -137,6 +152,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { useOptimizationStreamStore } from '@/stores/optimizationStream'
 import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 
@@ -159,9 +175,29 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'edit', 'copy', 'export', 'toggle-audio', 'optimize', 'toggle-favorite'])
+const emit = defineEmits([
+  'select',
+  'edit',
+  'copy',
+  'export',
+  'toggle-audio',
+  'optimize',
+  'cancel-optimize',
+  'toggle-favorite'
+])
+
+const optimizationStream = useOptimizationStreamStore()
+const isStreamingOptimization = computed(() => (
+  optimizationStream.recordId === props.record.id && optimizationStream.isActive
+))
+const showTypingCursor = computed(() => (
+  isStreamingOptimization.value && optimizationStream.phase === 'streaming'
+))
 
 const displayText = computed(() => {
+  if (isStreamingOptimization.value) {
+    return optimizationStream.text || '正在优化…'
+  }
   return props.record.optimized_text || props.record.raw_text || '处理中...'
 })
 
@@ -235,5 +271,28 @@ function formatTime(timestamp) {
 .record-status-group .record-favorite-btn.is-active :deep(svg) {
   fill: currentColor;
   stroke: none;
+}
+
+.typing-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  background: var(--accent);
+  animation: recordCursorBlink 0.9s steps(1) infinite;
+}
+
+@keyframes recordCursorBlink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0;
+  }
 }
 </style>

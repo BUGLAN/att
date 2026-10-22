@@ -46,7 +46,9 @@
 | PUT | `/api/records/{record_id}` | 修改记录文本/收藏 | body：`raw_text`、`optimized_text`、`is_modified`、`is_favorite`、`revision`（均可选） | 更新后的 `Record.to_dict()` | `records.py:242-269`；传 `revision` 且版本已变 → **409** |
 | DELETE | `/api/records/{record_id}` | 删除记录及其音频 | path `record_id` | `{status:"deleted", record_id}` | `records.py:272-279` |
 | GET | `/api/records/{record_id}/audio` | 播放音频 | path `record_id` | WAV 文件流（`media_type="audio/wav"`） | `records.py:282-304`；`audio_path` 为空或非普通文件 → 404 |
-| POST | `/api/records/{record_id}/optimize` | 用 AI 优化文本 | query `style`（默认 `"default"`） | `record_id`、`original_text`、`optimized_text`、`processing_time`、`fallback_reason` | `records.py:307-392`；无 `raw_text` → 400；优化异常 → **502**，同时广播 WS `optimization_failed`。**降级不再静默**：`fallback_reason` 非空表示「设置里配置的 LLM 调用失败、已回退到 `.env` 内置 key 完成」，取值为脱敏后的原因（`app/llm/optimizer.py:233-289`）；失败详情与 `fallback_reason` 均不含明文密钥 |
+| POST | `/api/records/{record_id}/optimize` | 用 AI 优化文本（非流式，保留兼容） | query `style`（默认 `"default"`） | `record_id`、`original_text`、`optimized_text`、`processing_time`、`tokens_used`、`truncated` | `records.py`；无 `raw_text` → 400；优化异常 → **502**，同时广播 WS `optimization_failed`；失败文案已脱敏 |
+| POST | `/api/records/{record_id}/optimize/stream` | 流式优化（NDJSON，推荐） | 无 body；path `record_id` | 200，`Content-Type: application/x-ndjson`；逐行事件：`{type:"start",record_id,original_text}`、`{type:"delta",text}`、`{type:"done",optimized_text,processing_time,tokens_used,truncated,degraded}`、`{type:"error",error,status,raw_text}` | 流式失败若发生在首条增量前，服务端会回退一次非流式 `optimize()`；客户端断开/取消时记录复位为 `transcribed`；HTTP 调用不重复广播增量 |
+| POST | `/api/records/{record_id}/optimize/cancel` | 取消正在执行的流式优化 | path `record_id` | `{record_id, cancelled}` | 手动 HTTP 流与后台自动优化共用任务表；无活动任务返回 `cancelled:false` |
 | GET | `/api/records/{record_id}/export` | 导出单条记录 | query `format`（`txt`/`json`，默认 `txt`）、`use_optimized`（默认 `true`） | `PlainTextResponse`，带 `Content-Disposition: attachment; filename=record_<id>.<format>` | `records.py:382-418`；`format` 非法 → 400（`ExportFormat` 仅 `txt`/`json`，`app/records/models.py:21-24`） |
 
 ---
@@ -117,7 +119,11 @@
 | `connected` | `{type, client_id, status:{recording,transcribing,record_id,duration,connected_clients}, timestamp}`，`timestamp` 为**毫秒整数** | 连接建立后仅发给新客户端 | `websocket.py:42-47` |
 | `status` | `{type:"status", recording, transcribing, record_id, duration, connected_clients, timestamp}`，`timestamp` 为**毫秒整数** | 连接/断开、`status_update` 后广播给所有客户端 | `websocket.py:95-100`、`sessions.py:229-231` |
 | `pong` | `{type:"pong"}` | 收到 `ping` | `sessions.py:375` |
-| `optimization_failed` | `{type, data:{record_id, error, status}, timestamp}`，此处 `timestamp` 为 **ISO 字符串**（与上面两种毫秒整数不一致） | `POST /api/records/{id}/optimize` 失败时广播 | `app/api/routers/records.py:344-353` |
+| `optimization_started` | `{type, data:{record_id}, timestamp}`，ISO 字符串 | 自动优化开始（单段/流式/多段 merge） | `app/services/optimization_stream_service.py` |
+| `optimization_delta` | `{type, data:{record_id, text}, timestamp}`，ISO 字符串；`text` 为增量片段 | 流式优化每收到一块内容 | 同上 |
+| `optimization_completed` | `{type, data:{record_id, optimized_text, processing_time, tokens_used, truncated}, timestamp}`，ISO 字符串 | 自动优化成功落盘后 | 同上 |
+| `optimization_cancelled` | `{type, data:{record_id, raw_text}, timestamp}`，ISO 字符串 | 自动优化被取消且记录复位后 | 同上 |
+| `optimization_failed` | `{type, data:{record_id, error, status, text}, timestamp}`，此处 `timestamp` 为 **ISO 字符串**（与上面两种毫秒整数不一致） | 自动优化失败 / 非流式 `/optimize` 失败时广播 | `app/services/optimization_stream_service.py`；`text` 为原文兜底 |
 | ~~`optimization_degraded`~~ | —— | **已随 LLM v2 移除**（2026-10-22）：`.env` 内置 key 兜底删除后不再有「降级成功」状态，配置失败直接走 `optimization_failed` | —— |
 
 ---

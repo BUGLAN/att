@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from app.llm.errors import LLMError
 from app.utils.logging import get_logger
@@ -31,6 +31,15 @@ class OptimizationResult:
     # finish_reason=length：输出达到 max_tokens 被截断（思考 token 也计入）。
     # 截断必须让调用方/用户看见，不能静默丢尾巴。
     truncated: bool = False
+
+
+@dataclass
+class OptimizationStreamEvent:
+    """流式优化事件：delta 携带增量文本，done 携带最终结果。"""
+
+    type: str
+    text: str = ""
+    result: Optional[OptimizationResult] = None
 
 
 def _get_prompt_manager():
@@ -187,6 +196,9 @@ class TextOptimizer:
             optimized_length=len(chat_result.text),
             processing_time=f"{processing_time:.2f}s",
             tokens_used=chat_result.total_tokens,
+            prompt_tokens=chat_result.prompt_tokens,
+            completion_tokens=chat_result.completion_tokens,
+            reasoning_tokens=chat_result.reasoning_tokens,
         )
 
         if chat_result.truncated:
@@ -204,3 +216,116 @@ class TextOptimizer:
             model_string=chat_result.model_string,
             truncated=chat_result.truncated,
         )
+
+    async def optimize_stream(
+        self,
+        text: str,
+        style: str = "default",
+        preset_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+    ) -> AsyncIterator[OptimizationStreamEvent]:
+        """流式优化：逐块产出 delta，最后产出 done。
+
+        与 optimize() 使用同一套提示词/模型解析；失败直接抛 LLMError，
+        由调用方决定「回退非流式」或「展示错误并复位状态」。
+        """
+        from app.llm.gateway import get_llm_gateway
+        from app.llm.store import get_llm_store
+
+        if not text.strip():
+            yield OptimizationStreamEvent(
+                type="done",
+                result=OptimizationResult(
+                    original_text=text,
+                    optimized_text=text,
+                    processing_time=0,
+                ),
+            )
+            return
+
+        try:
+            prompt = _resolve_prompt(text, preset_id, style, self.DEFAULT_PROMPT)
+        except Exception as exc:
+            logger.warning("提示词预设解析失败，使用内置默认模板", error=str(exc))
+            prompt = self.DEFAULT_PROMPT.format(text=text)
+
+        entry, profile, plain_key = get_llm_store().resolve_runtime(model_id)
+
+        logger.info(
+            "开始流式文本优化",
+            model=entry.model,
+            profile_id=profile.id,
+            preset_id=preset_id,
+            text_length=len(text),
+        )
+
+        start_time = time.perf_counter()
+        first_token_ms: Optional[int] = None
+        parts: list[str] = []
+        finish_reason = ""
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        reasoning_tokens = 0
+
+        async for chunk in get_llm_gateway().chat_stream(
+            model_string=entry.model,
+            messages=[{"role": "user", "content": prompt}],
+            api_key=plain_key,
+            api_base=profile.api_base,
+            extra_headers=profile.extra_headers or None,
+            temperature=entry.params.temperature,
+            max_tokens=entry.params.max_tokens,
+            timeout_s=entry.params.timeout_s,
+            retries=entry.params.retries,
+        ):
+            if chunk.text:
+                if first_token_ms is None:
+                    first_token_ms = int((time.perf_counter() - start_time) * 1000)
+                parts.append(chunk.text)
+                yield OptimizationStreamEvent(type="delta", text=chunk.text)
+
+            if chunk.finish_reason:
+                finish_reason = chunk.finish_reason
+            if chunk.prompt_tokens:
+                prompt_tokens = chunk.prompt_tokens
+            if chunk.completion_tokens:
+                completion_tokens = chunk.completion_tokens
+            if chunk.total_tokens:
+                total_tokens = chunk.total_tokens
+            if chunk.reasoning_tokens:
+                reasoning_tokens = chunk.reasoning_tokens
+
+        processing_time = time.perf_counter() - start_time
+        optimized_text = "".join(parts)
+        result = OptimizationResult(
+            original_text=text,
+            optimized_text=optimized_text,
+            processing_time=processing_time,
+            tokens_used=total_tokens or (prompt_tokens + completion_tokens),
+            model_string=entry.model,
+            truncated=finish_reason == "length",
+        )
+
+        logger.info(
+            "流式文本优化完成",
+            model=entry.model,
+            original_length=len(text),
+            optimized_length=len(optimized_text),
+            processing_time=f"{processing_time:.2f}s",
+            first_token_ms=first_token_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            reasoning_tokens=reasoning_tokens,
+            finish_reason=finish_reason or "stop",
+        )
+
+        if result.truncated:
+            logger.warning(
+                "流式优化结果被截断（输出达到 max_tokens 上限），文本可能不完整",
+                model=entry.model,
+                max_tokens=entry.params.max_tokens,
+            )
+
+        yield OptimizationStreamEvent(type="done", result=result)

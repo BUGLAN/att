@@ -2,6 +2,7 @@
  * HTTP API client
  * 直接访问 Python FastAPI 后端，不经过 IPC 中转。
  */
+import { createNdjsonParser } from '@/utils/ndjson.mjs'
 
 let backendPort = null
 
@@ -135,6 +136,116 @@ async function request(method, endpoint, options = {}) {
   return response.json()
 }
 
+/**
+ * 读取 NDJSON 流式响应：每行一个 JSON 事件，边读边回调。
+ * 返回 { eventCount }，供调用方判断是否已经收到过增量（决定能否安全降级）。
+ */
+async function streamNdjson(endpoint, options = {}) {
+  const baseUrl = await getBaseUrl()
+  const url = `${baseUrl}${endpoint}`
+  const timeout = options.timeout ?? SLOW_TIMEOUT_MS
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeout)
+
+  const externalSignal = options.signal
+  const onExternalAbort = () => controller.abort()
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort()
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true })
+    }
+  }
+
+  let eventCount = 0
+  const onEvent = options.onEvent
+  const parser = createNdjsonParser((event) => {
+    eventCount += 1
+    if (typeof onEvent === 'function') {
+      onEvent(event)
+    }
+  })
+
+  let response
+  try {
+    response = await fetch(url, {
+      method: options.method || 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal
+    })
+
+    if (!response.ok) {
+      let errorData = null
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`
+      try {
+        errorData = await response.json()
+        errorMessage = extractErrorMessage(errorData, response)
+      } catch (error) {
+        // 解析失败时保留状态码文案
+      }
+      const httpError = new Error(errorMessage)
+      httpError.status = response.status
+      httpError.detail = errorData?.detail
+      throw httpError
+    }
+
+    if (!response.body) {
+      throw new Error('当前环境不支持流式读取（response.body 为空）')
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          break
+        }
+        parser.push(decoder.decode(value, { stream: true }))
+      }
+      parser.push(decoder.decode())
+      parser.flush()
+    } finally {
+      reader.releaseLock()
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      if (timedOut) {
+        throw new Error(`流式请求超时（超过 ${Math.round(timeout / 1000)} 秒未完成）`)
+      }
+      const cancelled = new Error('已取消')
+      cancelled.name = 'AbortError'
+      cancelled.cancelled = true
+      throw cancelled
+    }
+
+    if (error?.status) {
+      throw error
+    }
+
+    if (error?.name === 'SyntaxError') {
+      throw new Error(`流式响应解析失败：${error.message}`)
+    }
+
+    throw new Error(`流式连接中断：${error?.message || error}`)
+  } finally {
+    clearTimeout(timer)
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onExternalAbort)
+    }
+  }
+
+  return { eventCount }
+}
+
 async function uploadForm(endpoint, fileField, blob, filename) {
   const baseUrl = await getBaseUrl()
   const url = `${baseUrl}${endpoint}`
@@ -203,6 +314,12 @@ export const api = {
   updateRecord: (id, data) => request('PUT', `/records/${id}`, { body: data }),
   deleteRecord: (id) => request('DELETE', `/records/${id}`),
   optimizeRecord: (id) => request('POST', `/records/${id}/optimize`, { timeout: SLOW_TIMEOUT_MS }),
+  optimizeRecordStream: (id, options = {}) => streamNdjson(`/records/${id}/optimize/stream`, {
+    ...options,
+    method: 'POST',
+    timeout: options.timeout ?? SLOW_TIMEOUT_MS
+  }),
+  cancelOptimizeRecord: (id) => request('POST', `/records/${id}/optimize/cancel`, { timeout: 10000 }),
 
   async getClipboardItems(params = {}) {
     const searchParams = new URLSearchParams()

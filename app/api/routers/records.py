@@ -30,14 +30,14 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.api.deps import runtime_state
 from app.api.uploads import read_upload_within_limit
 from app.llm.security import redact_secrets
 from app.records.models import ExportFormat, RecordStatus
-from app.services import records_service, transcription_service
+from app.services import optimization_stream_service, records_service, transcription_service
 from app.services.websocket import manager as ws_manager
 from app.utils.logging import get_logger
 
@@ -383,6 +383,50 @@ async def optimize_record(
         "tokens_used": result.tokens_used,
         "truncated": result.truncated
     }
+
+
+@router.post("/records/{record_id}/optimize/stream")
+async def optimize_record_stream(record_id: str, state=Depends(runtime_state)):
+    """流式优化记录原文：NDJSON 逐行返回 start / delta / done / error。
+
+    与 /optimize 的差异只在传输方式：记录状态机、落盘、错误复位完全复用
+    optimization_stream_service，非流式端点保留给旧调用方与降级路径。
+    """
+    record = await state.record_manager.get_record(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+    if not record.raw_text:
+        raise HTTPException(status_code=400, detail="No text to optimize")
+    if state.optimizer is None:
+        raise HTTPException(status_code=503, detail="LLM 优化器未初始化")
+
+    async def event_stream():
+        async for event in optimization_stream_service.stream_optimization(
+            record_id=record_id,
+            text=record.raw_text,
+            optimizer=state.optimizer,
+            record_manager=state.record_manager,
+            preset_id=state.user_settings.get("default_preset_id"),
+            # HTTP 调用方直接消费增量，不再走 WS 增量，避免同一客户端收到两遍
+            broadcast=False,
+        ):
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/records/{record_id}/optimize/cancel")
+async def cancel_optimize_record(record_id: str):
+    """取消该记录正在执行的流式优化（手动 HTTP 或后台自动共用）。"""
+    cancelled = await optimization_stream_service.cancel_optimization(record_id)
+    return {"record_id": record_id, "cancelled": cancelled}
 
 
 @router.get("/records/{record_id}/export")

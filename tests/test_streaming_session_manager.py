@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.records.models import RecordStatus
+from app.services import optimization_stream_service
 from app.services import streaming_session_manager as ssm_module
 from app.services.streaming_session_manager import (
     ManagedStreamingSession,
@@ -40,6 +41,7 @@ class FakeRecordManager:
         self.counter = 0
         self.records = {}
         self.updates = []
+        self.error_messages = []
 
     async def create_record(self, audio_path, duration, status, raw_text):
         self.counter += 1
@@ -53,6 +55,9 @@ class FakeRecordManager:
             setattr(record, key, value)
         self.updates.append((record_id, dict(kwargs)))
         return record
+
+    async def set_error_message(self, record_id, message):
+        self.error_messages.append((record_id, message))
 
 
 class FakeOptimizer:
@@ -109,7 +114,8 @@ class FakeAsrSession:
 def _build_manager(monkeypatch, tmp_path, *, auto_optimize=False, optimizer=None):
     """构造注入了假依赖的会话管理器，并接管 user_settings 与 ws 广播。"""
     ws = FakeWsManager()
-    monkeypatch.setattr(ssm_module, "ws_manager", ws)
+    # 增量/完成事件统一由 optimization_stream_service 广播
+    monkeypatch.setattr(optimization_stream_service, "ws_manager", ws)
     monkeypatch.setattr(
         ssm_module,
         "user_settings",
@@ -174,7 +180,11 @@ def test_finish_session_returns_before_optimize_completes(monkeypatch, tmp_path)
     record = manager.record_manager.records[payload["record"]["id"]]
     assert record.status == RecordStatus.OPTIMIZED
     assert record.optimized_text == "优化后的会议内容"
-    assert [message["type"] for message in ws.messages] == ["optimization_completed"]
+    assert [message["type"] for message in ws.messages] == [
+        "optimization_started",
+        "optimization_delta",
+        "optimization_completed",
+    ]
 
 
 def test_finish_session_optimize_failure_resets_and_broadcasts(monkeypatch, tmp_path):

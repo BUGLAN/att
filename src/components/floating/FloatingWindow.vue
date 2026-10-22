@@ -31,7 +31,11 @@
         <p v-if="showScrollingTranscript" class="primary-line primary-line-streaming">
           <span class="prefix-text">{{ prefixText }}</span>
           <span ref="streamingViewport" class="streaming-viewport">
-            <span class="highlight streaming-text">{{ contentText }}</span>
+            <span class="highlight streaming-text">{{ contentText }}</span><span
+              v-if="showTypingCursor"
+              class="typing-cursor"
+              aria-hidden="true"
+            ></span>
           </span>
         </p>
         <p v-else class="primary-line">
@@ -85,7 +89,9 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 
-const AUTO_HIDE_MS = 800
+// 完成后至少留出可读完一行结果的时间；错误需要更久，避免一闪而过
+const AUTO_HIDE_MS = 2000
+const ERROR_AUTO_HIDE_MS = 3200
 
 const phase = ref('idle')
 const text = ref('')
@@ -114,15 +120,20 @@ const contentText = computed(() => {
   if (phase.value === 'recording' && ['multi', 'streaming'].includes(mode.value)) return text.value || '正在聆听...'
   if (phase.value === 'recording') return '结束录音后将开始转写...'
   if (phase.value === 'transcribing') return '正在生成转写结果...'
-  if (phase.value === 'optimizing') return 'AI 正在整理文本...'
+  if (phase.value === 'optimizing') return text.value || 'AI 正在整理文本...'
   if (phase.value === 'complete') return text.value || '文本已生成'
   if (phase.value === 'error') return text.value || '请稍后重试'
   return '实时内容正在生成中...'
 })
 
 const showScrollingTranscript = computed(() => (
-  phase.value === 'recording' && ['multi', 'streaming'].includes(mode.value) && Boolean(text.value)
+  (
+    phase.value === 'optimizing' ||
+    (phase.value === 'recording' && ['multi', 'streaming'].includes(mode.value))
+  ) && Boolean(text.value)
 ))
+
+const showTypingCursor = computed(() => phase.value === 'optimizing')
 
 function clearHideTimer() {
   if (!hideTimer) {
@@ -140,11 +151,11 @@ function clearScrollAnimation() {
   }
 }
 
-function scheduleHide() {
+function scheduleHide(delayMs = AUTO_HIDE_MS) {
   clearHideTimer()
   hideTimer = setTimeout(() => {
     window.floatingAPI?.close()
-  }, AUTO_HIDE_MS)
+  }, delayMs)
 }
 
 function applyState(payload = {}) {
@@ -153,7 +164,7 @@ function applyState(payload = {}) {
   mode.value = payload.mode || 'single'
 
   if (phase.value === 'complete' || phase.value === 'error') {
-    scheduleHide()
+    scheduleHide(phase.value === 'error' ? ERROR_AUTO_HIDE_MS : AUTO_HIDE_MS)
     return
   }
 

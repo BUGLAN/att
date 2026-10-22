@@ -84,9 +84,46 @@
             </div>
           </div>
 
-          <div class="live-content">
-            <p v-if="displayTranscript" class="live-transcript">{{ displayTranscript }}</p>
-            <p v-else class="live-placeholder">{{ transcriptPlaceholder }}</p>
+          <div ref="liveScroll" class="live-content" @scroll="handleLiveScroll">
+            <template v-if="showOptimizationStream">
+              <div class="stream-status">
+                <span v-if="optimizationStream.isWaitingForFirstToken" class="stream-spinner" aria-hidden="true"></span>
+                <span>{{ optimizationStatusText }}</span>
+                <BaseButton
+                  v-if="canCancelOptimization"
+                  variant="ghost"
+                  size="sm"
+                  class="stream-cancel"
+                  @click="cancelOptimization(optimizationStream.recordId)"
+                >
+                  取消
+                </BaseButton>
+              </div>
+
+              <p v-if="optimizationStream.text" class="live-transcript streaming-transcript">
+                {{ optimizationStream.text }}<span
+                  v-if="optimizationStream.phase === 'streaming'"
+                  class="typing-cursor"
+                  aria-hidden="true"
+                ></span>
+              </p>
+              <p v-else class="live-placeholder">{{ optimizationEmptyText }}</p>
+
+              <p v-if="optimizationStream.phase === 'error'" class="stream-error">
+                {{ optimizationStream.error }}
+              </p>
+              <p
+                v-if="optimizationStream.phase === 'waiting' && displayTranscript"
+                class="stream-raw-preview"
+              >
+                原始转写：{{ displayTranscript }}
+              </p>
+            </template>
+
+            <template v-else>
+              <p v-if="displayTranscript" class="live-transcript">{{ displayTranscript }}</p>
+              <p v-else class="live-placeholder">{{ transcriptPlaceholder }}</p>
+            </template>
           </div>
 
           <div class="live-footer">
@@ -101,11 +138,13 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRecorder } from '@/composables/useRecorder'
 import { deriveStreamingProviderLabel } from '@/composables/recorder/streamProtocol.mjs'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
+import { useOptimizationStreamStore } from '@/stores/optimizationStream'
+import { shouldAutoScroll } from '@/composables/recorder/streamScroll.mjs'
 import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
@@ -122,11 +161,15 @@ const {
   isMultiModeEnabled,
   isStreamingModeEnabled,
   startRecording,
-  stopRecording
+  stopRecording,
+  cancelOptimization
 } = useRecorder()
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
+const optimizationStream = useOptimizationStreamStore()
 const serviceActionPending = ref(false)
+const liveScroll = ref(null)
+const autoScrollEnabled = ref(true)
 
 // 真流式 provider 的展示名（Qwen 本地 / 豆包在线），文案不再写死 Qwen
 const streamingProviderLabel = computed(() => (
@@ -186,6 +229,7 @@ const liveModeText = computed(() => {
 
 const statusBadge = computed(() => {
   if (isRecording.value) return '录音中'
+  if (optimizationStream.isActive) return '优化中'
   if (isTranscribing.value) return '处理中'
   return '就绪'
 })
@@ -193,7 +237,7 @@ const statusBadge = computed(() => {
 // 状态徽章的语义色：录音=错误红（醒目）、转写=警告黄、就绪=成功绿
 const statusTone = computed(() => {
   if (isRecording.value) return 'err'
-  if (isTranscribing.value) return 'warn'
+  if (isTranscribing.value || livePhase.value === 'optimizing') return 'warn'
   return 'ok'
 })
 
@@ -219,6 +263,7 @@ const panelStatus = computed(() => {
 
   if (isRecording.value) return '正在录制整段音频'
   if (isTranscribing.value) return '正在处理录音结果'
+  if (livePhase.value === 'optimizing') return '正在后台优化文本'
   return '等待开始录音'
 })
 
@@ -253,6 +298,7 @@ const sessionStatusShort = computed(() => sessionStatusText.value || '待开始'
 const segmentCountText = computed(() => {
   if (isStreamingModeEnabled.value) {
     if (isRecording.value) return '流式会话进行中'
+    if (livePhase.value === 'optimizing') return '后台优化中'
     if (isTranscribing.value) return '流式结果收尾中'
     return '流式模式'
   }
@@ -296,9 +342,76 @@ const liveIndicatorText = computed(() => {
   if (isRecording.value && isStreamingModeEnabled.value) return 'LIVE STREAM'
   if (isRecording.value && isMultiModeEnabled.value) return 'LIVE AI'
   if (isRecording.value) return 'RECORDING'
+  if (optimizationStream.isActive) return 'STREAMING'
   if (isTranscribing.value) return 'PROCESSING'
   return 'STANDBY'
 })
+
+const showOptimizationStream = computed(() => (
+  !isRecording.value &&
+  Boolean(optimizationStream.recordId) &&
+  (
+    optimizationStream.isActive ||
+    optimizationStream.phase === 'error' ||
+    optimizationStream.phase === 'cancelled'
+  )
+))
+
+const optimizationStatusText = computed(() => {
+  if (optimizationStream.phase === 'waiting') return '正在等待模型返回首字…'
+  if (optimizationStream.phase === 'streaming') return '正在流式优化'
+  if (optimizationStream.phase === 'error') return '优化失败'
+  if (optimizationStream.phase === 'cancelled') return '已取消优化'
+  return '正在优化'
+})
+
+const optimizationEmptyText = computed(() => {
+  if (optimizationStream.phase === 'waiting') return '首字到达前会先显示加载状态，请稍候…'
+  if (optimizationStream.phase === 'error') return '没有收到可用的优化文本'
+  if (optimizationStream.phase === 'cancelled') return '已保留原始转写'
+  return '正在生成优化文本…'
+})
+
+const canCancelOptimization = computed(() => (
+  optimizationStream.isActive &&
+  optimizationStream.source === 'auto' &&
+  Boolean(optimizationStream.recordId)
+))
+
+function handleLiveScroll() {
+  const element = liveScroll.value
+  if (!element) {
+    return
+  }
+
+  autoScrollEnabled.value = shouldAutoScroll({
+    scrollTop: element.scrollTop,
+    scrollHeight: element.scrollHeight,
+    clientHeight: element.clientHeight
+  })
+}
+
+watch(
+  () => optimizationStream.phase,
+  (phase, previous) => {
+    if (phase === 'waiting' && previous !== 'waiting') {
+      autoScrollEnabled.value = true
+    }
+  }
+)
+
+watch(
+  () => [optimizationStream.text, optimizationStream.phase, showOptimizationStream.value],
+  async () => {
+    await nextTick()
+    const element = liveScroll.value
+    if (!element || !autoScrollEnabled.value) {
+      return
+    }
+    element.scrollTop = element.scrollHeight
+  },
+  { flush: 'post' }
+)
 
 async function refreshModelServiceStatus(probeRuntime = true) {
   try {
@@ -663,6 +776,82 @@ watch(
 
 .live-placeholder {
   color: var(--text-3);
+}
+
+.stream-status {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: var(--s-3);
+  padding-bottom: var(--s-2);
+  border-bottom: 1px dashed var(--line);
+  color: var(--accent);
+  font-size: var(--fs-cap);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.stream-cancel {
+  margin-left: auto;
+}
+
+.stream-spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--line-soft-strong);
+  border-top-color: var(--accent);
+  border-radius: var(--r-full);
+  animation: streamSpin 0.9s linear infinite;
+}
+
+.streaming-transcript {
+  min-height: 1.7em;
+}
+
+.typing-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  background: var(--accent);
+  animation: cursorBlink 0.9s steps(1) infinite;
+}
+
+.stream-error {
+  margin: var(--s-3) 0 0;
+  color: var(--err);
+  font-size: var(--fs-cap);
+  line-height: 1.5;
+}
+
+.stream-raw-preview {
+  margin: var(--s-3) 0 0;
+  padding-top: var(--s-3);
+  border-top: 1px dashed var(--line);
+  color: var(--text-3);
+  font-size: var(--fs-cap);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+@keyframes streamSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes cursorBlink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0;
+  }
 }
 
 .live-footer {

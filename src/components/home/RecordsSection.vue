@@ -26,6 +26,7 @@
         @export="(format) => exportRecord(record, format)"
         @toggle-audio="toggleAudio(record.id)"
         @optimize="optimizeRecord(record.id)"
+        @cancel-optimize="cancelOptimize(record.id)"
         @toggle-favorite="toggleFavorite(record)"
       />
 
@@ -84,6 +85,7 @@ const {
   copyText,
   toggleFavorite,
   optimizeRecord,
+  cancelOptimize,
   exportRecord,
   toggleSelectMode,
   toggleSelection,

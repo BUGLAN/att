@@ -30,7 +30,7 @@ from app.api.deps import runtime_state
 from app.api.uploads import read_upload_within_limit
 from app.records.models import RecordStatus
 from app.records.session_manager import session_manager
-from app.services import records_service, transcription_service
+from app.services import optimization_stream_service, records_service, transcription_service
 from app.services.websocket import manager as ws_manager
 from app.utils.logging import get_logger
 
@@ -153,31 +153,36 @@ async def merge_session(session_id: str, state=Depends(runtime_state)) -> dict:
     records_service.invalidate_record_index(state.record_manager, record.id)
 
     optimized_text = None
-    if state.user_settings.get("auto_optimize", False) and merged_text:
+    if state.user_settings.get("auto_optimize", False) and merged_text and state.optimizer:
         try:
-            await state.record_manager.update_record(
-                record.id,
-                status=RecordStatus.OPTIMIZING
-            )
-            optimize_result = await state.optimizer.optimize(
-                merged_text,
-                preset_id=state.user_settings.get("default_preset_id")
-            )
-            updated_record = await state.record_manager.update_record(
-                record.id,
-                optimized_text=optimize_result.optimized_text,
-                status=RecordStatus.OPTIMIZED
-            )
+            # 多段 merge 仍在 HTTP 请求内完成（调用方要拿最终文本），但优化过程
+            # 逐块通过 WS 广播；terminal 事件交给 finalizeRealtimeSession 统一收尾，
+            # 避免 WS 与 HTTP 响应各粘贴一次。
+            async for event in optimization_stream_service.stream_optimization(
+                record_id=record.id,
+                text=merged_text,
+                optimizer=state.optimizer,
+                record_manager=state.record_manager,
+                preset_id=state.user_settings.get("default_preset_id"),
+                broadcast=True,
+                broadcast_terminal=False,
+            ):
+                if event.get("type") == "done":
+                    optimized_text = event.get("optimized_text")
+                elif event.get("type") == "error":
+                    logger.warning(
+                        "多段录音自动优化失败",
+                        session_id=session_id,
+                        record_id=record.id,
+                        error=event.get("error"),
+                    )
+
+            updated_record = await state.record_manager.get_record(record.id)
             if updated_record:
                 record = updated_record
-                optimized_text = optimize_result.optimized_text
         except Exception as error:
-            await state.record_manager.update_record(
-                record.id,
-                status=RecordStatus.TRANSCRIBED
-            )
             logger.warning(
-                "多段录音自动优化失败",
+                "多段录音自动优化异常",
                 session_id=session_id,
                 record_id=record.id,
                 error=str(error)

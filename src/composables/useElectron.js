@@ -29,6 +29,8 @@ export function useElectron() {
     updateRecord: (id, data) => httpApi.updateRecord(id, data),
     deleteRecord: (id) => httpApi.deleteRecord(id),
     optimizeRecord: (id) => httpApi.optimizeRecord(id),
+    optimizeRecordStream: (id, options) => httpApi.optimizeRecordStream(id, options),
+    cancelOptimizeRecord: (id) => httpApi.cancelOptimizeRecord(id),
     exportRecord: (id, format) => httpApi.exportRecord(id, format),
     getRecordAudio: (id) => httpApi.getRecordAudio(id),
     getHealth: (probeRuntime = false) => httpApi.getHealth(probeRuntime),

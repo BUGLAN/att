@@ -12,14 +12,13 @@ import numpy as np
 
 from app.config import settings, user_settings
 from app.llm.optimizer import TextOptimizer
-from app.llm.security import redact_secrets
 from app.records.manager import RecordManager
 from app.records.models import RecordStatus
 from app.stt.models import ASRProviderType
 from app.stt.factory import get_asr_provider_config
 from app.stt.providers.doubao_asr_provider import DoubaoStreamingProvider
 from app.stt.providers.qwen_streaming_runtime_provider import QwenStreamingProvider
-from app.services.websocket import manager as ws_manager
+from app.services import optimization_stream_service
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -221,13 +220,15 @@ class StreamingSessionManager:
             "duration": duration
         }
 
-        if user_settings.get("auto_optimize", False):
-            # 优化必须留在收尾关键路径之外：LLM provider 无超时（SDK 默认 600s），
-            # 内联 await 会让前端在「正在完成流式转写」卡最长 10 分钟。
-            # 这里先立即返回 transcribed 记录，优化放后台任务执行，
-            # 完成后经全局 WS 广播 optimization_completed（与单段录音路径一致）。
-            optimize_task = asyncio.create_task(
-                self._optimize_in_background(record.id, final_text)
+        if user_settings.get("auto_optimize", False) and final_text.strip():
+            # 优化留在收尾关键路径之外；后台任务逐块广播增量，前端可边收边渲染。
+            optimize_task = optimization_stream_service.start_background_optimization(
+                record_id=record.id,
+                text=final_text,
+                optimizer=self.optimizer,
+                record_manager=self.record_manager,
+                preset_id=user_settings.get("default_preset_id"),
+                broadcast_terminal=True,
             )
             optimize_task.add_done_callback(_log_background_task_error)
 
@@ -238,64 +239,6 @@ class StreamingSessionManager:
             duration=duration
         )
         return payload
-
-    async def _optimize_in_background(self, record_id: str, final_text: str) -> None:
-        """后台执行流式录音的自动优化，完成后广播 optimization_completed。"""
-        try:
-            optimize_result = await self.optimizer.optimize(
-                final_text,
-                preset_id=user_settings.get("default_preset_id")
-            )
-            record = await self.record_manager.update_record(
-                record_id,
-                optimized_text=optimize_result.optimized_text,
-                status=RecordStatus.OPTIMIZED
-            )
-            if record:
-                await ws_manager.broadcast({
-                    "type": "optimization_completed",
-                    "data": {
-                        "record_id": record.id,
-                        "optimized_text": optimize_result.optimized_text
-                    },
-                    "timestamp": datetime.now().isoformat()
-                })
-            logger.info("流式录音自动优化完成", record_id=record_id)
-        except Exception as error:
-            # 错误文案先脱敏：上游鉴权失败会在错误体里回显密钥（AGENTS.md §3.4）
-            safe_error = redact_secrets(error)
-            logger.warning("流式录音自动优化失败", record_id=record_id, error=safe_error)
-            # 与单段模式对齐：失败把记录复位为 transcribed 并广播失败事件
-            try:
-                await self.record_manager.update_record(
-                    record_id,
-                    status=RecordStatus.TRANSCRIBED
-                )
-            except Exception as reset_error:
-                logger.warning(
-                    "流式录音优化失败后复位记录状态失败",
-                    record_id=record_id,
-                    error=str(reset_error)
-                )
-            try:
-                await ws_manager.broadcast({
-                    "type": "optimization_failed",
-                    "data": {
-                        "record_id": record_id,
-                        "error": safe_error,
-                        "status": RecordStatus.TRANSCRIBED.value,
-                        # 自动优化开启时前端不在 transcribed 阶段粘贴，
-                        # 失败广播带上原文，前端兜底粘贴，保证总有输出
-                        "text": final_text
-                    },
-                    "timestamp": datetime.now().isoformat()
-                })
-            except Exception as broadcast_error:
-                logger.warning(
-                    "推送流式优化失败事件失败",
-                    record_id=record_id,
-                    error=str(broadcast_error)
-                )
 
     async def cancel_session(self, session_id: str) -> None:
         async with self._lock:

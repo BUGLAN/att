@@ -13,10 +13,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.llm.security import redact_secrets
 from app.records.manager import RecordManager
 from app.records.models import RecordStatus
 from app.records.session_manager import SessionManager
+from app.services import optimization_stream_service
 from app.services.websocket import manager as ws_manager
 from app.stt.base import ASRProvider
 from app.utils.logging import get_logger
@@ -96,61 +96,20 @@ async def transcribe_audio_background(
             processing_time=f"{result.processing_time:.2f}s"
         )
 
-        # 按设置执行自动优化
-        if user_settings.get("auto_optimize", False):
-            try:
-                logger.info("Auto-optimizing text", record_id=record_id)
-                await record_manager.update_record(
-                    record_id,
-                    status=RecordStatus.OPTIMIZING
-                )
-
-                await ws_manager.broadcast({
-                    "type": "optimization_started",
-                    "data": {"record_id": record_id},
-                    "timestamp": datetime.now().isoformat()
-                })
-
-                preset_id = user_settings.get("default_preset_id")
-                optimize_result = await optimizer.optimize(
-                    result.text,
-                    preset_id=preset_id
-                )
-
-                await record_manager.update_record(
-                    record_id,
-                    optimized_text=optimize_result.optimized_text,
-                    status=RecordStatus.OPTIMIZED
-                )
-                # 自动优化成功即清除历史错误原因
-                await record_manager.set_error_message(record_id, "")
-
-                await ws_manager.broadcast({
-                    "type": "optimization_completed",
-                    "data": build_completion_metadata(
-                        record_id=record_id,
-                        optimized_text=optimize_result.optimized_text
-                    ),
-                    "timestamp": datetime.now().isoformat()
-                })
-
-                logger.info("Auto-optimization complete", record_id=record_id)
-            except Exception as e:
-                # 与 /records/{id}/optimize 一致：失败必须把状态复位，
-                # 否则自动优化失败后记录会永久停留在 optimizing
-                # 错误文案先脱敏：上游鉴权失败会在错误体里回显密钥（AGENTS.md §3.4）
-                safe_error = redact_secrets(e)
-                await record_manager.update_record(
-                    record_id,
-                    status=RecordStatus.TRANSCRIBED
-                )
-                # 持久化失败原因，便于用户在记录详情里看到历史错误
-                await record_manager.set_error_message(record_id, safe_error)
-                logger.error(
-                    "Auto-optimization failed, status reset to transcribed",
-                    record_id=record_id,
-                    error=safe_error
-                )
+        # 按设置执行自动优化：放到独立任务里，避免阻塞转写后台任务的收尾。
+        # 优化过程通过 optimization_stream_service 逐块广播，前端可以边收边渲染。
+        if user_settings.get("auto_optimize", False) and result.text.strip():
+            preset_id = user_settings.get("default_preset_id")
+            await optimization_stream_service.run_optimization(
+                record_id=record_id,
+                text=result.text,
+                optimizer=optimizer,
+                record_manager=record_manager,
+                preset_id=preset_id,
+                broadcast=True,
+                broadcast_terminal=True,
+            )
+            logger.info("Auto-optimization finished", record_id=record_id)
 
     except Exception as e:
         logger.error(

@@ -2,6 +2,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useRecordsStore } from '@/stores/records'
 import { useSettingsStore } from '@/stores/settings'
+import { useOptimizationStreamStore } from '@/stores/optimizationStream'
 import { useElectron } from './useElectron'
 import { useGlobalWebSocket } from './useWebSocket'
 import { createSilenceDetector } from './useSilenceDetector'
@@ -9,6 +10,7 @@ import { derivePostStopState, deriveStartAbortState, shouldQueueStopDuringStart 
 // 第 5 轮"安全抽取"出的纯逻辑模块（不依赖 Vue / 浏览器全局对象，可被 Node 直接单测）。
 // 本文件保留全部时序编排：startRecording / stopRecording 主流程、AudioContext、
 // WebSocket 生命周期、热键与悬浮窗同步，只把纯计算与纯判定委托给这些模块。
+import * as floatingSession from './recorder/floatingSession.mjs'
 import * as pcm from './recorder/pcm.mjs'
 import * as segmentPolicy from './recorder/segmentPolicy.mjs'
 import * as pollPolicy from './recorder/pollPolicy.mjs'
@@ -18,6 +20,9 @@ import * as statusCopy from './recorder/statusCopy.mjs'
 const STREAM_SAMPLE_RATE = 16000
 // 流式连接必须在限定时间内 settle，否则调用方的 finally 永不执行，startPending 会永久为真
 const STREAM_CONNECT_TIMEOUT_MS = 8000
+// 后台优化看门狗：迟迟收不到 optimization_completed / optimization_failed 时按原文收尾，
+// 避免悬浮窗永久停在“正在优化”。取 60s，与 LLM 模型默认 timeout_s 对齐。
+const OPTIMIZATION_WATCHDOG_MS = 60000
 
 const duration = ref(0)
 const mediaRecorder = ref(null)
@@ -34,6 +39,8 @@ const streamingConnectionState = ref('idle')
 const sessionStatusText = ref('按住快捷键开始录音')
 
 let pollingTimer = null
+// 当前轮询绑定的 record_id：旧录音的后台优化事件不能停掉新录音的轮询
+let pollingRecordId = null
 // 连续轮询失败次数：超过失败上限（见 recorder/pollPolicy.mjs）必须停止并提示，避免静默永久轮询
 let pollingFailureCount = 0
 let mountedInstances = 0
@@ -43,6 +50,10 @@ let startPending = false
 let pendingStopAfterStart = false
 let pollingInFlight = false
 let floatingSessionActive = false
+// 当前悬浮窗绑定的记录 id（空串 = 新会话尚未拿到 record_id）。
+// 后台优化事件可能晚于下一次录音到达，收尾前必须核对它属于哪个会话。
+let floatingSessionRecordId = ''
+let optimizationWatchdog = null
 let desktopRecordingSyncActive = false
 let silenceDetector = null
 let realtimeStopRequested = false
@@ -132,19 +143,68 @@ function completeFloatingSession(phase, text) {
     text
   })
   floatingSessionActive = false
+  floatingSessionRecordId = ''
+  clearOptimizationWatchdog()
 }
 
-function beginFloatingSession() {
-  if (floatingSessionActive) {
+function clearOptimizationWatchdog() {
+  if (!optimizationWatchdog) {
     return
   }
 
-  floatingSessionActive = true
+  clearTimeout(optimizationWatchdog)
+  optimizationWatchdog = null
+}
+
+/**
+ * 后台优化迟迟没有回包时按原文收尾：宁可让用户先拿到转写文本，
+ * 也不要把悬浮窗永久钉在“正在优化”。
+ */
+function armOptimizationWatchdog(recordId, fallbackText) {
+  clearOptimizationWatchdog()
+  optimizationWatchdog = setTimeout(() => {
+    optimizationWatchdog = null
+
+    if (!ownsFloatingRecord(recordId)) {
+      return
+    }
+
+    const appStore = useAppStore()
+    if (appStore.isRecording || startPending) {
+      // 用户已经开了下一段录音：上一段的超时不能动新会话的状态
+      return
+    }
+
+    const { tray } = useElectron()
+    appStore.setTranscribing(false)
+    tray.setIcon('idle')
+    livePhase.value = 'completed'
+    sessionStatusText.value = '优化超时，已保留转写原文'
+    completeFloatingSession('complete', fallbackText)
+    appStore.showToast('优化超时，已保留转写原文')
+  }, OPTIMIZATION_WATCHDOG_MS)
+}
+
+function ownsFloatingRecord(recordId) {
+  return floatingSession.ownsFloatingRecord({
+    active: floatingSessionActive,
+    currentRecordId: floatingSessionRecordId,
+    eventRecordId: recordId
+  })
+}
+
+/**
+ * 流式 ASR 已收尾、后台优化仍在跑：把悬浮窗切到 optimizing 并放进看门狗。
+ * 这里不调用 completeFloatingSession——那会让悬浮窗在优化完成前自动隐藏。
+ */
+function awaitBackgroundOptimization(recordId, text) {
+  floatingSessionRecordId = recordId
   syncFloatingWindow({
-    phase: 'recording',
+    phase: 'optimizing',
     duration: 0,
-    text: ['multi', 'streaming'].includes(activeRecordingMode.value) ? liveTranscript.value : ''
-  }, { show: true })
+    text
+  })
+  armOptimizationWatchdog(recordId, text)
 }
 
 function logRecordingTiming(stage, startedAt) {
@@ -403,6 +463,19 @@ function stopPolling() {
   }
   pollingInFlight = false
   pollingFailureCount = 0
+  pollingRecordId = null
+}
+
+/**
+ * 只停止属于该 record 的轮询。后台优化事件可能晚于下一次录音到达，
+ * 无差别 stopPolling() 会把新录音的轮询一并停掉。
+ */
+function stopPollingForRecord(recordId) {
+  if (!recordId || pollingRecordId !== recordId) {
+    return
+  }
+
+  stopPolling()
 }
 
 function resetStreamingState() {
@@ -532,18 +605,24 @@ function handleRecordCompleted(recordId, patch, options = {}) {
   const appStore = useAppStore()
   const recordsStore = useRecordsStore()
   const { tray } = useElectron()
+  const { background = false } = options
 
   recordsStore.updateRecordStatus(recordId, patch)
-  appStore.setCurrentRecordId(recordId)
-  appStore.setRecordStatus({ record_id: recordId, ...patch })
 
-  const existingRecord = Array.isArray(recordsStore.records)
-    ? recordsStore.records.find((record) => record.id === recordId)
-    : null
+  // background：上一段录音的后台优化完成时，用户可能已经开始录下一段。
+  // 此时只更新记录集，不能把主界面当前记录 / 忙碌状态切回旧记录。
+  if (!background) {
+    appStore.setCurrentRecordId(recordId)
+    appStore.setRecordStatus({ record_id: recordId, ...patch })
 
-  appStore.setCurrentRecord(existingRecord ? { ...existingRecord, ...patch } : { id: recordId, ...patch })
+    const existingRecord = Array.isArray(recordsStore.records)
+      ? recordsStore.records.find((record) => record.id === recordId)
+      : null
 
-  if (!options.keepBusy) {
+    appStore.setCurrentRecord(existingRecord ? { ...existingRecord, ...patch } : { id: recordId, ...patch })
+  }
+
+  if (!options.keepBusy && !background) {
     appStore.setTranscribing(false)
     tray.setIcon('idle')
   }
@@ -558,6 +637,9 @@ async function prepareRecordingEnvironment() {
   startPending = true
   pendingStopAfterStart = false
   floatingSessionActive = true
+  // 新会话尚未拿到 record_id：清掉上一段的值，避免旧优化事件误收新悬浮窗
+  floatingSessionRecordId = ''
+  clearOptimizationWatchdog()
   appStore.setRecording(true)
   syncFloatingWindow({
     phase: 'recording',
@@ -890,22 +972,41 @@ async function connectStreamingSocket(language) {
             appStore.setRecordStatus({ record_id: record.id, status: record.status })
 
             updateStreamingTranscript(finalText)
-            livePhase.value = 'completed'
-            sessionStatusText.value = `${streamProtocol.deriveStreamingProviderLabel(
-              useSettingsStore().settings.asr_provider
-            )}录音已完成`
             appStore.setRecording(false)
             appStore.setTranscribing(false)
-            tray.setIcon('idle')
 
-            completeFloatingSession('complete', finalText)
+            const awaitOptimization = floatingSession.shouldAwaitBackgroundOptimization({
+              autoOptimize: useSettingsStore().settings.auto_optimize,
+              recordId: record.id,
+              recordStatus: record.status,
+              // 极端竞态：optimization_completed 可能比 stream_finished 先到
+              optimizationCompleted: completedPhases.has(`${record.id}:optimization`)
+            })
 
-            if (useSettingsStore().settings.auto_optimize) {
+            if (awaitOptimization) {
+              // ASR 已收尾、后台优化还在跑：这里绝不能 complete ——
+              // FloatingWindow 收到 complete 后 2s 就会自动隐藏，优化期间会全无提示。
+              livePhase.value = 'optimizing'
+              sessionStatusText.value = '转写完成，正在后台优化'
+              tray.setIcon('transcribing')
+              const optimizationStream = useOptimizationStreamStore()
+              // 极端竞态：后台 optimization_started/delta 可能先于 stream_finished 到达，
+              // 此时不能重置已经收到的增量。
+              if (!(optimizationStream.isActive && optimizationStream.recordId === record.id)) {
+                optimizationStream.begin(record.id, { source: 'auto' })
+              }
+              awaitBackgroundOptimization(record.id, optimizationStream.text || finalText)
               // 自动优化开启时不在 transcribed 阶段粘贴：后台优化完成后
               // optimization_completed 会粘贴最终文本（与单段模式一致）。
               // 否则原文、优化文各粘贴一次，输入框出现两遍几乎相同的内容。
               appStore.showToast('转写完成，正在后台优化')
             } else {
+              livePhase.value = 'completed'
+              sessionStatusText.value = `${streamProtocol.deriveStreamingProviderLabel(
+                useSettingsStore().settings.asr_provider
+              )}录音已完成`
+              tray.setIcon('idle')
+              completeFloatingSession('complete', finalText)
               appStore.showToast(
                 statusCopy.deriveCompletionToast('streaming', await maybeCopyText(finalText))
               )
@@ -1039,6 +1140,9 @@ async function uploadSingleRecording(blob) {
     }
 
     appStore.setCurrentRecordId(result.record_id)
+    if (floatingSessionActive) {
+      floatingSessionRecordId = result.record_id
+    }
     clearCompletion(result.record_id)
     appStore.setRecordStatus({ record_id: result.record_id, status: result.transcription_status || 'transcribing' })
     recordsStore.addRecord({
@@ -1159,6 +1263,9 @@ async function finalizeRealtimeSession() {
     }
 
     if (finalRecord) {
+      if (floatingSessionActive) {
+        floatingSessionRecordId = finalRecord.id
+      }
       syncRecordIntoStore(finalRecord)
       appStore.setCurrentRecordId(finalRecord.id)
       appStore.setCurrentRecord(finalRecord)
@@ -1169,11 +1276,22 @@ async function finalizeRealtimeSession() {
     liveTranscript.value = finalText || liveTranscript.value
     setRealtimePhase('completed')
 
+    // 多段 merge 的流式优化只广播增量、不广播 terminal（避免与这里重复粘贴），
+    // 因此由 finalize 负责把流式状态收成 done。
+    const optimizationStream = useOptimizationStreamStore()
+    if (optimizationStream.recordId === (finalRecord?.id || merged.record_id)) {
+      optimizationStream.finish(finalText || '')
+    }
+
     completeFloatingSession('complete', finalText || '')
 
     appStore.showToast(statusCopy.deriveCompletionToast('multi', await maybeCopyText(finalText)))
   } catch (error) {
     console.error('[Recorder] Failed to finalize realtime session:', error)
+    const optimizationStream = useOptimizationStreamStore()
+    if (floatingSessionRecordId && optimizationStream.recordId === floatingSessionRecordId) {
+      optimizationStream.fail(error.message || '多段录音处理失败')
+    }
     setRealtimePhase('error', error.message || '多段录音处理失败')
     completeFloatingSession('error', error.message || '多段录音处理失败')
     appStore.showToast(error.message || '多段录音处理失败')
@@ -1629,6 +1747,22 @@ function recoverLeakedTranscribingState() {
   return true
 }
 
+async function cancelOptimization(recordId) {
+  if (!recordId) {
+    return
+  }
+
+  const { api } = useElectron()
+  const optimizationStream = useOptimizationStreamStore()
+  const result = await api.cancelOptimizeRecord(recordId).catch(() => null)
+  if (result?.cancelled) {
+    if (optimizationStream.recordId === recordId) {
+      optimizationStream.cancel()
+    }
+    useAppStore().showToast('正在取消优化…')
+  }
+}
+
 async function startRecording() {
   const startedAt = performance.now()
   const appStore = useAppStore()
@@ -1773,6 +1907,7 @@ async function handleWebSocketMessage(message) {
   const appStore = useAppStore()
   const settingsStore = useSettingsStore()
   const recordsStore = useRecordsStore()
+  const optimizationStream = useOptimizationStreamStore()
   const { tray } = useElectron()
 
   if (message.type === 'segment_transcribed') {
@@ -1838,6 +1973,9 @@ async function handleWebSocketMessage(message) {
     tray.setIcon('transcribing')
     recordsStore.updateRecordStatus(recordId, { status: 'transcribing' })
     if (floatingSessionActive) {
+      if (activeRecordingMode.value === 'single') {
+        floatingSessionRecordId = recordId
+      }
       syncFloatingWindow({
         phase: 'transcribing',
         duration: 0,
@@ -1856,7 +1994,7 @@ async function handleWebSocketMessage(message) {
       return
     }
 
-    stopPolling()
+    stopPollingForRecord(recordId)
     handleRecordCompleted(recordId, {
       status: 'transcribed',
       raw_text: message.data?.text || '',
@@ -1865,12 +2003,19 @@ async function handleWebSocketMessage(message) {
     })
 
     if (!settingsStore.settings.auto_optimize) {
-      completeFloatingSession('complete', message.data?.text || '')
+      if (ownsFloatingRecord(recordId)) {
+        completeFloatingSession('complete', message.data?.text || '')
+      }
       appStore.showToast(
         statusCopy.deriveCompletionToast('transcription', await maybeCopyText(message.data?.text))
       )
     } else {
+      livePhase.value = 'optimizing'
+      sessionStatusText.value = '转写完成，正在优化'
       if (floatingSessionActive) {
+        if (activeRecordingMode.value === 'single') {
+          floatingSessionRecordId = recordId
+        }
         syncFloatingWindow({
           phase: 'optimizing',
           duration: 0,
@@ -1889,15 +2034,72 @@ async function handleWebSocketMessage(message) {
     }
     completedPhases.delete(`${recordId}:optimization`)
 
-    appStore.setTranscribing(true)
+    const recordingInProgress = appStore.isRecording || startPending
+    // 多段模式的记录在 merge 内部才创建；finalize 期间允许 started 事件认领悬浮窗
+    if (
+      floatingSessionActive &&
+      activeRecordingMode.value === 'multi' &&
+      realtimeFinalizing &&
+      !floatingSessionRecordId
+    ) {
+      floatingSessionRecordId = recordId
+    }
+
+    // 用户已经开始下一段录音：上一段的 started 只更新记录集，不打断新会话
+    if (recordingInProgress && !ownsFloatingRecord(recordId)) {
+      recordsStore.updateRecordStatus(recordId, { status: 'optimizing' })
+      return
+    }
+
+    if (!(optimizationStream.isActive && optimizationStream.recordId === recordId)) {
+      optimizationStream.begin(recordId, { source: 'auto' })
+    }
+
+    // 流式模式的后台优化不应把热键锁死；单段/多段保持原有「处理中」语义
+    if (activeRecordingMode.value !== 'streaming') {
+      appStore.setTranscribing(true)
+    }
     appStore.setRecordStatus({ record_id: recordId, status: 'optimizing' })
     tray.setIcon('transcribing')
     recordsStore.updateRecordStatus(recordId, { status: 'optimizing' })
+    livePhase.value = 'optimizing'
     if (floatingSessionActive) {
+      if (['single', 'streaming'].includes(activeRecordingMode.value)) {
+        floatingSessionRecordId = recordId
+      }
       syncFloatingWindow({
         phase: 'optimizing',
         duration: 0,
-        text: ''
+        text: optimizationStream.text
+      })
+    }
+    return
+  }
+
+  if (message.type === 'optimization_delta') {
+    const recordId = message.data?.record_id
+    const chunk = message.data?.text || ''
+    if (!recordId || !chunk) {
+      return
+    }
+
+    if (optimizationStream.recordId !== recordId) {
+      // 兼容没有 started 的旧后端；新录音期间不认领旧记录
+      if (!ownsFloatingRecord(recordId)) {
+        return
+      }
+      optimizationStream.begin(recordId, { source: 'auto' })
+    }
+
+    optimizationStream.append(chunk)
+
+    if (floatingSessionActive && ownsFloatingRecord(recordId)) {
+      liveTranscript.value = optimizationStream.text
+      sessionStatusText.value = '正在优化'
+      syncFloatingWindow({
+        phase: 'optimizing',
+        duration: 0,
+        text: optimizationStream.text
       })
     }
     return
@@ -1912,15 +2114,70 @@ async function handleWebSocketMessage(message) {
       return
     }
 
-    stopPolling()
+    stopPollingForRecord(recordId)
+    const recordingInProgress = appStore.isRecording || startPending
+    if (optimizationStream.recordId === recordId) {
+      // 即使新录音已经开始，也要把旧记录的状态收成 done，避免旧 store 卡在 active
+      optimizationStream.finish(message.data?.optimized_text || '')
+    } else if (!recordingInProgress && !optimizationStream.isActive) {
+      // 兼容没有 started 的旧后端
+      optimizationStream.begin(recordId, { source: 'auto' })
+      optimizationStream.finish(message.data?.optimized_text || '')
+    }
     handleRecordCompleted(recordId, {
       status: 'optimized',
       optimized_text: message.data?.optimized_text || ''
-    })
-    completeFloatingSession('complete', message.data?.optimized_text || '')
+    }, { keepBusy: recordingInProgress, background: recordingInProgress })
+    if (ownsFloatingRecord(recordId)) {
+      completeFloatingSession('complete', message.data?.optimized_text || '')
+    }
+
+    if (!recordingInProgress) {
+      livePhase.value = 'completed'
+      sessionStatusText.value = '优化完成'
+    }
+
+    // 新录音已经开始：上一段的优化结果只入库，不要粘贴进当前输入框
+    if (recordingInProgress) {
+      appStore.showToast('上一段录音优化完成，文本已保存到记录集')
+      return
+    }
+
     appStore.showToast(
       statusCopy.deriveCompletionToast('optimization', await maybeCopyText(message.data?.optimized_text))
     )
+    return
+  }
+
+  if (message.type === 'optimization_cancelled') {
+    const recordId = message.data?.record_id
+    const rawText = message.data?.raw_text || ''
+    const recordingInProgress = appStore.isRecording || startPending
+
+    if (recordId) {
+      recordsStore.updateRecordStatus(recordId, { status: 'transcribed' })
+      if (!recordingInProgress) {
+        appStore.setRecordStatus({ record_id: recordId, status: 'transcribed' })
+      }
+    }
+    if (optimizationStream.recordId === recordId) {
+      // 取消后展示原文 + “已取消”，不要保留半截优化文本
+      optimizationStream.begin(recordId, { source: 'auto' })
+      if (rawText) {
+        optimizationStream.append(rawText)
+      }
+      optimizationStream.cancel()
+    }
+    if (!recordingInProgress) {
+      appStore.setTranscribing(false)
+      tray.setIcon('idle')
+      livePhase.value = 'completed'
+      sessionStatusText.value = '已取消优化'
+    }
+    if (ownsFloatingRecord(recordId)) {
+      completeFloatingSession('complete', rawText)
+    }
+    appStore.showToast('已取消优化，保留原始文本')
     return
   }
 
@@ -1928,15 +2185,42 @@ async function handleWebSocketMessage(message) {
     const recordId = message.data?.record_id
     const fallbackText = message.data?.text || ''
 
-    stopPolling()
+    const recordingInProgress = appStore.isRecording || startPending
+    stopPollingForRecord(recordId)
+    if (recordId) {
+      if (recordingInProgress && optimizationStream.recordId === recordId) {
+        optimizationStream.fail(message.data?.error || '优化失败')
+      } else if (!recordingInProgress && (
+        optimizationStream.recordId === recordId || !optimizationStream.isActive
+      )) {
+        // 把失败状态收成“原文 + 错误”，避免界面停在半截优化文本上
+        optimizationStream.begin(recordId, { source: 'auto' })
+        if (fallbackText) {
+          optimizationStream.append(fallbackText)
+        }
+        optimizationStream.fail(message.data?.error || '优化失败')
+      }
+    }
     if (recordId) {
       recordsStore.updateRecordStatus(recordId, { status: message.data?.status || 'transcribed' })
-      appStore.setRecordStatus({ record_id: recordId, status: message.data?.status || 'transcribed' })
+      if (!recordingInProgress) {
+        appStore.setRecordStatus({ record_id: recordId, status: message.data?.status || 'transcribed' })
+      }
     }
-    appStore.setTranscribing(false)
-    tray.setIcon('idle')
-    if (floatingSessionActive) {
+    if (!recordingInProgress) {
+      appStore.setTranscribing(false)
+      tray.setIcon('idle')
+      livePhase.value = 'completed'
+      sessionStatusText.value = '优化失败，已保留转写原文'
+    }
+    if (ownsFloatingRecord(recordId)) {
       completeFloatingSession('complete', fallbackText)
+    }
+
+    // 用户已经开始下一段录音：不要把上一段失败兜底的原文粘贴进新输入框
+    if (recordingInProgress) {
+      appStore.showToast('上一段录音优化失败，原文已保留在记录集中', { tone: 'error' })
+      return
     }
 
     // 自动优化模式下 transcribed 阶段没有粘贴过，失败时兜底粘贴原文，
@@ -1952,7 +2236,7 @@ async function handleWebSocketMessage(message) {
   if (message.type === 'error') {
     const recordId = message.data?.record_id
     if (recordId) {
-      stopPolling()
+      stopPollingForRecord(recordId)
       recordsStore.updateRecordStatus(recordId, { status: 'failed' })
       appStore.setRecordStatus({ record_id: recordId, status: 'failed' })
     }
@@ -1981,7 +2265,9 @@ async function pollRecordStatus(recordId) {
       }
       stopPolling()
       handleRecordCompleted(recordId, status)
-      completeFloatingSession('complete', status.optimized_text || '')
+      if (ownsFloatingRecord(recordId)) {
+        completeFloatingSession('complete', status.optimized_text || '')
+      }
       appStore.showToast(
         statusCopy.deriveCompletionToast('optimization', await maybeCopyText(status.optimized_text))
       )
@@ -1995,7 +2281,9 @@ async function pollRecordStatus(recordId) {
         }
         stopPolling()
         handleRecordCompleted(recordId, status)
-        completeFloatingSession('complete', status.raw_text || '')
+        if (ownsFloatingRecord(recordId)) {
+          completeFloatingSession('complete', status.raw_text || '')
+        }
         appStore.showToast(
           statusCopy.deriveCompletionToast('transcription', await maybeCopyText(status.raw_text))
         )
@@ -2011,7 +2299,9 @@ async function pollRecordStatus(recordId) {
       stopPolling()
       appStore.setTranscribing(false)
       tray.setIcon('idle')
-      completeFloatingSession('error', '转写失败')
+      if (ownsFloatingRecord(recordId)) {
+        completeFloatingSession('error', '转写失败')
+      }
       appStore.showToast('转写失败')
       return true
     }
@@ -2039,6 +2329,7 @@ async function pollRecordStatus(recordId) {
 
 function startPolling(recordId) {
   stopPolling()
+  pollingRecordId = recordId
   pollingFailureCount = 0
   pollingTimer = setInterval(async () => {
     if (pollPolicy.shouldSkipPollTick(pollingInFlight)) {
@@ -2145,6 +2436,7 @@ export function useRecorder() {
     currentSessionId,
     startRecording,
     stopRecording,
+    cancelOptimization,
     startPolling,
     stopPolling
   }

@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 
@@ -45,9 +45,28 @@ class GatewayChatResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    # 部分 OpenAI 兼容上游会把“看不见的思考 token”单列；没有该字段时保持 0
+    reasoning_tokens: int = 0
     # stop=正常结束；length=输出达到 max_tokens 被截断（思考模式模型上很容易发生，
     # 思考 token 也计入 max_tokens）——截断必须可见，不能静默丢尾巴
     finish_reason: str = "stop"
+
+    @property
+    def truncated(self) -> bool:
+        return self.finish_reason == "length"
+
+
+@dataclass
+class GatewayStreamChunk:
+    """流式补全的一块增量：text 可能为空（仅携带 finish_reason / usage）。"""
+
+    text: str = ""
+    model_string: str = ""
+    finish_reason: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    reasoning_tokens: int = 0
 
     @property
     def truncated(self) -> bool:
@@ -162,6 +181,191 @@ class LiteLLMGateway:
             raise LLMError(CODE_UNSUPPORTED_PROVIDER, f"服务商前缀不可用且兼容端点也失败：{model_string}")
         return retry
 
+    async def chat_stream(
+        self,
+        *,
+        model_string: str,
+        messages: list[dict[str, str]],
+        api_key: str = "",
+        api_base: Optional[str] = None,
+        extra_headers: Optional[dict[str, str]] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+        timeout_s: int = 60,
+        retries: int = 2,
+    ) -> AsyncIterator[GatewayStreamChunk]:
+        """流式补全：逐块 yield，失败抛 LLMError（已分级、已脱敏）。
+
+        与 chat() 共用「前缀未收录时回退 openai/ 兼容端点」的策略；调用方应把
+        「第一条增量之前就失败」视为可降级为 chat() 的信号。
+        """
+        _warm_spec_cache()
+        stream = await self._open_stream_once(
+            model_string=model_string,
+            messages=messages,
+            api_key=api_key,
+            api_base=api_base,
+            extra_headers=extra_headers,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_s=timeout_s,
+            retries=retries,
+        )
+        if stream is None:
+            fallback = self._plan_compat_fallback(model_string, api_base)
+            if fallback is None:
+                raise LLMError(
+                    CODE_UNSUPPORTED_PROVIDER,
+                    f"无法识别的服务商前缀，且未配置可用于兜底的 API Base：{model_string}",
+                )
+
+            fallback_model, fallback_base = fallback
+            logger.warning(
+                "服务商前缀未被当前 LiteLLM 版本收录，流式回退 openai 兼容端点重试",
+                model_string=model_string,
+                fallback_model=fallback_model,
+            )
+            stream = await self._open_stream_once(
+                model_string=fallback_model,
+                messages=messages,
+                api_key=api_key,
+                api_base=fallback_base,
+                extra_headers=extra_headers,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout_s=timeout_s,
+                retries=retries,
+            )
+            if stream is None:
+                raise LLMError(
+                    CODE_UNSUPPORTED_PROVIDER,
+                    f"服务商前缀不可用且兼容端点也失败：{model_string}",
+                )
+            model_string = fallback_model
+
+        try:
+            async for chunk in stream:
+                parsed = self._parse_stream_chunk(chunk, model_string)
+                if parsed is not None:
+                    yield parsed
+        except Exception as exc:
+            err = classify_exception(exc, (api_key,) if api_key else ())
+            logger.warning(
+                "LLM 流式调用失败",
+                model=model_string,
+                error_code=err.code,
+                error=err.message,
+            )
+            raise err from exc
+
+    async def _open_stream_once(
+        self,
+        *,
+        model_string: str,
+        messages: list[dict[str, str]],
+        api_key: str,
+        api_base: Optional[str],
+        extra_headers: Optional[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        timeout_s: int,
+        retries: int,
+    ) -> Optional[Any]:
+        """打开一次流。前缀未收录返回 None；其余失败抛 LLMError。"""
+        import litellm  # 懒加载：见模块 docstring
+
+        kwargs: dict[str, Any] = {
+            "model": model_string,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "timeout": float(timeout_s),
+            "num_retries": int(retries),
+            "stream": True,
+            # 让 OpenAI 兼容上游在最后一块带 usage；不支持时下面会去掉重试一次
+            "stream_options": {"include_usage": True},
+        }
+        if api_key:
+            kwargs["api_key"] = api_key
+        if api_base:
+            kwargs["api_base"] = api_base
+        if extra_headers:
+            kwargs["extra_headers"] = extra_headers
+
+        try:
+            return await litellm.acompletion(**kwargs)
+        except Exception as exc:
+            err = classify_exception(exc, (api_key,) if api_key else ())
+            if err.code == CODE_UNSUPPORTED_PROVIDER:
+                return None
+
+            # 少数 OpenAI 兼容代理不认 stream_options；去掉后重试一次，仍失败再上抛
+            if "stream_options" in str(exc).lower():
+                kwargs.pop("stream_options", None)
+                try:
+                    return await litellm.acompletion(**kwargs)
+                except Exception as retry_exc:
+                    retry_err = classify_exception(
+                        retry_exc, (api_key,) if api_key else ()
+                    )
+                    if retry_err.code == CODE_UNSUPPORTED_PROVIDER:
+                        return None
+                    raise retry_err from retry_exc
+
+            raise err from exc
+
+    @staticmethod
+    def _usage_counts(usage: Any) -> tuple[int, int, int, int]:
+        """从 LiteLLM usage（对象或 dict）中取 prompt/completion/total/reasoning。"""
+        if usage is None:
+            return (0, 0, 0, 0)
+
+        def value(obj: Any, name: str) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(name)
+            return getattr(obj, name, None)
+
+        prompt = int(value(usage, "prompt_tokens") or 0)
+        completion = int(value(usage, "completion_tokens") or 0)
+        total = int(value(usage, "total_tokens") or 0)
+        details = value(usage, "completion_tokens_details")
+        reasoning = int(value(details, "reasoning_tokens") or 0) if details else 0
+        return (prompt, completion, total, reasoning)
+
+    @classmethod
+    def _parse_stream_chunk(
+        cls, chunk: Any, model_string: str
+    ) -> Optional[GatewayStreamChunk]:
+        """把 LiteLLM 的一块响应归一成 GatewayStreamChunk；空块返回 None。"""
+        choices = getattr(chunk, "choices", None) or []
+        text = ""
+        finish_reason = ""
+
+        if choices:
+            choice = choices[0]
+            delta = getattr(choice, "delta", None)
+            if delta is not None:
+                content = getattr(delta, "content", None)
+                if isinstance(content, str):
+                    text = content
+            finish_reason = str(getattr(choice, "finish_reason", "") or "")
+
+        usage = getattr(chunk, "usage", None)
+        prompt, completion, total, reasoning = cls._usage_counts(usage)
+
+        if not text and not finish_reason and not total:
+            return None
+
+        return GatewayStreamChunk(
+            text=text,
+            model_string=model_string,
+            finish_reason=finish_reason,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=total,
+            reasoning_tokens=reasoning,
+        )
+
     def _plan_compat_fallback(
         self, model_string: str, api_base: Optional[str]
     ) -> Optional[tuple[str, str]]:
@@ -236,6 +440,7 @@ class LiteLLMGateway:
             raise LLMError("provider_error", "上游返回了无法解析的响应结构") from exc
 
         usage = getattr(response, "usage", None)
+        completion_details = getattr(usage, "completion_tokens_details", None)
         result = GatewayChatResult(
             text=text,
             model_string=model_string,
@@ -243,13 +448,18 @@ class LiteLLMGateway:
             prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
             completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
             total_tokens=int(getattr(usage, "total_tokens", 0) or 0),
+            reasoning_tokens=int(getattr(completion_details, "reasoning_tokens", 0) or 0),
             finish_reason=str(getattr(response.choices[0], "finish_reason", "") or "stop"),
         )
         logger.info(
             "LLM 调用成功",
             model=model_string,
             latency_ms=latency_ms,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
             total_tokens=result.total_tokens,
+            # 思考 token 不计入可见输出，但会计费/计入耗时；单列出来才能解释“短文本为何要 7 秒”
+            reasoning_tokens=result.reasoning_tokens,
             finish_reason=result.finish_reason,
         )
         if result.truncated:

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.records.models import RecordStatus
-from app.services import transcription_service
+from app.services import optimization_stream_service, transcription_service
 
 
 class _FakeASRProvider:
@@ -116,7 +116,9 @@ class _Settings(dict):
 @pytest.fixture
 def fake_ws(monkeypatch):
     fake = _FakeWebSocketManager()
+    # 转写事件走 transcription_service，优化增量事件走 optimization_stream_service
     monkeypatch.setattr(transcription_service, "ws_manager", fake)
+    monkeypatch.setattr(optimization_stream_service, "ws_manager", fake)
     return fake
 
 
@@ -165,6 +167,7 @@ def test_auto_optimize_success_reaches_optimized(fake_ws):
         "transcription_started",
         "transcription_completed",
         "optimization_started",
+        "optimization_delta",
         "optimization_completed",
     ]
 
@@ -188,6 +191,7 @@ def test_auto_optimize_success_no_degraded_event(fake_ws):
         "transcription_started",
         "transcription_completed",
         "optimization_started",
+        "optimization_delta",
         "optimization_completed",
     ]
     assert "optimization_degraded" not in fake_ws.events
@@ -210,12 +214,13 @@ def test_auto_optimize_failure_resets_to_transcribed(fake_ws):
     assert RecordStatus.OPTIMIZING in manager.statuses
     # 失败原因必须持久化到记录（Record.error），否则用户看不到历史错误
     assert manager.error_messages == [("rec-3", "模拟优化失败")]
-    # 优化失败不广播 optimization_completed，也不广播 error（与原实现一致）
+    # 优化失败广播 optimization_failed（前端据此复位并兜底粘贴原文）
     assert "optimization_completed" not in fake_ws.events
     assert fake_ws.events == [
         "transcription_started",
         "transcription_completed",
         "optimization_started",
+        "optimization_failed",
     ]
 
 
