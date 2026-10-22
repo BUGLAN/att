@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, clipboard, nativeImage } = require('electron')
 const path = require('path')
+const fs = require('fs')
 const { execFile } = require('child_process')
 const { PythonManager } = require('./python/manager')
 const { PythonManager: PythonRuntimeManager } = require('./python/runtime-manager')
@@ -132,8 +133,23 @@ async function createWindow() {
   })
 
   if (isDev) {
-    await mainWindow.loadURL(DEV_SERVER_URL)
-    mainWindow.webContents.openDevTools()
+    try {
+      await mainWindow.loadURL(DEV_SERVER_URL)
+      mainWindow.webContents.openDevTools()
+    } catch (error) {
+      // Vite 开发服务器没在跑（例如只重启了 Electron、没走 electron:dev 脚本）：
+      // loadURL 会以 ERR_CONNECTION_REFUSED 拒绝，窗口全黑。回退加载本地构建产物，
+      // 保证仓库 checkout 下直接启动也总能出界面。
+      const distIndex = path.join(__dirname, '..', 'dist', 'index.html')
+      if (fs.existsSync(distIndex)) {
+        logElectron('main', 'Dev server unreachable, fallback to dist build', {
+          error: String(error && error.message ? error.message : error)
+        })
+        await mainWindow.loadFile(distIndex)
+      } else {
+        throw error
+      }
+    }
   } else {
     await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
