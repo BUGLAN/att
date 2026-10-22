@@ -1,4 +1,4 @@
-﻿"""
+"""
 Qwen3-ASR provider 实现
 """
 import asyncio
@@ -404,6 +404,135 @@ class QwenASRProvider(ASRProvider):
 
         return segments, detected_language, duration, time.time() - start_time
 
+    # ==================== 长文件分块（文件转写路径，设计文档 §3.3） ====================
+
+    # 静音检测参数：20ms 窗口能量，连续 ≥500ms 判静音，阈值取全局能量的 2%（约 -34dB）
+    SILENCE_WINDOW_MS = 20
+    SILENCE_MIN_MS = 500
+    SILENCE_RELATIVE_THRESHOLD = 0.02
+
+    def _silence_cut_points(self, audio: "np.ndarray", sample_rate: int) -> list[int]:
+        """纯 numpy 能量静音检测：返回可作为切点的采样位置（长静音段中点）。
+
+        切在静音中点：边界两侧都留有静音余量，避免切掉词首词尾。
+        """
+        import numpy as np
+
+        window = max(int(sample_rate * self.SILENCE_WINDOW_MS / 1000), 1)
+        usable = (audio.size // window) * window
+        if usable <= 0:
+            return []
+
+        frames = audio[:usable].reshape(-1, window).astype("float32")
+        rms = np.sqrt(np.mean(np.square(frames), axis=1))
+        threshold = max(float(np.percentile(rms, 95)) * self.SILENCE_RELATIVE_THRESHOLD, 1e-5)
+        silent = rms <= threshold
+
+        min_windows = max(int(self.SILENCE_MIN_MS / self.SILENCE_WINDOW_MS), 1)
+        cuts: list[int] = []
+        run_start: int | None = None
+        for index, is_silent in enumerate(silent):
+            if is_silent and run_start is None:
+                run_start = index
+            elif not is_silent and run_start is not None:
+                if index - run_start >= min_windows:
+                    cuts.append((run_start + index) // 2 * window)
+                run_start = None
+        if run_start is not None and (silent.size - run_start) >= min_windows:
+            cuts.append((run_start + silent.size) // 2 * window)
+        return cuts
+
+    def _plan_chunks(self, audio_size: int, sample_rate: int, cut_points: list[int]) -> list[tuple[int, int]]:
+        """贪心装箱：每块 ≤ max_audio_seconds；优先在窗内最靠右的静音点切，无静音点硬切。"""
+        limit = max(int(self.max_audio_seconds), 1) * sample_rate
+        chunks: list[tuple[int, int]] = []
+        start = 0
+        while start < audio_size:
+            limit_end = min(start + limit, audio_size)
+            if limit_end >= audio_size:
+                chunks.append((start, audio_size))
+                break
+            candidates = [cut for cut in cut_points if start < cut <= limit_end]
+            end = candidates[-1] if candidates else limit_end
+            chunks.append((start, end))
+            start = end
+        return chunks
+
+    def _transcribe_chunked_sync(
+        self,
+        model,
+        audio_path: str,
+        language: str,
+        return_timestamps: bool,
+        duration: float,
+    ) -> tuple[list[TranscriptionSegment], str, float]:
+        """分块转写主流程：静音切点装箱 → 逐块推理 → 时间戳偏移拼接。
+
+        返回 (segments, language, processing_time)；块间不重叠（静音处天然边界）。
+        """
+        start_time = time.time()
+        audio, sample_rate = self._load_audio_input(audio_path)
+
+        chunks = self._plan_chunks(audio.size, sample_rate, self._silence_cut_points(audio, sample_rate))
+        logger.info(
+            "Qwen3-ASR 长文件分块转写",
+            duration=duration,
+            chunk_window=self.max_audio_seconds,
+            chunks=[round((end - start) / sample_rate, 1) for start, end in chunks],
+        )
+
+        normalized_language = self._normalize_language(language)
+        detected_language = language
+        segments: list[TranscriptionSegment] = []
+
+        for chunk_start, chunk_end in chunks:
+            chunk_audio = audio[chunk_start:chunk_end]
+            offset = chunk_start / sample_rate
+            chunk_seconds = (chunk_end - chunk_start) / sample_rate
+
+            results = model.transcribe(
+                audio=(chunk_audio, sample_rate),
+                language=normalized_language,
+                return_time_stamps=return_timestamps
+            )
+            if not isinstance(results, list):
+                results = [results]
+            if not results:
+                continue
+
+            result = results[0]
+            detected_language = self._normalize_detected_language(
+                self._get_result_field(result, "language"),
+                fallback_language=language
+            )
+            text = self._extract_text_value(result, "text")
+            timestamps = self._get_result_field(result, "time_stamps", [])
+            chunk_segments = self._build_segments_from_timestamps(timestamps, detected_language)
+
+            if not chunk_segments and text:
+                chunk_segments = [
+                    TranscriptionSegment(
+                        start=0.0,
+                        end=chunk_seconds,
+                        text=text,
+                        confidence=1.0,
+                        language=detected_language
+                    )
+                ]
+
+            for segment in chunk_segments:
+                segments.append(
+                    TranscriptionSegment(
+                        start=segment.start + offset,
+                        end=segment.end + offset,
+                        text=segment.text,
+                        confidence=segment.confidence,
+                        language=segment.language
+                    )
+                )
+
+        return segments, detected_language, time.time() - start_time
+
     async def transcribe(
         self,
         audio_path: str | Path,
@@ -421,13 +550,25 @@ class QwenASRProvider(ASRProvider):
             return_timestamps=requested_timestamps
         )
 
-        segments, detected_language, duration, processing_time = await asyncio.to_thread(
-            self._transcribe_sync,
-            model,
-            str(audio_path),
-            language,
-            requested_timestamps
-        )
+        # 长文件：超过 max_audio_seconds 走静音分块拼接（文件转写路径，设计 §3.3）
+        duration = self._read_duration(str(audio_path))
+        if duration > self.max_audio_seconds:
+            segments, detected_language, processing_time = await asyncio.to_thread(
+                self._transcribe_chunked_sync,
+                model,
+                str(audio_path),
+                language,
+                requested_timestamps,
+                duration,
+            )
+        else:
+            segments, detected_language, duration, processing_time = await asyncio.to_thread(
+                self._transcribe_sync,
+                model,
+                str(audio_path),
+                language,
+                requested_timestamps
+            )
 
         logger.info(
             "Qwen3-ASR 转写完成",

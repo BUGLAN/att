@@ -195,6 +195,14 @@ class FileTranscriptionService:
                 "download_root": str(settings.faster_whisper_models_path),
             }
 
+        # qwen：文件路径的长音频分块窗口（provider 的 max_audio_seconds 参数承载，
+        # 录音流程不受影响——录音分段天然短于窗口）
+        if engine == ASRProviderType.QWEN_ASR:
+            config.qwen_asr = {
+                **config.qwen_asr,
+                "max_audio_seconds": max(int(settings.transcribe_file_qwen_chunk_seconds), 5),
+            }
+
         if engine == ASRProviderType.DOUBAO_ASR and not str(config.doubao_asr.get("api_key") or ""):
             raise FileTranscribeError(
                 409,
