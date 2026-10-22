@@ -22,19 +22,109 @@ export const JOB_POLL_MAX_DELAY_MS = 5000
 export const JOB_POLL_MAX_WAIT_MS = 15 * 60 * 1000
 
 /**
- * 构造 POST /api/transcribe 请求体。
+ * 引擎卡片元数据（与后端 engine 参数一一对应；UI 不暴露 auto，缺省即显式 whisper）。
+ */
+export const TRANSCRIBE_ENGINES = [
+  {
+    value: 'whisper',
+    label: 'faster-whisper',
+    tag: '本地',
+    badge: '默认',
+    desc: '速度快，中文优化。长文件分段转写。'
+  },
+  {
+    value: 'qwen_asr',
+    label: 'Qwen3-ASR',
+    tag: '本地',
+    desc: '多语种效果更好；长文件自动按 30s 窗口分块。'
+  },
+  {
+    value: 'doubao_asr',
+    label: '豆包 · 实时大模型',
+    tag: '在线',
+    desc: '火山在线识别，质量高、不吃本机算力；按音频时长计费。'
+  }
+]
+
+/**
+ * 构造 POST /api/transcribe 请求体（M2：engine + LLM 校对参数）。
  * 路径为空时返回 null（调用方据此提示，不发请求）。
  */
-export function buildTranscribeRequest({ path, language = 'zh', wantSegments = false }) {
+export function buildTranscribeRequest({
+  path,
+  language = 'zh',
+  wantSegments = false,
+  engine = 'whisper',
+  proofread = false,
+  proofreadModelId = null,
+  proofreadBatchSegments = 40,
+  proofreadContextChars = 200
+}) {
   const trimmed = String(path ?? '').trim()
   if (!trimmed) {
     return null
   }
-  return {
+
+  const request = {
     path: trimmed,
     language: String(language || 'zh'),
-    want_segments: Boolean(wantSegments)
+    want_segments: Boolean(wantSegments),
+    engine: TRANSCRIBE_ENGINES.some((item) => item.value === engine) ? engine : 'whisper',
+    proofread: Boolean(proofread)
   }
+
+  if (request.proofread) {
+    if (proofreadModelId) {
+      request.proofread_model_id = String(proofreadModelId)
+    }
+    request.proofread_options = {
+      batch_segments: Number.isFinite(Number(proofreadBatchSegments))
+        ? Number(proofreadBatchSegments)
+        : 40,
+      context_chars: Number.isFinite(Number(proofreadContextChars))
+        ? Number(proofreadContextChars)
+        : 200
+    }
+  }
+  return request
+}
+
+/**
+ * 把文本按句切分（保留分隔符），用于校对对照视图。
+ */
+export function splitSentences(text) {
+  const raw = String(text ?? '')
+  if (!raw.trim()) {
+    return []
+  }
+  const parts = raw.match(/[^。！？!?.\n]*[。！？!?.\n]?/g) || []
+  return parts.map((part) => part.trim()).filter(Boolean)
+}
+
+/**
+ * 构造「原文 × 校对后」的逐句对照（前端 diff，设计 §4.7）。
+ *
+ * 句数一致时逐句配对；不一致（校对并句等）退化为整段一对，保证视图永不错位。
+ * 返回 { pairs: [{raw, corrected, changed}], changedCount }。
+ */
+export function buildProofreadDiff(rawText, correctedText) {
+  const raw = String(rawText ?? '')
+  const corrected = String(correctedText ?? '')
+  const rawParts = splitSentences(raw)
+  const correctedParts = splitSentences(corrected)
+
+  let pairs
+  if (rawParts.length === correctedParts.length && rawParts.length > 0) {
+    pairs = rawParts.map((part, index) => ({
+      raw: part,
+      corrected: correctedParts[index],
+      changed: part !== correctedParts[index]
+    }))
+  } else {
+    pairs = [{ raw, corrected, changed: raw !== corrected }]
+  }
+
+  return { pairs, changedCount: pairs.filter((pair) => pair.changed).length }
 }
 
 /**
@@ -91,8 +181,20 @@ export function normalizeTranscribeResult(payload, { path = '' } = {}) {
     text,
     durationSeconds,
     engine: String(payload.engine ?? ''),
+    engineKey: String(payload.engine ?? '').split(':')[0],
     cached: Boolean(payload.cached),
-    segments: Array.isArray(payload.segments) ? payload.segments : []
+    segments: Array.isArray(payload.segments) ? payload.segments : [],
+    rawText: typeof payload.raw_text === 'string' ? payload.raw_text : '',
+    proofread: payload.proofread && typeof payload.proofread === 'object'
+      ? {
+          applied: Boolean(payload.proofread.applied),
+          llmModel: String(payload.proofread.llm_model ?? ''),
+          windows: Number(payload.proofread.windows ?? 0),
+          fallbackBatches: Array.isArray(payload.proofread.fallback_batches)
+            ? payload.proofread.fallback_batches
+            : []
+        }
+      : null
   }
 }
 

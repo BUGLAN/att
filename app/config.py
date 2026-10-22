@@ -304,6 +304,7 @@ class Settings(BaseSettings):
     transcribe_file_cache_size: int = 200                 # 内容哈希结果缓存的条数上限（LRU 按整文件条目）
     transcribe_file_qwen_chunk_seconds: int = 30          # Qwen 长文件分块窗口（模型设计上限 30s）
     transcribe_file_doubao_session_seconds: int = 1800    # 豆包单会话时长上限，超长分段（保守默认 30 分钟）
+    transcribe_file_proof_concurrency: int = 2            # LLM 校对窗口并发数
 
     # Processing
     max_upload_size: int = 500 * 1024 * 1024  # 500MB

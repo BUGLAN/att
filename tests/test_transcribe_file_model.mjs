@@ -12,7 +12,10 @@ import {
   isJobPollExpired,
   isSupportedMediaPath,
   nextJobPollDelay,
-  normalizeTranscribeResult
+  normalizeTranscribeResult,
+  buildProofreadDiff,
+  splitSentences,
+  TRANSCRIBE_ENGINES
 } from '../src/composables/transcribe/fileTranscribeModel.mjs'
 
 test('同步超时常量与契约一致（15 分钟）', () => {
@@ -21,15 +24,59 @@ test('同步超时常量与契约一致（15 分钟）', () => {
   assert.equal(JOB_POLL_MAX_DELAY_MS, 5000)
 })
 
-test('buildTranscribeRequest：正常构造 snake_case 请求体', () => {
+test('buildTranscribeRequest：正常构造 snake_case 请求体（M2 含 engine/proofread）', () => {
   assert.deepEqual(
-    buildTranscribeRequest({ path: 'E:\\tmp\\dv\\abc.mp4', language: 'zh', wantSegments: false }),
-    { path: 'E:\\tmp\\dv\\abc.mp4', language: 'zh', want_segments: false }
+    buildTranscribeRequest({ path: '/tmp/dv/abc.mp4', language: 'zh', wantSegments: false }),
+    { path: '/tmp/dv/abc.mp4', language: 'zh', want_segments: false, engine: 'whisper', proofread: false }
   )
   assert.deepEqual(
-    buildTranscribeRequest({ path: ' /a/b.wav ', wantSegments: true }),
-    { path: '/a/b.wav', language: 'zh', want_segments: true }
+    buildTranscribeRequest({ path: ' /a/b.wav ', wantSegments: true, engine: 'qwen_asr' }),
+    { path: '/a/b.wav', language: 'zh', want_segments: true, engine: 'qwen_asr', proofread: false }
   )
+})
+
+test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法引擎回落 whisper', () => {
+  const request = buildTranscribeRequest({
+    path: '/a/b.wav',
+    proofread: true,
+    proofreadModelId: 'm-1',
+    proofreadBatchSegments: 60,
+    proofreadContextChars: 0
+  })
+  assert.equal(request.proofread, true)
+  assert.equal(request.proofread_model_id, 'm-1')
+  assert.deepEqual(request.proofread_options, { batch_segments: 60, context_chars: 0 })
+
+  const bare = buildTranscribeRequest({ path: '/a/b.wav', proofread: true })
+  assert.ok(!('proofread_model_id' in bare))
+  assert.deepEqual(bare.proofread_options, { batch_segments: 40, context_chars: 200 })
+  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'gpt' }).engine, 'whisper')
+})
+
+test('TRANSCRIBE_ENGINES：三引擎元数据齐备', () => {
+  assert.deepEqual(
+    TRANSCRIBE_ENGINES.map((item) => item.value),
+    ['whisper', 'qwen_asr', 'doubao_asr']
+  )
+})
+
+test('splitSentences：按句切分并过滤空串', () => {
+  assert.deepEqual(splitSentences('一句。两句！三句？'), ['一句。', '两句！', '三句？'])
+  assert.deepEqual(splitSentences('  '), [])
+  assert.deepEqual(splitSentences(''), [])
+})
+
+test('buildProofreadDiff：逐句配对、句数不一致退化整段、无修改计 0', () => {
+  const diff = buildProofreadDiff('大家好呃今天学习。第二句嗯。', '大家好，今天学习。第二句。')
+  assert.equal(diff.pairs.length, 2)
+  assert.equal(diff.changedCount, 2)
+  assert.equal(diff.pairs[0].raw, '大家好呃今天学习。')
+
+  const single = buildProofreadDiff('一句。两句。三句。', '合并后的一句话。')
+  assert.equal(single.pairs.length, 1)
+  assert.equal(single.changedCount, 1)
+
+  assert.equal(buildProofreadDiff('一样。', '一样。').changedCount, 0)
 })
 
 test('buildTranscribeRequest：空路径返回 null（不发请求）', () => {
@@ -86,9 +133,22 @@ test('normalizeTranscribeResult：归一字段并兜底缺省', () => {
   assert.equal(view.text, '你好')
   assert.equal(view.durationSeconds, 61.5)
   assert.equal(view.engine, 'whisper:medium')
+  assert.equal(view.engineKey, 'whisper')
   assert.equal(view.cached, true)
   assert.equal(view.fileName, 'a.mp4')
   assert.deepEqual(view.segments, [{ start: 0, end: 1 }])
+  assert.equal(view.rawText, '')            // 无校对字段时的缺省
+  assert.equal(view.proofread, null)
+
+  // 校对字段归一（M2）
+  const proofed = normalizeTranscribeResult({
+    text: '校对后', raw_text: '原文',
+    proofread: { applied: 1, llm_model: 'deep', windows: '3', fallback_batches: [1] }
+  }, { path: '/a.wav' })
+  assert.equal(proofed.rawText, '原文')
+  assert.equal(proofed.proofread.applied, true)
+  assert.equal(proofed.proofread.windows, 3)
+  assert.deepEqual(proofed.proofread.fallbackBatches, [1])
 
   const empty = normalizeTranscribeResult(null)
   assert.equal(empty, null)

@@ -39,6 +39,14 @@ async def _require_token(
         raise HTTPException(status_code=401, detail="缺少或错误的 X-ATT-Token")
 
 
+class ProofreadOptionsBody(BaseModel):
+    """窗口参数（全部可选，缺省 40 段 / 4000 字 / 200 字重叠）。"""
+
+    batch_segments: int | None = Field(None, ge=1, le=200)
+    batch_chars: int | None = Field(None, ge=200, le=20000)
+    context_chars: int | None = Field(None, ge=0, le=2000)
+
+
 class TranscribeFileRequest(BaseModel):
     """POST /api/transcribe 请求体。"""
 
@@ -49,6 +57,17 @@ class TranscribeFileRequest(BaseModel):
         "auto",
         description="转写引擎：缺省 auto=本地优先（全局配置指向在线引擎时回落 whisper）；"
                     "用在线豆包必须显式指定 doubao_asr（凭据未配置返回 409）",
+    )
+    proofread: bool = Field(
+        False,
+        description="ASR 后用 LLM 滑动窗口校对（纠错不润色，失败批保留原文）；"
+                    "开启后一律走 202 异步任务，无可用 LLM 模型返回 409",
+    )
+    proofread_model_id: str | None = Field(
+        None, description="LLM 模型条目 ID（v2 档案体系），缺省用默认优化模型"
+    )
+    proofread_options: ProofreadOptionsBody | None = Field(
+        None, description="窗口参数：batch_segments / batch_chars / context_chars"
     )
 
 
@@ -61,6 +80,9 @@ async def transcribe_local_file(request: TranscribeFileRequest):
             request.language,
             request.want_segments,
             request.engine,
+            request.proofread,
+            request.proofread_model_id,
+            request.proofread_options.model_dump() if request.proofread_options else None,
         )
     except FileTranscribeError as error:
         raise HTTPException(
@@ -82,6 +104,8 @@ async def get_transcribe_job(job_id: str):
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
     return {
         "status": job["status"],
+        "stage": job.get("stage", ""),
+        "progress": job.get("progress"),
         "result": job["result"],
         "error": job["error"],
     }

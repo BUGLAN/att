@@ -66,6 +66,83 @@
         </BaseButton>
       </div>
 
+      <!-- 引擎三卡（UI 不暴露 auto：缺省即显式 whisper，设计 §7） -->
+      <div class="tp-sec">
+        <span class="tp-sec-key">ENGINE</span>
+        <span class="tp-sec-name">转写引擎</span>
+        <span class="tp-sec-note">缓存 key = 内容 sha256 + 引擎</span>
+      </div>
+      <div class="tp-engines">
+        <button
+          v-for="item in TRANSCRIBE_ENGINES"
+          :key="item.value"
+          type="button"
+          class="tp-engine"
+          :class="{
+            'is-selected': engine === item.value,
+            'is-disabled': item.value === 'doubao_asr' && !doubaoKeySet
+          }"
+          :disabled="isBusy"
+          @click="pickEngine(item.value)"
+        >
+          <span v-if="item.badge" class="tp-engine-badge">{{ item.badge }}</span>
+          <span class="tp-engine-name">
+            <span class="tp-dot" :class="{ off: item.value === 'doubao_asr' && !doubaoKeySet }"></span>
+            {{ item.label }}
+          </span>
+          <span class="tp-engine-tag">{{ item.tag }}</span>
+          <p class="tp-engine-desc">{{ item.desc }}</p>
+          <p v-if="item.value === 'doubao_asr' && !doubaoKeySet" class="tp-engine-warn">
+            ⚠ 未配置 Access Token — <span class="tp-go-settings" @click.stop="goSettings">去设置</span>
+          </p>
+        </button>
+      </div>
+
+      <!-- LLM 校对面板：开关 + 窗口参数（默认关，设计 §10-1 倾向值） -->
+      <div class="tp-proof">
+        <div class="tp-proof-head">
+          <button
+            type="button"
+            class="tp-switch"
+            :class="{ on: proofreadOn }"
+            :disabled="isBusy"
+            :aria-pressed="proofreadOn"
+            @click="toggleProofread"
+          >
+            <span class="tp-switch-knob"></span>
+          </button>
+          <span class="tp-proof-title">LLM 校对<span class="tp-proof-mono">SLIDING-WINDOW</span></span>
+          <span class="tp-proof-hint">转写完成后自动执行 · 纠错不润色 · 失败批保留原文</span>
+        </div>
+
+        <div v-if="proofreadOn" class="tp-proof-body">
+          <label class="tp-proof-field">
+            <span class="tp-proof-key">LLM 模型</span>
+            <select v-model="proofreadModelId" class="tp-tick-select" :disabled="isBusy">
+              <option value="">默认模型</option>
+              <option v-for="model in llmModels" :key="model.id" :value="model.id">
+                {{ model.label }}
+              </option>
+            </select>
+          </label>
+          <label class="tp-proof-field">
+            <span class="tp-proof-key">窗口批大小</span>
+            <select v-model.number="proofreadBatchSegments" class="tp-tick-select" :disabled="isBusy">
+              <option :value="20">20 段 / 批</option>
+              <option :value="40">40 段 / 批</option>
+              <option :value="60">60 段 / 批</option>
+            </select>
+          </label>
+          <label class="tp-proof-field">
+            <span class="tp-proof-key">上下文重叠</span>
+            <select v-model.number="proofreadContextChars" class="tp-tick-select" :disabled="isBusy">
+              <option :value="200">携带前文 200 字</option>
+              <option :value="0">不携带（最省 token）</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
       <div class="tp-ticks">
         <label class="tp-tick">
           <span class="tp-tick-key">LANG</span>
@@ -101,6 +178,23 @@
         <span class="tp-chip">{{ result.engine || '本地引擎' }}</span>
         <span v-if="result.cached" class="tp-stamp">缓存命中</span>
 
+        <span v-if="result.proofread && result.proofread.applied" class="tp-chip tp-chip--proof">
+          已校对{{ result.proofread.fallbackBatches.length ? '·部分保留原文' : '' }}
+        </span>
+
+        <div v-if="result.rawText" class="tp-tabs">
+          <button
+            v-for="tab in resultTabs"
+            :key="tab.key"
+            type="button"
+            class="tp-tab"
+            :class="{ on: activeResultTab === tab.key }"
+            @click="activeResultTab = tab.key"
+          >
+            {{ tab.label }}
+          </button>
+        </div>
+
         <BaseButton
           variant="ghost"
           size="sm"
@@ -112,7 +206,29 @@
         </BaseButton>
       </header>
 
-      <p class="tp-ledger-text">{{ result.text || '（没有识别到语音内容）' }}</p>
+      <!-- 校对后（默认视图） -->
+      <p v-if="activeResultTab !== 'raw'" class="tp-ledger-text">{{ result.text || '（没有识别到语音内容）' }}</p>
+      <!-- ASR 原文 -->
+      <p v-if="activeResultTab === 'raw'" class="tp-ledger-text tp-ledger-text--muted">
+        {{ result.rawText || '（没有识别到语音内容）' }}
+      </p>
+
+      <!-- 对照视图：逐句 diff（句数不一致时整段一对，纯逻辑见 fileTranscribeModel.mjs） -->
+      <div v-if="activeResultTab === 'diff'" class="tp-diff">
+        <p class="tp-diff-meta">共 {{ proofreadDiff.pairs.length }} 句 · {{ proofreadDiff.changedCount }} 处修改</p>
+        <div
+          v-for="(pair, index) in proofreadDiff.pairs"
+          :key="index"
+          class="tp-diff-row"
+          :class="{ changed: pair.changed }"
+        >
+          <template v-if="pair.changed">
+            <p class="tp-diff-line tp-diff-line--raw">{{ pair.raw }}</p>
+            <p class="tp-diff-line tp-diff-line--fixed">{{ pair.corrected }}</p>
+          </template>
+          <p v-else class="tp-diff-line tp-diff-line--same">{{ pair.raw }}</p>
+        </div>
+      </div>
 
       <details v-if="result.segments.length" class="tp-segments">
         <summary>时间轴 · {{ result.segments.length }} 段</summary>
@@ -146,6 +262,7 @@
       >
         <span class="tp-rack-idx">{{ String(history.length - index).padStart(2, '0') }}</span>
         <span class="tp-rack-name">{{ item.fileName }}</span>
+        <span class="tp-rack-eng">{{ item.engineKey || 'whisper' }}</span>
         <span class="tp-rack-preview">{{ item.text.slice(0, 60) || '（空）' }}</span>
         <span class="tp-rack-dur">{{ formatDuration(item.durationSeconds) }}</span>
       </button>
@@ -156,16 +273,29 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
+import { useSettingsStore } from '@/stores/settings'
 import { useFileTranscribe } from '@/composables/useFileTranscribe'
-import { formatDuration } from '@/composables/transcribe/fileTranscribeModel.mjs'
+import {
+  TRANSCRIBE_ENGINES,
+  buildProofreadDiff,
+  formatDuration
+} from '@/composables/transcribe/fileTranscribeModel.mjs'
 import BaseButton from '@/components/common/BaseButton.vue'
 import BaseInput from '@/components/common/BaseInput.vue'
 
 const appStore = useAppStore()
+const settingsStore = useSettingsStore()
 const {
   filePath,
   language,
   wantSegments,
+  engine,
+  proofreadOn,
+  proofreadModelId,
+  proofreadBatchSegments,
+  proofreadContextChars,
+  llmModels,
+  loadLlmModels,
   isBusy,
   statusText,
   error,
@@ -179,6 +309,44 @@ const {
 } = useFileTranscribe()
 
 const copied = ref(false)
+const activeResultTab = ref('text')
+
+// 豆包凭据态：设置页保存过的 Access Token（GET /api/settings 只回布尔）
+const doubaoKeySet = computed(() => Boolean(settingsStore.settings?.doubao_asr_api_key_set))
+
+// 引擎选择：豆包未配置凭据时卡片置灰不可选（后端也会 409 兜底）
+function pickEngine(value) {
+  if (value === 'doubao_asr' && !doubaoKeySet.value) {
+    appStore.showToast('请先在设置页配置豆包 Access Token', { tone: 'info' })
+    return
+  }
+  engine.value = value
+}
+
+function goSettings() {
+  appStore.setCurrentPage('settings')
+}
+
+async function toggleProofread() {
+  proofreadOn.value = !proofreadOn.value
+  if (proofreadOn.value) {
+    const models = await loadLlmModels()
+    if (!models.length) {
+      appStore.showToast('尚未配置任何 LLM 模型，开启校对会失败；请先到设置页配置', { tone: 'info' })
+    }
+  }
+}
+
+// 结果三视图（有校对原文时才显示 tabs）
+const resultTabs = computed(() => result.value?.rawText
+  ? [
+      { key: 'text', label: '校对后' },
+      { key: 'raw', label: '原文' },
+      { key: 'diff', label: '对照' }
+    ]
+  : [])
+
+const proofreadDiff = computed(() => buildProofreadDiff(result.value?.rawText || '', result.value?.text || ''))
 
 // 波形条：固定 32 根，种子化的伪随机高度，保证每次进来形状一致
 const WAVE_SEED = [38, 62, 24, 80, 46, 30, 72, 55, 20, 88, 40, 64, 28, 76, 34, 58,
@@ -500,6 +668,308 @@ async function handleCopy() {
 }
 
 .tp-path :deep(input)::placeholder {
+  color: var(--text-3);
+}
+
+/* ---------- 引擎三卡 ---------- */
+.tp-sec {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.tp-sec-key {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--accent);
+  padding: 1px 8px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-sm);
+  background: var(--accent-faint);
+}
+
+.tp-sec-name {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.tp-sec-note {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.tp-engines {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.tp-engine {
+  position: relative;
+  text-align: left;
+  padding: 12px 14px;
+  cursor: pointer;
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: inherit;
+  font-family: inherit;
+  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+
+.tp-engine:hover:not(.is-disabled) {
+  border-color: var(--accent-line);
+}
+
+.tp-engine.is-selected {
+  border-color: var(--accent-line-strong);
+  background: var(--accent-veil);
+  box-shadow: 0 0 0 1px var(--accent-line-strong);
+}
+
+.tp-engine.is-disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.tp-engine-badge {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+
+.tp-engine-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.tp-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  flex-shrink: 0;
+}
+
+.tp-dot.off {
+  background: var(--err);
+}
+
+.tp-engine-tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 7px;
+  margin-left: 6px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--line-strong);
+  color: var(--text-3);
+}
+
+.tp-engine.is-selected .tp-engine-tag {
+  color: var(--accent);
+  border-color: var(--accent-line);
+}
+
+.tp-engine-desc {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.tp-engine-warn {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--err);
+}
+
+.tp-go-settings {
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ---------- LLM 校对面板 ---------- */
+.tp-proof {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.tp-proof-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tp-switch {
+  position: relative;
+  width: 38px;
+  height: 20px;
+  border-radius: var(--r-full);
+  background: var(--gray-700);
+  border: 1px solid var(--line-strong);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--t-base) var(--ease);
+  padding: 0;
+}
+
+.tp-switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.tp-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-2);
+  transition: all var(--t-base) var(--ease);
+}
+
+.tp-switch.on .tp-switch-knob {
+  left: 20px;
+  background: var(--accent-ink);
+}
+
+.tp-proof-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.tp-proof-mono {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--accent);
+  margin-left: 8px;
+}
+
+.tp-proof-hint {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.tp-proof-body {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line-strong);
+}
+
+.tp-proof-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tp-proof-key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--text-3);
+}
+
+/* ---------- 结果 tabs 与对照视图 ---------- */
+.tp-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 3px;
+}
+
+.tp-tab {
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 4px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.tp-tab.on {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.tp-chip--proof {
+  color: var(--ok);
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+}
+
+.tp-ledger-text--muted {
+  color: var(--text-2);
+}
+
+.tp-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tp-diff-meta {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.tp-diff-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+}
+
+.tp-diff-row.changed {
+  background: var(--white-veil);
+}
+
+.tp-diff-line {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+.tp-diff-line--raw {
+  color: var(--err);
+  text-decoration: line-through;
+  text-decoration-color: rgba(248, 113, 113, 0.5);
+}
+
+.tp-diff-line--fixed {
+  color: var(--ok);
+}
+
+.tp-diff-line--same {
   color: var(--text-3);
 }
 
@@ -879,6 +1349,16 @@ async function handleCopy() {
   color: var(--text-1);
 }
 
+.tp-rack-eng {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+  border: 1px solid var(--line-strong);
+  padding: 0 6px;
+  border-radius: var(--r-full);
+}
+
 .tp-rack-preview {
   flex: 1;
   min-width: 0;
@@ -924,6 +1404,10 @@ async function handleCopy() {
 
   .tp-rail {
     flex-direction: column;
+  }
+
+  .tp-engines {
+    grid-template-columns: 1fr;
   }
 
   .tp-path {

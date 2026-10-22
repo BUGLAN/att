@@ -28,11 +28,38 @@ export function useFileTranscribe() {
   const filePath = ref('')
   const language = ref('zh')
   const wantSegments = ref(false)
+  // M2：引擎与 LLM 校对（设计 §7：UI 不暴露 auto，默认显式 whisper；校对默认关）
+  const engine = ref('whisper')
+  const proofreadOn = ref(false)
+  const proofreadModelId = ref('')
+  const proofreadBatchSegments = ref(40)
+  const proofreadContextChars = ref(200)
+  const llmModels = shallowRef([])        // [{id, label}]：LLM v2 模型条目（校对面板下拉）
   const isBusy = ref(false)
   const statusText = ref('')
+  const stage = ref('')                   // asr | proofreading（202 阶段展示）
+  const progress = shallowRef(null)       // {window_done, window_total}
   const error = ref('')
   const result = shallowRef(null)
   const history = shallowRef([])
+
+  /** 懒加载 LLM v2 模型条目（校对面板第一次展开时拉一次）。 */
+  async function loadLlmModels() {
+    if (llmModels.value.length) {
+      return llmModels.value
+    }
+    try {
+      const state = await api.getLLMState()
+      llmModels.value = (state?.models || []).map((item) => ({
+        id: item.id,
+        label: item.label || item.model || item.id
+      }))
+    } catch (err) {
+      // 拉不到就让面板空着，开启校对时后端会给 409 的可读提示
+      llmModels.value = []
+    }
+    return llmModels.value
+  }
 
   // 每次 startTranscribe 自增；轮询循环发现 runId 变化即自行退出，防止旧轮询污染新请求
   let runSeq = 0
@@ -93,8 +120,16 @@ export function useFileTranscribe() {
         return null // 已被更新的转写请求接管
       }
 
-      statusText.value = '长文件转写进行中，已等待 ' + Math.round((Date.now() - startedAt) / 1000) + ' 秒…'
       const job = await api.getTranscribeJob(jobId)
+
+      // 阶段与窗口进度（M2：asr → proofreading x/y）
+      stage.value = String(job.stage || '')
+      progress.value = job.progress || null
+      if (stage.value === 'proofreading' && progress.value) {
+        statusText.value = 'LLM 校对中 · 窗口 ' + progress.value.window_done + '/' + progress.value.window_total
+      } else {
+        statusText.value = '转写进行中，已等待 ' + Math.round((Date.now() - startedAt) / 1000) + ' 秒…'
+      }
 
       if (job.status === 'done') {
         return normalizeTranscribeResult(job.result, { path: filePath.value })
@@ -112,7 +147,12 @@ export function useFileTranscribe() {
     const request = buildTranscribeRequest({
       path: filePath.value,
       language: language.value,
-      wantSegments: wantSegments.value
+      wantSegments: wantSegments.value,
+      engine: engine.value,
+      proofread: proofreadOn.value,
+      proofreadModelId: proofreadModelId.value || null,
+      proofreadBatchSegments: proofreadBatchSegments.value,
+      proofreadContextChars: proofreadContextChars.value
     })
 
     if (!request) {
@@ -128,6 +168,8 @@ export function useFileTranscribe() {
     isBusy.value = true
     error.value = ''
     result.value = null
+    stage.value = ''
+    progress.value = null
     statusText.value = '正在提交转写…'
 
     try {
@@ -137,7 +179,7 @@ export function useFileTranscribe() {
       }
 
       if (isAsyncJobAccepted(payload)) {
-        statusText.value = '文件较长，已转入后台任务…'
+        statusText.value = proofreadOn.value ? '已转入后台任务（ASR + LLM 校对）…' : '文件较长，已转入后台任务…'
         const polled = await pollJobResult(payload.job_id, currentRun)
         if (polled == null) {
           return
@@ -161,6 +203,8 @@ export function useFileTranscribe() {
       if (currentRun === runSeq) {
         isBusy.value = false
         statusText.value = ''
+        stage.value = ''
+        progress.value = null
       }
     }
   }
@@ -187,8 +231,17 @@ export function useFileTranscribe() {
     filePath,
     language,
     wantSegments,
+    engine,
+    proofreadOn,
+    proofreadModelId,
+    proofreadBatchSegments,
+    proofreadContextChars,
+    llmModels,
+    loadLlmModels,
     isBusy,
     statusText,
+    stage,
+    progress,
     error,
     result,
     history,

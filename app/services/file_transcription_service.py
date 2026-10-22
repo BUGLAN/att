@@ -32,6 +32,12 @@ from pathlib import Path
 from app.config import settings
 from app.records.models import TranscriptionResult
 from app.repositories.json_store import read_json_lenient, write_json_atomic
+from app.services.transcribe_proofread import (
+    PROMPT_VERSION,
+    ProofreadOptions,
+    TranscribeProofreader,
+    resolve_proofread_model,
+)
 from app.stt import factory as stt_factory
 from app.stt.models import ASRProviderConfig, ASRProviderType
 from app.utils.logging import get_logger
@@ -51,6 +57,9 @@ ENGINE_CHOICES = ("auto", "whisper", "qwen_asr", "doubao_asr")
 # 异步任务表约束：任务状态只存内存，完成/失败保留一段时间供调用方轮询，之后清理
 JOB_KEEP_SECONDS = 30 * 60
 JOB_MAX_ENTRIES = 100
+
+# 每个引擎桶最多保留的校对变体数（不同模型/提示词版本的结果各存一份，超出淘汰最旧）
+PROOFREAD_VARIANTS_PER_ENGINE = 8
 
 # Windows 下隐藏 ffmpeg/ffprobe 子进程的控制台窗口
 SUBPROCESS_WINDOWS_NO_WINDOW = 0x08000000
@@ -93,23 +102,40 @@ class FileTranscriptionService:
         language: str = "zh",
         want_segments: bool = False,
         engine: str = "auto",
+        proofread: bool = False,
+        proofread_model_id: str | None = None,
+        proofread_options: dict | None = None,
     ) -> TranscribeOutcome:
-        """处理一次 POST /api/transcribe：缓存命中秒回；短文件同步，长文件转 202 任务。
+        """处理一次 POST /api/transcribe：缓存命中秒回；proofread 或长文件转 202 任务。
 
-        engine 解析在最前（哈希大文件之前就能对凭据缺失/非法值快速失败）。
+        engine 解析与 LLM 前置校验都在哈希大文件之前（凭据/模型缺失快速失败）。
+        proofread=true 一律走 202（ASR + 校对总时长不可控，不占同步 HTTP，设计 §4.1）。
         """
         engine_type, config = self._resolve_engine(engine)
+        if proofread:
+            try:
+                resolve_proofread_model(proofread_model_id)
+            except Exception as error:
+                raise FileTranscribeError(
+                    409, f"LLM 校对不可用：{error}。请先在设置页配置 LLM，或关闭校对"
+                ) from error
+
         target = self._validate_path(path)
         # 内容哈希只算一次（大文件全量读不便宜），查缓存与转写后落缓存共用
         content_hash = await self._content_hash(target)
 
         cached = self._cache_lookup(content_hash, engine_type.value)
         if cached is not None:
-            logger.info("文件转写缓存命中", path=str(target), engine=engine_type.value)
-            return TranscribeOutcome(
-                kind="result",
-                payload=self._shape_payload(cached, want_segments, cached=True),
-            )
+            variant = self._proofread_variant(cached, proofread_model_id) if proofread else None
+            if not proofread or variant is not None:
+                logger.info("文件转写缓存命中", path=str(target), engine=engine_type.value,
+                            proofread=bool(variant))
+                return TranscribeOutcome(
+                    kind="result",
+                    payload=self._shape_payload(cached, want_segments, cached=True,
+                                                proofread_variant=variant),
+                )
+            # ASR 结果命中但校对变体缺失 → 落到 202 只跑校对阶段
 
         duration = await self._probe_duration(target)
 
@@ -121,8 +147,11 @@ class FileTranscriptionService:
                 f"音频时长约 {duration / 60:.0f} 分钟，超过上限 {max_seconds / 60:.0f} 分钟",
             )
 
-        if duration > settings.transcribe_file_async_threshold_seconds:
-            job_id = self._start_job(target, language, want_segments, duration, content_hash, engine_type, config)
+        if proofread or duration > settings.transcribe_file_async_threshold_seconds:
+            job_id = self._start_job(
+                target, language, want_segments, duration, content_hash,
+                engine_type, config, proofread, proofread_model_id, proofread_options,
+            )
             return TranscribeOutcome(kind="job", payload={"job_id": job_id})
 
         payload = await self._run_transcription(
@@ -431,6 +460,9 @@ class FileTranscriptionService:
         content_hash: str,
         engine: ASRProviderType,
         config: ASRProviderConfig,
+        proofread: bool = False,
+        proofread_model_id: str | None = None,
+        proofread_options: dict | None = None,
     ) -> str:
         """登记并启动一个后台转写任务，返回 job_id；忙/表满按 503 拒绝。"""
         busy_headers = {"Retry-After": str(settings.transcribe_file_busy_retry_after_seconds)}
@@ -443,18 +475,23 @@ class FileTranscriptionService:
         job_id = uuid.uuid4().hex
         self._jobs[job_id] = {
             "status": "running",
+            "stage": "asr",          # asr → proofreading → done（无校对时跳过 proofreading）
+            "progress": None,        # 校对阶段：{"window_done": n, "window_total": m}
             "result": None,
             "error": "",
             "created_at": time.time(),
         }
 
         task = asyncio.create_task(
-            self._execute_job(job_id, target, language, want_segments, duration, content_hash, engine, config)
+            self._execute_job(
+                job_id, target, language, want_segments, duration, content_hash,
+                engine, config, proofread, proofread_model_id, proofread_options,
+            )
         )
         self._job_tasks.add(task)
         task.add_done_callback(self._job_tasks.discard)
-        logger.info("长文件转写任务已受理", job_id=job_id, engine=engine.value,
-                    path=str(target), duration=duration)
+        logger.info("转写任务已受理", job_id=job_id, engine=engine.value,
+                    proofread=proofread, path=str(target), duration=duration)
         return job_id
 
     async def _execute_job(
@@ -467,23 +504,70 @@ class FileTranscriptionService:
         content_hash: str,
         engine: ASRProviderType,
         config: ASRProviderConfig,
+        proofread: bool = False,
+        proofread_model_id: str | None = None,
+        proofread_options: dict | None = None,
     ) -> None:
-        """后台任务体：终态只写 done / failed，结果与错误进任务表。"""
+        """后台任务体：ASR 阶段（可跳过）→（可选）校对阶段 → 终态。
+
+        终态只写 done / failed；校对整体降级（LLM 不可用）不算失败（设计 §4.5）。
+        """
+        job = self._jobs[job_id]
         try:
-            payload = await self._run_transcription(
-                target, language, want_segments, duration, content_hash, engine, config
-            )
-            self._jobs[job_id]["result"] = self._shape_payload(payload, want_segments)
-            self._jobs[job_id]["status"] = "done"
-            logger.info("长文件转写任务完成", job_id=job_id)
+            # ---- 阶段一：ASR（引擎桶缓存命中时直接复用，只跑校对）----
+            bucket = self._cache_lookup(content_hash, engine.value) if content_hash else None
+            if bucket is not None:
+                payload = {
+                    "_sha256": content_hash,
+                    "text": bucket.get("text", ""),
+                    "duration_seconds": bucket.get("duration_seconds", 0.0),
+                    "engine": bucket.get("engine", ""),
+                    "segments": bucket.get("segments", []),
+                }
+                if isinstance(bucket.get("billing"), dict):
+                    payload["billing"] = bucket["billing"]
+            else:
+                payload = await self._run_transcription(
+                    target, language, want_segments, duration, content_hash, engine, config
+                )
+
+            # ---- 阶段二：LLM 校对 ----
+            if proofread:
+                job["stage"] = "proofreading"
+
+                def _progress(done: int, total: int) -> None:
+                    job["progress"] = {"window_done": done, "window_total": total}
+
+                proofreader = TranscribeProofreader(
+                    proofread_model_id,
+                    ProofreadOptions.from_request(proofread_options),
+                    on_progress=_progress,
+                )
+                result = await proofreader.run(list(payload.get("segments") or []))
+
+                payload = dict(payload)
+                payload["raw_text"] = payload.get("text", "")
+                if result.applied:
+                    payload["text"] = result.text
+                    payload["segments"] = result.segments
+                    # 校对成功才写缓存变体（降级不写，下次可重试校对）
+                    self._store_proofread_variant(
+                        content_hash, engine.value, proofread_model_id, result
+                    )
+                payload["proofread"] = result.meta()
+
+            job["stage"] = "done"
+            job["result"] = self._shape_payload(payload, want_segments)
+            job["status"] = "done"
+            logger.info("转写任务完成", job_id=job_id, proofread=proofread)
         except FileTranscribeError as error:
-            self._jobs[job_id]["status"] = "failed"
-            self._jobs[job_id]["error"] = error.message
-            logger.warning("长文件转写任务失败", job_id=job_id, error=error.message)
+            job["status"] = "failed"
+            job["error"] = error.message
+            logger.warning("转写任务失败", job_id=job_id, error=error.message)
         except Exception as error:  # 兜底：任务不允许无声消失
-            self._jobs[job_id]["status"] = "failed"
-            self._jobs[job_id]["error"] = f"转写失败：{error}"
-            logger.error("长文件转写任务异常", job_id=job_id, error=str(error))
+            job["status"] = "failed"
+            job["error"] = f"转写失败：{error}"
+            logger.error("转写任务异常", job_id=job_id, error=str(error))
 
     def _prune_jobs(self) -> None:
         """清理超过保留时长的终态任务，防止任务表无限膨胀。"""
@@ -563,6 +647,50 @@ class FileTranscriptionService:
 
         self._save_cache()
 
+    # ------------------------------------------------------------------ 校对缓存变体
+
+    @staticmethod
+    def _variant_key(model_id: str | None) -> str:
+        """校对变体键：{模型条目 or default}@{提示词版本}（设计 §5.1）。"""
+        return f"{model_id or 'default'}@{PROMPT_VERSION}"
+
+    @classmethod
+    def _proofread_variant(cls, bucket: dict, model_id: str | None) -> dict | None:
+        """读取引擎桶下的校对变体；无则 None。"""
+        variants = bucket.get("proofread") if isinstance(bucket, dict) else None
+        variant = variants.get(cls._variant_key(model_id)) if isinstance(variants, dict) else None
+        return variant if isinstance(variant, dict) else None
+
+    def _store_proofread_variant(
+        self, content_hash: str, engine_key: str, model_id: str | None, result
+    ) -> None:
+        """把校对结果写入引擎桶的 proofread 变体（超出上限淘汰最旧）。"""
+        self._ensure_cache_loaded()
+        entry = self._cache.get(content_hash)
+        if not isinstance(entry, dict):
+            return
+        engines = entry.get("engines")
+        if not isinstance(engines, dict) or not isinstance(engines.get(engine_key), dict):
+            return
+
+        bucket = engines[engine_key]
+        variants = bucket.setdefault("proofread", {})
+        variants[self._variant_key(model_id)] = {
+            "text": result.text,
+            "segments": result.segments,
+            "windows": result.windows,
+            "requests": result.requests,
+            "fallback_batches": result.fallback_batches,
+            "model_id": result.model_id,
+            "model_label": result.model_label,
+        }
+        while len(variants) > PROOFREAD_VARIANTS_PER_ENGINE:
+            variants.pop(next(iter(variants)))
+
+        self._cache.pop(content_hash, None)
+        self._cache[content_hash] = entry  # 触碰 LRU
+        self._save_cache()
+
     def _ensure_cache_loaded(self) -> None:
         """惰性加载磁盘缓存；文件损坏按空处理（宽容读，不阻塞主流程）。"""
         if self._cache_loaded:
@@ -584,8 +712,16 @@ class FileTranscriptionService:
     # ------------------------------------------------------------------ 响应整形
 
     @staticmethod
-    def _shape_payload(entry: dict, want_segments: bool, cached: bool = False) -> dict:
-        """按接口契约整形响应体：text 恒返回，segments 仅在需要时返回。"""
+    def _shape_payload(
+        entry: dict,
+        want_segments: bool,
+        cached: bool = False,
+        proofread_variant: dict | None = None,
+    ) -> dict:
+        """按接口契约整形响应体：text 恒返回，segments 仅在需要时返回。
+
+        proofread_variant 命中时：text/segments 换成校对版，附 raw_text 与 proofread 元数据。
+        """
         payload = {
             "text": str(entry.get("text", "")),
             "duration_seconds": float(entry.get("duration_seconds") or 0.0),
@@ -594,8 +730,30 @@ class FileTranscriptionService:
         }
         if isinstance(entry.get("billing"), dict):
             payload["billing"] = entry["billing"]
+        segments = list(entry.get("segments") or [])
+
+        # 校对任务的直通字段（202 结果路径）：原文与校对元数据
+        if isinstance(entry.get("raw_text"), str):
+            payload["raw_text"] = entry["raw_text"]
+        if isinstance(entry.get("proofread"), dict):
+            payload["proofread"] = entry["proofread"]
+
+        if proofread_variant is not None:
+            payload["raw_text"] = payload["text"]
+            payload["text"] = str(proofread_variant.get("text") or payload["text"])
+            segments = list(proofread_variant.get("segments") or segments)
+            payload["proofread"] = {
+                "applied": True,
+                "llm_model": proofread_variant.get("model_label")
+                or proofread_variant.get("model_id") or "default",
+                "windows": int(proofread_variant.get("windows") or 0),
+                "requests": int(proofread_variant.get("requests") or 0),
+                "fallback_batches": list(proofread_variant.get("fallback_batches") or []),
+                "prompt_version": PROMPT_VERSION,
+            }
+
         if want_segments:
-            payload["segments"] = list(entry.get("segments") or [])
+            payload["segments"] = segments
         return payload
 
 
