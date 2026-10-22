@@ -45,8 +45,9 @@
     <RecordEditModal v-if="modals.recordEdit" />
     <PresetModal v-if="modals.preset" />
     <PresetEditModal v-if="modals.presetEdit" />
-    <LLMModal v-if="modals.llm" />
-    <LLMEditModal v-if="modals.llmEdit" />
+    <LLMWizardModal v-if="modals.llmWizard" />
+    <LLMModelEditModal v-if="modals.llmModelEdit" />
+    <LLMProviderEditModal v-if="modals.llmProviderEdit" />
 
     <Toast />
   </div>
@@ -70,8 +71,9 @@ import SettingsPage from '@/components/settings/SettingsPage.vue'
 import RecordEditModal from '@/components/modals/RecordEditModal.vue'
 import PresetModal from '@/components/modals/PresetModal.vue'
 import PresetEditModal from '@/components/modals/PresetEditModal.vue'
-import LLMModal from '@/components/modals/LLMModal.vue'
-import LLMEditModal from '@/components/modals/LLMEditModal.vue'
+import LLMWizardModal from '@/components/modals/LLMWizardModal.vue'
+import LLMModelEditModal from '@/components/modals/LLMModelEditModal.vue'
+import LLMProviderEditModal from '@/components/modals/LLMProviderEditModal.vue'
 import Toast from '@/components/common/Toast.vue'
 
 import { useElectron } from '@/composables/useElectron'

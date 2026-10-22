@@ -21,7 +21,6 @@ from app.clipboard.manager import ClipboardManager
 from app.clipboard.routes import init_clipboard_manager
 from app.clipboard.routes import router as clipboard_router
 from app.config import settings
-from app.llm.gateway import get_gateway
 from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
 from app.repositories.housekeeping import run_startup_housekeeping
@@ -112,7 +111,6 @@ async def lifespan(app: FastAPI):
         await model_service_manager.shutdown()
         await qwen_streaming_service_manager.shutdown()
         await asr_provider.close()
-        await optimizer.close()
         release_writer_lock()
 
 

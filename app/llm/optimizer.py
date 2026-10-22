@@ -1,46 +1,47 @@
-"""
-Text optimization module using DeepSeek API
-Converts spoken language to written text
-"""
-import httpx
-from typing import Optional, List
-from dataclasses import dataclass
-import asyncio
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type
-)
-import time
+"""文本优化器：把语音识别结果转成书面语（ATT 唯一的 LLM 热路径）。
 
-from app.config import settings
-from app.llm.security import redact_secrets
+v2 变更（docs/LLM配置模块重设计.md §9）：
+- 调用统一走 LiteLLMGateway（超时/重试/错误分级/脱敏都在网关层强制注入）；
+- 默认模型来自 LLMStore 的 default_model_id（可在设置页一键切换）；
+- **移除 .env DeepSeek 直连兜底**：v1 的「配置失败 → 内置 key 重试」双真相源路径
+  整体删除。调用失败直接抛 LLMError（已分级、已脱敏），由调用方按既有失败路径
+  复位记录状态并提示用户——失败可见，绝不静默降级。
+"""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+from app.llm.errors import LLMError
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def _get_default_llm_config_id() -> Optional[str]:
-    """延迟读取默认 LLM 配置，避免模块间循环依赖。"""
-    try:
-        from app.llm.config_manager import get_llm_config_manager
+@dataclass
+class OptimizationResult:
+    """一次优化的结果。失败不返回结果——直接抛 LLMError，让失败可见。"""
 
-        manager = get_llm_config_manager()
-        default_config = manager.get_default()
-        return default_config.id if default_config else None
-    except Exception:
-        return None
+    original_text: str
+    optimized_text: str
+    processing_time: float
+    tokens_used: int = 0
+    model_string: str = ""
+    # finish_reason=length：输出达到 max_tokens 被截断（思考 token 也计入）。
+    # 截断必须让调用方/用户看见，不能静默丢尾巴。
+    truncated: bool = False
 
 
 def _get_prompt_manager():
     """Lazy import to avoid circular dependency."""
     from app.prompts import prompt_manager
+
     return prompt_manager
 
 
-def _resolve_prompt(text: str, preset_id: Optional[str], style: str) -> str:
-    """Resolve prompt text from presets with safe fallback."""
+def _resolve_prompt(text: str, preset_id: Optional[str], style: str, default_prompt: str) -> str:
+    """从预设解析提示词；预设缺失时回退到内置默认模板（安全兜底）。"""
     from app.config import user_settings
 
     pm = _get_prompt_manager()
@@ -54,35 +55,17 @@ def _resolve_prompt(text: str, preset_id: Optional[str], style: str) -> str:
         if rendered:
             return rendered
 
-    prompt_template = TextOptimizer.PROMPTS.get(style, TextOptimizer.DEFAULT_PROMPT)
-    return prompt_template.format(text=text)
-
-
-@dataclass
-class OptimizationResult:
-    """Result of text optimization"""
-    original_text: str
-    optimized_text: str
-    processing_time: float
-    tokens_used: int = 0
-    # 用户在设置里配置的 LLM 调用失败、回退到 .env 内置 key 完成优化时的原因。
-    # 非空即代表本次结果经过降级：调用方必须把它暴露给用户，
-    # 否则「key 配错了」会被静默掩盖成「优化成功」。
-    fallback_reason: Optional[str] = None
+    return default_prompt.format(text=text)
 
 
 class TextOptimizer:
-    """
-    DeepSeek API client for text optimization
+    """基于 LLM 的文本优化服务。
 
-    Features:
-    - Converts spoken language to written text
-    - Removes filler words and improves grammar
-    - Batch processing for multiple fragments
-    - Retry logic with exponential backoff
+    构造必须是轻量的（main.py 启动期实例化）：所有重资源（litellm、密钥解密）
+    都延迟到首次 optimize() 调用时发生。
     """
 
-    # Default prompt for voice-to-text optimization
+    # 内置兜底提示词：预设（prompts/*.txt）缺失或渲染失败时使用
     DEFAULT_PROMPT = """你是一位语音转文字大师，擅长将语音识别后的文字转化为准确、流畅的书面文字。
 
 ## 核心原则
@@ -129,7 +112,7 @@ class TextOptimizer:
 
 优化后的文字："""
 
-    # Keep PROMPTS dict for backward compatibility
+    # 兼容旧调用（style 参数）：全部指向默认提示词，风格由预设承担
     PROMPTS = {
         "default": DEFAULT_PROMPT,
         "formal": DEFAULT_PROMPT,
@@ -138,307 +121,86 @@ class TextOptimizer:
         "command": DEFAULT_PROMPT,
     }
 
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        model: Optional[str] = None,
-        base_url: Optional[str] = None
-    ):
-        """
-        Initialize the optimizer
-
-        Args:
-            api_key: DeepSeek API key (default from settings)
-            model: Model name (default from settings)
-            base_url: API base URL (default from settings)
-        """
-        self.api_key = api_key or settings.deepseek_api_key
-        self.model = model or settings.deepseek_model
-        self.base_url = base_url or settings.deepseek_base_url
-
-        if not self.api_key:
-            default_llm_config_id = _get_default_llm_config_id()
-            if default_llm_config_id:
-                logger.info(
-                    "DeepSeek env API key not configured, defaulting to LLM config gateway",
-                    default_config_id=default_llm_config_id
-                )
-            else:
-                logger.warning("DeepSeek API key not configured")
-
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            },
-            timeout=60.0
-        )
-
-        logger.info(
-            "TextOptimizer initialized",
-            model=self.model,
-            base_url=self.base_url
-        )
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception_type((httpx.HTTPError, asyncio.TimeoutError)),
-        reraise=True
-    )
     async def optimize(
         self,
         text: str,
         style: str = "default",
         preset_id: Optional[str] = None,
-        llm_config_id: Optional[str] = None
+        model_id: Optional[str] = None,
     ) -> OptimizationResult:
-        """
-        Optimize text using LLM API
+        """优化文本。
 
         Args:
-            text: Original text to optimize
-            style: Optimization style (deprecated, use preset_id)
-            preset_id: ID of the prompt preset to use
-            llm_config_id: ID of the LLM configuration to use
+            text: 原始文本
+            style: 风格（已废弃，保留参数兼容旧调用方）
+            preset_id: 提示词预设 ID（缺省用用户设置的默认预设）
+            model_id: 指定模型条目 ID（缺省用 store 的默认优化模型）
 
-        Returns:
-            OptimizationResult with optimized text
+        Raises:
+            LLMError: 已分级、已脱敏的调用失败（含「未配置任何模型」）
         """
+        # 延迟导入：避免 app.llm.store ↔ 配置体系的启动期耦合，也让本模块可独立单测
+        from app.llm.gateway import get_llm_gateway
+        from app.llm.store import get_llm_store
+
         if not text.strip():
             return OptimizationResult(
                 original_text=text,
                 optimized_text=text,
-                processing_time=0
+                processing_time=0,
             )
 
         try:
-            prompt = _resolve_prompt(text, preset_id, style)
-        except Exception as e:
-            logger.warning(
-                "Failed to load preset, using default",
-                preset_id=preset_id,
-                error=str(e)
-            )
-            prompt_template = self.PROMPTS.get(style, self.DEFAULT_PROMPT)
-            prompt = prompt_template.format(text=text)
+            prompt = _resolve_prompt(text, preset_id, style, self.DEFAULT_PROMPT)
+        except Exception as exc:
+            logger.warning("提示词预设解析失败，使用内置默认模板", error=str(exc))
+            prompt = self.DEFAULT_PROMPT.format(text=text)
 
-        logger.debug(
-            "Optimizing text",
-            style=style,
-            preset_id=preset_id,
-            llm_config_id=llm_config_id,
-            text_length=len(text)
-        )
-
-        # Try to use LLM Gateway if config_id is provided or if multi-LLM is available
-        resolved_llm_config_id = llm_config_id or _get_default_llm_config_id()
-        fallback_reason: Optional[str] = None
-
-        if resolved_llm_config_id:
-            try:
-                from app.llm.gateway import get_gateway
-                gateway = get_gateway()
-                provider = gateway.get_provider(resolved_llm_config_id)
-
-                if provider is None:
-                    # 配置存在但 provider 建不起来（配置已删除 / 解密失败 / provider 不支持）：
-                    # 与「调用失败」同属「配置没生效」，必须走降级上报，不能静默换用内置 key
-                    raise RuntimeError(f"LLM 配置不可用：{resolved_llm_config_id}")
-
-                start_time = time.time()
-                optimized_text = await provider.optimize(text, prompt)
-                processing_time = time.time() - start_time
-
-                logger.info(
-                    "Text optimized via LLM Gateway",
-                    config_id=resolved_llm_config_id,
-                    original_length=len(text),
-                    optimized_length=len(optimized_text),
-                    processing_time=f"{processing_time:.2f}s"
-                )
-
-                return OptimizationResult(
-                    original_text=text,
-                    optimized_text=optimized_text,
-                    processing_time=processing_time,
-                    tokens_used=0
-                )
-            except Exception as e:
-                # 用户配置的 provider 调用失败：记录脱敏后的原因并降级到内置 key。
-                # 原因会随 OptimizationResult 返回给调用方，必须让用户看到，
-                # 否则设置页里配错的 key 会被「优化成功」掩盖。
-                fallback_reason = redact_secrets(e, [self.api_key])
-                logger.warning(
-                    "Failed to use LLM Gateway, falling back to legacy",
-                    config_id=resolved_llm_config_id,
-                    error=fallback_reason
-                )
-
-        # Fallback to legacy DeepSeek-only implementation
-        if not self.api_key:
-            raise ValueError("DeepSeek API key not configured")
-
-        start_time = time.time()
-
-        response = await self._client.post(
-            "/chat/completions",
-            json={
-                "model": self.model,
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": settings.deepseek_temperature,
-                "max_tokens": settings.deepseek_max_tokens
-            }
-        )
-
-        response.raise_for_status()
-        data = response.json()
-
-        processing_time = time.time() - start_time
-
-        optimized_text = data["choices"][0]["message"]["content"]
-        tokens_used = data.get("usage", {}).get("total_tokens", 0)
+        entry, profile, plain_key = get_llm_store().resolve_runtime(model_id)
 
         logger.info(
-            "Text optimized",
-            style=style,
+            "开始文本优化",
+            model=entry.model,
+            profile_id=profile.id,
+            preset_id=preset_id,
+            text_length=len(text),
+        )
+
+        start_time = time.perf_counter()
+        chat_result = await get_llm_gateway().chat(
+            model_string=entry.model,
+            messages=[{"role": "user", "content": prompt}],
+            api_key=plain_key,
+            api_base=profile.api_base,
+            extra_headers=profile.extra_headers or None,
+            temperature=entry.params.temperature,
+            max_tokens=entry.params.max_tokens,
+            timeout_s=entry.params.timeout_s,
+            retries=entry.params.retries,
+        )
+        processing_time = time.perf_counter() - start_time
+
+        logger.info(
+            "文本优化完成",
+            model=chat_result.model_string,
             original_length=len(text),
-            optimized_length=len(optimized_text),
+            optimized_length=len(chat_result.text),
             processing_time=f"{processing_time:.2f}s",
-            tokens_used=tokens_used,
-            degraded=fallback_reason is not None
+            tokens_used=chat_result.total_tokens,
         )
+
+        if chat_result.truncated:
+            logger.warning(
+                "优化结果被截断（输出达到 max_tokens 上限），文本可能不完整",
+                model=chat_result.model_string,
+                max_tokens=entry.params.max_tokens,
+            )
 
         return OptimizationResult(
             original_text=text,
-            optimized_text=optimized_text,
+            optimized_text=chat_result.text,
             processing_time=processing_time,
-            tokens_used=tokens_used,
-            fallback_reason=fallback_reason
+            tokens_used=chat_result.total_tokens,
+            model_string=chat_result.model_string,
+            truncated=chat_result.truncated,
         )
-
-    async def batch_optimize(
-        self,
-        texts: List[str],
-        style: str = "default",
-        batch_size: int = 5
-    ) -> List[OptimizationResult]:
-        """
-        Optimize multiple texts in batches
-
-        Args:
-            texts: List of texts to optimize
-            style: Optimization style
-            batch_size: Number of concurrent requests
-
-        Returns:
-            List of OptimizationResults
-        """
-        results = []
-        semaphore = asyncio.Semaphore(batch_size)
-
-        async def optimize_with_semaphore(text: str) -> OptimizationResult:
-            async with semaphore:
-                try:
-                    return await self.optimize(text, style)
-                except Exception as e:
-                    logger.error("Batch optimization failed", error=str(e))
-                    return OptimizationResult(
-                        original_text=text,
-                        optimized_text=text,
-                        processing_time=0
-                    )
-
-        tasks = [optimize_with_semaphore(text) for text in texts]
-        results = await asyncio.gather(*tasks)
-
-        return list(results)
-
-    async def optimize_long_text(
-        self,
-        text: str,
-        style: str = "default",
-        chunk_size: int = 2000
-    ) -> OptimizationResult:
-        """
-        Optimize long text by splitting into chunks
-
-        Args:
-            text: Long text to optimize
-            style: Optimization style
-            chunk_size: Maximum characters per chunk
-
-        Returns:
-            OptimizationResult with merged optimized text
-        """
-        if len(text) <= chunk_size:
-            return await self.optimize(text, style)
-
-        # Split text into chunks at sentence boundaries
-        chunks = self._split_text(text, chunk_size)
-
-        # Optimize each chunk
-        results = await self.batch_optimize(chunks, style)
-
-        # Merge results
-        merged_text = "\n\n".join(r.optimized_text for r in results)
-        total_time = sum(r.processing_time for r in results)
-        total_tokens = sum(r.tokens_used for r in results)
-
-        return OptimizationResult(
-            original_text=text,
-            optimized_text=merged_text,
-            processing_time=total_time,
-            tokens_used=total_tokens
-        )
-
-    def _split_text(
-        self,
-        text: str,
-        chunk_size: int
-    ) -> List[str]:
-        """
-        Split text into chunks at sentence boundaries
-
-        Args:
-            text: Text to split
-            chunk_size: Maximum characters per chunk
-
-        Returns:
-            List of text chunks
-        """
-        if len(text) <= chunk_size:
-            return [text]
-
-        chunks = []
-        current_chunk = ""
-
-        # Split by sentences (Chinese and English)
-        sentence_endings = ['。', '！', '？', '.', '!', '?']
-
-        for char in text:
-            current_chunk += char
-
-            if char in sentence_endings and len(current_chunk) >= chunk_size * 0.8:
-                if len(current_chunk) >= chunk_size * 0.5:
-                    chunks.append(current_chunk.strip())
-                    current_chunk = ""
-
-        if current_chunk.strip():
-            chunks.append(current_chunk.strip())
-
-        return chunks
-
-    async def close(self) -> None:
-        """Close the HTTP client"""
-        await self._client.aclose()
-        logger.info("TextOptimizer client closed")
-
-    async def __aenter__(self) -> "TextOptimizer":
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        await self.close()

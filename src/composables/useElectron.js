@@ -42,12 +42,21 @@ export function useElectron() {
     deleteClipboardItem: (id) => httpApi.deleteClipboardItem(id),
     getSettings: () => httpApi.getSettings(),
     saveSettings: (settings) => httpApi.saveSettings(settings),
-    getLLMConfigs: () => httpApi.getLLMConfigs(),
-    saveLLMConfig: (config) => httpApi.saveLLMConfig(config),
-    deleteLLMConfig: (id) => httpApi.deleteLLMConfig(id),
-    testLLMConfig: (id) => httpApi.testLLMConfig(id),
-    setDefaultLLMConfig: (id) => httpApi.setDefaultLLMConfig(id),
+    // LLM v2（供应商档案 + 模型条目）
+    getLLMState: () => httpApi.getLLMState(),
     getLLMProviders: () => httpApi.getLLMProviders(),
+    createLLMProfile: (payload) => httpApi.createLLMProfile(payload),
+    updateLLMProfile: (id, payload) => httpApi.updateLLMProfile(id, payload),
+    deleteLLMProfile: (id) => httpApi.deleteLLMProfile(id),
+    verifyLLMProfile: (id) => httpApi.verifyLLMProfile(id),
+    getLLMRemoteModels: (id) => httpApi.getLLMRemoteModels(id),
+    verifyLLMDraft: (payload) => httpApi.verifyLLMDraft(payload),
+    createLLMModels: (items) => httpApi.createLLMModels(items),
+    updateLLMModel: (id, payload) => httpApi.updateLLMModel(id, payload),
+    deleteLLMModel: (id) => httpApi.deleteLLMModel(id),
+    verifyLLMModel: (id) => httpApi.verifyLLMModel(id),
+    activateLLMModel: (id) => httpApi.activateLLMModel(id),
+    updateLLMSettings: (payload) => httpApi.updateLLMSettings(payload),
     getPresets: () => httpApi.getPresets(),
     setDefaultPreset: (id) => httpApi.setDefaultPreset(id)
   }
@@ -205,6 +214,12 @@ export function useElectron() {
     return typeof picked === 'string' && picked ? picked : null
   }
 
+  // 「转文字」页：拖拽落下的 File 对象换本地绝对路径。浏览器环境拿不到，返回空串。
+  function filePathForFile(file) {
+    const path = globalThis.window?.electronAPI?.getPathForFile?.(file)
+    return typeof path === 'string' ? path : ''
+  }
+
   return {
     isElectron,
     isReady,
@@ -228,6 +243,7 @@ export function useElectron() {
     saveDesktopSettings,
     syncRecordingState,
     openMediaFile,
+    filePathForFile,
     platform: globalThis.window?.electronAPI?.platform || 'web',
     getBackendPort
   }

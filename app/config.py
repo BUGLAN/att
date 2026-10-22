@@ -292,12 +292,9 @@ class Settings(BaseSettings):
     doubao_asr_end_window_size: int = 0
     doubao_asr_force_to_speech_time: int = 0
 
-    # DeepSeek API
-    deepseek_api_key: str = ""
-    deepseek_model: str = "deepseek-chat"
-    deepseek_max_tokens: int = 4096
-    deepseek_temperature: float = 0.3
-    deepseek_base_url: str = "https://api.deepseek.com/v1"
+    # LLM 接入已迁移到 LiteLLM + data/llm_v2.json（供应商档案 + 模型条目），
+    # 旧的 DEEPSEEK_* 环境变量与「.env 内置 key 兜底」路径一并移除（2026-10）。
+    # extra="ignore" 会让残留的 DEEPSEEK_* 键被安全忽略，不报错。
 
     # 本地文件转写接口（POST /api/transcribe，采集层脚本与 App「转文字」页共用）
     transcribe_file_max_duration_seconds: int = 7200      # 时长上限，超过返回 413（默认 2 小时）

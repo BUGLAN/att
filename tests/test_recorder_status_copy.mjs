@@ -6,10 +6,11 @@ import assert from 'node:assert/strict'
 import {
   IDLE_SESSION_STATUS_TEXT,
   deriveCompletionToast,
-  deriveOptimizationDegradedToast,
   deriveRealtimePhaseText,
   listCompletionStages
 } from '../src/composables/recorder/statusCopy.mjs'
+// 注：deriveOptimizationDegradedToast 已随 LLM v2（移除 .env 内置 key 兜底）删除，
+// 后端不再广播 optimization_degraded，见 docs/LLM配置模块重设计.md §9.2。
 
 test('deriveRealtimePhaseText：多段录音各阶段文案与原实现一致', () => {
   assert.equal(deriveRealtimePhaseText('listening'), '静音切段已启用，停顿后会自动出字')
@@ -63,20 +64,6 @@ test('deriveCompletionToast：多段录音阶段三态文案', () => {
 test('deriveCompletionToast：未知阶段抛错，避免静默拿到错误文案', () => {
   assert.throws(() => deriveCompletionToast('unknown', { pasted: true }), /未知的完成态阶段/)
   assert.throws(() => deriveCompletionToast(undefined, {}), /未知的完成态阶段/)
-})
-
-test('deriveOptimizationDegradedToast：带上脱敏后的降级原因', () => {
-  assert.equal(
-    deriveOptimizationDegradedToast('401 Your api key: *** is invalid'),
-    '优化已降级：401 Your api key: *** is invalid（本次已用内置 key 完成）'
-  )
-})
-
-test('deriveOptimizationDegradedToast：原因缺失时回退默认文案', () => {
-  const expected = '优化已降级：配置的 LLM 调用失败（本次已用内置 key 完成）'
-  assert.equal(deriveOptimizationDegradedToast(''), expected)
-  assert.equal(deriveOptimizationDegradedToast('   '), expected)
-  assert.equal(deriveOptimizationDegradedToast(undefined), expected)
 })
 
 test('listCompletionStages：覆盖四个完成态阶段', () => {

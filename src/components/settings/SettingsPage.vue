@@ -317,25 +317,8 @@
           </div>
         </div>
 
-        <div class="settings-group">
-          <h3 class="settings-group-title">LLM 配置</h3>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">默认 LLM 配置</span>
-            <span class="setting-desc">选择用于文本优化的默认模型服务。</span>
-          </div>
-          <div class="setting-actions-inline">
-            <BaseSelect v-model="selectedLLMConfigId">
-              <option value="">未设置</option>
-              <option v-for="config in llmConfigs" :key="config.id" :value="config.id">
-                {{ config.name }}
-              </option>
-            </BaseSelect>
-            <BaseButton variant="outline" @click="openLLMModal">管理配置</BaseButton>
-          </div>
-        </div>
-      </div>
+        <!-- LLM 服务（v2：供应商档案 + 模型条目，见 docs/LLM配置模块重设计.md） -->
+        <LLMServiceSection />
 
       <!-- 诊断区：把原先常驻侧边栏的调试信息（WS 客户端数、模型服务状态）折叠到这里 -->
       <div class="settings-group">
@@ -378,7 +361,8 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
-import { useSettings, usePresets, useLLMConfig } from '@/composables/useSettings'
+import { useSettings, usePresets } from '@/composables/useSettings'
+import LLMServiceSection from '@/components/settings/llm/LLMServiceSection.vue'
 import { useElectron } from '@/composables/useElectron'
 import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
@@ -391,21 +375,18 @@ const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const { settings, saveSettings } = useSettings()
 const { presets, defaultPresetId, loadPresets, setDefaultPreset } = usePresets()
-const { llmConfigs, loadLLMConfigs, loadLLMProviders, setDefaultLLMConfig, defaultConfigId } = useLLMConfig()
 const { syncDesktopSettings, syncInputSettings, platform } = useElectron()
 
 const form = ref({})
 const audioInputDevices = ref([])
 const isCapturingHotkey = ref(false)
-const selectedLLMConfigId = ref('')
+
 const selectedPresetId = ref('')
 const isInitialized = ref(false)
 const syncDepth = ref(0)
 const isSavingSettings = ref(false)
-const isSavingLLM = ref(false)
 const isSavingPreset = ref(false)
 const lastSavedSettingsSnapshot = ref('')
-const lastSavedLLMConfigId = ref('')
 const lastSavedPresetId = ref('')
 
 const builtinPresets = computed(() => presets.value.filter((preset) => preset.is_builtin))
@@ -652,10 +633,6 @@ function openPresetModal() {
   appStore.openModal('presetEdit')
 }
 
-function openLLMModal() {
-  appStore.openModal('llm')
-}
-
 function startHotkeyCapture() {
   isCapturingHotkey.value = true
 }
@@ -739,25 +716,6 @@ async function handleSave() {
   }
 }
 
-async function handleDefaultLLMSave() {
-  if (!isInitialized.value || isSyncing.value || isSavingLLM.value) {
-    return
-  }
-
-  if (!selectedLLMConfigId.value || selectedLLMConfigId.value === lastSavedLLMConfigId.value) {
-    return
-  }
-
-  isSavingLLM.value = true
-
-  try {
-    await setDefaultLLMConfig(selectedLLMConfigId.value, { silent: true })
-    lastSavedLLMConfigId.value = selectedLLMConfigId.value
-  } finally {
-    isSavingLLM.value = false
-  }
-}
-
 async function handleDefaultPresetSave() {
   if (!isInitialized.value || isSyncing.value || isSavingPreset.value) {
     return
@@ -791,7 +749,6 @@ function debounce(fn, delay) {
 }
 
 const debouncedSaveSettings = debounce(handleSave, 500)
-const debouncedSaveLLM = debounce(handleDefaultLLMSave, 500)
 const debouncedSavePreset = debounce(handleDefaultPresetSave, 500)
 
 watch(settings, (value) => {
@@ -811,13 +768,6 @@ watch(settings, (value) => {
   })
 }, { immediate: true, deep: true })
 
-watch(defaultConfigId, (value) => {
-  runSyncUpdate(() => {
-    selectedLLMConfigId.value = value || ''
-    lastSavedLLMConfigId.value = selectedLLMConfigId.value
-  })
-}, { immediate: true })
-
 watch([defaultPresetId, builtinPresets], () => {
   runSyncUpdate(() => {
     selectedPresetId.value = resolveSelectedPresetId()
@@ -831,13 +781,6 @@ watch(form, () => {
   }
   debouncedSaveSettings()
 }, { deep: true })
-
-watch(selectedLLMConfigId, () => {
-  if (!isInitialized.value || isSyncing.value) {
-    return
-  }
-  debouncedSaveLLM()
-})
 
 watch(selectedPresetId, () => {
   if (!isInitialized.value || isSyncing.value) {
@@ -853,8 +796,6 @@ onMounted(async () => {
     settingsStore.loadSettings(),
     settingsStore.loadRuntimeStatus(true),
     loadPresets(),
-    loadLLMConfigs(),
-    loadLLMProviders(),
     loadAudioInputDevices()
   ])
 
@@ -866,10 +807,8 @@ onMounted(async () => {
 
   runSyncUpdate(() => {
     normalizeSettings(settings.value)
-    selectedLLMConfigId.value = defaultConfigId.value || ''
     selectedPresetId.value = resolveSelectedPresetId()
     lastSavedSettingsSnapshot.value = serializeSettingsPayload(buildSettingsPayload())
-    lastSavedLLMConfigId.value = selectedLLMConfigId.value
     lastSavedPresetId.value = selectedPresetId.value
   })
 

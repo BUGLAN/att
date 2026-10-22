@@ -260,22 +260,6 @@ class StreamingSessionManager:
                     },
                     "timestamp": datetime.now().isoformat()
                 })
-            if optimize_result.fallback_reason:
-                # 用户配置的 LLM 失败、回退到 .env 内置 key：优化成功但配置没生效。
-                # 流式收尾是异步路径，只能靠 WebSocket 让界面提示用户
-                logger.warning(
-                    "流式录音自动优化已降级到内置 key",
-                    record_id=record_id,
-                    reason=optimize_result.fallback_reason
-                )
-                await ws_manager.broadcast({
-                    "type": "optimization_degraded",
-                    "data": {
-                        "record_id": record_id,
-                        "reason": optimize_result.fallback_reason
-                    },
-                    "timestamp": datetime.now().isoformat()
-                })
             logger.info("流式录音自动优化完成", record_id=record_id)
         except Exception as error:
             # 错误文案先脱敏：上游鉴权失败会在错误体里回显密钥（AGENTS.md §3.4）

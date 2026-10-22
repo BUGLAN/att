@@ -172,19 +172,23 @@ export const useSettingsStore = defineStore('settings', () => {
   const currentPreset = ref(null)
   const defaultPresetId = ref(null)
 
-  const llmConfigs = ref([])
+  // ===== LLM v2 状态（供应商档案 + 模型条目，docs/LLM配置模块重设计.md §5）=====
+  const llmProfiles = ref([])
+  const llmModels = ref([])
   const llmProviders = ref([])
-  const currentLLMConfig = ref(null)
-  const defaultLLMConfigId = ref(null)
+  const llmDefaultModelId = ref(null)
+  const llmFallbackModelId = ref(null)
+  const llmSkippedEntries = ref([])
+  // 向导/编辑弹窗的当前编辑目标（与旧 currentLLMConfig 同一套模式）
+  const currentLLMProfile = ref(null)
+  const currentLLMModel = ref(null)
 
   const defaultPreset = computed(() => {
     return presets.value.find((preset) => preset.id === defaultPresetId.value) || presets.value[0] || null
   })
 
-  const defaultLLMConfig = computed(() => {
-    return llmConfigs.value.find((config) => config.id === defaultLLMConfigId.value) ||
-      llmConfigs.value.find((config) => config.is_default) ||
-      null
+  const llmDefaultModel = computed(() => {
+    return llmModels.value.find((model) => model.id === llmDefaultModelId.value) || llmModels.value[0] || null
   })
 
   async function loadSettings() {
@@ -457,14 +461,18 @@ export const useSettingsStore = defineStore('settings', () => {
     settings.value.last_used_preset_id = id
   }
 
-  async function loadLLMConfigs() {
+  // 档案 + 模型 + 默认绑定一次拉全（设置页首屏）
+  async function loadLLMState() {
     try {
-      const result = await api.getLLMConfigs()
-      llmConfigs.value = result.configs || []
-      defaultLLMConfigId.value = result.default_config_id || null
-      return llmConfigs.value
+      const result = await api.getLLMState()
+      llmProfiles.value = result.profiles || []
+      llmModels.value = result.models || []
+      llmDefaultModelId.value = result.default_model_id || null
+      llmFallbackModelId.value = result.fallback_model_id || null
+      llmSkippedEntries.value = result.skipped_entries || []
+      return result
     } catch (e) {
-      console.error('Failed to load LLM configs:', e)
+      console.error('Failed to load LLM state:', e)
       throw e
     }
   }
@@ -480,28 +488,76 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  async function saveLLMConfig(config) {
-    const result = await api.saveLLMConfig(config)
-    await loadLLMConfigs()
+  // 以下动作完成后统一重拉 state：后端会在验证时回写状态字段，本地不自己拼
+  async function refreshLLMState() {
+    return loadLLMState()
+  }
+
+  async function createLLMProfile(payload) {
+    const result = await api.createLLMProfile(payload)
+    await loadLLMState()
     return result
   }
 
-  async function deleteLLMConfig(id) {
-    await api.deleteLLMConfig(id)
-    await loadLLMConfigs()
+  async function updateLLMProfile(id, payload) {
+    const result = await api.updateLLMProfile(id, payload)
+    await loadLLMState()
+    return result
   }
 
-  async function testLLMConfig(id) {
-    return api.testLLMConfig(id)
+  async function deleteLLMProfile(id) {
+    try {
+      return await api.deleteLLMProfile(id)
+    } finally {
+      await loadLLMState()
+    }
   }
 
-  async function setDefaultLLMConfig(id) {
-    await api.setDefaultLLMConfig(id)
-    defaultLLMConfigId.value = id
-    llmConfigs.value = llmConfigs.value.map((config) => ({
-      ...config,
-      is_default: config.id === id
-    }))
+  async function verifyLLMProfile(id) {
+    return api.verifyLLMProfile(id)
+  }
+
+  async function verifyLLMDraft(payload) {
+    return api.verifyLLMDraft(payload)
+  }
+
+  async function getLLMRemoteModels(id) {
+    return api.getLLMRemoteModels(id)
+  }
+
+  async function createLLMModels(items) {
+    const result = await api.createLLMModels(items)
+    await loadLLMState()
+    return result
+  }
+
+  async function updateLLMModel(id, payload) {
+    const result = await api.updateLLMModel(id, payload)
+    await loadLLMState()
+    return result
+  }
+
+  async function deleteLLMModel(id) {
+    try {
+      return await api.deleteLLMModel(id)
+    } finally {
+      await loadLLMState()
+    }
+  }
+
+  async function verifyLLMModel(id) {
+    return api.verifyLLMModel(id)
+  }
+
+  async function activateLLMModel(id) {
+    await api.activateLLMModel(id)
+    llmDefaultModelId.value = id
+  }
+
+  async function updateLLMSettings(payload) {
+    await api.updateLLMSettings(payload)
+    llmDefaultModelId.value = payload.default_model_id ?? llmDefaultModelId.value
+    llmFallbackModelId.value = payload.fallback_model_id ?? null
   }
 
   return {
@@ -512,12 +568,16 @@ export const useSettingsStore = defineStore('settings', () => {
     presets,
     currentPreset,
     defaultPresetId,
-    llmConfigs,
+    llmProfiles,
+    llmModels,
     llmProviders,
-    currentLLMConfig,
-    defaultLLMConfigId,
+    llmDefaultModelId,
+    llmFallbackModelId,
+    llmSkippedEntries,
+    llmDefaultModel,
+    currentLLMProfile,
+    currentLLMModel,
     defaultPreset,
-    defaultLLMConfig,
     loadSettings,
     loadRuntimeStatus,
     startStreamingService,
@@ -525,11 +585,20 @@ export const useSettingsStore = defineStore('settings', () => {
     saveSettings,
     loadPresets,
     setDefaultPreset,
-    loadLLMConfigs,
+    loadLLMState,
     loadLLMProviders,
-    saveLLMConfig,
-    deleteLLMConfig,
-    testLLMConfig,
-    setDefaultLLMConfig
+    refreshLLMState,
+    createLLMProfile,
+    updateLLMProfile,
+    deleteLLMProfile,
+    verifyLLMProfile,
+    verifyLLMDraft,
+    getLLMRemoteModels,
+    createLLMModels,
+    updateLLMModel,
+    deleteLLMModel,
+    verifyLLMModel,
+    activateLLMModel,
+    updateLLMSettings
   }
 })

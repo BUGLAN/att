@@ -1924,16 +1924,6 @@ async function handleWebSocketMessage(message) {
     return
   }
 
-  if (message.type === 'optimization_degraded') {
-    // 用户在设置里配置的 LLM 调用失败、回退到 .env 内置 key 完成了优化：
-    // 结果本身可用，但必须提示「配置没生效」，否则设置页里配错的 key 会被静默掩盖
-    appStore.showToast(statusCopy.deriveOptimizationDegradedToast(message.data?.reason), {
-      tone: 'info',
-      duration: 6000
-    })
-    return
-  }
-
   if (message.type === 'optimization_failed') {
     const recordId = message.data?.record_id
     const fallbackText = message.data?.text || ''

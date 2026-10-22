@@ -36,11 +36,10 @@ class _FakeASRProvider:
 
 
 class _FakeOptimizer:
-    """假文本优化器：可配置成功/失败，以及是否降级到内置 key。"""
+    """假文本优化器：可配置成功/失败（v2 无降级通道）。"""
 
-    def __init__(self, fail: bool = False, fallback_reason: str | None = None):
+    def __init__(self, fail: bool = False):
         self.fail = fail
-        self.fallback_reason = fallback_reason
 
     async def optimize(self, text, preset_id=None, **kwargs):
         if self.fail:
@@ -48,7 +47,8 @@ class _FakeOptimizer:
         return SimpleNamespace(
             optimized_text=f"优化:{text}",
             processing_time=0.05,
-            fallback_reason=self.fallback_reason
+            tokens_used=10,
+            model_string="deepseek/deepseek-flash"
         )
 
 
@@ -169,17 +169,17 @@ def test_auto_optimize_success_reaches_optimized(fake_ws):
     ]
 
 
-def test_auto_optimize_degraded_broadcasts_warning(fake_ws):
-    """配置的 LLM 调用失败、回退到内置 key 时：优化仍算成功，但必须广播
-    optimization_degraded，否则「设置里的 key 没生效」会被静默掩盖。"""
+def test_auto_optimize_success_no_degraded_event(fake_ws):
+    """v2 移除了 .env 内置 key 兜底（docs/LLM配置模块重设计.md §9.2）：
+    优化成功就是成功，事件序列里不得再出现 optimization_degraded。"""
     manager = _FakeRecordManager()
 
     asyncio.run(transcription_service.transcribe_audio_background(
-        "rec-degraded",
+        "rec-ok",
         "a.wav",
         _FakeASRProvider("原始"),
         manager,
-        _FakeOptimizer(fallback_reason="401 Your api key: *** is invalid"),
+        _FakeOptimizer(),
         _Settings(auto_optimize=True, default_preset_id="preset-1"),
     ))
 
@@ -189,8 +189,8 @@ def test_auto_optimize_degraded_broadcasts_warning(fake_ws):
         "transcription_completed",
         "optimization_started",
         "optimization_completed",
-        "optimization_degraded",
     ]
+    assert "optimization_degraded" not in fake_ws.events
 
 
 def test_auto_optimize_failure_resets_to_transcribed(fake_ws):

@@ -105,8 +105,8 @@ async def close_streaming_session_manager() -> None:
 
 # ==================== 既有公开符号再导出（保持向后兼容） ====================
 
-# 请求模型（原 routes.py 顶层定义，现在随子路由迁移）
-from app.api.routers.llm import get_llm_manager  # noqa: E402
+# 请求模型（原 routes.py 顶层定义，现在随子路由迁移；LLM v2 见 app/llm/store.py）
+from app.api.routers.llm import get_store as get_llm_store  # noqa: E402  # 兼容再导出
 from app.api.routers.prompts import SetDefaultPromptRequest  # noqa: E402
 from app.api.routers.records import RecordUpdateRequest  # noqa: E402
 from app.api.routers.sessions import _handle_websocket_message  # noqa: E402

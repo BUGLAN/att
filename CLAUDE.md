@@ -11,9 +11,10 @@
 
 ## Claude Code 特有的注意点
 
-1. **改动前先看 `docs/已知问题.md`**：那里列着当前确认的缺陷（统一浮层无入口、`--win` 打包
-   在 nsis 阶段失败、多段录音上传失败会卡住、LLM provider 无超时）。别在不了解现状的情况下
-   "顺手重构"这些区域。
+1. **改动前先看 `docs/已知问题.md`**：那里列着当前确认的缺陷（`--win` 打包
+   在 nsis 阶段失败、多段录音上传失败会卡住）。别在不了解现状的情况下
+   "顺手重构"这些区域。LLM provider 无超时已于 2026-10-22 随 LLM v2 重写修复
+   （`docs/LLM配置模块重设计.md`）。
 2. **不要用 `git add -A`**：仓库里有未纳入版本库的审计截图与设计产物
    （`docs/ui-audit/`、`.tmp-shots/`、`.stitch/`，已在 `.gitignore` 里）。改动请按文件显式暂存。
 3. **提交信息用中文 Conventional Commits**：`<type>(<scope>): <中文描述>`，一个提交只做一件逻辑完整的事。
@@ -28,4 +29,5 @@
 ## 文档索引
 
 `README.md`、`AGENTS.md`、`docs/使用说明.md`、`docs/架构说明.md`、`docs/配置说明.md`、
-`docs/API.md`、`docs/ASR接入.md`、`docs/开发与运维.md`、`docs/已知问题.md`。
+`docs/API.md`、`docs/ASR接入.md`、`docs/开发与运维.md`、`docs/已知问题.md`、
+`docs/LLM配置模块重设计.md`（LLM v2 设计与原型）、`docs/文件转写-多引擎与LLM校对-设计.md`（文件转写多引擎与 LLM 校对设计）。

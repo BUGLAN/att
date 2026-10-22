@@ -3,7 +3,6 @@ import { useRecordsStore } from '@/stores/records'
 import { useAppStore } from '@/stores/app'
 import { useElectron } from './useElectron'
 import { buildExportFilename, downloadFromUrl } from '@/utils/exportDownload.mjs'
-import { deriveOptimizationDegradedToast } from './recorder/statusCopy.mjs'
 
 // 当前播放的音频对象
 const currentAudio = ref(null)
@@ -53,12 +52,11 @@ export function useRecords() {
   async function optimizeRecord(id) {
     try {
       const result = await recordsStore.optimizeRecord(id)
-      if (result?.fallback_reason) {
-        // 配置的 LLM 调用失败、回退到 .env 内置 key：优化结果可用，
-        // 但必须提示「配置没生效」，否则配错的 key 会被静默掩盖
-        appStore.showToast(deriveOptimizationDegradedToast(result.fallback_reason), {
-          tone: 'info',
-          duration: 6000
+      if (result?.truncated) {
+        // 输出达到 Max Tokens 上限被截断（思考 token 也计入），文本可能不完整
+        appStore.showToast('优化完成，但输出已达 Max Tokens 上限被截断，可在设置 → LLM 服务里调大', {
+          tone: 'warn',
+          duration: 8000
         })
       } else {
         appStore.showToast('优化完成')

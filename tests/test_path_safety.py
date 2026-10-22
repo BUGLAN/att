@@ -400,15 +400,16 @@ def test_user_settings_public_api_and_atomic_write(tmp_path: Path):
     assert UserSettings(settings_file).get_all() == all_settings
 
 
-def test_llm_config_manager_tolerates_invalid_shapes(tmp_path: Path):
-    from app.llm.config_manager import LLMConfigManager
+def test_llm_store_tolerates_invalid_shapes(tmp_path: Path):
+    from app.llm.store import LLMStore
 
-    config_file = tmp_path / "llm_configs.json"
+    config_file = tmp_path / "llm_v2.json"
     config_file.write_text("null", encoding="utf-8")
 
-    manager = LLMConfigManager(data_dir=str(tmp_path))
-    assert manager.get_all() == []
-    assert manager.get_default() is None
+    store = LLMStore(data_dir=str(tmp_path))
+    assert store.list_profiles() == []
+    assert store.list_models() == []
+    assert store.get_default_model() is None
 
 
 def test_cors_whitelist_allows_electron_and_blocks_foreign_origins():

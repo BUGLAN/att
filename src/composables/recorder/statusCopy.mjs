@@ -73,16 +73,6 @@ export function deriveCompletionToast(stage, copyResult) {
 }
 
 /**
- * 优化降级提示文案：用户在设置里配置的 LLM 调用失败后，回退到 .env 内置 key
- * 完成了优化。优化结果本身可用，但必须让用户知道「配置没生效」，
- * 否则设置页里配错的 key 会被静默掩盖成「优化成功」。
- */
-export function deriveOptimizationDegradedToast(reason) {
-  const detail = String(reason || '').trim() || '配置的 LLM 调用失败'
-  return `优化已降级：${detail}（本次已用内置 key 完成）`
-}
-
-/**
  * 当前支持的完成态阶段列表（便于测试与调用方排查打错字的情况）。
  */
 export function listCompletionStages() {

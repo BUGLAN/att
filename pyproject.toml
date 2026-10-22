@@ -22,6 +22,9 @@ dependencies = [
   "tenacity>=8.2.3",
   "openai>=1.0.0",
   "anthropic>=0.18.0",
+  # LLM 统一接入层：一套接口调 100+ 服务商（模型名 = 前缀/模型串，见 docs/LLM配置模块重设计.md）。
+  # 只在 app/llm/gateway.py 内部懒加载，避免 import 期拖慢后端启动。
+  "litellm>=1.40.0",
   "cryptography>=42.0.0",
   "pydantic>=2.5.0",
   "pydantic-settings>=2.1.0",

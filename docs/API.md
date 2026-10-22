@@ -118,7 +118,7 @@
 | `status` | `{type:"status", recording, transcribing, record_id, duration, connected_clients, timestamp}`，`timestamp` 为**毫秒整数** | 连接/断开、`status_update` 后广播给所有客户端 | `websocket.py:95-100`、`sessions.py:229-231` |
 | `pong` | `{type:"pong"}` | 收到 `ping` | `sessions.py:375` |
 | `optimization_failed` | `{type, data:{record_id, error, status}, timestamp}`，此处 `timestamp` 为 **ISO 字符串**（与上面两种毫秒整数不一致） | `POST /api/records/{id}/optimize` 失败时广播 | `app/api/routers/records.py:344-353` |
-| `optimization_degraded` | `{type, data:{record_id, reason}, timestamp}`，`timestamp` 为 **ISO 字符串** | 自动优化（单段 / 流式）中「设置里配置的 LLM 调用失败、回退到 `.env` 内置 key 完成」时广播，`reason` 为脱敏后的原因；手动优化走同步响应字段 `fallback_reason`，不重复广播 | `app/services/transcription_service.py:137-152`、`app/services/streaming_session_manager.py:262-278` |
+| ~~`optimization_degraded`~~ | —— | **已随 LLM v2 移除**（2026-10-22）：`.env` 内置 key 兜底删除后不再有「降级成功」状态，配置失败直接走 `optimization_failed` | —— |
 
 ---
 
@@ -184,21 +184,29 @@
 
 ---
 
-## 7. LLM 配置（llm）
+## 7. LLM 服务（llm，v2）
+
+> 2026-10-22 重写：接入层换 LiteLLM，配置从「一层配置」拆成「供应商档案 + 模型条目」
+> 两级（设计见 `docs/LLM配置模块重设计.md`）。旧 `/api/llm/configs*` 端点已整体移除。
 
 | 方法 | 路径 | 用途 | 关键请求字段 | 关键响应字段 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| GET | `/api/llm/configs` | 列出全部 LLM 配置 | — | `configs[]`（`id/provider/name/model/api_base/temperature/max_tokens/is_default/created_at/updated_at`）、`default_config_id` | `app/api/routers/llm.py:37-60`；**不返回 `api_key`** |
-| GET | `/api/llm/configs/{config_id}` | 单条配置 | path `config_id` | 同上单条 | `llm.py:63-83`；不存在 404 |
-| POST | `/api/llm/configs` | 新建配置 | `provider`、`name`、`api_key`（明文）、`model`、可选 `api_base/temperature/max_tokens/extra_params` | `id`、`provider`、`name`、`model`、`is_default` | `llm.py:86-100`、`app/llm/models.py:42-51`；异常 → 400；`api_key` 立即加密为 `api_key_encrypted` 落盘（`app/llm/config_manager.py:105, 115`） |
-| PUT | `/api/llm/configs/{config_id}` | 更新配置 | `name`、`api_key`、`api_base`、`model`、`temperature`、`max_tokens`、`extra_params`（均可选） | `id`、`name`、`model`、`updated_at` | `llm.py:103-118`；不存在 404；`ValueError` → 400 |
-| DELETE | `/api/llm/configs/{config_id}` | 删除配置 | path `config_id` | `{status:"deleted", config_id}` | `llm.py:121-133`；不存在 404；同时使网关缓存失效 |
-| PUT | `/api/llm/configs/{config_id}/default` | 设为默认 | path `config_id` | `{status:"updated", default_config_id}` | `llm.py:136-148`；不存在 404 |
-| POST | `/api/llm/configs/{config_id}/test` | 测试连通性 | path `config_id` | provider 的 `test_connection()` 结果；provider 创建失败时 `{success:false, error}` | `llm.py:151-165`；配置不存在 404；**错误文案里回显的密钥已脱敏**（`app/llm/security.py`）；渲染层入口在 LLM 配置管理弹窗的「测试连接」按钮 |
-| GET | `/api/llm/providers` | 支持的 provider 元数据 | — | `providers[]`：`id/name/default_base_url/models/default_model` | `llm.py:168-182`、`app/llm/models.py:66-103` |
-| GET | `/api/llm/providers/{provider}/models` | 某 provider 的模型列表 | path `provider` | `provider`、`models` | `llm.py:185-193`；未知 provider → 400 |
+| GET | `/api/llm/providers` | 服务商目录（协议前缀 + 元信息，**不含模型清单**） | — | `providers[]`：`id/name/litellm_prefix/default_base_url/requires_key/supports_model_listing/docs_url/notes/suggested_models` | `app/llm/registry.py` |
+| GET | `/api/llm/state` | 档案 + 模型 + 默认绑定聚合视图（设置页首屏） | — | `profiles[]`、`models[]`、`default_model_id`、`fallback_model_id`、`skipped_entries[]` | `llm.py` GET state；**响应不含任何密钥字段** |
+| GET / POST | `/api/llm/profiles` | 档案列表 / 新建 | POST：`provider`、`name`、`api_key`（明文，落盘前加密）、可选 `api_base/extra_headers/extra_query` | 安全序列化的档案对象（无密钥字段） | `ValueError` → 400（未知服务商 / custom 缺端点 / 名称空） |
+| GET / PUT / DELETE | `/api/llm/profiles/{profile_id}` | 档案详情 / 更新 / 删除 | PUT 可选 `name/api_key/api_base/extra_*`（`api_key` 缺省 = 保持现有密钥） | 同上 | DELETE 级联其下模型；含默认模型 → **409** |
+| POST | `/api/llm/profiles/{profile_id}/verify` | 验证已存档案（鉴权 + 尽力列模型） | — | `{ok, error_code, message, latency_ms, remote_models[]}` | 结果持久化到档案 `status`；验证失败也是 200 |
+| POST | `/api/llm/profiles/{profile_id}/remote-models` | 拉取上游模型列表（OpenAI 兼容 `/models`） | — | `{profile_id, models[]}` | 上游不支持 → **409** `{manual_only: true, reason}` |
+| POST | `/api/llm/verify-draft` | **保存前验证**（草稿密钥仅内存使用后即弃） | `provider`、可选 `api_key/api_base/extra_headers/model_name` | 同验证结构 | `model_name` 提供时验证到模型级 |
+| GET / POST | `/api/llm/models` | 模型列表（可 `?profile_id=` 过滤）/ 批量新建 | POST：`items[]`：`profile_id`、`model`（裸名自动补前缀，含 `/` 原样透传）、可选 `display_name/params/set_default` | `{created[], skipped[{model, reason}]}` | 重复 / 档案缺失的条目进 `skipped`，不整批失败 |
+| PUT / DELETE | `/api/llm/models/{model_id}` | 更新 / 删除模型 | PUT：可选 `display_name/model/params` | 模型对象 / `{status:"deleted"}` | 删除默认模型 → **409**；参数校验失败 → 400 |
+| POST | `/api/llm/models/{model_id}/verify` | 单模型轻量验证（约 5 token 补全，超时 15s） | — | 验证结构 | 结果持久化到模型 `status` |
+| POST | `/api/llm/models/{model_id}/activate` | 设为默认优化模型 | — | `{status:"updated", default_model_id}` | 即时生效，下一次优化请求即用新模型 |
+| PUT | `/api/llm/settings` | 更新默认 / 备用模型绑定 | `default_model_id`、`fallback_model_id`（显式 `null` = 清除备用） | `{status:"updated", ...}` | 不存在的模型 → 404 |
 
-`LLMProvider` 枚举：`deepseek`、`claude`、`openai`、`doubao`、`qwen`、`custom`（`app/llm/models.py:11-18`）。
+`error_code` 分级（所有验证端点）：`ok / auth_failed / model_not_found / quota_exceeded / timeout / network_error / provider_error / unsupported_provider`；
+`message` 一律经 `app/llm/security.py` 脱敏。模型串规则：`<litellm前缀>/<模型名>`（如 `deepseek/deepseek-flash`），
+模型名由用户拉取或手输，**原样透传**，服务商发布新模型无需改代码。
 
 ---
 

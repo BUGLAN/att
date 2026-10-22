@@ -83,7 +83,6 @@ async def build_health_payload(
         "runtime_environment": get_runtime_environment(),
         "asr_provider": asr_provider.provider_type if asr_provider else configured_provider,
         "asr_model": asr_provider.model_name if asr_provider else configured_model,
-        "deepseek_configured": bool(app_settings.deepseek_api_key),
         "ws_clients": ws_manager.client_count,
         "qwen_streaming_backend": streaming_backend,
         "qwen_streaming_available": streaming_available,

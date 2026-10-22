@@ -134,23 +134,6 @@ async def transcribe_audio_background(
                     "timestamp": datetime.now().isoformat()
                 })
 
-                if optimize_result.fallback_reason:
-                    # 用户配置的 LLM 失败、回退到 .env 内置 key：优化成功但配置没生效，
-                    # 自动优化是异步路径，只能靠 WebSocket 让界面提示用户
-                    logger.warning(
-                        "Auto-optimization degraded to builtin key",
-                        record_id=record_id,
-                        reason=optimize_result.fallback_reason
-                    )
-                    await ws_manager.broadcast({
-                        "type": "optimization_degraded",
-                        "data": {
-                            "record_id": record_id,
-                            "reason": optimize_result.fallback_reason
-                        },
-                        "timestamp": datetime.now().isoformat()
-                    })
-
                 logger.info("Auto-optimization complete", record_id=record_id)
             except Exception as e:
                 # 与 /records/{id}/optimize 一致：失败必须把状态复位，

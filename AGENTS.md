@@ -19,8 +19,8 @@ npm run electron:dev:existing-backend # 复用已启动的后端
 npm run build                        # 渲染进程构建
 node scripts/package-electron.js --win   # 打包（见 §5 已知失败）
 
-uv run python -m pytest tests -q     # 后端测试（268 个用例）
-node scripts/run-node-tests.mjs      # 前端纯逻辑测试（16 个文件）
+uv run python -m pytest tests -q     # 后端测试（350+ 用例）
+node scripts/run-node-tests.mjs      # 前端纯逻辑测试（20 个文件）
 npm test                             # 上面两条
 ```
 
@@ -40,7 +40,7 @@ app/          FastAPI：
   services/      编排（settings / records / transcription / model_service）
   repositories/  JSON 持久化（原子写、单写者锁、索引、路径安全）
   stt/           ASR provider（base=批量、streaming_base=流式、factory=装配）
-  llm/           LLM 配置、网关、优化器、多 provider
+  llm/           LLM v2：LiteLLM 网关、服务商注册表、档案+模型存储、优化器
   records/ clipboard/ prompts/   业务域
   config.py      Settings(环境变量) + UserSettings(data/settings.json)
 ```
@@ -62,7 +62,7 @@ app/          FastAPI：
    写同一 `data/` 会被拒绝启动（这是有意设计，不要改成"容错继续跑"）。
 4. **密钥不得落明文**：`data/settings.json` 里豆包 Token 存
    `doubao_asr_api_key_encrypted`（Fernet，密钥在 `data/.encryption_key`），
-   `data/llm_configs.json` 存 `api_key_encrypted`。
+   `data/llm_v2.json`（LLM v2）存 `api_key_encrypted`（供应商档案级，模型条目不存密钥）。
    `GET /api/settings` **只返回** `doubao_asr_api_key_set: bool`；
    日志与异常文案里不得出现密钥。
 5. **测试不得依赖本机环境**：`tests/conftest.py` 有 autouse fixture 把
@@ -115,8 +115,8 @@ app/          FastAPI：
    全局 WS 有**固定 3s 重连**（`src/composables/useWebSocket.js` 的 `scheduleGlobalReconnect`，
    由 `onclose` 触发，另有 30s 心跳），但无退避、无重试上限、`onerror` 不触发，
    且收尾只由 WS 事件驱动、没有超时降级。
-3. LLM provider（`app/llm/providers/*.py`）构造客户端时没传 `timeout`，SDK 默认 600s →
-   **优化请求最长挂 10 分钟**，界面一直转圈，记录停在 `optimizing`。
+3. ~~LLM provider 没传 `timeout`~~（**2026-10-22 已修复**：LLM v2 重写后 provider 文件已删除，
+   调用统一走 `app/llm/gateway.py`，每次请求强制注入超时/重试；配置加载也改逐条容错）。
 
 > 2026-10 减法已解决的旧缺陷（统一浮层无入口、`/api/prompts` 僵尸写接口、死代码、
 > 零引用组件）见 `docs/已知问题.md` 的标注与「已修复」表。
@@ -140,4 +140,4 @@ app/          FastAPI：
 
 `README.md`（门面与快速开始）、`docs/使用说明.md`、`docs/架构说明.md`、
 `docs/配置说明.md`、`docs/API.md`、`docs/ASR接入.md`、`docs/开发与运维.md`、
-`docs/已知问题.md`。
+`docs/已知问题.md`、`docs/LLM配置模块重设计.md`（LLM v2 设计与原型）、`docs/文件转写-多引擎与LLM校对-设计.md`（文件转写多引擎与 LLM 校对设计）。

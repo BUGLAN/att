@@ -34,14 +34,15 @@ class _FailingOptimizer:
 
 
 class _SuccessOptimizer:
-    """模拟优化成功的优化器。"""
+    """模拟优化成功的优化器（v2：结果带真实 token 用量，无 fallback 通道）。"""
 
     async def optimize(self, text, style="default", **kwargs):
-        # fallback_reason 必须与真实 OptimizationResult 对齐：路由靠它判断是否降级
         return SimpleNamespace(
             optimized_text="优化后的文本",
             processing_time=0.01,
-            fallback_reason=None
+            tokens_used=42,
+            model_string="deepseek/deepseek-flash",
+            truncated=False
         )
 
 

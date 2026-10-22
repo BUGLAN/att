@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ATT · LLM 服务重设计 — 交互原型</title>
+<style>
+/* ========== 设计令牌：与 src/styles/tokens.css 对齐 ========== */
+:root{
+  color-scheme:dark;
+  --gray-950:#0a0a0b;--gray-900:#111113;--gray-850:#18181b;--gray-800:#1f1f23;
+  --gray-700:#2d2d32;--gray-600:#3f3f46;--gray-500:#52525b;--gray-400:#71717a;
+  --bg-base:var(--gray-950);--bg-surface:var(--gray-900);--bg-card:var(--gray-850);
+  --bg-raise:var(--gray-800);--bg-hover:var(--gray-700);
+  --line:var(--gray-800);--line-strong:var(--gray-700);
+  --text-1:#f4f4f5;--text-2:#9d9da6;--text-3:#8b8b96;
+  --accent:#c9a227;--accent-hi:#dcb63a;--accent-ink:#1a1400;
+  --accent-dim:rgba(201,162,39,.15);--accent-line:rgba(201,162,39,.30);
+  --accent-line-strong:rgba(201,162,39,.42);--accent-glow:rgba(201,162,39,.40);
+  --ok:#4ade80;--warn:#f5a524;--err:#f87171;--info:#60a5fa;
+  --ok-soft:rgba(74,222,128,.12);--warn-soft:rgba(245,165,36,.12);
+  --err-soft:rgba(248,113,113,.12);--info-soft:rgba(96,165,250,.12);
+  --ok-line:rgba(74,222,128,.28);--warn-line:rgba(245,165,36,.28);
+  --err-line:rgba(248,113,113,.28);--info-line:rgba(96,165,250,.28);
+  --scrim:rgba(0,0,0,.78);
+  --s-1:4px;--s-2:8px;--s-3:12px;--s-4:16px;--s-6:24px;--s-8:32px;
+  --r-sm:6px;--r-md:10px;--r-lg:16px;--r-xl:24px;--r-full:9999px;
+  --fs-cap:12px;--fs-sm:13px;--fs-base:14px;--fs-md:15px;--fs-lg:18px;--fs-xl:24px;
+  --e-2:0 4px 12px rgba(0,0,0,.5);--e-3:0 8px 32px rgba(0,0,0,.6);
+  --grad-card:linear-gradient(180deg,var(--gray-850),var(--gray-900));
+  --grad-raise:linear-gradient(180deg,var(--gray-800),var(--gray-850));
+  --focus-ring:0 0 0 2px var(--accent);
+  --t-base:250ms;--ease:cubic-bezier(.4,0,.2,1);
+  --font-sans:'Segoe UI','PingFang SC','Microsoft YaHei',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif;
+  --font-mono:Consolas,'Cascadia Mono',Menlo,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#050506;font-family:var(--font-sans);color:var(--text-1);
+  display:flex;flex-direction:column;align-items:center;padding:24px 16px 48px;gap:16px}
+
+/* ========== 原型导航（非产品 UI） ========== */
+.proto-nav{position:sticky;top:12px;z-index:99;display:flex;gap:6px;align-items:center;
+  background:var(--bg-card);border:1px solid var(--line-strong);border-radius:var(--r-full);
+  padding:6px 10px;box-shadow:var(--e-3)}
+.proto-nav .proto-title{font-size:12px;color:var(--text-3);padding:0 8px;letter-spacing:.5px}
+.proto-nav button{background:transparent;border:1px solid transparent;color:var(--text-2);
+  font:inherit;font-size:13px;padding:6px 14px;border-radius:var(--r-full);cursor:pointer;transition:all var(--t-base) var(--ease)}
+.proto-nav button:hover{color:var(--text-1);background:var(--bg-hover)}
+.proto-nav button.active{background:var(--accent-dim);color:var(--accent-hi);border-color:var(--accent-line)}
+.proto-note{font-size:12px;color:var(--text-3);max-width:1180px;line-height:1.7}
+.proto-note code{font-family:var(--font-mono);color:var(--accent-hi);font-size:11px}
+
+/* ========== 应用窗口骨架 ========== */
+.window{width:1180px;height:790px;background:var(--bg-base);border:1px solid var(--line-strong);
+  border-radius:var(--r-lg);overflow:hidden;display:flex;flex-direction:column;box-shadow:var(--e-3)}
+.titlebar{height:36px;background:var(--bg-surface);border-bottom:1px solid var(--line);
+  display:flex;align-items:center;padding:0 14px;gap:10px;flex:none}
+.titlebar .dot{width:10px;height:10px;border-radius:50%}
+.titlebar .app{font-size:12px;color:var(--text-3);margin-left:6px}
+.titlebar .win-btns{margin-left:auto;display:flex;gap:14px;color:var(--text-3);font-size:11px}
+.shell{flex:1;display:flex;min-height:0}
+.sidebar{width:196px;background:var(--bg-surface);border-right:1px solid var(--line);
+  padding:14px 10px;display:flex;flex-direction:column;gap:2px;flex:none}
+.side-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--r-md);
+  color:var(--text-2);font-size:14px;cursor:default}
+.side-item .ico{width:16px;height:16px;border-radius:4px;background:var(--bg-hover);flex:none}
+.side-item.active{background:var(--accent-dim);color:var(--accent-hi)}
+.side-item.active .ico{background:var(--accent)}
+.side-sep{height:1px;background:var(--line);margin:10px 6px}
+.side-item .badge-side{margin-left:auto;font-size:11px;color:var(--err);background:var(--err-soft);
+  border:1px solid var(--err-line);border-radius:var(--r-full);padding:1px 8px}
+.main{flex:1;overflow:auto;padding:22px 30px 40px}
+.page-head h1{font-size:var(--fs-xl);font-weight:600}
+.page-head p{font-size:13px;color:var(--text-2);margin-top:4px}
+
+/* ========== 通用控件 ========== */
+.group{margin-top:22px;border:1px solid var(--line);border-radius:var(--r-lg);
+  background:var(--grad-card);padding:18px 20px}
+.group-head{display:flex;align-items:center;gap:12px}
+.group-head h3{font-size:var(--fs-md);font-weight:600}
+.group-head .desc{font-size:12px;color:var(--text-3)}
+.group-head .spacer{flex:1}
+.btn{display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:13px;
+  padding:7px 14px;border-radius:var(--r-md);cursor:pointer;border:1px solid var(--line-strong);
+  background:var(--bg-raise);color:var(--text-1);transition:all var(--t-base) var(--ease)}
+.btn:hover{background:var(--bg-hover)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.primary:hover{background:var(--accent-hi)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--text-2)}
+.btn.ghost:hover{color:var(--text-1);background:var(--bg-hover)}
+.btn.sm{padding:4px 10px;font-size:12px;border-radius:var(--r-sm)}
+.btn.danger-ghost{background:transparent;border-color:transparent;color:var(--err)}
+.btn.danger-ghost:hover{background:var(--err-soft)}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;border-radius:var(--r-full);padding:2px 9px}
+.badge.ok{color:var(--ok);background:var(--ok-soft);border:1px solid var(--ok-line)}
+.badge.err{color:var(--err);background:var(--err-soft);border:1px solid var(--err-line)}
+.badge.warn{color:var(--warn);background:var(--warn-soft);border:1px solid var(--warn-line)}
+.badge.info{color:var(--info);background:var(--info-soft);border:1px solid var(--info-line)}
+.badge.gold{color:var(--accent-hi);background:var(--accent-dim);border:1px solid var(--accent-line)}
+.badge.neutral{color:var(--text-2);background:var(--bg-raise);border:1px solid var(--line-strong)}
+.dot-live{width:6px;height:6px;border-radius:50%;background:currentColor}
+.mono{font-family:var(--font-mono);font-size:12px}
+.hint{font-size:12px;color:var(--text-3);line-height:1.7}
+.label{display:block;font-size:12px;color:var(--text-2);margin-bottom:6px}
+.input,select.input{width:100%;background:var(--bg-raise);border:1px solid var(--line-strong);
+  border-radius:var(--r-md);color:var(--text-1);font:inherit;font-size:13px;padding:8px 12px;outline:none}
+.input:focus{border-color:var(--accent-line-strong);box-shadow:var(--focus-ring)}
+.input::placeholder{color:var(--gray-500)}
+.field{margin-bottom:16px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.search-wrap{position:relative}
+.search-wrap .input{padding-left:34px}
+.search-wrap .mag{position:absolute;left:11px;top:8px;color:var(--text-3);font-size:13px}
+
+/* ========== 画面1：设置页 · LLM 服务 ========== */
+.provider-card{margin-top:14px;border:1px solid var(--line-strong);border-radius:var(--r-md);
+  background:var(--bg-surface);padding:13px 16px;display:flex;align-items:center;gap:14px}
+.provider-card:hover{border-color:var(--line-strong);background:var(--bg-raise)}
+.plogo{width:34px;height:34px;border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;
+  font-weight:700;font-size:15px;color:#fff;flex:none}
+.p-name{font-size:14px;font-weight:600}
+.p-meta{font-size:12px;color:var(--text-3);margin-top:2px}
+.model-table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}
+.model-table th{font-size:11px;font-weight:500;color:var(--text-3);text-align:left;
+  padding:8px 10px;border-bottom:1px solid var(--line-strong);letter-spacing:.4px}
+.model-table td{padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+.model-table tr:last-child td{border-bottom:none}
+.model-table tr:hover td{background:var(--white-tint,rgba(255,255,255,.03))}
+.model-name{display:flex;align-items:center;gap:8px;font-weight:500}
+.err-text{font-size:12px;color:var(--err);margin-top:3px;max-width:420px;line-height:1.6}
+.empty-tip{margin-top:14px;border:1px dashed var(--line-strong);border-radius:var(--r-md);
+  padding:18px;text-align:center;font-size:13px;color:var(--text-3)}
+
+/* ========== 弹窗 ========== */
+.scr{display:none}
+.scr.active{display:block}
+.overlay{position:absolute;inset:0;background:var(--scrim);display:flex;align-items:center;justify-content:center;z-index:50}
+.modal{width:660px;max-height:640px;background:var(--bg-card);border:1px solid var(--line-strong);
+  border-radius:var(--r-lg);box-shadow:var(--e-3);display:flex;flex-direction:column;overflow:hidden}
+.modal.narrow{width:560px}
+.modal-head{padding:16px 20px 12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line)}
+.modal-head h2{font-size:16px;font-weight:600}
+.modal-head .steps{margin-left:auto;display:flex;gap:6px;align-items:center;font-size:11px;color:var(--text-3)}
+.step-dot{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+  background:var(--bg-raise);border:1px solid var(--line-strong);font-size:10px}
+.step-dot.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:700}
+.modal-body{padding:18px 20px;overflow:auto}
+.modal-foot{padding:13px 20px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;background:rgba(0,0,0,.16)}
+.modal-foot .left{margin-right:auto}
+
+/* 供应商目录 */
+.pgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+.pcell{border:1px solid var(--line-strong);border-radius:var(--r-md);background:var(--bg-surface);
+  padding:12px;display:flex;flex-direction:column;gap:8px;cursor:pointer;transition:all var(--t-base) var(--ease)}
+.pcell:hover{border-color:var(--accent-line-strong);background:var(--bg-raise)}
+.pcell.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);background:var(--accent-dim)}
+.pcell .top{display:flex;align-items:center;gap:8px}
+.pcell .nm{font-size:13px;font-weight:600}
+.pcell .tag{font-size:11px;color:var(--text-3)}
+.pcell .keymark{margin-left:auto;font-size:10px;color:var(--text-3);border:1px solid var(--line-strong);border-radius:var(--r-full);padding:0 6px}
+
+/* 模型选择列表 */
+.pick-list{border:1px solid var(--line-strong);border-radius:var(--r-md);overflow:hidden;margin-top:8px}
+.pick-item{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--bg-surface)}
+.pick-item:last-child{border-bottom:none}
+.pick-item:hover{background:var(--bg-raise)}
+.cb{width:15px;height:15px;border-radius:4px;border:1px solid var(--line-strong);flex:none;display:inline-flex;align-items:center;justify-content:center}
+.cb.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-size:10px;font-weight:800}
+.pick-name{font-size:13px;font-weight:500}
+.pick-sub{font-size:11px;color:var(--text-3);margin-top:1px}
+.pick-right{margin-left:auto;display:flex;gap:6px;align-items:center}
+
+/* 验证结果条 */
+.verify{margin-top:14px;border-radius:var(--r-md);padding:11px 14px;font-size:12px;line-height:1.7;display:flex;gap:10px;align-items:flex-start}
+.verify.ok{background:var(--ok-soft);border:1px solid var(--ok-line);color:var(--ok)}
+.verify.err{background:var(--err-soft);border:1px solid var(--err-line);color:var(--err)}
+.verify.info{background:var(--info-soft);border:1px solid var(--info-line);color:var(--info)}
+.verify b{font-weight:600}
+.verify .lat{margin-left:auto;font-family:var(--font-mono);white-space:nowrap}
+
+/* 折叠的高级区 */
+.collapse{margin-top:4px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--bg-surface)}
+.collapse>summary{cursor:pointer;padding:9px 14px;font-size:12px;color:var(--text-2);list-style:none}
+.collapse>summary::before{content:"▸ ";color:var(--text-3)}
+.collapse[open]>summary::before{content:"▾ "}
+.collapse .inner{padding:4px 14px 14px}
+
+/* 开关 */
+.switch{width:34px;height:19px;border-radius:var(--r-full);background:var(--bg-hover);position:relative;flex:none}
+.switch::after{content:"";position:absolute;width:13px;height:13px;border-radius:50%;background:var(--text-2);top:3px;left:3px}
+.switch.on{background:var(--accent)}
+.switch.on::after{left:18px;background:var(--accent-ink)}
+
+/* 设置页普通行 */
+.setting-item{display:flex;align-items:center;gap:16px;padding:13px 0;border-bottom:1px solid var(--line)}
+.setting-item:last-child{border-bottom:none}
+.setting-item .info{flex:1}
+.setting-item .lb{font-size:14px}
+.setting-item .ds{font-size:12px;color:var(--text-3);margin-top:3px}
+.inline-ctl{display:flex;gap:10px;align-items:center}
+.select-inline{background:var(--bg-raise);border:1px solid var(--line-strong);border-radius:var(--r-md);
+  color:var(--text-1);font:inherit;font-size:13px;padding:7px 10px;min-width:230px}
+.toast{position:absolute;right:22px;bottom:22px;background:var(--bg-card);border:1px solid var(--ok-line);
+  border-radius:var(--r-md);padding:10px 16px;font-size:13px;color:var(--ok);box-shadow:var(--e-2);z-index:60}
+.window-wrap{position:relative}
+</style>
+</head>
+<body>
+
+<div class="proto-nav" id="nav">
+  <span class="proto-title">原型 · LLM 服务重设计</span>
+  <button data-s="s1" class="active">① 设置页 · LLM 服务</button>
+  <button data-s="s2">② 添加供应商 · 目录</button>
+  <button data-s="s3">③ 供应商档案 · 保存前验证</button>
+  <button data-s="s4">④ 添加模型 · 拉取列表</button>
+  <button data-s="s5">⑤ 模型验证失败态</button>
+</div>
+<p class="proto-note">交互原型：Audio to Text · LLM 配置模块重设计（LiteLLM 方案）。界面令牌与 <code>src/styles/tokens.css</code> 对齐；
+数据为演示样例。点击上方按钮切换画面，产品细节见 <code>docs/LLM配置模块重设计.md</code>。</p>
+
+<!-- ================================================= -->
+<!-- 画面1：设置页 · LLM 服务分组                        -->
+<!-- ================================================= -->
+<div class="window-wrap">
+<div class="window scr active" id="s1">
+  <div class="titlebar">
+    <span class="dot" style="background:#f87171"></span><span class="dot" style="background:#f5a524"></span><span class="dot" style="background:#4ade80"></span>
+    <span class="app">Audio to Text</span>
+    <span class="win-btns">— &nbsp;□ &nbsp;✕</span>
+  </div>
+  <div class="shell">
+    <div class="sidebar">
+      <div class="side-item"><span class="ico"></span>录音转写</div>
+      <div class="side-item"><span class="ico"></span>文件转写</div>
+      <div class="side-item"><span class="ico"></span>记录库</div>
+      <div class="side-item"><span class="ico"></span>剪贴板</div>
+      <div class="side-sep"></div>
+      <div class="side-item active"><span class="ico"></span>设置</div>
+    </div>
+    <div class="main">
+      <div class="page-head">
+        <h1>设置</h1>
+        <p>配置你的录音、提示词和 LLM 服务</p>
+      </div>
+
+      <!-- ▼ 重设计后的 LLM 服务分组 -->
+      <div class="group">
+        <div class="group-head">
+          <h3>LLM 服务</h3>
+          <span class="desc">供应商接入由 LiteLLM 统一驱动 · 新模型发布无需更新应用</span>
+          <span class="spacer"></span>
+          <button class="btn sm">管理供应商</button>
+          <button class="btn sm primary">＋ 添加模型</button>
+        </div>
+
+        <!-- 供应商档案 -->
+        <div style="margin-top:12px">
+          <div class="provider-card">
+            <div class="plogo" style="background:#4d6bfe">D</div>
+            <div>
+              <div class="p-name">DeepSeek 官方 <span class="badge gold" style="margin-left:6px">2 个模型</span></div>
+              <div class="p-meta mono">deepseek · api.deepseek.com · 密钥已保存（sk-****7f3a）</div>
+            </div>
+            <span class="spacer" style="flex:1"></span>
+            <span class="badge ok"><span class="dot-live"></span>已验证 · 812ms</span>
+            <button class="btn sm ghost">重新验证</button>
+            <button class="btn sm ghost">编辑</button>
+          </div>
+
+          <div class="provider-card">
+            <div class="plogo" style="background:#10a37f">O</div>
+            <div>
+              <div class="p-name">OpenAI <span class="badge neutral" style="margin-left:6px">1 个模型</span></div>
+              <div class="p-meta mono">openai · 默认端点 · 密钥已保存（sk-****c21e）</div>
+            </div>
+            <span class="spacer" style="flex:1"></span>
+            <span class="badge err"><span class="dot-live"></span>验证失败</span>
+            <button class="btn sm ghost">重新验证</button>
+            <button class="btn sm ghost">编辑</button>
+          </div>
+
+          <div class="provider-card">
+            <div class="plogo" style="background:#6b7280">L</div>
+            <div>
+              <div class="p-name">本地 Ollama <span class="badge neutral" style="margin-left:6px">1 个模型</span></div>
+              <div class="p-meta mono">ollama_chat · http://127.0.0.1:11434 · 无需密钥</div>
+            </div>
+            <span class="spacer" style="flex:1"></span>
+            <span class="badge ok"><span class="dot-live"></span>已验证 · 43ms</span>
+            <button class="btn sm ghost">重新验证</button>
+            <button class="btn sm ghost">编辑</button>
+          </div>
+        </div>
+
+        <!-- 模型列表 -->
+        <table class="model-table">
+          <thead><tr>
+            <th style="width:26%">模型</th><th style="width:30%">LiteLLM 模型串</th>
+            <th>参数</th><th style="width:17%">状态</th><th style="width:19%"></th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td><div class="model-name">DeepSeek Flash <span class="badge gold">默认优化</span></div></td>
+              <td class="mono" style="color:var(--text-2)">deepseek/deepseek-flash</td>
+              <td class="hint">temp 0.3 · max 4,096 · 超时 60s</td>
+              <td><span class="badge ok"><span class="dot-live"></span>可用 · 812ms</span></td>
+              <td style="text-align:right;white-space:nowrap">
+                <button class="btn sm ghost">测试</button><button class="btn sm ghost">编辑</button><button class="btn sm danger-ghost">删除</button>
+              </td>
+            </tr>
+            <tr>
+              <td><div class="model-name">DeepSeek V4 Pro</div></td>
+              <td class="mono" style="color:var(--text-2)">deepseek/deepseek-v4-pro</td>
+              <td class="hint">temp 0.3 · max 8,192 · 超时 90s</td>
+              <td><span class="badge ok"><span class="dot-live"></span>可用 · 1.9s</span></td>
+              <td style="text-align:right;white-space:nowrap">
+                <button class="btn sm ghost">测试</button><button class="btn sm ghost">编辑</button><button class="btn sm danger-ghost">删除</button>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div class="model-name">gpt-4o（旧）</div>
+                <div class="err-text">验证失败：401 · 上游密钥无效或已过期（错误已脱敏）。重新填写 API Key 后重试。</div>
+              </td>
+              <td class="mono" style="color:var(--text-2)">openai/gpt-4o</td>
+              <td class="hint">temp 0.7 · max 4,096 · 超时 60s</td>
+              <td><span class="badge err"><span class="dot-live"></span>失败 · 401</span></td>
+              <td style="text-align:right;white-space:nowrap">
+                <button class="btn sm ghost">测试</button><button class="btn sm ghost">修复</button><button class="btn sm danger-ghost">删除</button>
+              </td>
+            </tr>
+            <tr>
+              <td><div class="model-name">qwen3:14b（本地）</div></td>
+              <td class="mono" style="color:var(--text-2)">ollama_chat/qwen3:14b</td>
+              <td class="hint">temp 0.3 · max 4,096 · 超时 120s</td>
+              <td><span class="badge ok"><span class="dot-live"></span>可用 · 43ms</span></td>
+              <td style="text-align:right;white-space:nowrap">
+                <button class="btn sm ghost">测试</button><button class="btn sm ghost">编辑</button><button class="btn sm danger-ghost">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="hint" style="margin-top:12px">
+          默认优化模型：DeepSeek Flash　·　备用模型：<b style="color:var(--text-2)">未设置</b>（默认不自动切换，避免意外费用）
+         　·　<code class="mono" style="color:var(--text-3)">.env</code> 内置 DeepSeek 兜底将于下个版本移除
+        </p>
+      </div>
+
+      <!-- 文本优化分组 -->
+      <div class="group">
+        <div class="group-head"><h3>文本优化</h3></div>
+        <div class="setting-item">
+          <div class="info"><div class="lb">转写后自动优化</div><div class="ds">转写完成后使用默认优化模型自动处理文本。</div></div>
+          <div class="switch on"></div>
+        </div>
+        <div class="setting-item">
+          <div class="info"><div class="lb">默认提示词</div><div class="ds">优化时使用的预设（只读，预设来源于 prompts/*.txt）。</div></div>
+          <div class="inline-ctl"><span class="select-inline">语音转书面语（内置）</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="toast">✓ 已设为默认优化模型</div>
+</div>
+</div>
+
+<!-- ================================================= -->
+<!-- 画面2：添加供应商 · 目录                            -->
+<!-- ================================================= -->
+<div class="window-wrap">
+<div class="window scr" id="s2">
+  <div class="titlebar">
+    <span class="dot" style="background:#f87171"></span><span class="dot" style="background:#f5a524"></span><span class="dot" style="background:#4ade80"></span>
+    <span class="app">Audio to Text</span>
+    <span class="win-btns">— &nbsp;□ &nbsp;✕</span>
+  </div>
+  <div class="shell">
+    <div class="overlay">
+      <div class="modal">
+        <div class="modal-head">
+          <h2>添加供应商</h2>
+          <div class="steps"><span class="step-dot on">1</span> 选择 <span style="opacity:.5">—</span> <span class="step-dot">2</span> 凭据 <span style="opacity:.5">—</span> <span class="step-dot">3</span> 模型</div>
+        </div>
+        <div class="modal-body">
+          <p class="hint">接入层基于 <b style="color:var(--text-2)">LiteLLM</b>，支持 100+ 服务商。未列出的 OpenAI 兼容端点（如硅基流动、第三方中转）选择「自定义 OpenAI 兼容」即可，无需等待应用更新。</p>
+          <div class="search-wrap" style="margin-top:14px">
+            <span class="mag">⌕</span>
+            <input class="input" placeholder="搜索供应商，例如 deepseek、ollama、openrouter…" value="deep">
+          </div>
+          <div class="pgrid">
+            <div class="pcell sel">
+              <div class="top"><div class="plogo" style="width:26px;height:26px;font-size:13px;background:#4d6bfe">D</div><span class="nm">DeepSeek</span><span class="keymark">需密钥</span></div>
+              <span class="tag mono">deepseek/…</span>
+            </div>
+            <div class="pcell">
+              <div class="top"><div class="plogo" style="width:26px;height:26px;font-size:13px;background:#10a37f">O</div><span class="nm">OpenAI</span><span class="keymark">需密钥</span></div>
+              <span class="tag mono">openai/…</span>
+            </div>
+            <div class="pcell" style="opacity:.45">
+              <div class="top"><div class="plogo" style="width:26px;height:26px;font-size:13px;background:#d97757">A</div><span class="nm">Anthropic</span><span class="keymark">需密钥</span></div>
+              <span class="tag mono">anthropic/…</span>
+            </div>
+            <div class="pcell" style="opacity:.45">
+              <div class="top"><div class="plogo" style="width:26px;height:26px;font-size:13px;background:#8e8e93">G</div><span class="nm">通义千问</span><span class="keymark">需密钥</span></div>
+              <span class="tag mono">dashscope/…</span>
+            </div>
+          </div>
+          <p class="hint" style="margin-top:14px">
+            目录还包括：Google Gemini（<span class="mono">gemini/…</span>）、豆包 / 火山方舟（<span class="mono">doubao/…</span>）、Moonshot Kimi、智谱 GLM、Groq、OpenRouter、Mistral、xAI、Ollama / vLLM / LM Studio（本地）…
+            完整列表由后端 <span class="mono">GET /api/llm/providers</span> 提供，随 LiteLLM 版本自动扩充。
+          </p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost left">取消</button>
+          <button class="btn">自定义 OpenAI 兼容…</button>
+          <button class="btn primary">下一步：填写凭据</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ================================================= -->
+<!-- 画面3：供应商档案 · 保存前验证                       -->
+<!-- ================================================= -->
+<div class="window-wrap">
+<div class="window scr" id="s3">
+  <div class="titlebar">
+    <span class="dot" style="background:#f87171"></span><span class="dot" style="background:#f5a524"></span><span class="dot" style="background:#4ade80"></span>
+    <span class="app">Audio to Text</span>
+    <span class="win-btns">— &nbsp;□ &nbsp;✕</span>
+  </div>
+  <div class="shell">
+    <div class="overlay">
+      <div class="modal narrow">
+        <div class="modal-head">
+          <h2><span class="plogo" style="width:22px;height:22px;font-size:12px;background:#4d6bfe;display:inline-flex;vertical-align:-4px;margin-right:8px">D</span>DeepSeek · 供应商档案</h2>
+          <div class="steps"><span class="step-dot">1</span> 选择 <span style="opacity:.5">—</span> <span class="step-dot on">2</span> 凭据 <span style="opacity:.5">—</span> <span class="step-dot">3</span> 模型</div>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label class="label">档案名称</label>
+            <input class="input" value="DeepSeek 官方">
+          </div>
+          <div class="field">
+            <label class="label">API Key</label>
+            <input class="input" type="password" value="sk-xxxxxxxxxxxxxxxxxxxx3a">
+            <p class="hint" style="margin-top:5px">仅保存在本机 <span class="mono">data/</span>（Fernet 加密），不会上传；编辑时留空表示保持现有密钥。</p>
+          </div>
+          <div class="field">
+            <label class="label">API Base <span style="color:var(--text-3)">（可选，留空使用官方默认端点）</span></label>
+            <input class="input" placeholder="https://api.deepseek.com">
+          </div>
+          <details class="collapse">
+            <summary>高级设置（自定义请求头 / 查询参数 / 代理）</summary>
+            <div class="inner">
+              <div class="field" style="margin-top:10px"><label class="label">自定义请求头（JSON）</label><input class="input mono" placeholder='{"X-Title": "AudioToText"}'></div>
+              <div class="field"><label class="label">组织 / 项目 ID（如服务商要求）</label><input class="input mono" placeholder="org-…"></div>
+            </div>
+          </details>
+
+          <div class="verify ok">
+            <span>✓</span>
+            <div>
+              <b>验证通过</b> — 密钥有效，列取到 <b>2 个模型</b>（deepseek-flash、deepseek-v4-pro）。<br>
+              该结果未保存任何数据；点击「下一步」后档案才会写入本机。
+            </div>
+            <span class="lat">812ms</span>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost left">取消</button>
+          <button class="btn">重新验证</button>
+          <button class="btn primary">下一步：选择模型</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ================================================= -->
+<!-- 画面4：添加模型 · 拉取列表                           -->
+<!-- ================================================= -->
+<div class="window-wrap">
+<div class="window scr" id="s4">
+  <div class="titlebar">
+    <span class="dot" style="background:#f87171"></span><span class="dot" style="background:#f5a524"></span><span class="dot" style="background:#4ade80"></span>
+    <span class="app">Audio to Text</span>
+    <span class="win-btns">— &nbsp;□ &nbsp;✕</span>
+  </div>
+  <div class="shell">
+    <div class="overlay">
+      <div class="modal">
+        <div class="modal-head">
+          <h2>添加模型 · DeepSeek 官方</h2>
+          <div class="steps"><span class="step-dot">1</span> 选择 <span style="opacity:.5">—</span> <span class="step-dot">2</span> 凭据 <span style="opacity:.5">—</span> <span class="step-dot on">3</span> 模型</div>
+        </div>
+        <div class="modal-body">
+          <p class="hint">下方列表实时拉取自上游（<span class="mono">GET /v1/models</span>）。上游不支持列取时，直接在「手动输入」里填模型名即可——<b style="color:var(--text-2)">服务商发布任何新模型都无需等待应用更新</b>。</p>
+
+          <div class="pick-list">
+            <div class="pick-item">
+              <span class="cb on">✓</span>
+              <div><div class="pick-name">deepseek-flash</div><div class="pick-sub">V4.1-Flash · 1M 上下文 · 支持视觉与思考模式</div></div>
+              <div class="pick-right"><span class="badge info">推荐</span><span class="badge neutral">¥0.02-8 / M</span></div>
+            </div>
+            <div class="pick-item">
+              <span class="cb on">✓</span>
+              <div><div class="pick-name">deepseek-v4-pro</div><div class="pick-sub">V4-Pro · 更强推理 · 输出上限 384K</div></div>
+              <div class="pick-right"><span class="badge neutral">¥0.15-27 / M</span></div>
+            </div>
+            <div class="pick-item" style="opacity:.55">
+              <span class="cb"></span>
+              <div><div class="pick-name">deepseek-v4-flash <span class="badge warn" style="margin-left:4px">已下线 · 别名可用</span></div><div class="pick-sub">请求将由 V4.1-Flash-1017 服务</div></div>
+              <div class="pick-right"></div>
+            </div>
+          </div>
+
+          <div class="field" style="margin-top:16px">
+            <label class="label">手动输入模型名（可选，支持逗号分隔多个）</label>
+            <input class="input mono" placeholder="例如 deepseek-v4.2-preview（上游列表尚未收录时直接填这里）">
+          </div>
+
+          <details class="collapse">
+            <summary>模型参数（可稍后在编辑里修改）</summary>
+            <div class="inner">
+              <div class="row2" style="margin-top:10px">
+                <div class="field"><label class="label">Temperature</label><input class="input" value="0.3"></div>
+                <div class="field"><label class="label">Max Tokens</label><input class="input" value="4096"></div>
+                <div class="field"><label class="label">请求超时（秒）</label><input class="input" value="60"></div>
+                <div class="field"><label class="label">失败重试次数</label><input class="input" value="2"></div>
+              </div>
+              <p class="hint">超时与重试由 LiteLLM 统一注入到每次请求，杜绝「网络黑洞挂 10 分钟」（对应已知问题 #4）。</p>
+            </div>
+          </details>
+
+          <div class="verify info">
+            <span>ⓘ</span>
+            <div>保存后将对勾选的每个模型做一次轻量连通性验证（约 5 token 的补全请求），结果与延迟显示在设置页。</div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost left">上一步</button>
+          <button class="btn">保存并设为默认优化模型</button>
+          <button class="btn primary">保存 2 个模型</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ================================================= -->
+<!-- 画面5：模型验证失败态                               -->
+<!-- ================================================= -->
+<div class="window-wrap">
+<div class="window scr" id="s5">
+  <div class="titlebar">
+    <span class="dot" style="background:#f87171"></span><span class="dot" style="background:#f5a524"></span><span class="dot" style="background:#4ade80"></span>
+    <span class="app">Audio to Text</span>
+    <span class="win-btns">— &nbsp;□ &nbsp;✕</span>
+  </div>
+  <div class="shell">
+    <div class="overlay">
+      <div class="modal narrow">
+        <div class="modal-head"><h2>验证失败 · gpt-4o</h2></div>
+        <div class="modal-body">
+          <div class="verify err">
+            <span>✕</span>
+            <div>
+              <b>鉴权失败（401）</b> — 上游返回：Authentication Fails, Your api key: *** is invalid<br>
+              建议检查：<b>① 密钥是否复制完整</b>　② 密钥是否被撤销/过期　③ 账户是否欠费
+            </div>
+            <span class="lat">327ms</span>
+          </div>
+          <p class="hint" style="margin-top:12px">
+            错误按类型分级展示（<span class="mono">auth_failed / network_error / timeout / model_not_found / quota_exceeded</span>），
+            文案里不出现密钥明文（统一经 <span class="mono">redact_secrets</span> 脱敏）。修正后点「重新验证」即时生效，无需重启应用。
+          </p>
+          <div class="field" style="margin-top:16px">
+            <label class="label">重新填写 API Key</label>
+            <input class="input" type="password" placeholder="sk-…">
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost left">关闭</button>
+          <button class="btn primary">重新验证</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+// 原型画面切换（支持 #s1..#s5 直达，便于自动化截图）
+const nav = document.getElementById('nav');
+function showScreen(id) {
+  const target = document.getElementById(id);
+  if (!target) return false;
+  document.querySelectorAll('.scr').forEach(s => s.classList.remove('active'));
+  target.classList.add('active');
+  nav.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.s === id));
+  window.scrollTo({ top: 0 });
+  return true;
+}
+nav.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-s]');
+  if (!btn) return;
+  showScreen(btn.dataset.s);
+});
+showScreen((location.hash || '#s1').slice(1));
+// 供应商目录点选
+document.querySelectorAll('.pcell').forEach(c => c.addEventListener('click', () => {
+  document.querySelectorAll('.pcell').forEach(x => x.classList.remove('sel'));
+  c.classList.add('sel');
+}));
+// 勾选框
+document.querySelectorAll('.cb').forEach(cb => cb.addEventListener('click', () => {
+  cb.classList.toggle('on');
+  cb.textContent = cb.classList.contains('on') ? '✓' : '';
+}));
+// 开关
+document.querySelectorAll('.switch').forEach(s => s.addEventListener('click', () => s.classList.toggle('on')));
+</script>
+</body>
+</html>

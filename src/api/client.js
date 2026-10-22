@@ -114,16 +114,22 @@ async function request(method, endpoint, options = {}) {
   }
 
   if (!response.ok) {
+    let errorData = null
     let errorMessage
 
     try {
-      errorMessage = extractErrorMessage(await response.json(), response)
+      errorData = await response.json()
+      errorMessage = extractErrorMessage(errorData, response)
     } catch (error) {
       // 解析失败时回退到状态码文案
       errorMessage = `HTTP ${response.status}: ${response.statusText}`
     }
 
-    throw new Error(errorMessage)
+    const error = new Error(errorMessage)
+    // 保留原始状态码与 detail（409 冲突 / structured detail 的调用方需要自行分支）
+    error.status = response.status
+    error.detail = errorData?.detail
+    throw error
   }
 
   return response.json()
@@ -259,16 +265,22 @@ export const api = {
   }),
   stopStreamingService: () => request('POST', '/model-service/stop'),
 
-  getLLMConfigs: () => request('GET', '/llm/configs'),
-  saveLLMConfig: (config) => (
-    config.id
-      ? request('PUT', `/llm/configs/${config.id}`, { body: config })
-      : request('POST', '/llm/configs', { body: config })
-  ),
-  deleteLLMConfig: (id) => request('DELETE', `/llm/configs/${id}`),
-  testLLMConfig: (id) => request('POST', `/llm/configs/${id}/test`, { timeout: SLOW_TIMEOUT_MS }),
-  setDefaultLLMConfig: (id) => request('PUT', `/llm/configs/${id}/default`),
+  // ===== LLM v2（供应商档案 + 模型条目，见 docs/LLM配置模块重设计.md §6）=====
+  getLLMState: () => request('GET', '/llm/state'),
   getLLMProviders: () => request('GET', '/llm/providers'),
+  createLLMProfile: (payload) => request('POST', '/llm/profiles', { body: payload }),
+  updateLLMProfile: (id, payload) => request('PUT', `/llm/profiles/${id}`, { body: payload }),
+  deleteLLMProfile: (id) => request('DELETE', `/llm/profiles/${id}`),
+  verifyLLMProfile: (id) => request('POST', `/llm/profiles/${id}/verify`, { timeout: SLOW_TIMEOUT_MS }),
+  getLLMRemoteModels: (id) => request('POST', `/llm/profiles/${id}/remote-models`, { timeout: SLOW_TIMEOUT_MS }),
+  // 保存前验证：草稿密钥只在后端内存中用一次，不落盘
+  verifyLLMDraft: (payload) => request('POST', '/llm/verify-draft', { body: payload, timeout: SLOW_TIMEOUT_MS }),
+  createLLMModels: (items) => request('POST', '/llm/models', { body: { items } }),
+  updateLLMModel: (id, payload) => request('PUT', `/llm/models/${id}`, { body: payload }),
+  deleteLLMModel: (id) => request('DELETE', `/llm/models/${id}`),
+  verifyLLMModel: (id) => request('POST', `/llm/models/${id}/verify`, { timeout: SLOW_TIMEOUT_MS }),
+  activateLLMModel: (id) => request('POST', `/llm/models/${id}/activate`),
+  updateLLMSettings: (payload) => request('PUT', '/llm/settings', { body: payload }),
 
   // 预设是只读的（唯一真相源是 prompts/*.txt）：只保留列出与设默认两个接口
   getPresets: () => request('GET', '/prompts'),

@@ -375,22 +375,13 @@ async def optimize_record(
     await state.record_manager.set_error_message(record_id, "")
     _invalidate_index(state, record_id)
 
-    if result.fallback_reason:
-        # 用户配置的 LLM 调用失败后回退到 .env 内置 key：优化本身成功了，
-        # 但「配置没生效」必须让用户知道，否则设置页里的 key 配错会被静默掩盖。
-        # 手动优化走同步响应（fallback_reason 字段），不额外广播，避免前端重复提示。
-        logger.warning(
-            "文本优化已降级：回退到内置 key 完成",
-            record_id=record_id,
-            reason=result.fallback_reason
-        )
-
     return {
         "record_id": record_id,
         "original_text": record.raw_text,
         "optimized_text": result.optimized_text,
         "processing_time": result.processing_time,
-        "fallback_reason": result.fallback_reason
+        "tokens_used": result.tokens_used,
+        "truncated": result.truncated
     }
 
 

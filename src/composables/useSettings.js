@@ -74,78 +74,92 @@ export function usePresets() {
   }
 }
 
-export function useLLMConfig() {
+/**
+ * LLM v2 设置（供应商档案 + 模型条目）。
+ * 状态与动作都在 settingsStore；这里只补 toast 反馈这层交互语义。
+ */
+export function useLLMService() {
   const settingsStore = useSettingsStore()
   const appStore = useAppStore()
 
-  const llmConfigs = computed(() => settingsStore.llmConfigs)
-  const llmProviders = computed(() => settingsStore.llmProviders)
-  const defaultConfig = computed(() => settingsStore.defaultLLMConfig)
-  const defaultConfigId = computed(() => settingsStore.defaultLLMConfigId)
+  const profiles = computed(() => settingsStore.llmProfiles)
+  const models = computed(() => settingsStore.llmModels)
+  const providers = computed(() => settingsStore.llmProviders)
+  const defaultModel = computed(() => settingsStore.llmDefaultModel)
+  const defaultModelId = computed(() => settingsStore.llmDefaultModelId)
+  const skippedEntries = computed(() => settingsStore.llmSkippedEntries)
 
-  async function loadLLMConfigs() {
-    await settingsStore.loadLLMConfigs()
+  async function loadLLMState() {
+    return settingsStore.loadLLMState()
   }
 
   async function loadLLMProviders() {
-    await settingsStore.loadLLMProviders()
+    return settingsStore.loadLLMProviders()
   }
 
-  async function saveLLMConfig(config) {
-    try {
-      const result = await settingsStore.saveLLMConfig(config)
-      appStore.showToast('配置已保存')
-      return result
-    } catch (error) {
-      appStore.showToast('保存配置失败')
-      throw error
-    }
-  }
-
-  async function deleteLLMConfig(id) {
-    try {
-      await settingsStore.deleteLLMConfig(id)
-      appStore.showToast('配置已删除')
-    } catch (error) {
-      appStore.showToast('删除配置失败')
-      throw error
-    }
-  }
-
-  async function testLLMConfig(id) {
-    try {
-      const result = await settingsStore.testLLMConfig(id)
-      appStore.showToast(result.success ? '连接测试成功' : `连接测试失败: ${result.error || '未知错误'}`)
-      return result
-    } catch (error) {
-      appStore.showToast('连接测试失败')
-      throw error
-    }
-  }
-
-  async function setDefaultLLMConfig(id, options = {}) {
+  async function activateModel(id, options = {}) {
     const { silent = false } = options
     try {
-      await settingsStore.setDefaultLLMConfig(id)
+      await settingsStore.activateLLMModel(id)
       if (!silent) {
-        appStore.showToast('已设为默认 LLM 配置')
+        appStore.showToast('已设为默认优化模型')
       }
     } catch (error) {
-      appStore.showToast('设置默认配置失败')
+      appStore.showToast('设置默认模型失败')
+      throw error
+    }
+  }
+
+  async function verifyModel(id) {
+    try {
+      return await settingsStore.verifyLLMModel(id)
+    } catch (error) {
+      appStore.showToast('验证请求失败')
+      throw error
+    }
+  }
+
+  async function deleteModel(id, options = {}) {
+    const { silent = false } = options
+    try {
+      await settingsStore.deleteLLMModel(id)
+      if (!silent) {
+        appStore.showToast('模型已删除')
+      }
+    } catch (error) {
+      const detail = error?.message || ''
+      appStore.showToast(detail ? `删除失败：${detail}` : '删除失败')
+      throw error
+    }
+  }
+
+  async function deleteProfile(id, options = {}) {
+    const { silent = false } = options
+    try {
+      await settingsStore.deleteLLMProfile(id)
+      if (!silent) {
+        appStore.showToast('供应商档案已删除')
+      }
+    } catch (error) {
+      const detail = error?.message || ''
+      appStore.showToast(detail ? `删除失败：${detail}` : '删除失败')
       throw error
     }
   }
 
   return {
-    llmConfigs,
-    llmProviders,
-    defaultConfig,
-    defaultConfigId,
-    loadLLMConfigs,
+    profiles,
+    models,
+    providers,
+    defaultModel,
+    defaultModelId,
+    skippedEntries,
+    loadLLMState,
     loadLLMProviders,
-    saveLLMConfig,
-    deleteLLMConfig,
-    testLLMConfig,
-    setDefaultLLMConfig
+    activateModel,
+    verifyModel,
+    deleteModel,
+    deleteProfile,
+    store: settingsStore
   }
 }

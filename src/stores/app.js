@@ -87,8 +87,9 @@ export const useAppStore = defineStore('app', () => {
     recordEdit: false,
     preset: false,
     presetEdit: false,
-    llm: false,
-    llmEdit: false
+    llmWizard: false,
+    llmModelEdit: false,
+    llmProviderEdit: false
   })
 
   // Toast 队列：每条消息有独立 tone 与独立计时，最多同时展示 3 条
