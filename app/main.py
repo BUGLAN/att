@@ -2,6 +2,7 @@
 FastAPI Application Entry Point
 Audio-to-Text API with AI-powered optimization
 """
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from app.clipboard.manager import ClipboardManager
 from app.clipboard.routes import init_clipboard_manager
 from app.clipboard.routes import router as clipboard_router
 from app.config import settings
+from app.llm.gateway import warm_up_llm_import
 from app.llm.optimizer import TextOptimizer
 from app.records.manager import RecordManager
 from app.repositories.housekeeping import run_startup_housekeeping
@@ -94,6 +96,12 @@ async def lifespan(app: FastAPI):
         init_processors(audio_processor, asr_provider, optimizer, record_manager)
         init_clipboard_manager(clipboard_manager)
         model_service_manager.configure(asr_provider)
+
+        # LiteLLM 首次 import 约 2.5s（实测 1.106.2）。网关必须懒加载以免拖慢启动，
+        # 但代价会落在「后端起来后的第一次优化」上——用户体感就是官方 key 也要 3 秒。
+        # 这里用后台线程预热 import，不阻塞启动、不发网络请求、不产生费用。
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, warm_up_llm_import)
 
         await maybe_preload_asr_provider(asr_provider)
 

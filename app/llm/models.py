@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # 档案/模型最近一次验证的状态值
 STATUS_UNKNOWN = "unknown"
@@ -32,6 +32,14 @@ class VerifyStatus(BaseModel):
     error: Optional[str] = None           # 已脱敏的失败原因（面向用户展示）
 
 
+# 思考强度取值（空串 = 不干预，交给上游默认值）
+# - none：关闭思考，首字延迟最低。DeepSeek 官方模型默认 effort=high，
+#   在「语音转写后的短文本润色」场景下思考纯属浪费——实测同一请求
+#   1.90s/首字 1596ms → 0.57s/首字 555ms，思考 token 还会吃满 max_tokens
+#   导致「正文 0 字 + finish_reason=length」，触发非流式二次重试（耗时翻倍）。
+REASONING_EFFORTS = ("", "none", "low", "medium", "high")
+
+
 class ModelParams(BaseModel):
     """模型级调用参数。timeout_s / retries 由网关在每次请求强制注入。"""
 
@@ -39,6 +47,17 @@ class ModelParams(BaseModel):
     max_tokens: int = 4096
     timeout_s: int = Field(default=60, ge=5, le=600)
     retries: int = Field(default=2, ge=0, le=5)
+    # 思考强度："" 不干预 / "none" 关闭 / "low"|"medium"|"high" 显式档位。
+    # 由网关按 LiteLLM 的 reasoning_effort 参数下传（DeepSeek 上 none 会被
+    # 映射成 thinking={type:disabled}）。
+    reasoning_effort: str = ""
+
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _normalize_reasoning_effort(cls, value: Any) -> str:
+        """未知取值一律降级为「不干预」，不让一条脏参数让整个模型条目加载失败。"""
+        text = str(value or "").strip().lower()
+        return text if text in REASONING_EFFORTS else ""
 
 
 class ProviderProfile(BaseModel):

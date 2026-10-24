@@ -241,7 +241,10 @@ async def stream_optimization(
 
         # 首条增量前失败：允许回退一次非流式调用。已经产出增量后不回退，
         # 否则用户会先看到半段、再看到整段重复文本。
-        if allow_fallback and not parts and stream_method is not None:
+        # 确定性失败（输出被思考 token 吃光）也不回退：重跑只会再烧一次 token，
+        # 实测把 22s 的失败翻成 41s，用户仍然拿不到结果。
+        can_fallback = allow_fallback and getattr(error, "retryable", True)
+        if can_fallback and not parts and stream_method is not None:
             try:
                 logger.info("流式优化在首条增量前失败，回退非流式调用", record_id=record_id, error=safe_error)
                 fallback_result = await optimizer.optimize(text, preset_id=preset_id)

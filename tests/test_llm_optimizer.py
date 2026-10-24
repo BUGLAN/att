@@ -138,3 +138,42 @@ def test_optimize_uses_named_preset(monkeypatch):
 
     rendered_head = preset.prompt_template.split("{text}")[0][:20]
     assert rendered_head in gateway.kwargs["messages"][0]["content"]
+
+
+def test_optimize_raises_non_retryable_when_thinking_eats_all_tokens(monkeypatch):
+    """非流式路径同样不能把「思考吃满预算」当普通空结果再重跑一次。"""
+    import app.llm.store as store_module
+    import app.llm.gateway as gateway_module
+    from app.llm.gateway import GatewayChatResult
+    from app.llm.models import ModelEntry, ModelParams, ProviderProfile
+    from app.llm.errors import CODE_OUTPUT_TRUNCATED, LLMError
+    from app.llm.optimizer import TextOptimizer
+
+    class _Store:
+        entry = ModelEntry(
+            id="mdl-1", profile_id="prof-1", model="deepseek/deepseek-flash",
+            params=ModelParams(max_tokens=4096, reasoning_effort="none"),
+        )
+        profile = ProviderProfile(id="prof-1", provider="deepseek", name="DeepSeek")
+
+        def resolve_runtime(self, model_id=None):
+            return self.entry, self.profile, "sk-secret-1234"
+
+    class _Gateway:
+        async def chat(self, **kwargs):
+            return GatewayChatResult(
+                text="", model_string="deepseek/deepseek-flash", latency_ms=22520,
+                prompt_tokens=504, completion_tokens=4096, total_tokens=4600,
+                reasoning_tokens=4096, finish_reason="length",
+            )
+
+    monkeypatch.setattr(store_module, "get_llm_store", lambda: _Store())
+    monkeypatch.setattr(gateway_module, "get_llm_gateway", lambda: _Gateway())
+
+    try:
+        asyncio.run(TextOptimizer().optimize("原始文本"))
+    except LLMError as exc:
+        assert exc.code == CODE_OUTPUT_TRUNCATED
+        assert exc.retryable is False
+    else:
+        raise AssertionError("空正文 + length 必须抛不可重试错误")

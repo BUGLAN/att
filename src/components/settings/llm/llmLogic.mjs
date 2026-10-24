@@ -132,6 +132,24 @@ export function formatLatency(latencyMs) {
   return (value / 1000).toFixed(1) + 's'
 }
 
+/**
+ * 思考强度选项（值与后端 app/llm/models.py 的 REASONING_EFFORTS 一一对应）。
+ * 空串必须保留：它表示「不干预」，老配置升级后不能被悄悄改成某个档位。
+ */
+export const REASONING_EFFORT_OPTIONS = [
+  { value: '', label: '跟随模型默认' },
+  { value: 'none', label: '关闭（最快，推荐语音润色）' },
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' }
+]
+
+/** 思考强度的展示文案；空/未知都显示「默认」。 */
+export function reasoningEffortLabel(value) {
+  const found = REASONING_EFFORT_OPTIONS.find((item) => item.value === (value || ''))
+  return found ? found.label : '默认'
+}
+
 /** 模型参数摘要行。 */
 export function describeParams(params) {
   if (!params) {
@@ -139,11 +157,16 @@ export function describeParams(params) {
   }
   const maxTokens = Number(params.max_tokens ?? 0)
   const maxText = maxTokens > 0 ? maxTokens.toLocaleString('en-US') : '-'
-  return [
+  const parts = [
     'temp ' + (params.temperature ?? '-'),
     'max ' + maxText,
     '超时 ' + (params.timeout_s ?? '-') + 's'
-  ].join(' · ')
+  ]
+  // 只在显式设过思考强度时才显示，避免老配置的摘要行突然变长
+  if (params.reasoning_effort) {
+    parts.push('思考 ' + reasoningEffortLabel(params.reasoning_effort))
+  }
+  return parts.join(' · ')
 }
 
 /** 密钥展示文案：有尾号提示时展示掩码，否则按是否必需给提示。 */

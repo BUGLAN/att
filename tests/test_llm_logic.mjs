@@ -19,6 +19,8 @@ import {
   isValidModelName,
   keyDisplay,
   parseManualModelInput,
+  reasoningEffortLabel,
+  REASONING_EFFORT_OPTIONS,
   statusTone,
   STATUS_LABELS
 } from '../src/components/settings/llm/llmLogic.mjs'
@@ -124,4 +126,34 @@ test('keyDisplay：掩码展示与无密钥提示', () => {
 
 test('进程显式退出（run-node-tests 约定）', () => {
   process.exit(0)
+})
+
+// ==================== 思考强度（2026-10-24 性能修复） ====================
+
+test('REASONING_EFFORT_OPTIONS：含「不干预」空串，且与后端取值一致', () => {
+  assert.deepEqual(
+    REASONING_EFFORT_OPTIONS.map((item) => item.value),
+    ['', 'none', 'low', 'medium', 'high']
+  )
+})
+
+test('reasoningEffortLabel：空/未知都显示默认，不抛错', () => {
+  assert.equal(reasoningEffortLabel(''), '默认')
+  assert.equal(reasoningEffortLabel(undefined), '默认')
+  assert.equal(reasoningEffortLabel('bogus'), '默认')
+  assert.match(reasoningEffortLabel('none'), /关闭/)
+})
+
+test('describeParams：未设思考强度时摘要行与旧版一致', () => {
+  assert.equal(
+    describeParams({ temperature: 0.3, max_tokens: 4096, timeout_s: 60, reasoning_effort: '' }),
+    'temp 0.3 · max 4,096 · 超时 60s'
+  )
+})
+
+test('describeParams：设了思考强度时追加到摘要行', () => {
+  assert.match(
+    describeParams({ temperature: 0.3, max_tokens: 4096, timeout_s: 60, reasoning_effort: 'none' }),
+    /思考 关闭/
+  )
 })

@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
-from app.llm.errors import LLMError
+from app.llm.errors import CODE_OUTPUT_TRUNCATED, LLMError
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -186,6 +186,7 @@ class TextOptimizer:
             max_tokens=entry.params.max_tokens,
             timeout_s=entry.params.timeout_s,
             retries=entry.params.retries,
+            reasoning_effort=entry.params.reasoning_effort,
         )
         processing_time = time.perf_counter() - start_time
 
@@ -200,6 +201,14 @@ class TextOptimizer:
             completion_tokens=chat_result.completion_tokens,
             reasoning_tokens=chat_result.reasoning_tokens,
         )
+
+        # 非流式路径的同一个坑：思考 token 吃满预算 → 正文为空 + length。
+        # 必须抛不可重试错误，否则上层会把它当"空结果"再降级重跑一次。
+        if not chat_result.text.strip() and chat_result.truncated:
+            raise LLMError(
+                CODE_OUTPUT_TRUNCATED,
+                f"模型的思考 token 占满了 max_tokens={entry.params.max_tokens}，正文为空",
+            )
 
         if chat_result.truncated:
             logger.warning(
@@ -278,6 +287,7 @@ class TextOptimizer:
             max_tokens=entry.params.max_tokens,
             timeout_s=entry.params.timeout_s,
             retries=entry.params.retries,
+            reasoning_effort=entry.params.reasoning_effort,
         ):
             if chunk.text:
                 if first_token_ms is None:
@@ -298,6 +308,16 @@ class TextOptimizer:
 
         processing_time = time.perf_counter() - start_time
         optimized_text = "".join(parts)
+
+        # 思考型模型把输出预算全花在推理上：finish_reason=length 且正文为空。
+        # 这种失败是确定性的——重跑同一请求只会再烧一次思考 token，必须直接
+        # 报「被截断」而不是走「空结果」的降级重试路径（实测会把 22s 翻成 41s）。
+        if not optimized_text.strip() and finish_reason == "length":
+            raise LLMError(
+                CODE_OUTPUT_TRUNCATED,
+                f"模型的思考 token 占满了 max_tokens={entry.params.max_tokens}，正文为空",
+            )
+
         result = OptimizationResult(
             original_text=text,
             optimized_text=optimized_text,

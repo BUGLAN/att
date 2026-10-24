@@ -21,6 +21,9 @@ CODE_TIMEOUT = "timeout"
 CODE_NETWORK = "network_error"
 CODE_PROVIDER = "provider_error"
 CODE_UNSUPPORTED_PROVIDER = "unsupported_provider"
+# 输出预算被思考 token 吃光：可见正文为空且 finish_reason=length。
+# 这不是「上游不支持流式」，重试同一请求必然同样失败，所以禁止回退重跑。
+CODE_OUTPUT_TRUNCATED = "output_truncated"
 CODE_UNKNOWN = "unknown"
 
 ERROR_CODES = {
@@ -32,8 +35,12 @@ ERROR_CODES = {
     CODE_NETWORK,
     CODE_PROVIDER,
     CODE_UNSUPPORTED_PROVIDER,
+    CODE_OUTPUT_TRUNCATED,
     CODE_UNKNOWN,
 }
+
+# 确定性失败：换传输方式重试也不会成功，调用方不得再跑一遍（否则耗时翻倍）
+NON_RETRYABLE_CODES = {CODE_OUTPUT_TRUNCATED}
 
 # 面向用户的建议文案（P7：失败原因要可执行，而不是一坨异常字符串）
 USER_HINTS: dict[str, str] = {
@@ -44,6 +51,7 @@ USER_HINTS: dict[str, str] = {
     CODE_NETWORK: "网络连接失败，请检查网络与代理设置",
     CODE_PROVIDER: "上游服务故障，请稍后重试",
     CODE_UNSUPPORTED_PROVIDER: "当前接入层版本不支持该服务商前缀，可在档案编辑里改用「自定义 OpenAI 兼容」端点",
+    CODE_OUTPUT_TRUNCATED: "模型的思考 token 占满了 Max Tokens，没有余量输出正文。请在模型参数里把「思考强度」设为「关闭」，或调大 Max Tokens",
     CODE_UNKNOWN: "调用失败，请查看日志获取详情",
 }
 
@@ -56,6 +64,11 @@ class LLMError(Exception):
         self.message = message
         self.user_message = f"{message}。建议：{USER_HINTS[self.code]}" if hint and message else (message or USER_HINTS[self.code])
         super().__init__(self.user_message)
+
+    @property
+    def retryable(self) -> bool:
+        """False 表示换一种传输方式重试也必然失败（如输出被截断）。"""
+        return self.code not in NON_RETRYABLE_CODES
 
 
 # 异常类名 → 错误分级（覆盖 openai SDK 与 litellm 的异常命名，二者高度一致）

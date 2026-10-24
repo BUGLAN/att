@@ -93,6 +93,28 @@ class VerifyOutcome:
         }
 
 
+def _is_unsupported_param_error(exc: BaseException) -> bool:
+    """判断异常是不是「上游不认这个可选参数」。
+
+    覆盖 LiteLLM 的 UnsupportedParamsError（本地预检，不产生网络请求）与
+    上游返回的 "unsupported parameter/unknown parameter/unrecognized" 等文案。
+    命中后调用方应去掉该参数重试，而不是把整次调用判死。
+    """
+    if exc.__class__.__name__ in ("UnsupportedParamsError", "UnsupportedParameterError"):
+        return True
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "does not support parameters",
+            "unsupported parameter",
+            "unrecognized request argument",
+            "unknown parameter",
+            "unsupported_parameter",
+        )
+    )
+
+
 def _extract_model_name(model_string: str) -> str:
     """deepseek/deepseek-flash -> deepseek-flash（回退组装时剥掉旧前缀）。"""
     return model_string.split("/", 1)[-1] if "/" in model_string else model_string
@@ -134,6 +156,7 @@ class LiteLLMGateway:
         max_tokens: int = 4096,
         timeout_s: int = 60,
         retries: int = 2,
+        reasoning_effort: str = "",
     ) -> GatewayChatResult:
         """执行一次补全。失败抛 LLMError（已分级、已脱敏）。"""
         _warm_spec_cache()
@@ -148,6 +171,7 @@ class LiteLLMGateway:
             max_tokens=max_tokens,
             timeout_s=timeout_s,
             retries=retries,
+            reasoning_effort=reasoning_effort,
         )
         if result is not None:
             return result
@@ -176,6 +200,7 @@ class LiteLLMGateway:
             max_tokens=max_tokens,
             timeout_s=timeout_s,
             retries=retries,
+            reasoning_effort=reasoning_effort,
         )
         if retry is None:
             raise LLMError(CODE_UNSUPPORTED_PROVIDER, f"服务商前缀不可用且兼容端点也失败：{model_string}")
@@ -193,6 +218,7 @@ class LiteLLMGateway:
         max_tokens: int = 4096,
         timeout_s: int = 60,
         retries: int = 2,
+        reasoning_effort: str = "",
     ) -> AsyncIterator[GatewayStreamChunk]:
         """流式补全：逐块 yield，失败抛 LLMError（已分级、已脱敏）。
 
@@ -210,6 +236,7 @@ class LiteLLMGateway:
             max_tokens=max_tokens,
             timeout_s=timeout_s,
             retries=retries,
+            reasoning_effort=reasoning_effort,
         )
         if stream is None:
             fallback = self._plan_compat_fallback(model_string, api_base)
@@ -235,6 +262,7 @@ class LiteLLMGateway:
                 max_tokens=max_tokens,
                 timeout_s=timeout_s,
                 retries=retries,
+                reasoning_effort=reasoning_effort,
             )
             if stream is None:
                 raise LLMError(
@@ -270,6 +298,7 @@ class LiteLLMGateway:
         max_tokens: int,
         timeout_s: int,
         retries: int,
+        reasoning_effort: str = "",
     ) -> Optional[Any]:
         """打开一次流。前缀未收录返回 None；其余失败抛 LLMError。"""
         import litellm  # 懒加载：见模块 docstring
@@ -285,6 +314,7 @@ class LiteLLMGateway:
             # 让 OpenAI 兼容上游在最后一块带 usage；不支持时下面会去掉重试一次
             "stream_options": {"include_usage": True},
         }
+        self._apply_reasoning_effort(kwargs, reasoning_effort, model_string)
         if api_key:
             kwargs["api_key"] = api_key
         if api_base:
@@ -298,6 +328,21 @@ class LiteLLMGateway:
             err = classify_exception(exc, (api_key,) if api_key else ())
             if err.code == CODE_UNSUPPORTED_PROVIDER:
                 return None
+
+            # 上游明确表示不认 reasoning_effort：去掉它重试一次（同 chat_once）
+            if "reasoning_effort" in kwargs and _is_unsupported_param_error(exc):
+                logger.info(
+                    "上游不支持 reasoning_effort，流式已去掉该参数重试",
+                    model=model_string,
+                )
+                kwargs.pop("reasoning_effort", None)
+                try:
+                    return await litellm.acompletion(**kwargs)
+                except Exception as retry_exc:
+                    retry_err = classify_exception(retry_exc, (api_key,) if api_key else ())
+                    if retry_err.code == CODE_UNSUPPORTED_PROVIDER:
+                        return None
+                    raise retry_err from retry_exc
 
             # 少数 OpenAI 兼容代理不认 stream_options；去掉后重试一次，仍失败再上抛
             if "stream_options" in str(exc).lower():
@@ -313,6 +358,43 @@ class LiteLLMGateway:
                     raise retry_err from retry_exc
 
             raise err from exc
+
+    @staticmethod
+    def _apply_reasoning_effort(
+        kwargs: dict[str, Any], reasoning_effort: str, model_string: str
+    ) -> None:
+        """把「思考强度」下传成 LiteLLM 的 reasoning_effort。
+
+        为什么必须显式传：DeepSeek 现行模型的思考默认强度是 high
+        （GET /models 返回 effort.default_level=high），而语音转写后的短文本润色
+        完全不需要思考链——实测同一请求 1.90s/首字 1596ms 降到 0.57s/首字 555ms。
+        思考 token 还会计入 max_tokens，占满后正文为空并触发整条链路重跑。
+        `none` 在 LiteLLM 的 DeepSeek 适配层会被映射成 thinking={type:disabled}；
+        其余档位映射成 thinking={type:enabled}。空串 = 不干预，保持上游默认。
+
+        只给「确认支持推理」的模型加：LiteLLM 对不支持该参数的模型（如
+        openai/gpt-4o-mini）会直接抛 UnsupportedParamsError，那会让一个纯性能
+        开关把原本能用的模型变成不可用。调用点另有一层兜底：真报了这个错就
+        去掉参数重试一次。
+        """
+        value = (reasoning_effort or "").strip().lower()
+        if not value:
+            return
+        try:
+            import litellm
+
+            if not litellm.supports_reasoning(model=model_string):
+                logger.info(
+                    "该模型不支持思考强度参数，已跳过（不影响调用）",
+                    model=model_string,
+                    reasoning_effort=value,
+                )
+                return
+        except Exception:
+            # 探测失败时不阻断：宁可让上游决定，也不要因为一次本地探测失败
+            # 把用户的模型配置变成不可用。
+            pass
+        kwargs["reasoning_effort"] = value
 
     @staticmethod
     def _usage_counts(usage: Any) -> tuple[int, int, int, int]:
@@ -397,6 +479,7 @@ class LiteLLMGateway:
         max_tokens: int,
         timeout_s: int,
         retries: int,
+        reasoning_effort: str = "",
     ) -> Optional[GatewayChatResult]:
         """单次调用；「前缀未收录且可兜底」时返回 None 交给上层重试，其余失败抛 LLMError。"""
         import litellm  # 懒加载：见模块 docstring
@@ -410,6 +493,7 @@ class LiteLLMGateway:
             "timeout": float(timeout_s),
             "num_retries": int(retries),
         }
+        self._apply_reasoning_effort(kwargs, reasoning_effort, model_string)
         if api_key:
             kwargs["api_key"] = api_key
         if api_base:
@@ -425,13 +509,36 @@ class LiteLLMGateway:
             if err.code == CODE_UNSUPPORTED_PROVIDER:
                 # 兜底与否由上层 _plan_compat_fallback 决策（注册表兼容端点 / 自定义 api_base）
                 return None
-            logger.warning(
-                "LLM 调用失败",
-                model=model_string,
-                error_code=err.code,
-                error=err.message,  # 已脱敏文案
-            )
-            raise err from exc
+
+            # 上游明确表示不认 reasoning_effort：去掉它重试一次。性能开关绝不能
+            # 把原本可用的模型变成不可用（supports_reasoning 对自定义网关不可靠）。
+            if "reasoning_effort" in kwargs and _is_unsupported_param_error(exc):
+                logger.info(
+                    "上游不支持 reasoning_effort，已去掉该参数重试",
+                    model=model_string,
+                )
+                kwargs.pop("reasoning_effort", None)
+                try:
+                    response = await litellm.acompletion(**kwargs)
+                except Exception as retry_exc:
+                    retry_err = classify_exception(retry_exc, (api_key,) if api_key else ())
+                    if retry_err.code == CODE_UNSUPPORTED_PROVIDER:
+                        return None
+                    logger.warning(
+                        "LLM 调用失败",
+                        model=model_string,
+                        error_code=retry_err.code,
+                        error=retry_err.message,
+                    )
+                    raise retry_err from retry_exc
+            else:
+                logger.warning(
+                    "LLM 调用失败",
+                    model=model_string,
+                    error_code=err.code,
+                    error=err.message,  # 已脱敏文案
+                )
+                raise err from exc
 
         latency_ms = int((time.perf_counter() - start) * 1000)
         try:
@@ -481,7 +588,12 @@ class LiteLLMGateway:
         extra_headers: Optional[dict[str, str]] = None,
         timeout_s: int = VERIFY_TIMEOUT_S,
     ) -> VerifyOutcome:
-        """轻量验证：约 5 token 的补全请求，验证「档案凭据 + 模型名」都可用。"""
+        """轻量验证：约 5 token 的补全请求，验证「档案凭据 + 模型名」都可用。
+
+        这里**强制关闭思考**：5 token 的预算必然被思考 token 吃光
+        （finish_reason=length），既拖慢「测试」按钮，又会在日志里刷
+        「输出被截断，请调大 Max Tokens」的假告警。验证只关心连通性与鉴权。
+        """
         start = time.perf_counter()
         try:
             await self.chat(
@@ -493,6 +605,7 @@ class LiteLLMGateway:
                 max_tokens=5,
                 timeout_s=timeout_s,
                 retries=0,
+                reasoning_effort="none",
             )
         except LLMError as err:
             return VerifyOutcome(ok=False, error_code=err.code, message=err.user_message)
@@ -594,3 +707,22 @@ def get_llm_gateway() -> LiteLLMGateway:
     if _gateway is None:
         _gateway = LiteLLMGateway()
     return _gateway
+
+
+def warm_up_llm_import() -> None:
+    """预热 LiteLLM 的 import 开销（实测 1.106.2 首次 import ≈ 2.5s）。
+
+    为什么需要：网关必须懒加载 litellm，否则拖慢整个后端启动；代价是**每次后端
+    启动后的第一次优化**要额外付 2.5s 的 import 成本，用户看到的就是"明明官方 key
+    却要 3 秒多"。启动期用后台线程预热，把这段开销挪到用户还没说话的时候。
+
+    只做 import + 注册表预填，**不发任何网络请求**，不产生费用。
+    """
+    try:
+        import litellm  # noqa: F401  预热 import 缓存
+
+        litellm.suppress_debug_info = True
+        _warm_spec_cache()
+        logger.info("LiteLLM 预热完成")
+    except Exception as error:  # 预热失败不能影响主流程，首次调用会重试 import
+        logger.warning("LiteLLM 预热失败（不影响功能）", error=str(error))

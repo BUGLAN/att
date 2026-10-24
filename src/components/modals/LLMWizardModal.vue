@@ -99,8 +99,17 @@
           <div class="wiz-field"><label class="wiz-label">Max Tokens</label><input v-model.number="form.params.max_tokens" type="number" min="100" step="100" class="wiz-input"></div>
           <div class="wiz-field"><label class="wiz-label">请求超时（秒）</label><input v-model.number="form.params.timeout_s" type="number" min="5" max="600" class="wiz-input"></div>
           <div class="wiz-field"><label class="wiz-label">失败重试次数</label><input v-model.number="form.params.retries" type="number" min="0" max="5" class="wiz-input"></div>
+          <div class="wiz-field">
+            <label class="wiz-label">思考强度</label>
+            <select v-model="form.params.reasoning_effort" class="wiz-input">
+              <option v-for="item in REASONING_EFFORT_OPTIONS" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select>
+          </div>
         </div>
-        <p class="wiz-hint">超时与重试由网关注入到每次请求，杜绝「网络黑洞挂 10 分钟」。</p>
+        <p class="wiz-hint">
+          超时与重试由网关注入到每次请求，杜绝「网络黑洞挂 10 分钟」。
+          语音润色建议把思考强度设为「关闭」：思考 token 计入 Max Tokens，占满后正文会为空。
+        </p>
       </details>
 
       <label class="wiz-check-row">
@@ -130,7 +139,7 @@ import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import Modal from '@/components/common/Modal.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
-import { errorCopy, formatLatency, parseManualModelInput } from '@/components/settings/llm/llmLogic.mjs'
+import { errorCopy, formatLatency, parseManualModelInput, REASONING_EFFORT_OPTIONS } from '@/components/settings/llm/llmLogic.mjs'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
@@ -153,7 +162,7 @@ function defaultForm() {
     name: '',
     api_key: '',
     api_base: '',
-    params: { temperature: 0.3, max_tokens: 4096, timeout_s: 60, retries: 2 }
+    params: { temperature: 0.3, max_tokens: 4096, timeout_s: 60, retries: 2, reasoning_effort: '' }
   }
 }
 

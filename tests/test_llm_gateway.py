@@ -352,3 +352,141 @@ def test_is_valid_model_string():
     assert is_valid_model_string("qwen3:14b")
     assert not is_valid_model_string("")
     assert not is_valid_model_string("bad model name with spaces")
+
+
+# ==================== 思考强度透传（2026-10-24 性能修复） ====================
+
+
+def test_chat_injects_reasoning_effort_when_configured(monkeypatch):
+    """思考强度必须真的下传：DeepSeek 现行模型默认 effort=high，
+    短文本润色实测 1.90s/首字 1596ms；关掉后 0.57s/首字 555ms。"""
+    fake = _FakeCompletion([_fake_response()])
+    monkeypatch.setattr("litellm.acompletion", fake)
+
+    asyncio.run(
+        LiteLLMGateway().chat(
+            model_string="deepseek/deepseek-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            api_key="sk-secret-1234",
+            reasoning_effort="none",
+        )
+    )
+
+    assert fake.calls[0]["reasoning_effort"] == "none"
+
+
+def test_chat_omits_reasoning_effort_when_blank(monkeypatch):
+    """空串 = 不干预：老配置升级后请求体不能凭空多一个字段。"""
+    fake = _FakeCompletion([_fake_response()])
+    monkeypatch.setattr("litellm.acompletion", fake)
+
+    asyncio.run(
+        LiteLLMGateway().chat(
+            model_string="deepseek/deepseek-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_effort="",
+        )
+    )
+
+    assert "reasoning_effort" not in fake.calls[0]
+
+
+def test_verify_model_disables_thinking_to_avoid_fake_truncation(monkeypatch):
+    """验证探测只有 5 token 预算，思考 token 必然把它吃光并刷假告警。"""
+    fake = _FakeCompletion([_fake_response(finish_reason="length")])
+    monkeypatch.setattr("litellm.acompletion", fake)
+
+    outcome = asyncio.run(
+        LiteLLMGateway().verify_model(
+            model_string="deepseek/deepseek-flash",
+            api_key="sk-secret-1234",
+        )
+    )
+
+    assert outcome.ok is True
+    assert fake.calls[0]["reasoning_effort"] == "none"
+    assert fake.calls[0]["max_tokens"] == 5
+
+
+def test_chat_stream_injects_reasoning_effort(monkeypatch):
+    """流式路径与 chat() 共用同一套注入逻辑，不能只在非流式生效。"""
+    captured: dict[str, Any] = {}
+
+    class _EmptyStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    async def fake(**kwargs):
+        captured.update(kwargs)
+        return _EmptyStream()
+
+    monkeypatch.setattr("litellm.acompletion", fake)
+
+    async def collect():
+        return [
+            chunk
+            async for chunk in LiteLLMGateway().chat_stream(
+                model_string="deepseek/deepseek-flash",
+                messages=[{"role": "user", "content": "hi"}],
+                reasoning_effort="low",
+            )
+        ]
+
+    assert asyncio.run(collect()) == []
+    assert captured["reasoning_effort"] == "low"
+    assert captured["stream"] is True
+
+
+def test_reasoning_effort_skipped_for_models_that_do_not_support_it(monkeypatch):
+    """纯性能开关不能把本来能用的模型变成不可用。
+
+    LiteLLM 对 openai/gpt-4o-mini 这类不支持推理参数的模型会直接抛
+    UnsupportedParamsError；必须在下传前用 supports_reasoning 拦掉。
+    """
+    import litellm
+
+    fake = _FakeCompletion([_fake_response()])
+    monkeypatch.setattr("litellm.acompletion", fake)
+    monkeypatch.setattr(litellm, "supports_reasoning", lambda model: False, raising=False)
+
+    asyncio.run(
+        LiteLLMGateway().chat(
+            model_string="openai/gpt-4o-mini",
+            messages=[{"role": "user", "content": "hi"}],
+            api_key="sk-secret-1234",
+            reasoning_effort="none",
+        )
+    )
+
+    assert "reasoning_effort" not in fake.calls[0]
+
+
+def test_chat_retries_without_reasoning_effort_when_upstream_rejects_it(monkeypatch):
+    """自定义网关/老模型可能不认 reasoning_effort：去掉参数重试，不能判死。"""
+    fake = _FakeCompletion([
+        _exc("UnsupportedParamsError", "openai does not support parameters: ['reasoning_effort']"),
+        _fake_response(text="ok without effort"),
+    ])
+    monkeypatch.setattr("litellm.acompletion", fake)
+
+    # supports_reasoning 对自定义端点不可靠，这里模拟它误报 True
+    import litellm
+    monkeypatch.setattr(litellm, "supports_reasoning", lambda model: True, raising=False)
+
+    result = asyncio.run(
+        LiteLLMGateway().chat(
+            model_string="openai/my-gateway-model",
+            messages=[{"role": "user", "content": "hi"}],
+            api_key="sk-secret-1234",
+            api_base="http://127.0.0.1:9999/v1",
+            reasoning_effort="none",
+        )
+    )
+
+    assert result.text == "ok without effort"
+    assert len(fake.calls) == 2
+    assert "reasoning_effort" in fake.calls[0]
+    assert "reasoning_effort" not in fake.calls[1], "第二次必须去掉不被支持的参数"

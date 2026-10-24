@@ -149,3 +149,59 @@ def test_optimizer_stream_emits_deltas_and_done(monkeypatch):
     assert gateway.kwargs["max_tokens"] == 2048
     assert gateway.kwargs["timeout_s"] == 33
     assert gateway.kwargs["retries"] == 1
+
+
+def test_optimizer_stream_passes_reasoning_effort(monkeypatch):
+    """模型条目里的思考强度必须一路传到网关（否则 UI 上的开关是装饰品）。"""
+    import app.llm.store as store_module
+    import app.llm.gateway as gateway_module
+
+    store = _FakeStore()
+    store.entry.params.reasoning_effort = "none"
+    gateway = _FakeStreamingGateway()
+    monkeypatch.setattr(store_module, "get_llm_store", lambda: store)
+    monkeypatch.setattr(gateway_module, "get_llm_gateway", lambda: gateway)
+
+    async def collect():
+        return [event async for event in TextOptimizer().optimize_stream("原始文本")]
+
+    asyncio.run(collect())
+    assert gateway.kwargs["reasoning_effort"] == "none"
+
+
+def test_optimizer_stream_raises_non_retryable_on_empty_truncated_output(monkeypatch):
+    """思考 token 吃满 max_tokens → 正文为空 + finish_reason=length。
+
+    这是确定性失败：重跑同一请求只会再烧一次思考 token（实测 22s → 41s），
+    所以必须直接抛不可重试错误，让调用方跳过「降级非流式」。
+    """
+    import app.llm.store as store_module
+    import app.llm.gateway as gateway_module
+    from app.llm.errors import CODE_OUTPUT_TRUNCATED, LLMError
+
+    class _ThinkingGateway:
+        async def chat_stream(self, **kwargs):
+            yield GatewayStreamChunk(
+                text="",
+                model_string="deepseek/deepseek-flash",
+                finish_reason="length",
+                prompt_tokens=504,
+                completion_tokens=4096,
+                total_tokens=4600,
+                reasoning_tokens=4096,
+            )
+
+    monkeypatch.setattr(store_module, "get_llm_store", lambda: _FakeStore())
+    monkeypatch.setattr(gateway_module, "get_llm_gateway", lambda: _ThinkingGateway())
+
+    async def collect():
+        return [event async for event in TextOptimizer().optimize_stream("原始文本")]
+
+    try:
+        asyncio.run(collect())
+    except LLMError as exc:
+        assert exc.code == CODE_OUTPUT_TRUNCATED
+        assert exc.retryable is False
+        assert "思考" in exc.user_message
+    else:
+        raise AssertionError("空正文 + length 必须抛 LLMError，不能静默返回空结果")

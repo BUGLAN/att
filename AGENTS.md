@@ -98,6 +98,9 @@ app/          FastAPI：
 | `Settings` 已删死字段 | `supported_formats` / `chunk_duration` / `target_sample_rate` / `target_channels` / `qwen_streaming_gpu_memory_utilization` / `qwen_streaming_max_model_len` 已删除（真实生效的是 `AudioProcessor` 类常量与桥接脚本自身 env）；`MAX_UPLOAD_SIZE` 在限流里生效但 `validate_audio` 用硬编码 500MB |
 | ~~死代码清单~~ | 2026-10 减法已全量清理（`useWebSocket()`、`convert_to_wav`、`chunk_audio` 链路、`ASRCapabilityError`、`reset_record_indexes` 等）；新增死代码时随手删，别攒清单 |
 | 提示词文案不要顺手改 | `src/composables/recorder/statusCopy.mjs` 里真流式那句是"复制**或**粘贴失败"，被 `tests/test_recorder_status_copy.mjs` 锁死；要统一得同时改测试 |
+| 思考型模型默认 effort 很高 | DeepSeek `deepseek-flash`/`deepseek-v4-pro` 的 `effort.default_level=high`：不显式传 `reasoning_effort` 时，短文本润色也会先写上千 reasoning token，首字延迟翻 3 倍；思考 token 还计入 `max_tokens`，占满后正文为空并 `finish_reason=length`。**性能开关类参数（如思考强度）必须走 `ModelParams.reasoning_effort` → 网关 `_apply_reasoning_effort()`，不要在业务层直接拼 litellm kwargs**；同时新增参数要兼容不支持它的模型（预检 + 上游拒绝时去掉重试），别把一个优化项变成可用性事故 |
+| 不要把「确定性失败」写进降级重试 | 流式优化在首条增量前失败会回退非流式重跑一次。但像「思考 token 吃满 max_tokens → 正文为空」这种**重跑必然同样失败**的情况，必须抛 `LLMError(retryable=False)`（如 `output_truncated`），否则一次 22s 的失败会翻成 41s。新增错误码时想清楚它该不该进 `NON_RETRYABLE_CODES` |
+| LiteLLM 的 import 成本不要落在热路径 | 网关必须懒加载 litellm（首次 import 实测 ≈2.5s，放模块层会拖慢后端启动），但启动后用 `warm_up_llm_import()` 后台线程预热，否则这段开销正好砸在「后端起来后的第一次语音优化」上，用户看到的就是"官方 key 也要 3 秒" |
 | `writer.lock` 冲突 | 提示"另一个 ATT 后端进程正在写同一份数据目录"时，先关掉另一个后端/容器，或临时 `ATT_ALLOW_MULTI_WRITER=1`（会丢数据风险） |
 
 ---

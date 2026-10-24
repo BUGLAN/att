@@ -164,3 +164,32 @@ def test_cancel_optimize_without_active_task_returns_false(monkeypatch, temp_dir
     response = client.post(f"/api/records/{record.id}/optimize/cancel")
     assert response.status_code == 200
     assert response.json()["cancelled"] is False
+
+def test_optimize_stream_does_not_retry_non_retryable_error(monkeypatch, temp_dir):
+    """确定性失败（思考 token 吃满预算）不得回退重跑：重试必然同样失败，
+    只会把一次 22s 的失败翻成 41s，用户仍然拿不到结果。"""
+    from app.llm.errors import CODE_OUTPUT_TRUNCATED, LLMError
+
+    class _TruncatedOptimizer(_StreamingOptimizer):
+        def __init__(self):
+            super().__init__()
+            self.fallback_called = False
+
+        async def optimize_stream(self, text, preset_id=None):
+            raise LLMError(CODE_OUTPUT_TRUNCATED, "思考 token 占满 max_tokens")
+            yield  # pragma: no cover - 保持异步生成器语义
+
+        async def optimize(self, text, preset_id=None):
+            self.fallback_called = True
+            return await super().optimize(text, preset_id=preset_id)
+
+    optimizer = _TruncatedOptimizer()
+    client, manager = _build_client(monkeypatch, temp_dir, optimizer)
+    record = _create_record(manager)
+
+    with client.stream("POST", f"/api/records/{record.id}/optimize/stream") as response:
+        events = _read_events(response)
+
+    assert events[-1]["type"] == "error"
+    assert optimizer.fallback_called is False, "不可重试错误不能触发降级重跑"
+    assert "思考" in events[-1]["error"]

@@ -24,7 +24,17 @@
         <div class="med-field"><label class="med-label">Max Tokens</label><input v-model.number="form.params.max_tokens" type="number" min="100" step="100" class="med-input"></div>
         <div class="med-field"><label class="med-label">请求超时（秒）</label><input v-model.number="form.params.timeout_s" type="number" min="5" max="600" class="med-input"></div>
         <div class="med-field"><label class="med-label">失败重试次数</label><input v-model.number="form.params.retries" type="number" min="0" max="5" class="med-input"></div>
+        <div class="med-field">
+          <label class="med-label">思考强度</label>
+          <select v-model="form.params.reasoning_effort" class="med-input">
+            <option v-for="item in REASONING_EFFORT_OPTIONS" :key="item.value" :value="item.value">{{ item.label }}</option>
+          </select>
+        </div>
       </div>
+      <p class="med-hint">
+        语音转写后的短文本润色不需要思考链。DeepSeek 现行模型默认强度是 high，每次都要先写一段推理才吐正文
+        （实测首字 1.6s → 0.55s）。思考 token 还计入 Max Tokens，占满后正文会为空。
+      </p>
 
       <div v-if="verifyState.status" class="med-banner" :class="verifyState.ok ? 'banner-ok' : 'banner-err'">
         {{ verifyState.ok ? `✓ 验证通过（${verifyState.latency}）` : `✕ ${verifyState.title}：${verifyState.detail}` }}
@@ -56,7 +66,7 @@ import { useSettingsStore } from '@/stores/settings'
 import Modal from '@/components/common/Modal.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
-import { errorCopy, formatLatency } from '@/components/settings/llm/llmLogic.mjs'
+import { errorCopy, formatLatency, REASONING_EFFORT_OPTIONS } from '@/components/settings/llm/llmLogic.mjs'
 import { useLLMService } from '@/composables/useSettings'
 
 const appStore = useAppStore()
@@ -74,7 +84,7 @@ function defaultForm() {
   return {
     display_name: '',
     model: '',
-    params: { temperature: 0.3, max_tokens: 4096, timeout_s: 60, retries: 2 }
+    params: { temperature: 0.3, max_tokens: 4096, timeout_s: 60, retries: 2, reasoning_effort: '' }
   }
 }
 
@@ -85,7 +95,7 @@ watch(model, (value) => {
   form.value = {
     display_name: value.display_name || '',
     model: value.model || '',
-    params: { ...value.params }
+    params: { reasoning_effort: '', ...value.params }
   }
   verifyState.value = { status: false, ok: false, title: '', detail: '', latency: '' }
 }, { immediate: true })
