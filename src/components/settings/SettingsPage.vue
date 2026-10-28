@@ -19,6 +19,7 @@
               <option value="whisper">Whisper / faster-whisper</option>
               <option value="qwen_asr">Qwen3-ASR</option>
               <option value="doubao_asr">豆包语音（火山引擎 · 在线流式）</option>
+              <option value="chatgpt_asr">ChatGPT 听写（在线 · 批量）</option>
             </BaseSelect>
           </div>
 
@@ -185,6 +186,53 @@
               <span class="setting-desc">毫秒。0 表示跟随服务端语义分段；建议 200–800（最大 1000），超出该范围服务端可能拒绝并断开连接。</span>
             </div>
             <BaseInput v-model.number="form.doubao_asr_end_window_size" type="number" min="0" max="10000" step="100" />
+          </div>
+
+          <!-- ChatGPT 听写（在线批量）：访问令牌只写不读，后端加密落盘 -->
+          <div v-if="showChatGPTSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">访问令牌</span>
+              <span class="setting-desc">
+                {{ form.chatgpt_asr_api_key_set ? '已保存（留空表示不修改）' : 'ChatGPT 网页账号的 access token（等同登录态，注意不是 platform.openai.com 的 API Key）。' }}
+              </span>
+            </div>
+            <BaseInput
+              v-model.trim="form.chatgpt_asr_api_key"
+              type="password"
+              autocomplete="new-password"
+              placeholder="粘贴 ChatGPT 访问令牌（可带 Bearer 前缀）"
+            />
+          </div>
+
+          <div v-if="showChatGPTSettings && form.chatgpt_asr_api_key_set" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">清除已保存的令牌</span>
+              <span class="setting-desc">开启后保存设置会删除已加密存储的访问令牌。</span>
+            </div>
+            <label class="toggle-switch">
+              <input v-model="form.chatgpt_asr_api_key_clear" type="checkbox">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div v-if="showChatGPTSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">端点</span>
+              <span class="setting-desc">ChatGPT 听写接口地址，默认无需修改。</span>
+            </div>
+            <BaseInput
+              v-model.trim="form.chatgpt_asr_endpoint"
+              type="text"
+              placeholder="https://chatgpt.com/backend-api/transcribe"
+            />
+          </div>
+
+          <div v-if="showChatGPTSettings" class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">请求超时</span>
+              <span class="setting-desc">秒。批量转写要等整段音频处理完，长录音可适当调大。</span>
+            </div>
+            <BaseInput v-model.number="form.chatgpt_asr_timeout_seconds" type="number" min="10" max="600" step="10" />
           </div>
         </div>
 
@@ -394,6 +442,7 @@ const isSyncing = computed(() => syncDepth.value > 0)
 const showWhisperSettings = computed(() => form.value.asr_provider === 'whisper')
 const showQwenSettings = computed(() => form.value.asr_provider === 'qwen_asr')
 const showDoubaoSettings = computed(() => form.value.asr_provider === 'doubao_asr')
+const showChatGPTSettings = computed(() => form.value.asr_provider === 'chatgpt_asr')
 const streamingRuntimeAvailable = computed(() => settingsStore.runtimeStatus.qwen_streaming_available === true)
 // 诊断区展示：后端上报的运行时环境
 const runtimeEnvironment = computed(() => settingsStore.runtimeStatus.runtime_environment || 'unknown')
@@ -528,6 +577,12 @@ function normalizeSettings(value = {}) {
     doubao_asr_resource_id: value.doubao_asr_resource_id || 'volc.seedasr.sauc.duration',
     doubao_asr_endpoint: value.doubao_asr_endpoint || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
     doubao_asr_end_window_size: value.doubao_asr_end_window_size ?? 0,
+    // ChatGPT 听写：明文令牌只存在于表单内存里，初始值恒为空
+    chatgpt_asr_api_key: '',
+    chatgpt_asr_api_key_clear: false,
+    chatgpt_asr_api_key_set: value.chatgpt_asr_api_key_set ?? false,
+    chatgpt_asr_endpoint: value.chatgpt_asr_endpoint || 'https://chatgpt.com/backend-api/transcribe',
+    chatgpt_asr_timeout_seconds: value.chatgpt_asr_timeout_seconds ?? 120,
     pause_audio_on_recording: value.pause_audio_on_recording ?? true,
     auto_optimize: value.auto_optimize ?? false,
     auto_copy_to_clipboard: value.auto_copy_to_clipboard ?? true,
@@ -557,6 +612,8 @@ function buildSettingsPayload() {
     doubao_asr_resource_id: form.value.doubao_asr_resource_id,
     doubao_asr_endpoint: form.value.doubao_asr_endpoint,
     doubao_asr_end_window_size: form.value.doubao_asr_end_window_size,
+    chatgpt_asr_endpoint: form.value.chatgpt_asr_endpoint,
+    chatgpt_asr_timeout_seconds: form.value.chatgpt_asr_timeout_seconds,
     pause_audio_on_recording: form.value.pause_audio_on_recording,
     auto_optimize: form.value.auto_optimize,
     auto_copy_to_clipboard: form.value.auto_copy_to_clipboard,
@@ -575,6 +632,14 @@ function buildSettingsPayload() {
 
   if (form.value.doubao_asr_api_key_clear) {
     payload.doubao_asr_api_key_clear = true
+  }
+
+  if (form.value.chatgpt_asr_api_key) {
+    payload.chatgpt_asr_api_key = form.value.chatgpt_asr_api_key
+  }
+
+  if (form.value.chatgpt_asr_api_key_clear) {
+    payload.chatgpt_asr_api_key_clear = true
   }
 
   return payload
@@ -699,6 +764,8 @@ async function handleSave() {
     // 否则下一次保存会把「带 Token 的快照」与「已清空的表单」判成变更，反复提交。
     form.value.doubao_asr_api_key = ''
     form.value.doubao_asr_api_key_clear = false
+    form.value.chatgpt_asr_api_key = ''
+    form.value.chatgpt_asr_api_key_clear = false
     lastSavedSettingsSnapshot.value = serializeSettingsPayload(buildSettingsPayload())
 
     const inputSyncResult = await syncInputSettings({

@@ -126,6 +126,11 @@ export const useSettingsStore = defineStore('settings', () => {
     doubao_asr_resource_id: 'volc.seedasr.sauc.duration',
     doubao_asr_endpoint: 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
     doubao_asr_end_window_size: 0,
+    // ChatGPT 听写 ASR（在线批量）：令牌同样只以「是否已配置」展示，
+    // 加密落盘为 chatgpt_asr_api_key_encrypted
+    chatgpt_asr_api_key_set: false,
+    chatgpt_asr_endpoint: 'https://chatgpt.com/backend-api/transcribe',
+    chatgpt_asr_timeout_seconds: 120,
     pause_audio_on_recording: true,
     auto_optimize: false,
     auto_copy_to_clipboard: true,

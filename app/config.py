@@ -175,6 +175,10 @@ class UserSettings:
         "doubao_asr_resource_id": "volc.seedasr.sauc.duration",
         "doubao_asr_endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
         "doubao_asr_end_window_size": 0,
+        # ChatGPT 听写 ASR（在线批量识别，实现移植自 Wangnov/codex-asr）
+        # 访问令牌同样只以密文落盘（chatgpt_asr_api_key_encrypted），无明文默认值。
+        "chatgpt_asr_endpoint": "https://chatgpt.com/backend-api/transcribe",
+        "chatgpt_asr_timeout_seconds": 120,
         "pause_audio_on_recording": True,
         "auto_optimize": False,
         "auto_copy_to_clipboard": True,  # 自动复制转码文本到剪贴板
@@ -291,6 +295,12 @@ class Settings(BaseSettings):
     # 0 = 不设置强制断句，跟随服务端语义分段；>0 时按该静音时长（毫秒）输出 definite
     doubao_asr_end_window_size: int = 0
     doubao_asr_force_to_speech_time: int = 0
+
+    # ChatGPT 听写 ASR（在线批量识别）：访问令牌同样以密文落盘，
+    # 环境变量 CHATGPT_ASR_API_KEY 只作为兜底（优先级：用户设置密文 > 环境变量）
+    chatgpt_asr_api_key: str = ""
+    chatgpt_asr_endpoint: str = "https://chatgpt.com/backend-api/transcribe"
+    chatgpt_asr_timeout_seconds: float = 120.0
 
     # LLM 接入已迁移到 LiteLLM + data/llm_v2.json（供应商档案 + 模型条目），
     # 旧的 DEEPSEEK_* 环境变量与「.env 内置 key 兜底」路径一并移除（2026-10）。

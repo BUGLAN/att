@@ -18,6 +18,7 @@ class ASRProviderName(str, Enum):
     WHISPER = "whisper"
     QWEN_ASR = "qwen_asr"
     DOUBAO_ASR = "doubao_asr"
+    CHATGPT_ASR = "chatgpt_asr"
 
 
 class RecordingModeName(str, Enum):
@@ -65,6 +66,15 @@ class UserSettingsUpdate(BaseModel):
     doubao_asr_endpoint: Optional[str] = None
     # 0 = 不设置强制断句；>0 时按该静音时长（毫秒）输出 definite
     doubao_asr_end_window_size: Optional[int] = Field(default=None, ge=0, le=10000)
+
+    # ChatGPT 听写 ASR（在线批量识别，实现移植自 Wangnov/codex-asr）
+    # chatgpt_asr_api_key 同样是「只写字段」：写入后立即加密成
+    # chatgpt_asr_api_key_encrypted 落盘，GET /api/settings 只回报 chatgpt_asr_api_key_set。
+    chatgpt_asr_api_key: Optional[str] = None
+    # 显式清除已保存的访问令牌（避免「空串 = 未提供」导致无法清空）
+    chatgpt_asr_api_key_clear: Optional[bool] = None
+    chatgpt_asr_endpoint: Optional[str] = None
+    chatgpt_asr_timeout_seconds: Optional[int] = Field(default=None, ge=10, le=600)
 
     # 录音与剪贴板行为
     pause_audio_on_recording: Optional[bool] = None

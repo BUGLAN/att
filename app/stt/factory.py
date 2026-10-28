@@ -4,7 +4,12 @@ ASR provider 工厂
 from app.config import settings, user_settings
 from app.stt.base import ASRProvider
 from app.stt.models import ASRConfigError, ASRProviderConfig, ASRProviderType
-from app.stt.providers import DoubaoASRProvider, QwenASRProvider, WhisperProvider
+from app.stt.providers import (
+    ChatGPTASRProvider,
+    DoubaoASRProvider,
+    QwenASRProvider,
+    WhisperProvider,
+)
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -25,6 +30,23 @@ def resolve_doubao_api_key(source: dict) -> str:
             logger.warning("解密豆包 Access Token 失败，回退环境变量", error=str(error))
 
     return str(source.get("doubao_asr_api_key") or settings.doubao_asr_api_key or "")
+
+
+def resolve_chatgpt_asr_api_key(source: dict) -> str:
+    """解析 ChatGPT 访问令牌：优先级与豆包一致（密文用户设置 > 环境变量）。
+
+    明文只在这里进内存，随后只用于鉴权头；解密失败不抛错，回退环境变量。
+    """
+    encrypted = str(source.get("chatgpt_asr_api_key_encrypted") or "")
+    if encrypted:
+        try:
+            from app.utils.encryption import get_encryption
+
+            return get_encryption().decrypt(encrypted) or ""
+        except Exception as error:
+            logger.warning("解密 ChatGPT 访问令牌失败，回退环境变量", error=str(error))
+
+    return str(source.get("chatgpt_asr_api_key") or settings.chatgpt_asr_api_key or "")
 
 
 def get_asr_provider_config(runtime_settings: dict | None = None) -> ASRProviderConfig:
@@ -53,6 +75,9 @@ def get_asr_provider_config(runtime_settings: dict | None = None) -> ASRProvider
         "doubao_asr_chunk_ms": settings.doubao_asr_chunk_ms,
         "doubao_asr_end_window_size": settings.doubao_asr_end_window_size,
         "doubao_asr_force_to_speech_time": settings.doubao_asr_force_to_speech_time,
+        "chatgpt_asr_api_key": settings.chatgpt_asr_api_key,
+        "chatgpt_asr_endpoint": settings.chatgpt_asr_endpoint,
+        "chatgpt_asr_timeout_seconds": settings.chatgpt_asr_timeout_seconds,
         **user_settings.get_all()
     }
 
@@ -110,7 +135,14 @@ def get_asr_provider_config(runtime_settings: dict | None = None) -> ASRProvider
             "force_to_speech_time": int(
                 source.get("doubao_asr_force_to_speech_time", settings.doubao_asr_force_to_speech_time)
             )
-        }
+        },
+        chatgpt_asr={
+            "api_key": resolve_chatgpt_asr_api_key(source),
+            "endpoint": source.get("chatgpt_asr_endpoint", settings.chatgpt_asr_endpoint),
+            "timeout_seconds": float(
+                source.get("chatgpt_asr_timeout_seconds", settings.chatgpt_asr_timeout_seconds)
+            ),
+        },
     )
 
 
@@ -124,5 +156,8 @@ def create_asr_provider(config: ASRProviderConfig) -> ASRProvider:
 
     if config.provider == ASRProviderType.DOUBAO_ASR:
         return DoubaoASRProvider(**config.doubao_asr)
+
+    if config.provider == ASRProviderType.CHATGPT_ASR:
+        return ChatGPTASRProvider(**config.chatgpt_asr)
 
     raise ASRConfigError(f"未实现的 ASR provider: {config.provider.value}")

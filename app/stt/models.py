@@ -11,6 +11,7 @@ class ASRProviderType(str, Enum):
     WHISPER = "whisper"
     QWEN_ASR = "qwen_asr"
     DOUBAO_ASR = "doubao_asr"
+    CHATGPT_ASR = "chatgpt_asr"
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class ASRProviderConfig:
     whisper: dict[str, Any] = field(default_factory=dict)
     qwen_asr: dict[str, Any] = field(default_factory=dict)
     doubao_asr: dict[str, Any] = field(default_factory=dict)
+    chatgpt_asr: dict[str, Any] = field(default_factory=dict)
 
 
 class ASRProviderError(RuntimeError):

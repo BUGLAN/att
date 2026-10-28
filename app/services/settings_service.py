@@ -47,15 +47,23 @@ MODEL_RUNTIME_KEYS = {
     "doubao_asr_resource_id",
     "doubao_asr_endpoint",
     "doubao_asr_end_window_size",
+    # ChatGPT 听写 ASR：同上，凭据/端点/超时都固化在 provider 实例里
+    "chatgpt_asr_api_key_encrypted",
+    "chatgpt_asr_endpoint",
+    "chatgpt_asr_timeout_seconds",
 }
 # 需要重建 provider 的键（recording_mode 只影响运行时行为，不需要重建）
 PROVIDER_REBUILD_KEYS = MODEL_RUNTIME_KEYS - {"recording_mode"}
 
-# 豆包 Access Token 的落盘字段：GET /api/settings 只回报是否已配置，绝不回传密文
-DOUBAO_SECRET_STORED_KEY = "doubao_asr_api_key_encrypted"
-DOUBAO_SECRET_WRITE_KEY = "doubao_asr_api_key"
-DOUBAO_SECRET_CLEAR_KEY = "doubao_asr_api_key_clear"
-DOUBAO_SECRET_FLAG_KEY = "doubao_asr_api_key_set"
+# 「只写不读」的密钥档案：明文仅出现在 PUT 请求里，落盘前加密；
+# GET /api/settings 只回报是否已配置（*_set 布尔），绝不回传明文与密文。
+# 每项 = (落盘密文键, PUT 明文键, 显式清除键, 回报标记键)
+SECRET_SPECS: tuple[tuple[str, str, str, str], ...] = (
+    # 豆包 Access Token
+    ("doubao_asr_api_key_encrypted", "doubao_asr_api_key", "doubao_asr_api_key_clear", "doubao_asr_api_key_set"),
+    # ChatGPT 访问令牌（网页登录态，等同账号凭据）
+    ("chatgpt_asr_api_key_encrypted", "chatgpt_asr_api_key", "chatgpt_asr_api_key_clear", "chatgpt_asr_api_key_set"),
+)
 
 
 class SettingsValidationError(Exception):
@@ -121,42 +129,43 @@ def validate_hotkey(hotkey: dict) -> bool:
     return is_valid_hotkey(hotkey)
 
 
-def mask_doubao_secret(payload: dict) -> dict:
-    """把豆包 Access Token 的密文换成布尔标记。
+def mask_asr_secrets(payload: dict) -> dict:
+    """把所有「只写不读」密钥的密文换成布尔标记。
 
     GET /api/settings 会被渲染进程整份读取并回传，密文既无用处也不该外泄，
     因此响应里只保留「是否已配置」，明文与密文都不返回。
     """
-    masked = {
-        key: value
-        for key, value in payload.items()
-        if key != DOUBAO_SECRET_STORED_KEY
-    }
-    masked[DOUBAO_SECRET_FLAG_KEY] = bool(payload.get(DOUBAO_SECRET_STORED_KEY))
+    masked = dict(payload)
+    for stored_key, _write_key, _clear_key, flag_key in SECRET_SPECS:
+        masked.pop(stored_key, None)
+        masked[flag_key] = bool(payload.get(stored_key))
     return masked
 
 
-def _apply_doubao_secret_update(filtered: dict) -> None:
-    """把明文 Access Token 换成密文（就地修改 filtered）。
+# 兼容旧名（豆包时代只有一份密钥）：行为不变，覆盖全部密钥档案
+mask_doubao_secret = mask_asr_secrets
 
-    - 非空明文 → 加密后写入 ``doubao_asr_api_key_encrypted``；
+
+def _apply_secret_updates(filtered: dict) -> None:
+    """把明文密钥换成密文（就地修改 filtered），逐档案处理。
+
+    - 非空明文 → 加密后写入对应的 ``*_encrypted`` 落盘键；
     - 空串/未传 → 视为「本次未提供」，保留已存密钥；
-    - ``doubao_asr_api_key_clear=true`` → 显式清除。
+    - ``*_clear=true`` → 显式清除。
 
     明文键本身绝不写进 settings.json，也不进日志。
     """
-    clear_requested = bool(filtered.pop(DOUBAO_SECRET_CLEAR_KEY, False))
-    raw_key = filtered.pop(DOUBAO_SECRET_WRITE_KEY, None)
-    raw_key = str(raw_key).strip() if raw_key else ""
+    from app.utils.encryption import get_encryption
 
-    if raw_key:
-        from app.utils.encryption import get_encryption
+    for stored_key, write_key, clear_key, _flag_key in SECRET_SPECS:
+        clear_requested = bool(filtered.pop(clear_key, False))
+        raw_key = filtered.pop(write_key, None)
+        raw_key = str(raw_key).strip() if raw_key else ""
 
-        filtered[DOUBAO_SECRET_STORED_KEY] = get_encryption().encrypt(raw_key)
-        return
-
-    if clear_requested:
-        filtered[DOUBAO_SECRET_STORED_KEY] = ""
+        if raw_key:
+            filtered[stored_key] = get_encryption().encrypt(raw_key)
+        elif clear_requested:
+            filtered[stored_key] = ""
 
 
 def build_settings_response(*, user_settings) -> dict:
@@ -184,7 +193,7 @@ def build_settings_response(*, user_settings) -> dict:
         )
         user_settings.update(initialization_updates)
 
-    return mask_doubao_secret(normalized_payload)
+    return mask_asr_secrets(normalized_payload)
 
 
 async def apply_settings_update(
@@ -225,11 +234,13 @@ async def apply_settings_update(
         "whisper",
         "qwen_asr",
         "doubao_asr",
+        "chatgpt_asr",
     }:
         raise SettingsValidationError("Invalid ASR provider")
 
-    # 豆包 Access Token：明文只在这里出现一次，落盘前换成密文
-    _apply_doubao_secret_update(filtered)
+    # 只写不读的密钥（豆包 Access Token / ChatGPT 访问令牌）：
+    # 明文只在这里出现一次，落盘前换成密文
+    _apply_secret_updates(filtered)
 
     if not filtered:
         raise SettingsValidationError("No valid settings provided")
@@ -282,5 +293,5 @@ async def apply_settings_update(
         result.provider_rebuilt = True
 
     payload = normalize_preset_settings(user_settings.get_all(), user_settings=user_settings)
-    result.payload = mask_doubao_secret(strip_retired_settings(payload))
+    result.payload = mask_asr_secrets(strip_retired_settings(payload))
     return result

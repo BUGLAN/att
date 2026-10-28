@@ -1,6 +1,6 @@
 # ASR 接入说明
 
-本文说明本项目**语音识别（ASR）的三条接入链路**、如何切换与验证，以及如何新增一个 provider。
+本文说明本项目**语音识别（ASR）的四条接入链路**、如何切换与验证，以及如何新增一个 provider。
 所有事实来自代码：`app/stt/`、`app/services/streaming_session_manager.py`、`app/config.py`。
 
 ---
@@ -22,6 +22,7 @@ ASR 层有两个接口（`app/stt/`）：
 | `whisper` | ✅ | ❌ | `provider` | 需要（点「开启模型」） | faster-whisper 本地推理 |
 | `qwen_asr` | ✅ | ✅ | `provider` / `managed_streaming_bridge` | 需要 | 流式依赖 vLLM；**Windows 上流式不可用**，须走远端桥接 |
 | `doubao_asr` | ✅ | ✅ | `online` | **不需要** | 火山引擎在线识别，凭据配齐即就绪 |
+| `chatgpt_asr` | ✅ | ❌ | `online` | **不需要** | ChatGPT 听写接口（在线批量），见 §6 |
 
 `model_service_mode` 的语义：
 
@@ -243,7 +244,81 @@ Invoke-RestMethod "http://127.0.0.1:8000/api/health?probe_runtime=true" |
 
 ---
 
-## 6. 新增一个 ASR provider
+## 6. ChatGPT 听写 ASR（在线批量）
+
+> 实现：`app/stt/providers/chatgpt_asr_provider.py`，调用逻辑移植自
+> [Wangnov/codex-asr](https://github.com/Wangnov/codex-asr)（MIT License）。
+
+### 6.1 接口与协议
+
+| 项目 | 内容 |
+| --- | --- |
+| 端点 | `POST https://chatgpt.com/backend-api/transcribe`（可在设置页覆盖） |
+| 鉴权 | **ChatGPT 网页账号 access token**（等同登录态，不是 platform API Key） |
+| 请求 | `multipart/form-data`：`file`（按后缀推断 MIME）+ 可选 `language` |
+| 响应 | `{"text": …, "asset_pointer": …, "asset_ttl": …, "asset_format": …}`，只取 `text` |
+| 限制 | 非流式、无时间戳；建议单文件 < 11 分钟；支持 wav/mp3/m4a/mp4/flac/ogg/webm |
+
+鉴权头四件套（缺一会被边缘风控拦截成 403 HTML 页）：
+
+```text
+Authorization: Bearer <token>
+originator: Codex Desktop
+User-Agent: Codex Desktop/26.429.30905 (windows; x86_64)
+ChatGPT-Account-Id: <从 JWT 的 https://api.openai.com/auth.chatgpt_account_id 提取>
+```
+
+`ChatGPT-Account-Id` 由 provider 从令牌里自动提取（`account_id_from_access_token`），
+提取失败时省略该头。粘贴令牌时带 `Bearer ` 前缀也能识别（会剥掉）。
+
+### 6.2 密钥流转（硬约束）
+
+与豆包 Access Token 完全同一套约定（`settings_service.SECRET_SPECS`）：
+
+- 明文只出现在 `PUT /api/settings` 请求里，落盘前加密为
+  `chatgpt_asr_api_key_encrypted`（Fernet，密钥在 `data/.encryption_key`）；
+- `GET /api/settings` 只回报 `chatgpt_asr_api_key_set: bool`；
+- 解析优先级：用户设置密文 > `CHATGPT_ASR_API_KEY` 环境变量；
+- 令牌不进日志与异常文案（401/403 的提示只说「令牌无效/被风控」，不回显内容）。
+
+### 6.3 设置项与重建
+
+| 设置键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `chatgpt_asr_api_key` | （只写） | 明文令牌，写入即加密；`chatgpt_asr_api_key_clear=true` 显式清除 |
+| `chatgpt_asr_endpoint` | `https://chatgpt.com/backend-api/transcribe` | 端点覆盖 |
+| `chatgpt_asr_timeout_seconds` | `120` | 请求超时（10–600） |
+
+三个键都登记在 `MODEL_RUNTIME_KEYS`：变更即卸载模型服务并重建 provider。
+
+### 6.4 能力与录音模式
+
+- `model_service_mode="online"`，令牌配齐即 `online_ready=True`，**不需要**点「开启模型」；
+- 不支持流式：录音模式选「流式」时会提示切换单段/多段（`get_runtime_capabilities`）。
+
+### 6.5 验证方式
+
+```bash
+# 进程内直调（不依赖 HTTP 层）：factory 装配 → 真实端点
+CHATGPT_ASR_API_KEY=<token> uv run python -c "
+import asyncio
+from app.stt.factory import get_asr_provider_config, create_asr_provider
+p = create_asr_provider(get_asr_provider_config({'asr_provider': 'chatgpt_asr'}))
+print(asyncio.run(p.transcribe('test.wav', 'zh')).segments[0].text)
+"
+```
+
+单测见 `tests/test_chatgpt_asr_provider.py`（鉴权头、状态码归一、空 text、工厂装配，不联网）。
+
+### 6.6 风险须知
+
+非官方逆向接口：OpenAI 改协议或加强风控后可能失效；令牌等同账号登录态，
+只能存本地（本项目的加密落盘即为此设计）；频繁大量使用有账号风险，
+重要场合请用官方 API 或本地模型。
+
+---
+
+## 7. 新增一个 ASR provider
 
 1. 在 `app/stt/providers/` 新建实现：
    - 批量：继承 `ASRProvider`，实现 `provider_type` / `model_name` / `transcribe()`，
@@ -262,7 +337,7 @@ Invoke-RestMethod "http://127.0.0.1:8000/api/health?probe_runtime=true" |
 
 ---
 
-## 7. 故障排查
+## 8. 故障排查
 
 | 现象 | 原因与处理 |
 | --- | --- |
@@ -272,4 +347,7 @@ Invoke-RestMethod "http://127.0.0.1:8000/api/health?probe_runtime=true" |
 | 灰字定稿很慢 | 把设置页「强制断句静音时长」设为 200–800 ms（对应 `end_window_size`） |
 | 「会话已被服务端关闭（可能是长时间静音）」 | 服务端 VAD 关会话；**豆包会话本身不做自动重连**（全局 WS 的重连与这条 ASR 连接无关），重开录音即可 |
 | Qwen 流式在 Windows 不可用 | 改用 `remote_bridge` + `scripts/qwen_streaming_service.py`，或切换单段/多段 |
+| ChatGPT 听写报 401 | 令牌过期（JWT 有 `exp`），重新从网页登录态获取并更新设置 |
+| ChatGPT 听写报 403「被风控拦截」 | 边缘风控；稍后重试、更换网络，或重新登录获取新令牌 |
+| ChatGPT 听写转写为空 | 音频里没有可识别语音（`text` 为空是合法结果），不是故障 |
 | 改了 `.env` 的 `ASR_PROVIDER` 没生效 | 设置页/`data/settings.json` 优先级更高，改那里 |
