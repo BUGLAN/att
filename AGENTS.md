@@ -143,4 +143,5 @@ app/          FastAPI：
 
 `README.md`（门面与快速开始）、`docs/使用说明.md`、`docs/架构说明.md`、
 `docs/配置说明.md`、`docs/API.md`、`docs/ASR接入.md`、`docs/开发与运维.md`、
-`docs/已知问题.md`、`docs/LLM配置模块重设计.md`（LLM v2 设计与原型）、`docs/文件转写-多引擎与LLM校对-设计.md`（文件转写多引擎与 LLM 校对设计）。
+`docs/已知问题.md`、`docs/LLM配置模块重设计.md`（LLM v2 设计与原型）、`docs/文件转写-多引擎与LLM校对-设计.md`（文件转写多引擎与 LLM 校对设计）、
+`docs/OpenLess-调研与借鉴清单.md`（同类开源项目的提示词契约与可借鉴工程件）。

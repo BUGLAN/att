@@ -205,3 +205,165 @@ def test_optimizer_stream_raises_non_retryable_on_empty_truncated_output(monkeyp
         assert "思考" in exc.user_message
     else:
         raise AssertionError("空正文 + length 必须抛 LLMError，不能静默返回空结果")
+
+
+# ==================== 看门狗：区分首 token / 块间空闲 ====================
+
+
+def _patch_open_stream(monkeypatch, gateway, stream):
+    """把网关的「开流」替换成直接返回预制的假流（绕过 litellm）。"""
+    import app.llm.gateway as gateway_module
+
+    async def fake_open(**kwargs):
+        return stream
+
+    monkeypatch.setattr(gateway, "_open_stream_once", fake_open)
+    return gateway_module
+
+
+class _HangingStream:
+    """开流后永远不产出第一条增量。"""
+
+    def __init__(self):
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(30)
+        raise StopAsyncIteration
+
+    async def aclose(self):
+        self.closed = True
+
+
+class _StallAfterFirstStream:
+    """产出第一块后卡死（相邻增量之间的空闲超预算）。"""
+
+    def __init__(self):
+        self._served = False
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._served:
+            self._served = True
+            return _chunk("第一块")
+        await asyncio.sleep(30)
+        raise StopAsyncIteration
+
+    async def aclose(self):
+        self.closed = True
+
+
+def test_watchdog_first_token_timeout_raises_retryable_timeout(monkeypatch):
+    """首 token 预算耗尽 → 可重试的 timeout，且必须关闭底层流。"""
+    from app.llm.errors import CODE_TIMEOUT, LLMError
+
+    hanging = _HangingStream()
+    gateway = LiteLLMGateway()
+    _patch_open_stream(monkeypatch, gateway, hanging)
+
+    async def run():
+        async for _chunk_ in gateway.chat_stream(
+            model_string="deepseek/deepseek-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            timeout_s=45,
+            first_token_timeout_s=0,
+            chunk_idle_timeout_s=45,
+        ):
+            pass
+
+    try:
+        asyncio.run(run())
+    except LLMError as exc:
+        # 看门狗抛出的分级不能被 chat_stream 的 classify_exception 洗成 unknown
+        assert exc.code == CODE_TIMEOUT
+        assert exc.retryable is True
+        assert "首条增量前" in exc.user_message
+    else:
+        raise AssertionError("首 token 卡死必须抛 LLMError(timeout)")
+    assert hanging.closed is True
+
+
+def test_watchdog_chunk_idle_timeout_keeps_first_chunk(monkeypatch):
+    """相邻增量之间卡死：第一块已经交付，空闲预算耗尽后抛 timeout。"""
+    from app.llm.errors import CODE_TIMEOUT, LLMError
+
+    stall = _StallAfterFirstStream()
+    gateway = LiteLLMGateway()
+    _patch_open_stream(monkeypatch, gateway, stall)
+
+    received: list[str] = []
+
+    async def run():
+        async for chunk in gateway.chat_stream(
+            model_string="deepseek/deepseek-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            timeout_s=45,
+            first_token_timeout_s=45,
+            chunk_idle_timeout_s=0,
+        ):
+            received.append(chunk.text)
+
+    try:
+        asyncio.run(run())
+    except LLMError as exc:
+        assert exc.code == CODE_TIMEOUT
+        assert "相邻增量之间" in exc.user_message
+    else:
+        raise AssertionError("块间卡死必须抛 LLMError(timeout)")
+    assert received == ["第一块"]
+    assert stall.closed is True
+
+
+def test_optimizer_stream_passes_stage_timeouts(monkeypatch):
+    """流式路径必须把派生出的阶段预算传给网关（否则看门狗形同虚设）。"""
+    import app.llm.store as store_module
+    import app.llm.gateway as gateway_module
+
+    store = _FakeStore()
+    gateway = _FakeStreamingGateway()
+    monkeypatch.setattr(store_module, "get_llm_store", lambda: store)
+    monkeypatch.setattr(gateway_module, "get_llm_gateway", lambda: gateway)
+
+    async def collect():
+        return [event async for event in TextOptimizer().optimize_stream("字" * 2000)]
+
+    asyncio.run(collect())
+    # 配置 33s，2000 字：总预算 = max(33, 20+60) = 80；首 token = min(80, 130) = 80；空闲 = 30
+    assert gateway.kwargs["timeout_s"] == 80
+    assert gateway.kwargs["first_token_timeout_s"] == 80
+    assert gateway.kwargs["chunk_idle_timeout_s"] == 30
+
+
+def test_optimizer_stream_done_result_is_cleaned(monkeypatch):
+    """增量按原文推送，最终 done 的落盘文本必须是清洗后的。"""
+    import app.llm.store as store_module
+    import app.llm.gateway as gateway_module
+
+    class _NoisyGateway:
+        def __init__(self):
+            self.kwargs = None
+
+        async def chat_stream(self, **kwargs):
+            self.kwargs = kwargs
+            yield GatewayStreamChunk(text="以下是整理后的内容：\n", model_string="deepseek/deepseek-flash")
+            yield GatewayStreamChunk(text="正文内容。", model_string="deepseek/deepseek-flash")
+            yield GatewayStreamChunk(text="", model_string="deepseek/deepseek-flash", finish_reason="stop")
+
+    gateway = _NoisyGateway()
+    monkeypatch.setattr(store_module, "get_llm_store", lambda: _FakeStore())
+    monkeypatch.setattr(gateway_module, "get_llm_gateway", lambda: gateway)
+
+    async def collect():
+        return [event async for event in TextOptimizer().optimize_stream("原始文本")]
+
+    events = asyncio.run(collect())
+    deltas = "".join(e.text for e in events if e.type == "delta")
+    assert deltas == "以下是整理后的内容：\n正文内容。"
+    assert events[-1].type == "done"
+    assert events[-1].result.optimized_text == "正文内容。"

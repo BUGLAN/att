@@ -90,17 +90,5 @@ class PromptManager:
         """Validate that a preset id exists."""
         return preset_id in self._presets
 
-    def render_prompt(self, preset_id: Optional[str], text: str) -> Optional[str]:
-        """Render a prompt template with text."""
-        preset = self.get_by_id(preset_id) if preset_id else self.get_default()
-        if not preset:
-            return None
-
-        template = preset.prompt_template
-        if "{text}" in template:
-            return template.format(text=text)
-
-        return f"{template.rstrip()}\n\n{text}".strip()
-
 
 prompt_manager = PromptManager()

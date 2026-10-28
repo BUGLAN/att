@@ -9,7 +9,6 @@ v1 时代这里锁的是「静默降级要上报 fallback_reason」；v2 移除�
 4. 调用参数（temperature/max_tokens/timeout/retries）来自模型条目配置。
 """
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
@@ -85,7 +84,10 @@ def test_optimize_success_returns_result_with_usage(monkeypatch):
     assert gateway.kwargs["timeout_s"] == 33, "超时必须来自模型配置（已知问题 #4）"
     assert gateway.kwargs["retries"] == 1
     assert gateway.kwargs["api_key"] == "sk-secret-1234"
-    assert "原始文本" in gateway.kwargs["messages"][0]["content"]
+    # 正文必须落在 user 消息里，system 只放规则（prompt_builder 的信封契约）
+    assert gateway.kwargs["messages"][0]["role"] == "system"
+    assert gateway.kwargs["messages"][1]["role"] == "user"
+    assert "原始文本" in gateway.kwargs["messages"][1]["content"]
 
 
 def test_optimize_failure_raises_visible_error_without_fallback(monkeypatch):
@@ -139,14 +141,62 @@ def test_optimize_uses_named_preset(monkeypatch):
     rendered_head = preset.prompt_template.split("{text}")[0][:20]
     assert rendered_head in gateway.kwargs["messages"][0]["content"]
 
+def test_optimize_scales_timeout_with_input_length(monkeypatch):
+    """自适应超时：长文本的请求预算按字数放大，不再被模型配置的定值掐断。"""
+    gateway = _FakeGateway()
+    _patch(monkeypatch, _FakeStore(), gateway)
+
+    asyncio.run(TextOptimizer().optimize("字" * 2000, preset_id=None))
+
+    # 配置 33s，2000 字：总预算 = max(33, 20 + 0.03×2000 = 80) = 80
+    assert gateway.kwargs["timeout_s"] == 80
+
+
+def test_optimize_cleans_model_output(monkeypatch):
+    """输出清洗：思考块与开头套话在返回前剥掉（模型不听话时的兜底）。"""
+    gateway = _FakeGateway(
+        result=GatewayChatResult(
+            text="<think>先想一想</think>以下是整理后的内容：\n优化后的文本",
+            model_string="deepseek/deepseek-flash",
+            latency_ms=900, prompt_tokens=100, completion_tokens=30, total_tokens=130,
+        )
+    )
+    _patch(monkeypatch, _FakeStore(), gateway)
+
+    result = asyncio.run(TextOptimizer().optimize("原始文本", preset_id=None))
+
+    assert result.optimized_text == "优化后的文本"
+
+
+def test_optimize_raises_when_output_cleaned_to_empty(monkeypatch):
+    """整段输出只有思考块 → 清洗后为空：抛可见错误而不是静默写入空文本。"""
+    from app.llm.errors import CODE_PROVIDER
+
+    gateway = _FakeGateway(
+        result=GatewayChatResult(
+            text="<think>全程推理没有正文</think>",
+            model_string="deepseek/deepseek-flash",
+            latency_ms=900, prompt_tokens=100, completion_tokens=30, total_tokens=130,
+        )
+    )
+    _patch(monkeypatch, _FakeStore(), gateway)
+
+    try:
+        asyncio.run(TextOptimizer().optimize("原始文本", preset_id=None))
+    except LLMError as exc:
+        assert exc.code == CODE_PROVIDER
+        assert "清洗" in exc.user_message
+    else:
+        raise AssertionError("思考块独占输出必须抛错，不能返回空结果")
+
 
 def test_optimize_raises_non_retryable_when_thinking_eats_all_tokens(monkeypatch):
     """非流式路径同样不能把「思考吃满预算」当普通空结果再重跑一次。"""
-    import app.llm.store as store_module
     import app.llm.gateway as gateway_module
+    import app.llm.store as store_module
+    from app.llm.errors import CODE_OUTPUT_TRUNCATED, LLMError
     from app.llm.gateway import GatewayChatResult
     from app.llm.models import ModelEntry, ModelParams, ProviderProfile
-    from app.llm.errors import CODE_OUTPUT_TRUNCATED, LLMError
     from app.llm.optimizer import TextOptimizer
 
     class _Store:

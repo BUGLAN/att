@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ import httpx
 
 from app.llm.errors import (
     CODE_OK,
+    CODE_TIMEOUT,
     CODE_UNSUPPORTED_PROVIDER,
     LLMError,
     classify_exception,
@@ -219,11 +221,22 @@ class LiteLLMGateway:
         timeout_s: int = 60,
         retries: int = 2,
         reasoning_effort: str = "",
+        first_token_timeout_s: Optional[int] = None,
+        chunk_idle_timeout_s: Optional[int] = None,
     ) -> AsyncIterator[GatewayStreamChunk]:
         """流式补全：逐块 yield，失败抛 LLMError（已分级、已脱敏）。
 
         与 chat() 共用「前缀未收录时回退 openai/ 兼容端点」的策略；调用方应把
         「第一条增量之前就失败」视为可降级为 chat() 的信号。
+
+        超时看门狗（`app/llm/timeouts.py` 派生，调用方按输入长度传入）：
+        - `first_token_timeout_s`：开流到第一条增量的等待上限（含思考模型的
+          推理时间，预算最宽）；
+        - `chunk_idle_timeout_s`：相邻增量之间的空闲上限（只反映服务端是否
+          卡死）。
+        两者的总上限都是 `timeout_s`（整次请求预算）。缺省时不区分阶段，
+        两个预算都退化为 `timeout_s`——LiteLLM 自身的 timeout 只约束建连与
+        单次读，流式正文迭代必须由本层兜底。
         """
         _warm_spec_cache()
         stream = await self._open_stream_once(
@@ -272,10 +285,22 @@ class LiteLLMGateway:
             model_string = fallback_model
 
         try:
-            async for chunk in stream:
-                parsed = self._parse_stream_chunk(chunk, model_string)
-                if parsed is not None:
-                    yield parsed
+            async for chunk in self._stream_with_watchdog(
+                stream,
+                model_string=model_string,
+                # None 才退化；0 也是合法预算（立即超时，测试与极端配置用）
+                first_token_timeout_s=(
+                    first_token_timeout_s if first_token_timeout_s is not None else timeout_s
+                ),
+                chunk_idle_timeout_s=(
+                    chunk_idle_timeout_s if chunk_idle_timeout_s is not None else timeout_s
+                ),
+            ):
+                yield chunk
+        except LLMError:
+            # 看门狗抛出的超时已分级（timeout），不能再走 classify_exception
+            # 被降级成 unknown
+            raise
         except Exception as exc:
             err = classify_exception(exc, (api_key,) if api_key else ())
             logger.warning(
@@ -285,6 +310,56 @@ class LiteLLMGateway:
                 error=err.message,
             )
             raise err from exc
+
+    async def _stream_with_watchdog(
+        self,
+        stream: Any,
+        *,
+        model_string: str,
+        first_token_timeout_s: int,
+        chunk_idle_timeout_s: int,
+    ) -> AsyncIterator[GatewayStreamChunk]:
+        """带超时看门狗地转发流：区分「首 token」与「块间空闲」两类卡死。
+
+        LiteLLM/OpenAI 客户端的 timeout 只约束建连与单次网络读，无法表达
+        「开流后 N 秒还没有第一条增量」「相邻两块之间超过 N 秒」这类阶段预算，
+        所以在网关层包一层 `asyncio.wait_for`。任一阶段超时都会关闭底层流
+        并抛 `LLMError(timeout)`（可重试——上游卡死换一次重试合理）。
+        """
+        iterator = stream.__aiter__()
+        saw_chunk = False
+        try:
+            while True:
+                budget = first_token_timeout_s if not saw_chunk else chunk_idle_timeout_s
+                try:
+                    raw = await asyncio.wait_for(iterator.__anext__(), timeout=float(budget))
+                except StopAsyncIteration:
+                    return
+                except asyncio.TimeoutError as exc:
+                    stage = "首条增量前" if not saw_chunk else "相邻增量之间"
+                    logger.warning(
+                        "流式响应看门狗超时",
+                        model=model_string,
+                        stage=stage,
+                        budget_s=budget,
+                    )
+                    raise LLMError(
+                        CODE_TIMEOUT,
+                        f"流式响应在{stage}超过 {budget}s 没有新数据",
+                    ) from exc
+                saw_chunk = True
+                parsed = self._parse_stream_chunk(raw, model_string)
+                if parsed is not None:
+                    yield parsed
+        finally:
+            # 无论正常耗尽、超时还是调用方提前退出，都尽力关闭底层流，
+            # 不让被取消的连接挂在后台
+            close = getattr(iterator, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001  关闭失败的流无需上报
+                    pass
 
     async def _open_stream_once(
         self,
