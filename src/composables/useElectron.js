@@ -1,17 +1,70 @@
 import { ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { api as httpApi, getBackendPort } from '@/api/client'
 
-const isElectron = typeof window !== 'undefined' && !!window.electronAPI
+/**
+ * 桌面能力包装层（Tauri 2 内核版，阶段 3a）。
+ *
+ * 形状兼容约定（架构文档 §10.1）：
+ * - 导出面与旧 Electron 版完全一致，组件/composable 零改动
+ * - `isElectron` 名称保留（语义 = 「桌面环境」），新增 `isDesktop` 别名
+ * - 事件通道名沿用旧名（hotkey:press / paste-text / clipboard:changed …），
+ *   Rust 侧事件桥按同名发射
+ * - 3g 待接入项：openMediaFile / filePathForFile / pasteActive 返回降级值
+ */
+
+const isElectron = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
+const isDesktop = isElectron
 
 function toPlainObject(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value))
 }
 
+// 同步平台推断（旧版读 window.electronAPI.platform 是同步的；Tauri invoke 是异步，
+// 这里用 UA 做同步推断供默认值场景，精确值走 getPlatform()）
+function detectPlatformSync() {
+  if (typeof navigator === 'undefined') return 'web'
+  const ua = navigator.userAgent
+  if (ua.includes('Win')) return 'win32'
+  if (ua.includes('Mac')) return 'darwin'
+  if (ua.includes('Linux')) return 'linux'
+  return 'web'
+}
+
+// ---------------- Tauri 事件通道管理（对齐旧 removeAllListeners 语义）----------------
+
+const channelUnlisteners = new Map()
+
+async function addChannelListener(channel, callback) {
+  if (!isDesktop) return
+  const { listen } = await import('@tauri-apps/api/event')
+  const unlisten = await listen(channel, (event) => callback(event.payload))
+  if (!channelUnlisteners.has(channel)) {
+    channelUnlisteners.set(channel, new Set())
+  }
+  channelUnlisteners.get(channel).add(unlisten)
+}
+
+async function removeAllChannelListeners(channel) {
+  const set = channelUnlisteners.get(channel)
+  if (!set) return
+  for (const unlisten of set) {
+    try {
+      await unlisten()
+    } catch (error) {
+      console.warn('[Desktop] Failed to unlisten channel:', channel, error)
+    }
+  }
+  channelUnlisteners.delete(channel)
+}
+
 export function useElectron() {
-  const isReady = ref(false)
+  const isReady = ref(isDesktop)
 
   function debugLog(scope, message, details) {
-    globalThis.window?.electronAPI?.debugLog?.(scope, message, toPlainObject(details))
+    if (isDesktop) {
+      void invoke('debug_log', { scope, message, details: toPlainObject(details) }).catch(() => {})
+    }
   }
 
   const api = {
@@ -64,35 +117,30 @@ export function useElectron() {
   }
 
   const windowControl = {
-    minimize: () => globalThis.window?.electronAPI?.minimizeWindow(),
-    maximize: () => globalThis.window?.electronAPI?.maximizeWindow(),
-    close: () => globalThis.window?.electronAPI?.closeWindow()
+    minimize: () => isDesktop && void invoke('window_minimize'),
+    maximize: () => isDesktop && void invoke('window_toggle_maximize'),
+    close: () => isDesktop && void invoke('window_close')
   }
 
   const tray = {
-    setIcon: (iconType) => globalThis.window?.electronAPI?.setTrayIcon(iconType),
-    updateMenu: (records = []) => globalThis.window?.electronAPI?.updateTrayMenu(records)
+    setIcon: (iconType) => isDesktop && void invoke('set_tray_icon', { iconType }),
+    updateMenu: (records = []) => isDesktop && void invoke('update_tray_menu', { records })
   }
 
   const floatingWindow = {
-    show: () => globalThis.window?.electronAPI?.showFloatingWindow(),
-    hide: () => globalThis.window?.electronAPI?.hideFloatingWindow(),
-    toggle: () => globalThis.window?.electronAPI?.toggleFloatingWindow(),
-    updateState: (payload) => globalThis.window?.electronAPI?.updateFloatingWindowState(toPlainObject(payload))
+    show: () => isDesktop && void invoke('show_floating_window'),
+    hide: () => isDesktop && void invoke('hide_floating_window'),
+    toggle: () => isDesktop && void invoke('toggle_floating_window'),
+    updateState: (payload) => isDesktop && void invoke('update_floating_window_state', { payload: toPlainObject(payload) })
   }
-
-  // 统一浮层已整体下线：两组浮层封装与对应的两个事件监听一并删除。
 
   const clipboard = {
     readText: async () => {
-      if (globalThis.window?.electronAPI?.readClipboardText) {
+      if (isDesktop) {
         try {
-          const result = await globalThis.window.electronAPI.readClipboardText()
-          if (typeof result === 'string') {
-            return result
-          }
+          return await invoke('read_clipboard_text')
         } catch (error) {
-          console.error('[Clipboard] Electron clipboard read failed:', error)
+          console.error('[Clipboard] Tauri clipboard read failed:', error)
         }
       }
 
@@ -103,14 +151,14 @@ export function useElectron() {
       throw new Error('Clipboard read API unavailable')
     },
     writeText: async (text) => {
-      if (globalThis.window?.electronAPI?.writeClipboard) {
+      if (isDesktop) {
         try {
-          const result = await globalThis.window.electronAPI.writeClipboard(text)
+          const result = await invoke('write_clipboard_text', { text })
           if (result !== false) {
             return true
           }
         } catch (error) {
-          console.error('[Clipboard] Electron clipboard write failed:', error)
+          console.error('[Clipboard] Tauri clipboard write failed:', error)
         }
       }
 
@@ -122,8 +170,8 @@ export function useElectron() {
       throw new Error('Clipboard API unavailable')
     },
     writeImage: async (payload) => {
-      if (globalThis.window?.electronAPI?.writeClipboardImage) {
-        const result = await globalThis.window.electronAPI.writeClipboardImage(toPlainObject(payload))
+      if (isDesktop) {
+        const result = await invoke('write_clipboard_image', { payload: toPlainObject(payload) })
         if (result !== false) {
           return true
         }
@@ -132,98 +180,102 @@ export function useElectron() {
       throw new Error('Image clipboard API unavailable')
     },
     pasteActive: async () => {
-      if (globalThis.window?.electronAPI?.pasteClipboard) {
-        const result = await globalThis.window.electronAPI.pasteClipboard()
-        if (!result || result.success === false) {
-          throw new Error(result?.error || 'Paste helper failed')
-        }
-        return true
+      if (isDesktop) {
+        return invoke('paste_active')
       }
 
-      throw new Error('System paste is only available in Electron')
+      throw new Error('System paste is only available in desktop mode')
     }
   }
 
-  // 历史上的 onRecordStatus / onRecordCompleted / startStatusPolling / stopStatusPolling
-  // 是静默 no-op（记录状态实时刷新只走全局 WebSocket），已删除。
-
   function onHotkeyPress(callback) {
-    globalThis.window?.electronAPI?.onHotkeyPress?.(callback)
+    void addChannelListener('hotkey:press', callback)
   }
 
   function onHotkeyRelease(callback) {
-    globalThis.window?.electronAPI?.onHotkeyRelease?.(callback)
+    void addChannelListener('hotkey:release', callback)
   }
 
   function onPasteText(callback) {
-    globalThis.window?.electronAPI?.onPasteText(callback)
+    void addChannelListener('paste-text', callback)
   }
 
   function onNavigateSettings(callback) {
-    globalThis.window?.electronAPI?.onNavigateSettings(callback)
+    void addChannelListener('navigate:settings', callback)
   }
 
   function onClipboardChanged(callback) {
-    globalThis.window?.electronAPI?.onClipboardChanged(callback)
+    void addChannelListener('clipboard:changed', callback)
   }
 
   function onDesktopPermissionRequired(callback) {
-    globalThis.window?.electronAPI?.onDesktopPermissionRequired?.(callback)
+    void addChannelListener('desktop:permission-required', callback)
   }
 
   function onDesktopAgentError(callback) {
-    globalThis.window?.electronAPI?.onDesktopAgentError?.(callback)
+    void addChannelListener('desktop:agent-error', callback)
   }
 
   function removeAllListeners(channel) {
-    globalThis.window?.electronAPI?.removeAllListeners(channel)
+    void removeAllChannelListeners(channel)
   }
 
   async function syncInputSettings(settings) {
-    return globalThis.window?.electronAPI?.syncInputSettings(toPlainObject(settings))
+    if (!isDesktop) {
+      return { success: false, error: 'Desktop settings sync unavailable' }
+    }
+    return invoke('sync_input_settings', { payload: toPlainObject(settings) })
   }
 
   async function syncDesktopSettings(settings) {
-    if (!globalThis.window?.electronAPI?.syncDesktopSettings) {
+    if (!isDesktop) {
       return { success: false, error: 'Desktop settings sync unavailable' }
     }
-
-    return globalThis.window.electronAPI.syncDesktopSettings(toPlainObject(settings))
+    return invoke('sync_desktop_settings', { payload: toPlainObject(settings) })
   }
 
   async function getDesktopSettings() {
-    return globalThis.window?.electronAPI?.getDesktopSettings?.()
+    if (!isDesktop) {
+      return null
+    }
+    return invoke('get_desktop_settings')
   }
 
   async function saveDesktopSettings(settings) {
-    return globalThis.window?.electronAPI?.saveDesktopSettings?.(toPlainObject(settings))
+    if (!isDesktop) {
+      return { success: false, error: 'Desktop settings sync unavailable' }
+    }
+    return invoke('save_desktop_settings', { payload: toPlainObject(settings) })
   }
 
   async function syncRecordingState(payload) {
-    if (!globalThis.window?.electronAPI?.syncRecordingState) {
+    if (!isDesktop) {
       return { success: false, error: 'Recording state sync unavailable' }
     }
-
-    return globalThis.window.electronAPI.syncRecordingState(toPlainObject(payload))
+    return invoke('sync_recording_state', { payload: toPlainObject(payload) })
   }
 
-  // 「转文字」页：系统文件选择对话框。仅 Electron 可用，浏览器环境返回 null。
+  // 「转文字」页：系统文件选择对话框（3g 接入 dialog 插件；当前返回 null 走路径输入）
   async function openMediaFile() {
-    if (!globalThis.window?.electronAPI?.openMediaFile) {
-      return null
-    }
-    const picked = await globalThis.window.electronAPI.openMediaFile()
-    return typeof picked === 'string' && picked ? picked : null
+    return null
   }
 
-  // 「转文字」页：拖拽落下的 File 对象换本地绝对路径。浏览器环境拿不到，返回空串。
-  function filePathForFile(file) {
-    const path = globalThis.window?.electronAPI?.getPathForFile?.(file)
-    return typeof path === 'string' ? path : ''
+  // 「转文字」页：拖拽落下的 File 对象换本地绝对路径（3g 接入 Tauri onDragDrop）
+  function filePathForFile() {
+    return ''
+  }
+
+  // 精确平台值（异步）：settings 默认值用同步 detectPlatformSync 即可
+  async function getPlatform() {
+    if (!isDesktop) {
+      return detectPlatformSync()
+    }
+    return invoke('get_platform')
   }
 
   return {
     isElectron,
+    isDesktop,
     isReady,
     api,
     windowControl,
@@ -246,7 +298,8 @@ export function useElectron() {
     syncRecordingState,
     openMediaFile,
     filePathForFile,
-    platform: globalThis.window?.electronAPI?.platform || 'web',
+    getPlatform,
+    platform: detectPlatformSync(),
     getBackendPort
   }
 }

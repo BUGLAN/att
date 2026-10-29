@@ -1,0 +1,57 @@
+# ATT 桌面应用：本文件同时是 workspace 根与 Tauri app 包（标准 Tauri 布局）
+[workspace]
+resolver = "2"
+members = [
+    "crates/att-core",
+    "crates/att-hotkey",
+    "crates/att-server",
+]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "macros", "rt", "rt-multi-thread", "fs", "net", "time"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+
+[package]
+name = "att-app"
+description = "ATT 桌面应用（Tauri 2 壳：装配核心 + 数据面服务 + 前端命令）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "att-app"
+
+[lib]
+name = "att_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+att-core = { path = "crates/att-core" }
+att-hotkey = { path = "crates/att-hotkey" }
+att-server = { path = "crates/att-server" }
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 剪贴板（读写文本/图片；粘贴模拟 enigo 在 3g 接入）
+arboard = "3"
+# PNG 解码（写剪贴板图片）
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

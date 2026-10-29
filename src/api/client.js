@@ -5,22 +5,75 @@
 import { createNdjsonParser } from '@/utils/ndjson.mjs'
 
 let backendPort = null
+// Tauri 注入的端口是「本次启动的权威值」：网络错误后重解析时优先复用，
+// 避免把正确端口丢掉、退回到探测默认值（Rust 回退随机端口时探测必然失败）。
+let injectedPortCache = null
+
+// Rust 数据面的首选固定端口（app 侧同值）；被占用时 Rust 会回退随机端口，
+// 此时以注入值为准。这里保留探测兜底，避免「注入失败 + invoke 失败」时整站瘫痪。
+const PREFERRED_BACKEND_PORT = 17890
+const LEGACY_PYTHON_PORT = 8000
+
+async function probeHealth(port, timeoutMs = 900) {
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: controller.signal
+    })
+    clearTimeout(timer)
+    return response.ok
+  } catch (error) {
+    return false
+  }
+}
 
 export async function getBackendPort() {
   if (backendPort) {
     return backendPort
   }
 
-  if (typeof window !== 'undefined' && window.electronAPI?.getPort) {
+  // ① Tauri 注入（initialization_script 在页面脚本前写入，最可靠）
+  if (!injectedPortCache && typeof window !== 'undefined') {
+    const injected = window.__ATT_BACKEND_PORT__
+    if (typeof injected === 'number' && injected > 0) {
+      injectedPortCache = injected
+      console.info('[API] 后端端口:', injected, '（Tauri 注入）')
+    }
+  }
+  if (injectedPortCache) {
+    backendPort = injectedPortCache
+    return backendPort
+  }
+
+  // ② Tauri invoke（注入缺失时的兜底）
+  if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
     try {
-      backendPort = await window.electronAPI.getPort()
-      return backendPort
+      const { invoke } = await import('@tauri-apps/api/core')
+      const port = await invoke('get_backend_port')
+      if (typeof port === 'number' && port > 0) {
+        backendPort = port
+        console.info('[API] 后端端口:', backendPort, '（invoke）')
+        return backendPort
+      }
     } catch (error) {
-      console.warn('[API] Failed to get port from Electron, using default:', error)
+      console.warn('[API] 通过 invoke 获取后端端口失败:', error)
     }
   }
 
-  backendPort = 8000
+  // ③ 探测兜底：固定端口 → 旧 Python 端口
+  for (const candidate of [PREFERRED_BACKEND_PORT, LEGACY_PYTHON_PORT]) {
+    if (await probeHealth(candidate)) {
+      backendPort = candidate
+      console.info('[API] 后端端口:', backendPort, '（健康探测命中）')
+      return backendPort
+    }
+  }
+
+  backendPort = typeof window !== 'undefined' && window.__TAURI_INTERNALS__
+    ? PREFERRED_BACKEND_PORT
+    : LEGACY_PYTHON_PORT
+  console.warn('[API] 后端端口探测失败，使用默认值:', backendPort)
   return backendPort
 }
 
@@ -109,6 +162,10 @@ async function request(method, endpoint, options = {}) {
     if (error?.name === 'AbortError') {
       throw new Error(`请求超时（超过 ${Math.round(timeout / 1000)} 秒未响应）`)
     }
+    // 打印真实 URL 便于排障（3a 实机验收时靠这条日志定位端口/CORS 问题）
+    console.error(`[API] 请求失败 ${method} ${url}:`, error)
+    // 清掉缓存端口，下次调用重新解析（注入值会在 injectedPortCache 里保留优先级）
+    backendPort = null
     throw new Error(`无法连接后端服务：${error?.message || error}`)
   } finally {
     clearTimeout(timer)
@@ -126,6 +183,7 @@ async function request(method, endpoint, options = {}) {
       errorMessage = `HTTP ${response.status}: ${response.statusText}`
     }
 
+    console.error(`[API] 响应错误 ${method} ${url} → ${response.status}: ${errorMessage}`)
     const error = new Error(errorMessage)
     // 保留原始状态码与 detail（409 冲突 / structured detail 的调用方需要自行分支）
     error.status = response.status

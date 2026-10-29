@@ -1,0 +1,597 @@
+//! 设置域：Settings(env) + UserSettings(data/settings.json)。
+//!
+//! 这是**全应用唯一的设置归一化实现**（旧版同一逻辑散落在 Python config.py、
+//! electron/desktop/settings.js、desktop_agent.py、前端 stores/settings.js 四处，
+//! 见阶段①文档 §4.3-18——重写收敛于此）。
+
+pub mod hotkey;
+
+use crate::storage::json_store;
+use crate::Platform;
+#[cfg(test)]
+use crate::now_rfc3339;
+use hotkey::binding_from_legacy;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+
+pub use hotkey::{HotkeyAction, HotkeyBinding, TriggerMode};
+
+/// 已下线功能的僵尸配置键：读写两侧一律剥离（清单与 app/config.py:27-38 对齐）。
+pub const RETIRED_SETTINGS_KEYS: &[&str] = &[
+    "selection_toolbar_enabled",
+    "selection_toolbar_trigger_delay_ms",
+    "selection_toolbar_fallback_to_clipboard",
+    "selection_toolbar_show_examples",
+    "selection_toolbar_auto_add_to_wordbook",
+    "clipboard_overlay_trigger",
+    "clipboard_overlay_retrigger_action",
+    "clipboard_overlay_enter_behavior",
+    "clipboard_overlay_auto_focus_search",
+    "clipboard_overlay_close_on_click_copy",
+];
+
+/// 触发「停模型服务 + 重建 provider」的设置键（语义沿用 Python MODEL_RUNTIME_KEYS；
+/// provider 重建在 3f 接入引擎后生效，这里先返回变更清单）。
+pub const MODEL_RUNTIME_KEYS: &[&str] = &[
+    "asr_provider",
+    "asr_language",
+    "whisper_model",
+    "whisper_device",
+    "qwen_asr_model",
+    "qwen_asr_device",
+    "qwen_asr_dtype",
+    "qwen_asr_max_new_tokens",
+    "qwen_asr_return_timestamps",
+    "qwen_asr_use_forced_aligner",
+    "qwen_asr_forced_aligner_model",
+    "qwen_asr_max_audio_seconds",
+    "doubao_asr_resource_id",
+    "doubao_asr_endpoint",
+    "doubao_asr_end_window_size",
+    "chatgpt_asr_endpoint",
+    "chatgpt_asr_timeout_seconds",
+];
+
+/// 进程级配置（env 覆盖；3a 只需数据目录，后续阶段按需扩展）。
+#[derive(Debug, Clone)]
+pub struct EnvSettings {
+    pub data_dir: PathBuf,
+    pub models_dir: PathBuf,
+}
+
+impl EnvSettings {
+    pub fn from_env() -> Self {
+        let data_dir = std::env::var("ATT_DATA_DIR").unwrap_or_else(|_| "data".into());
+        let models_dir = std::env::var("ATT_MODELS_DIR").unwrap_or_else(|_| "models".into());
+        Self {
+            data_dir: PathBuf::from(data_dir),
+            models_dir: PathBuf::from(models_dir),
+        }
+    }
+}
+
+/// 用户设置（data/settings.json）。
+///
+/// 字段名与默认值与 Python 版 `UserSettings.DEFAULT_SETTINGS` 逐一对齐
+/// （阶段①文档 §3.8 配置全表）；全部 `#[serde(default)]` 保证旧数据可读。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UserSettings {
+    // ---- ASR 基础 ----
+    pub asr_provider: String,          // whisper | qwen_asr | doubao_asr | chatgpt_asr
+    pub asr_language: String,          // zh | en | ja | ko
+    // ---- Whisper ----
+    pub whisper_model: String,
+    pub whisper_device: String,        // auto | cuda | cpu
+    // ---- Qwen3-ASR ----
+    pub qwen_asr_model: String,
+    pub qwen_asr_device: String,
+    pub qwen_asr_dtype: String,
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub qwen_asr_max_new_tokens: i64,
+    pub qwen_asr_return_timestamps: bool,
+    pub qwen_asr_use_forced_aligner: bool,
+    pub qwen_asr_forced_aligner_model: String,
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub qwen_asr_max_audio_seconds: i64,
+    // ---- 豆包（火山 SAUC）----
+    pub doubao_asr_resource_id: String,
+    pub doubao_asr_endpoint: String,
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub doubao_asr_end_window_size: i64,
+    // ---- ChatGPT 听写 ----
+    pub chatgpt_asr_endpoint: String,
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub chatgpt_asr_timeout_seconds: i64,
+    // ---- 密文（GET 视图替换为 *_set 布尔，明文永不外发）----
+    pub doubao_asr_api_key_encrypted: Option<String>,
+    pub chatgpt_asr_api_key_encrypted: Option<String>,
+    // ---- 行为 ----
+    pub pause_audio_on_recording: bool,
+    pub auto_optimize: bool,
+    pub auto_copy_to_clipboard: bool,
+    /// 透明透传键：仅存在于 PUT 白名单（与 Python 行为一致），UI 选择后原样保存。
+    pub audio_input_device: Option<String>,
+    // ---- 录音 ----
+    pub recording_mode: String,        // single | multi | streaming
+    pub silence_threshold: f64,        // 秒
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub silence_level: i64,            // dB
+    // ---- 提示词 ----
+    pub default_preset_id: Option<String>,
+    pub last_used_preset_id: Option<String>,
+    // ---- 热键（新版多绑定模型，取代旧 hotkey 单对象）----
+    pub hotkeys: Vec<HotkeyBinding>,
+}
+
+impl Default for UserSettings {
+    fn default() -> Self {
+        Self::with_platform(Platform::current())
+    }
+}
+
+impl UserSettings {
+    /// 按平台构造默认值（热键默认绑定随平台变化）。
+    pub fn with_platform(platform: Platform) -> Self {
+        Self {
+            asr_provider: "whisper".into(),
+            asr_language: "zh".into(),
+            whisper_model: "large-v3".into(),
+            whisper_device: "auto".into(),
+            qwen_asr_model: "Qwen/Qwen3-ASR-1.7B".into(),
+            qwen_asr_device: "auto".into(),
+            qwen_asr_dtype: "auto".into(),
+            qwen_asr_max_new_tokens: 256,
+            qwen_asr_return_timestamps: false,
+            qwen_asr_use_forced_aligner: false,
+            qwen_asr_forced_aligner_model: "Qwen/Qwen3-ForcedAligner-0.6B".into(),
+            qwen_asr_max_audio_seconds: 30,
+            doubao_asr_resource_id: "volc.seedasr.sauc.duration".into(),
+            doubao_asr_endpoint: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel".into(),
+            doubao_asr_end_window_size: 0,
+            chatgpt_asr_endpoint: "https://chatgpt.com/backend-api/transcribe".into(),
+            chatgpt_asr_timeout_seconds: 120,
+            doubao_asr_api_key_encrypted: None,
+            chatgpt_asr_api_key_encrypted: None,
+            pause_audio_on_recording: true,
+            auto_optimize: false,
+            auto_copy_to_clipboard: true,
+            audio_input_device: None,
+            recording_mode: "single".into(),
+            silence_threshold: 1.5,
+            silence_level: -40,
+            default_preset_id: None,
+            last_used_preset_id: None,
+            hotkeys: vec![HotkeyBinding::default_binding(platform)],
+        }
+    }
+
+    /// 从 data/settings.json 加载：宽容读 + 剥离退役键 + 旧 hotkey 迁移 + 默认值兜底。
+    pub fn load(path: &Path, platform: Platform) -> Self {
+        json_store::with_resource_lock(path, || {
+            let raw: Value = json_store::read_json_lenient(path);
+            let mut object = json_store::ensure_object(raw);
+            let Some(map) = object.as_object_mut() else {
+                return Self::with_platform(platform);
+            };
+            strip_retired_keys(map);
+            migrate_legacy_hotkey(map, platform);
+            merge_defaults_into(map, platform);
+            serde_json::from_value(object).unwrap_or_else(|error| {
+                tracing::warn!("settings.json 结构异常，回落默认设置: {error}");
+                Self::with_platform(platform)
+            })
+        })
+    }
+
+    /// 原子写回。
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        json_store::write_json_atomic(path, self)
+    }
+
+    /// 首个指定动作的绑定（前端兼容视图取 Record 绑定）。
+    pub fn binding_of(&self, action: HotkeyAction) -> Option<&HotkeyBinding> {
+        self.hotkeys.iter().find(|b| b.action == action)
+    }
+
+    /// 旧版 hotkey 视图（GET /api/settings 与桌面设置命令都要返回它）。
+    pub fn legacy_hotkey_view(&self, platform: Platform) -> Value {
+        self.binding_of(HotkeyAction::Record)
+            .map(|b| b.to_legacy(platform))
+            .unwrap_or_else(|| HotkeyBinding::default_binding(platform).to_legacy(platform))
+    }
+
+    /// 用旧版 hotkey 对象更新 Record 绑定（保持触发模式不变）。
+    pub fn update_record_binding_from_legacy(&mut self, platform: Platform, value: &Value) {
+        let trigger = self
+            .binding_of(HotkeyAction::Record)
+            .map(|b| b.trigger)
+            .unwrap_or(TriggerMode::Hold);
+        let mut binding = binding_from_legacy(platform, value);
+        binding.trigger = trigger;
+        match self.hotkeys.iter_mut().find(|b| b.action == HotkeyAction::Record) {
+            Some(slot) => *slot = binding,
+            None => self.hotkeys.push(binding),
+        }
+    }
+
+    /// GET /api/settings 响应视图：脱敏（密文 → *_set 布尔）+ 旧 hotkey 兼容字段。
+    pub fn public_view(&self, platform: Platform) -> Value {
+        let mut view = json!({});
+        let object = serde_json::to_value(self).unwrap_or_else(|_| json!({}));
+        if let Some(map) = object.as_object() {
+            for (key, value) in map {
+                // 密文字段绝不外发
+                if key == "doubao_asr_api_key_encrypted" || key == "chatgpt_asr_api_key_encrypted" {
+                    continue;
+                }
+                view[key] = value.clone();
+            }
+        }
+        view["doubao_asr_api_key_set"] = json!(self.doubao_asr_api_key_encrypted.is_some());
+        view["chatgpt_asr_api_key_set"] = json!(self.chatgpt_asr_api_key_encrypted.is_some());
+        view["hotkey"] = self.legacy_hotkey_view(platform);
+        view
+    }
+}
+
+/// 设置更新结果：变更的运行时键（供上层触发停服务/重建 provider）。
+#[derive(Debug, Default)]
+pub struct SettingsUpdate {
+    pub runtime_keys_changed: Vec<&'static str>,
+    pub restart_hotkey_backend: bool,
+}
+
+/// 应用 PUT /api/settings 请求体。
+///
+/// 契约（阶段① §3.3，必须保真）：
+/// - 白名单之外的未知键静默丢弃
+/// - `null` = 未提供（跳过）
+/// - 类型非法 → 中文错误（HTTP 400）
+/// - `doubao_asr_api_key`（明文）→ 加密落盘；`*_clear` → 清除
+pub fn apply_settings_update(
+    settings: &mut UserSettings,
+    body: &Value,
+    platform: Platform,
+    crypto: &crate::storage::crypto::Crypto,
+) -> Result<SettingsUpdate, String> {
+    let body = json_store::ensure_object(body.clone());
+    let map = body.as_object().ok_or("请求体必须是对象")?;
+    let mut outcome = SettingsUpdate::default();
+
+    // 通用字段：key → （读取器）逐个显式处理，保证类型契约
+    for (key, value) in map {
+        if value.is_null() {
+            continue; // null = 未提供
+        }
+        let type_error = |expect: &str| format!("字段 {key} 类型非法，期望 {expect}");
+
+        match key.as_str() {
+            // ---- 密钥类（明文入口，只写不读）----
+            "doubao_asr_api_key" => {
+                let plain = value.as_str().filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| type_error("字符串"))?;
+                settings.doubao_asr_api_key_encrypted = Some(crypto.encrypt(plain.trim()));
+            }
+            "doubao_asr_api_key_clear" => {
+                if value.as_bool().unwrap_or(false) {
+                    settings.doubao_asr_api_key_encrypted = None;
+                }
+            }
+            "chatgpt_asr_api_key" => {
+                let plain = value.as_str().filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| type_error("字符串"))?;
+                settings.chatgpt_asr_api_key_encrypted = Some(crypto.encrypt(plain.trim()));
+            }
+            "chatgpt_asr_api_key_clear" => {
+                if value.as_bool().unwrap_or(false) {
+                    settings.chatgpt_asr_api_key_encrypted = None;
+                }
+            }
+            // ---- 旧版热键对象（前端 saveSettings 会带上）----
+            "hotkey" => {
+                settings.update_record_binding_from_legacy(platform, value);
+                outcome.restart_hotkey_backend = true;
+            }
+            "hotkeys" => {
+                // 新版绑定数组（3c 起设置页使用；此处做结构校验）
+                let parsed: Vec<HotkeyBinding> = serde_json::from_value(value.clone())
+                    .map_err(|e| format!("字段 hotkeys 结构非法: {e}"))?;
+                settings.hotkeys = parsed;
+                outcome.restart_hotkey_backend = true;
+            }
+
+            // ---- 字符串键 ----
+            "asr_provider" => set_string(&mut settings.asr_provider, key, value, &type_error)?,
+            "asr_language" => set_string(&mut settings.asr_language, key, value, &type_error)?,
+            "whisper_model" => set_string(&mut settings.whisper_model, key, value, &type_error)?,
+            "whisper_device" => set_string(&mut settings.whisper_device, key, value, &type_error)?,
+            "qwen_asr_model" => set_string(&mut settings.qwen_asr_model, key, value, &type_error)?,
+            "qwen_asr_device" => set_string(&mut settings.qwen_asr_device, key, value, &type_error)?,
+            "qwen_asr_dtype" => set_string(&mut settings.qwen_asr_dtype, key, value, &type_error)?,
+            "qwen_asr_forced_aligner_model" => {
+                set_string(&mut settings.qwen_asr_forced_aligner_model, key, value, &type_error)?
+            }
+            "doubao_asr_resource_id" => {
+                set_string(&mut settings.doubao_asr_resource_id, key, value, &type_error)?
+            }
+            "doubao_asr_endpoint" => {
+                set_string(&mut settings.doubao_asr_endpoint, key, value, &type_error)?
+            }
+            "chatgpt_asr_endpoint" => {
+                set_string(&mut settings.chatgpt_asr_endpoint, key, value, &type_error)?
+            }
+            "recording_mode" => {
+                let mode = value.as_str().ok_or_else(|| type_error("字符串"))?;
+                if !matches!(mode, "single" | "multi" | "streaming") {
+                    return Err(format!("字段 recording_mode 取值非法: {mode}"));
+                }
+                settings.recording_mode = mode.into();
+            }
+            "audio_input_device" => {
+                settings.audio_input_device = value.as_str().map(str::to_string);
+            }
+            "default_preset_id" | "last_used_preset_id" => {
+                let v = match value.as_str() {
+                    Some(s) => Some(s.to_string()),
+                    None if value.is_null() => None,
+                    _ => return Err(type_error("字符串或 null")),
+                };
+                if key == "default_preset_id" {
+                    settings.default_preset_id = v;
+                } else {
+                    settings.last_used_preset_id = v;
+                }
+            }
+
+            // ---- 整数键 ----
+            "qwen_asr_max_new_tokens" => set_i64(&mut settings.qwen_asr_max_new_tokens, key, value, &type_error)?,
+            "qwen_asr_max_audio_seconds" => set_i64(&mut settings.qwen_asr_max_audio_seconds, key, value, &type_error)?,
+            "doubao_asr_end_window_size" => set_i64(&mut settings.doubao_asr_end_window_size, key, value, &type_error)?,
+            "chatgpt_asr_timeout_seconds" => set_i64(&mut settings.chatgpt_asr_timeout_seconds, key, value, &type_error)?,
+            "silence_level" => set_i64(&mut settings.silence_level, key, value, &type_error)?,
+
+            // ---- 浮点键 ----
+            "silence_threshold" => {
+                let v = value.as_f64().ok_or_else(|| type_error("数字"))?;
+                settings.silence_threshold = v.clamp(0.0, 60.0);
+            }
+
+            // ---- 布尔键 ----
+            "qwen_asr_return_timestamps" => set_bool(&mut settings.qwen_asr_return_timestamps, key, value, &type_error)?,
+            "qwen_asr_use_forced_aligner" => set_bool(&mut settings.qwen_asr_use_forced_aligner, key, value, &type_error)?,
+            "pause_audio_on_recording" => set_bool(&mut settings.pause_audio_on_recording, key, value, &type_error)?,
+            "auto_optimize" => set_bool(&mut settings.auto_optimize, key, value, &type_error)?,
+            "auto_copy_to_clipboard" => set_bool(&mut settings.auto_copy_to_clipboard, key, value, &type_error)?,
+
+            // 未知键：静默丢弃（契约如此）
+            _ => {}
+        }
+
+        if MODEL_RUNTIME_KEYS.contains(&key.as_str()) {
+            outcome.runtime_keys_changed.push(
+                MODEL_RUNTIME_KEYS.iter().find(|k| **k == key.as_str()).copied().unwrap_or(""),
+            );
+        }
+    }
+
+    Ok(outcome)
+}
+
+fn set_string(
+    slot: &mut String, key: &str, value: &Value,
+    type_error: &dyn Fn(&str) -> String,
+) -> Result<(), String> {
+    let _ = key;
+    *slot = value.as_str().ok_or_else(|| type_error("字符串"))?.to_string();
+    Ok(())
+}
+
+fn set_i64(
+    slot: &mut i64, key: &str, value: &Value,
+    type_error: &dyn Fn(&str) -> String,
+) -> Result<(), String> {
+    let _ = key;
+    // 与反序列化同策略：接受浮点数（取整），兼容前端滑杆/Python 侧写出的 -40.0
+    *slot = value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|f| f.round() as i64))
+        .ok_or_else(|| type_error("整数"))?;
+    Ok(())
+}
+
+fn set_bool(
+    slot: &mut bool, key: &str, value: &Value,
+    type_error: &dyn Fn(&str) -> String,
+) -> Result<(), String> {
+    let _ = key;
+    *slot = value.as_bool().ok_or_else(|| type_error("布尔值"))?;
+    Ok(())
+}
+
+/// 宽容整数反序列化：Python / 前端可能把整数语义字段写成浮点数
+/// （如 `silence_level: -40.0`），严格 i64 反序列化会让 settings.json
+/// **整体**解析失败、全部设置回落默认值（真实事故：曾导致用户配置与密钥密文被
+/// 默认值覆盖）。这里接受整数与可取整的浮点，仅拒绝非数字。
+fn deserialize_i64_lenient<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|f| f.round() as i64))
+        .ok_or_else(|| {
+            serde::de::Error::custom("期望整数（或可取整的数字）")
+        })
+}
+
+/// 剥离退役键（原地）。
+pub fn strip_retired_keys(object: &mut serde_json::Map<String, Value>) {
+    for key in RETIRED_SETTINGS_KEYS {
+        object.remove(*key);
+    }
+}
+
+/// 旧 `hotkey` 对象 → `hotkeys[]`（仅在 hotkeys 缺失时转换；完整迁移见 migration 模块）。
+fn migrate_legacy_hotkey(object: &mut serde_json::Map<String, Value>, platform: Platform) {
+    let has_new = object.get("hotkeys").and_then(|h| h.as_array()).is_some_and(|a| !a.is_empty());
+    if has_new {
+        object.remove("hotkey");
+        return;
+    }
+    if let Some(legacy) = object.remove("hotkey") {
+        let binding = binding_from_legacy(platform, &legacy);
+        object.insert("hotkeys".into(), serde_json::to_value(vec![binding]).unwrap_or_default());
+    }
+}
+
+/// 默认值合并进 JSON 对象（等价 Python `{**DEFAULT_SETTINGS, **payload}`）。
+fn merge_defaults_into(object: &mut serde_json::Map<String, Value>, platform: Platform) {
+    let defaults = serde_json::to_value(UserSettings::with_platform(platform))
+        .unwrap_or_else(|_| json!({}));
+    if let Some(default_map) = defaults.as_object() {
+        for (key, value) in default_map {
+            object.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::crypto::Crypto;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("att-settings-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn 加载_退役键剥离_旧热键迁移_默认值兜底() {
+        let dir = temp_dir("load");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, serde_json::json!({
+            "asr_provider": "doubao_asr",
+            "selection_toolbar_enabled": true,           // 退役键
+            "clipboard_overlay_trigger": "x",            // 退役键
+            "hotkey": {"modifiers": ["ctrl", "shift"], "key": "r", "display": "Ctrl+Shift+R"},
+            "auto_optimize": true
+        }).to_string()).unwrap();
+
+        let settings = UserSettings::load(&path, Platform::Windows);
+        assert_eq!(settings.asr_provider, "doubao_asr");
+        assert!(settings.auto_optimize);
+        // 默认值兜底：未出现的键全部有值
+        assert_eq!(settings.whisper_model, "large-v3");
+        // 旧热键迁移：Ctrl+Shift+R 保持
+        let binding = settings.binding_of(HotkeyAction::Record).unwrap();
+        assert_eq!(binding.display(Platform::Linux), "Ctrl+Shift+R");
+        assert_eq!(binding.trigger, TriggerMode::Hold);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 公共视图_密文不外发_set布尔与旧hotkey齐备() {
+        let dir = temp_dir("view");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::with_platform(Platform::Windows);
+        settings.doubao_asr_api_key_encrypted = Some(crypto.encrypt("tok"));
+
+        let view = settings.public_view(Platform::Windows);
+        assert!(view.get("doubao_asr_api_key_encrypted").is_none(), "密文字段绝不能出现在 GET 视图");
+        assert_eq!(view["doubao_asr_api_key_set"], json!(true));
+        assert_eq!(view["chatgpt_asr_api_key_set"], json!(false));
+        assert!(view["hotkey"].is_object(), "旧 hotkey 兼容字段必须存在");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 更新_白名单null与类型契约与密钥加解密() {
+        let dir = temp_dir("update");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::with_platform(Platform::Windows);
+
+        let body = serde_json::json!({
+            "asr_provider": "qwen_asr",
+            "recording_mode": "streaming",
+            "silence_threshold": 2.5,
+            "auto_optimize": null,                 // null = 未提供
+            "unknown_future_key": 123,             // 未知键静默丢弃
+            "doubao_asr_api_key": "sk-test-token"
+        });
+        let outcome = apply_settings_update(&mut settings, &body, Platform::Windows, &crypto).unwrap();
+        assert_eq!(settings.asr_provider, "qwen_asr");
+        assert_eq!(settings.recording_mode, "streaming");
+        assert!(!settings.auto_optimize, "null 未提供 → 保持原值");
+        assert!(outcome.runtime_keys_changed.contains(&"asr_provider"));
+        let cipher = settings.doubao_asr_api_key_encrypted.clone().unwrap();
+        assert_eq!(crypto.decrypt(&cipher).as_deref(), Some("sk-test-token"));
+
+        // 类型非法 → 中文错误
+        let bad = serde_json::json!({"auto_optimize": "yes"});
+        let err = apply_settings_update(&mut settings, &bad, Platform::Windows, &crypto).unwrap_err();
+        assert!(err.contains("auto_optimize") && err.contains("布尔"), "错误信息应包含字段名与期望类型: {err}");
+
+        // 清除密钥
+        let clear = serde_json::json!({"doubao_asr_api_key_clear": true});
+        apply_settings_update(&mut settings, &clear, Platform::Windows, &crypto).unwrap();
+        assert!(settings.doubao_asr_api_key_encrypted.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 时间戳工具_rfc3339() {
+        assert!(now_rfc3339().ends_with("Z") || now_rfc3339().contains('+'));
+    }
+
+    /// 回归锁：Python/前端写出的浮点数（-40.0）不得让 settings.json 整体解析失败
+    /// （曾导致全部设置回落默认值，保存时覆盖用户真实配置）。
+    #[test]
+    fn 加载_浮点数整数字段_宽容取整不回落默认() {
+        let dir = temp_dir("float");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "asr_provider": "chatgpt_asr",
+                "silence_level": -40.0,                 // Python 历史数据实况
+                "qwen_asr_max_new_tokens": 448.0,       // 同类风险字段
+                "chatgpt_asr_timeout_seconds": 90.0,
+                "auto_optimize": true
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let settings = UserSettings::load(&path, Platform::Windows);
+        assert_eq!(settings.asr_provider, "chatgpt_asr", "用户配置必须保留，不得回落默认");
+        assert_eq!(settings.silence_level, -40, "浮点整数应取整读取");
+        assert_eq!(settings.qwen_asr_max_new_tokens, 448);
+        assert_eq!(settings.chatgpt_asr_timeout_seconds, 90);
+        assert!(settings.auto_optimize);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 回归锁：PUT 收到浮点数（前端滑杆常见）应取整保存而非报错。
+    #[test]
+    fn 更新_浮点数整数字段_取整保存() {
+        let dir = temp_dir("float-put");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::with_platform(Platform::Windows);
+
+        let body = serde_json::json!({ "silence_level": -35.5, "chatgpt_asr_timeout_seconds": 60.0 });
+        apply_settings_update(&mut settings, &body, Platform::Windows, &crypto).unwrap();
+        assert_eq!(settings.silence_level, -36, "浮点按四舍五入取整");
+        assert_eq!(settings.chatgpt_asr_timeout_seconds, 60);
+
+        // 非数字仍是 400 中文错误
+        let bad = serde_json::json!({ "silence_level": "loud" });
+        let err = apply_settings_update(&mut settings, &bad, Platform::Windows, &crypto).unwrap_err();
+        assert!(err.contains("silence_level") && err.contains("整数"), "错误信息应包含字段名与期望类型: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

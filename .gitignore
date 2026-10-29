@@ -89,3 +89,6 @@ logs/
 .watchdog/
 .kilo/
 .omx/
+# Tauri (Rust) 构建产物
+src-tauri/target/
+src-tauri/gen/

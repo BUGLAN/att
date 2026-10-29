@@ -676,6 +676,13 @@ function runSyncUpdate(callback) {
 }
 
 async function loadAudioInputDevices() {
+  // Tauri 模式下不触碰 getUserMedia：页面是 v-show 常驻挂载，挂载即请求麦克风
+  // 会触发系统权限弹窗（3a 实机验收暴露）。设备枚举在 3b 改为 Rust 命令。
+  if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+    audioInputDevices.value = []
+    return
+  }
+
   try {
     await navigator.mediaDevices.getUserMedia({ audio: true })
     const devices = await navigator.mediaDevices.enumerateDevices()

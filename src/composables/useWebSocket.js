@@ -3,6 +3,10 @@ import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 import { createSingletonAsyncInvoker } from '@/utils/asyncSingleton.mjs'
 
+// Tauri 模式下全局 WS 端点已按架构决策移除（D4）：
+// 「连接状态」改为健康检查轮询，业务事件由 Tauri events 下发（3b 起接入）。
+const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
+
 const globalWsState = {
   isConnected: ref(false),
   lastMessage: ref(null),
@@ -13,6 +17,7 @@ const messageHandlers = new Set()
 let globalWs = null
 let globalReconnectTimer = null
 let globalHeartbeatTimer = null
+let healthPollTimer = null
 let shouldReconnect = true
 const connectGlobalOnce = createSingletonAsyncInvoker(async () => {
   try {
@@ -92,6 +97,41 @@ function stopGlobalHeartbeat() {
   }
 }
 
+// ---------------- Tauri 模式：健康检查轮询替代 WS ----------------
+
+async function probeBackendHealth() {
+  const appStore = useAppStore()
+  try {
+    await api.getHealth(false)
+    globalWsState.isConnected.value = true
+    globalWsState.error.value = null
+    appStore.setConnected(true)
+    appStore.setConnectedClients(1)
+  } catch (error) {
+    globalWsState.isConnected.value = false
+    globalWsState.error.value = error?.message || 'backend unreachable'
+    appStore.setConnected(false)
+    appStore.setConnectedClients(0)
+  }
+}
+
+function startTauriHealthLoop() {
+  if (healthPollTimer) {
+    return
+  }
+  void probeBackendHealth()
+  healthPollTimer = setInterval(() => {
+    void probeBackendHealth()
+  }, 5000)
+}
+
+function stopTauriHealthLoop() {
+  if (healthPollTimer) {
+    clearInterval(healthPollTimer)
+    healthPollTimer = null
+  }
+}
+
 function sendGlobal(data) {
   if (globalWs?.readyState === WebSocket.OPEN) {
     globalWs.send(JSON.stringify(data))
@@ -116,6 +156,13 @@ function scheduleGlobalReconnect() {
 }
 
 async function connectGlobal() {
+  // Tauri：无 WS 端点，改为健康检查驱动连接状态
+  if (isTauri) {
+    shouldReconnect = true
+    startTauriHealthLoop()
+    return null
+  }
+
   if (globalWs?.readyState === WebSocket.OPEN || globalWs?.readyState === WebSocket.CONNECTING) {
     return globalWs
   }
@@ -126,6 +173,7 @@ async function connectGlobal() {
 function disconnectGlobal() {
   shouldReconnect = false
   stopGlobalHeartbeat()
+  stopTauriHealthLoop()
   clearTimeout(globalReconnectTimer)
 
   if (globalWs) {

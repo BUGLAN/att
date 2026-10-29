@@ -1,7 +1,7 @@
 <template>
   <header class="title-bar">
-    <div class="title-bar-drag" @dblclick="windowControl.maximize()">
-      <div class="title-bar-brand">
+    <div class="title-bar-drag" data-tauri-drag-region @dblclick="windowControl.maximize()">
+      <div class="title-bar-brand" data-tauri-drag-region>
         <LogoMark :size="30" alt="ATT" />
         <span class="logo-text">Audio To Text</span>
       </div>

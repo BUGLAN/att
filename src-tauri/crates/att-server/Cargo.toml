@@ -1,0 +1,19 @@
+[package]
+name = "att-server"
+description = "内嵌 axum 数据面 API（仅回环）：记录/设置/提示词/LLM 只读/健康（契约与 Python 版对齐）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+att-core = { path = "../att-core" }
+axum = "0.8"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

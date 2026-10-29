@@ -1,0 +1,10 @@
+[package]
+name = "att-hotkey"
+description = "全局热键平台后端抽象（3a 骨架：trait 与类型；Windows/macOS/Linux 注册实现 3c 接入）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+att-core = { path = "../att-core" }
+thiserror = { workspace = true }

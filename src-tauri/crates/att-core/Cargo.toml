@@ -1,0 +1,26 @@
+[package]
+name = "att-core"
+description = "ATT 领域内核：存储/设置/记录/迁移/事件总线（不依赖桌面框架，可 headless 测试）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+# Fernet 兼容加密：纯 Rust 规范实现（不用 fernet crate——它拖 openssl，
+# Windows 分发不友好），与 Python cryptography 互操作由 fixture 测试锁定
+aes = "0.9"
+cbc = { version = "0.2", features = ["alloc"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+# WAV 读写与时长解析（迁移阶段的音频错位修复）
+hound = "3.5"
+# 探测旧 Electron userData 目录（迁移 legacy desktop-settings.json）
+dirs = "6"

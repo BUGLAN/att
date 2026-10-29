@@ -7,6 +7,9 @@
     "dev": "vite --strictPort",
     "build": "vite build",
     "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
     "codex:backend": "powershell -ExecutionPolicy Bypass -File scripts/start_dev_with_codex.ps1 -Preset backend",
     "codex:frontend": "powershell -ExecutionPolicy Bypass -File scripts/start_dev_with_codex.ps1 -Preset frontend",
     "backend:dev:uv": "cross-env UV_PROJECT_ENVIRONMENT=.venv UV_CACHE_DIR=tmp/uv-cache uv run --no-sync python -m uvicorn app.main:app --reload",
@@ -18,13 +21,16 @@
     "electron:build:mac": "vite build && electron-builder --mac",
     "test": "npm run test:node && npm run test:python",
     "test:node": "node scripts/run-node-tests.mjs",
-    "test:python": "uv run python -m pytest tests -q"
+    "test:python": "uv run python -m pytest tests -q",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
     "vue": "^3.4.21",
     "pinia": "^2.1.7"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0",
     "@vitejs/plugin-vue": "^5.0.4",
     "vite": "^5.2.0",
     "electron": "^29.1.0",

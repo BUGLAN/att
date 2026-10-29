@@ -6,10 +6,20 @@ const STREAMING_SERVICE_POLL_INTERVAL_MS = 1000
 const STREAMING_SERVICE_POLL_TIMEOUT_MS = 5 * 60 * 1000
 
 function getPlatform() {
-  if (typeof window !== 'undefined' && window.electronAPI?.platform) {
-    return window.electronAPI.platform
+  // Tauri 下 invoke 是异步的，而默认热键需要同步值：UA 推断足够（精确值走 useElectron.getPlatform()）
+  if (typeof navigator === 'undefined') {
+    return 'win32'
   }
-
+  const ua = navigator.userAgent
+  if (ua.includes('Win')) {
+    return 'win32'
+  }
+  if (ua.includes('Mac')) {
+    return 'darwin'
+  }
+  if (ua.includes('Linux')) {
+    return 'linux'
+  }
   return 'win32'
 }
 
