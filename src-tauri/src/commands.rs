@@ -151,20 +151,8 @@ pub fn write_clipboard_text(text: String) -> Result<bool, String> {
 /// 写图片剪贴板：imagePath 解析（相对路径锚定 data/clipboard/），PNG 解码为 RGBA。
 #[tauri::command]
 pub fn write_clipboard_image(state: State<'_, AppState>, payload: Value) -> Result<bool, String> {
-    let raw_path = payload.get("imagePath").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-    if raw_path.is_empty() {
-        return Err(err("imagePath 不能为空"));
-    }
-    let path = std::path::Path::new(&raw_path);
-    let resolved = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        state.core.data_dir.join("clipboard").join(&raw_path)
-    };
-    // 路径安全：必须落在数据目录内
-    if !resolved.starts_with(&state.core.data_dir) {
-        return Err(err("图片路径越界"));
-    }
+    let raw_path = payload.get("imagePath").and_then(|v| v.as_str()).unwrap_or("");
+    let resolved = resolve_clipboard_image_path(&state.core.data_dir, raw_path)?;
     let bytes = std::fs::read(&resolved).map_err(|e| err(format!("读取图片失败: {e}")))?;
     let img = image::load_from_memory(&bytes).map_err(|e| err(format!("图片解码失败: {e}")))?;
     let rgba = img.to_rgba8();
@@ -178,6 +166,25 @@ pub fn write_clipboard_image(state: State<'_, AppState>, payload: Value) -> Resu
         })
         .map_err(|e| err(e.to_string()))?;
     Ok(true)
+}
+
+/// 解析剪贴板图片路径（相对路径锚定 `data/clipboard/`），并确认真实路径落在数据目录内。
+///
+/// 必须先 canonicalize 再比较：`Path::starts_with` 只按路径分段比较、不解析 `..`，
+/// `data/clipboard/../../x` 这类路径会原样通过；符号链接同理。
+pub fn resolve_clipboard_image_path(data_dir: &std::path::Path, raw_path: &str) -> Result<std::path::PathBuf, String> {
+    let raw_path = raw_path.trim();
+    if raw_path.is_empty() {
+        return Err(err("imagePath 不能为空"));
+    }
+    let path = std::path::Path::new(raw_path);
+    let joined = if path.is_absolute() { path.to_path_buf() } else { data_dir.join("clipboard").join(path) };
+    let resolved = std::fs::canonicalize(&joined).map_err(|e| err(format!("读取图片失败: {e}")))?;
+    let root = std::fs::canonicalize(data_dir).map_err(|e| err(format!("数据目录不可用: {e}")))?;
+    if !resolved.starts_with(&root) {
+        return Err(err("图片路径越界"));
+    }
+    Ok(resolved)
 }
 
 /// 模拟「粘贴」到焦点窗口（Cmd/Ctrl+V）。
@@ -286,4 +293,29 @@ pub fn get_floating_state() -> Value {
 #[tauri::command]
 pub fn debug_log(scope: String, message: String, details: Option<Value>) {
     tracing::info!("[{scope}] {message} {details:?}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_clipboard_image_path;
+
+    #[test]
+    fn 剪贴板图片路径_相对路径锚定且拒绝越界() {
+        let root = std::env::temp_dir().join(format!("att-clip-{}", uuid::Uuid::new_v4()));
+        let data_dir = root.join("data");
+        std::fs::create_dir_all(data_dir.join("clipboard")).unwrap();
+        std::fs::write(data_dir.join("clipboard").join("a.png"), b"x").unwrap();
+        std::fs::write(root.join("secret.png"), b"x").unwrap();
+
+        let ok = resolve_clipboard_image_path(&data_dir, "a.png").unwrap();
+        assert!(ok.ends_with("clipboard/a.png") || ok.ends_with("clipboard\\a.png"));
+        // `..` 逃逸：旧实现的 starts_with 分段比较会放行
+        assert_eq!(resolve_clipboard_image_path(&data_dir, "../../secret.png").unwrap_err(), "图片路径越界");
+        // 绝对路径指向数据目录外
+        let outside = root.join("secret.png");
+        assert_eq!(resolve_clipboard_image_path(&data_dir, outside.to_str().unwrap()).unwrap_err(), "图片路径越界");
+        assert!(resolve_clipboard_image_path(&data_dir, "  ").is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
