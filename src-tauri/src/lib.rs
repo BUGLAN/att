@@ -37,11 +37,26 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 二次启动：唤起主窗口（与旧版 second-instance 行为一致）
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            show_main_window(app);
         }))
+        .on_window_event(|window, event| {
+            // 关闭主窗口（与旧 electron/main.js 的 close / window-all-closed 行为对齐）：
+            // 悬浮窗是预创建的隐藏窗口，任由主窗口销毁会让进程带着全局热键残留在后台，
+            // 二次启动也找不到 "main" 可唤起。
+            // - macOS：只隐藏，点 Dock 图标（RunEvent::Reopen）再显示；Cmd+Q 照常退出
+            // - 其他平台：关闭即退出应用
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if cfg!(target_os = "macos") {
+                    let _ = window.hide();
+                } else {
+                    window.app_handle().exit(0);
+                }
+            }
+        })
         .setup(|app| {
             let data_dir = resolve_data_dir(app);
             init_logging(&data_dir);
@@ -180,8 +195,24 @@ pub fn run() {
             commands::get_floating_state,
             commands::open_main_settings,
         ])
-        .run(tauri::generate_context!())
-        .expect("Tauri 应用启动失败");
+        .build(tauri::generate_context!())
+        .expect("Tauri 应用启动失败")
+        .run(|_app, _event| {
+            // macOS：主窗口被隐藏后点 Dock 图标重新显示（旧版 app.on('activate')）
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                show_main_window(_app);
+            }
+        });
+}
+
+/// 显示并聚焦主窗口（二次启动 / Dock 唤起 / 悬浮窗「设置」按钮共用）。
+pub fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
 }
 
 /// 日志同时输出到终端与 `data/logs/att-app.log`（每次启动覆盖；打包版没有终端可看）。

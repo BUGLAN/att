@@ -271,11 +271,7 @@ pub fn update_floating_window_state(payload: Value) {
 #[tauri::command]
 pub fn open_main_settings(app: AppHandle) {
     use tauri::Emitter;
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
+    crate::show_main_window(&app);
     let _ = app.emit_to("main", "navigate:settings", ());
 }
 
