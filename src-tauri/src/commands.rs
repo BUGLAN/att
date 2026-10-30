@@ -1,7 +1,7 @@
 //! Tauri 命令层：对旧 electronAPI 31 个方法的 1:1 替换（前端 useElectron.js 换内核不换形状）。
 //!
-//! 3a 范围：端口/平台/窗口/桌面设置/剪贴板/托盘与悬浮窗占位/调试日志。
-//! 3b-3g：录音会话、热键、音频设备、托盘/悬浮窗真实现、粘贴模拟。
+//! 已接入：端口/平台/窗口/桌面设置/剪贴板/粘贴模拟/录音会话/麦克风枚举/热键状态。
+//! 待接入：托盘与悬浮窗（当前为占位）。
 
 use crate::AppState;
 use serde_json::{json, Value};
@@ -125,12 +125,12 @@ pub fn sync_desktop_settings(state: State<'_, AppState>, payload: Value) -> Resu
     }
 }
 
-/// 旧 desktop:recording-state：录音开始/结束（系统静音联动在 3g 接入）。
+/// 旧 desktop:recording-state：静音联动已由 Rust 录音 Actor 自行处理，这里只做兼容回执。
 #[tauri::command]
 pub fn sync_recording_state(payload: Value) -> Value {
     let recording = payload.get("recording").and_then(|v| v.as_bool()).unwrap_or(false);
-    tracing::debug!("录音状态同步（静音联动 3g 接入）: recording={recording}");
-    json!({ "success": true, "skipped": true, "reason": "mute-pending-3g" })
+    tracing::debug!("录音状态同步（静音由录音 Actor 管理）: recording={recording}");
+    json!({ "success": true, "skipped": true, "reason": "managed-by-recorder" })
 }
 
 // ---------------- 剪贴板 ----------------
@@ -180,13 +180,53 @@ pub fn write_clipboard_image(state: State<'_, AppState>, payload: Value) -> Resu
     Ok(true)
 }
 
-/// 模拟「粘贴」到焦点窗口（enigo，3g 接入）。
+/// 模拟「粘贴」到焦点窗口（Cmd/Ctrl+V）。
 #[tauri::command]
-pub fn paste_active() -> Result<Value, String> {
-    Err(err("系统粘贴将在阶段 3g 接入"))
+pub async fn paste_active() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(crate::desktop::paste_active)
+        .await
+        .map_err(|e| err(e.to_string()))??;
+    Ok(json!({ "success": true }))
 }
 
-// ---------------- 托盘 / 悬浮窗（3g 真实现）----------------
+// ---------------- 录音（Rust 侧采集 + 识别，前端只做展示）----------------
+
+#[tauri::command]
+pub fn recording_start(state: State<'_, AppState>) {
+    state.recorder.start();
+}
+
+#[tauri::command]
+pub fn recording_stop(state: State<'_, AppState>) {
+    state.recorder.stop();
+}
+
+#[tauri::command]
+pub fn recording_cancel(state: State<'_, AppState>) {
+    state.recorder.cancel();
+}
+
+#[tauri::command]
+pub fn recording_get_state(state: State<'_, AppState>) -> Value {
+    state.recorder.state()
+}
+
+/// 麦克风列表（设置页下拉框；Tauri 下不再走 getUserMedia 枚举）。
+#[tauri::command]
+pub async fn list_audio_devices() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(att_audio::list_input_devices)
+        .await
+        .unwrap_or_default()
+}
+
+/// 全局快捷键状态：{ enabled, error }（error 为权限缺失等引导文案）。
+#[tauri::command]
+pub fn get_hotkey_status(state: State<'_, AppState>) -> Value {
+    let error = state.hotkey_error.lock().ok().and_then(|e| e.clone());
+    json!({ "enabled": error.is_none(), "error": error })
+}
+
+// ---------------- 托盘（占位）/ 悬浮窗 ----------------
 
 #[tauri::command]
 pub fn set_tray_icon(icon_type: String) {
@@ -199,17 +239,50 @@ pub fn update_tray_menu(records: Value) {
 }
 
 #[tauri::command]
-pub fn show_floating_window() {}
+pub fn show_floating_window(app: AppHandle) {
+    crate::floating::update(&app, crate::floating::last_state(), true);
+}
 
 #[tauri::command]
-pub fn hide_floating_window() {}
+pub fn hide_floating_window(app: AppHandle) {
+    crate::floating::hide(&app);
+}
 
 #[tauri::command]
-pub fn toggle_floating_window() {}
+pub fn toggle_floating_window(app: AppHandle) {
+    let visible = app
+        .get_webview_window(crate::floating::LABEL)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+    if visible {
+        crate::floating::hide(&app);
+    } else {
+        crate::floating::update(&app, crate::floating::last_state(), true);
+    }
+}
 
+/// 前端主窗口的悬浮窗同步：桌面端由录音 Actor 直接驱动悬浮窗，这里忽略（避免双源打架）。
 #[tauri::command]
 pub fn update_floating_window_state(payload: Value) {
-    let _ = payload; // 3g：转发给悬浮窗 webview
+    let _ = payload;
+}
+
+/// 悬浮窗「设置」按钮：唤起主窗口并跳到设置页（旧 main:open-settings 通道）。
+#[tauri::command]
+pub fn open_main_settings(app: AppHandle) {
+    use tauri::Emitter;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    let _ = app.emit_to("main", "navigate:settings", ());
+}
+
+/// 悬浮窗页面挂载时拉取最近状态（页面加载晚于首次推送的情形）。
+#[tauri::command]
+pub fn get_floating_state() -> Value {
+    crate::floating::last_state()
 }
 
 // ---------------- 调试 ----------------

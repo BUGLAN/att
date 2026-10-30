@@ -104,3 +104,31 @@ npm run tauri:dev
 ## 6. 下一步（3b：音频管道 + 单段录音）
 
 cpal 采集（SPSC 环 + 重采样 16k）→ WAV 落盘 → whisper.cpp Provider → Record 落库 → 录音状态/音量事件；替换 useRecorder 单段路径为 useRecordingBridge。
+
+## 7. 豆包主链路打通（2026-10-29，提前落地 3b/3c/3d 的必要子集）
+
+3a 交付后应用「能浏览不能用」：录音按钮、快捷键、识别、粘贴全部是占位。本轮按设计 D1/D3
+（采集与编排在 Rust）把**豆包语音这条主链路**端到端打通，其余引擎/功能仍按阶段计划推进。
+
+| 模块 | 内容 | 测试 |
+| --- | --- | --- |
+| `att-core/stt/sauc` | 火山 SAUC 二进制协议编解码（逐项移植 Python `volcengine_sauc.py`：帧头/错误帧两种布局/gzip/definite 前缀推进/错误归一化） | 6 |
+| `att-core/stt/doubao` | tokio-tungstenite 会话：三头鉴权握手、后台读任务、200ms 切帧推流、末包+静默窗口收尾、批量转写；TLS 用 native-tls（不引入 OpenSSL/aws-lc 构建依赖） | 3 + 实网探针 |
+| `att-core/audio` | 16k PCM16 WAV 读写（tmp+rename）、跨块保相位的线性重采样器 | 2 |
+| `att-audio`（新 crate） | cpal 采集：回调内 mono 混音→rtrb SPSC 环（零分配零锁）→采集线程 20ms 读环→16k i16 分块+电平；停止时先停设备再冲刷尾部 | — |
+| `att-hotkey` | 底层键盘监听：macOS CGEventTap（listen-only，超时停用自动重启）/ Windows WH_KEYBOARD_LL；匹配状态机移植旧 pynput 语义（**支持纯修饰键组合**，如 Win+Alt / ⌘⌥）；锁存期间 250ms 物理键态重同步防粘滞 | 4 |
+| `src/recording.rs` | 录音 Actor：Idle→Connecting→Recording→Finalizing；流式=采集与建连并行（建连期间样本缓存、就绪后冲刷），单段/多段=录完批量识别；失败也落盘建 failed 记录（录音不丢）；中途断连按已识别文本降级保存 | — |
+| `src/desktop.rs` / `floating.rs` | 自动复制+模拟粘贴（macOS CGEvent / Windows SendInput）、录音静音（macOS osascript）、底部居中悬浮窗（Actor 直接驱动） | — |
+| 前端 | `useRecorder` 桌面端改为发指令+订阅 `recording:*` 事件（映射规则 `recorder/nativeSession.mjs`，Node 用例 6 个）；设置页麦克风列表改走 Rust 枚举；`floating.js` 垫片 `window.floatingAPI` | 6 |
+
+**实网验证**（本机 `data/settings.json` 的密文 Token）：
+`cargo run -p att-core --example doubao_probe -- ../data <wav> [stream]`——批量与实时节奏推流均返回正确文本，
+流式中间结果逐字到达，末包后约 0.8s 出最终结果。
+
+**权限（macOS）**：全局快捷键需「输入监控」，自动粘贴需「辅助功能」，录音需「麦克风」；
+开发态这些权限归属**启动 `tauri dev` 的终端应用**。快捷键不可用的原因可经 `get_hotkey_status` 命令查询，
+日志写入 `data/logs/att-app.log`（每次启动覆盖）。
+
+**仍未接入**（按原阶段计划）：LLM 优化（3f，`auto_optimize` 暂不生效）、文件转写、剪贴板历史、托盘、
+多段模式的 VAD 实时分段（当前按单段处理）、Windows 端系统静音、Whisper/Qwen/ChatGPT 引擎
+（选中时开始录音会提示切换到豆包）。

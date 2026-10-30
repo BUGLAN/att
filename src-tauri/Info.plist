@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- 麦克风采集在 Rust 侧（cpal）进行；缺少该声明时 macOS 会直接终止访问麦克风的进程 -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Audio to Text 需要使用麦克风进行语音转文字。</string>
+</dict>
+</plist>

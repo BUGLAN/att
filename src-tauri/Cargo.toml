@@ -2,6 +2,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/att-audio",
     "crates/att-core",
     "crates/att-hotkey",
     "crates/att-server",
@@ -36,20 +37,31 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+att-audio = { path = "crates/att-audio" }
 att-core = { path = "crates/att-core" }
 att-hotkey = { path = "crates/att-hotkey" }
 att-server = { path = "crates/att-server" }
-tauri = { version = "2", features = [] }
+# macos-private-api：悬浮窗透明背景（macOS 需要私有 API）
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-single-instance = "2"
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# 剪贴板（读写文本/图片；粘贴模拟 enigo 在 3g 接入）
+# 剪贴板（读写文本/图片）
 arboard = "3"
+uuid = { version = "1", features = ["v4"] }
 # PNG 解码（写剪贴板图片）
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+# 模拟粘贴（CGEvent）与辅助功能授权检测
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.25"
+core-foundation = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse"] }
 
 [profile.release]
 lto = true

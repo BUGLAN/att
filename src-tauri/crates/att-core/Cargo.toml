@@ -24,3 +24,11 @@ rand = "0.8"
 hound = "3.5"
 # 探测旧 Electron userData 目录（迁移 legacy desktop-settings.json）
 dirs = "6"
+# 豆包 SAUC 流式 ASR：WebSocket（native-tls：mac/Win 走系统 TLS，不引入 OpenSSL/aws-lc 构建依赖）
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+flate2 = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true }

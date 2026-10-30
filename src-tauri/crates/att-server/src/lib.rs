@@ -6,8 +6,8 @@
 //! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出）
 //! - GET /api/prompts + PUT /api/prompts/default
 //! - GET /api/llm/state|providers（3f 前返回空态）
-//! - 模型服务三端点（骨架：尚未接引擎，返回「未就绪」定型载荷）
-//! - 录音/上传/转写类端点 → 501（3b/3d/3e 接入）
+//! - 模型服务三端点（在线引擎凭据配齐即就绪）
+//! - 录音由 Rust 录音 Actor 直接完成（Tauri 命令），上传/会话/转写类 HTTP 端点 → 501
 //!
 //! 两个 WebSocket 端点（/api/ws、/api/asr/stream）按 D4 决策**移除**：
 //! 事件改由 Tauri events 下发（旧事件名重放）。
@@ -242,38 +242,73 @@ async fn root() -> Json<Value> {
     Json(json!({ "name": "att-server", "status": "ok", "note": "前端由 Tauri 直接服务，本端点仅供探活" }))
 }
 
+/// 引擎运行态（在线 provider 无需「开启模型」，凭据配齐即就绪）。
+struct EngineStatus {
+    ready: bool,
+    error: Option<String>,
+    streaming_supported: bool,
+    streaming_available: bool,
+    streaming_backend: Option<&'static str>,
+    mode: &'static str,
+}
+
+fn engine_status(core: &CoreState) -> EngineStatus {
+    let settings = core.settings();
+    if let Some(message) = att_core::stt::unsupported_provider_message(&settings.asr_provider) {
+        return EngineStatus {
+            ready: false,
+            error: Some(message),
+            streaming_supported: false,
+            streaming_available: false,
+            streaming_backend: None,
+            mode: "provider",
+        };
+    }
+    let error = att_core::stt::doubao_config(core).ensure().err().map(|e| e.to_string());
+    let streaming = settings.recording_mode == "streaming";
+    EngineStatus {
+        ready: error.is_none(),
+        streaming_supported: streaming,
+        streaming_available: streaming && error.is_none(),
+        streaming_backend: Some("doubao_sauc"),
+        mode: "online",
+        error,
+    }
+}
+
 /// GET /api/health：前端 runtimeStatus 的全部字段（新旧双命名同源）。
 async fn health(State(state): State<Arc<ServerState>>) -> Json<Value> {
     let settings = state.core.settings();
-    let engine_note = "引擎将在阶段 3b/3f 接入";
+    let engine = engine_status(&state.core);
     Json(json!({
         "status": "ok",
         "runtime_environment": "tauri-rust",
         "asr_provider": settings.asr_provider,
         "recording_mode": settings.recording_mode,
+        "online_ready": engine.ready,
         // 新命名
         "model_service_managed": true,
-        "model_service_running": false,
+        "model_service_running": engine.ready,
         "model_service_loading": false,
-        "model_service_ready": false,
-        "model_service_error": engine_note,
+        "model_service_ready": engine.ready,
+        "model_service_error": engine.error,
         "model_service_supported": true,
-        "model_service_mode": "provider",
-        "streaming_available": false,
-        "streaming_supported": false,
-        "streaming_backend": Value::Null,
-        "streaming_error": engine_note,
+        "model_service_mode": engine.mode,
+        "streaming_available": engine.streaming_available,
+        "streaming_supported": engine.streaming_supported,
+        "streaming_backend": engine.streaming_backend,
+        "streaming_error": engine.error,
         // 旧命名（前端仍读取，见阶段① §3.3 双命名契约）
-        "qwen_streaming_available": false,
-        "qwen_streaming_backend": Value::Null,
-        "qwen_streaming_error": engine_note,
+        "qwen_streaming_available": engine.streaming_available,
+        "qwen_streaming_backend": engine.streaming_backend,
+        "qwen_streaming_error": engine.error,
         "qwen_streaming_service_managed": true,
-        "qwen_streaming_service_running": false,
+        "qwen_streaming_service_running": engine.ready,
         "qwen_streaming_service_loading": false,
-        "qwen_streaming_service_ready": false,
+        "qwen_streaming_service_ready": engine.ready,
         "qwen_streaming_service_pid": Value::Null,
         "qwen_streaming_service_url": Value::Null,
-        "qwen_streaming_service_error": engine_note,
+        "qwen_streaming_service_error": engine.error,
     }))
 }
 
@@ -447,37 +482,46 @@ async fn records_export(
     (StatusCode::OK, headers, body).into_response()
 }
 
-// ---- 模型服务（骨架：3b/3f 接引擎后替换实现） ----
+// ---- 模型服务（在线引擎：凭据配齐即就绪；本地引擎尚未移植） ----
 
-fn model_service_payload() -> Value {
+fn model_service_payload(core: &CoreState) -> Value {
+    let settings = core.settings();
+    let engine = engine_status(core);
     json!({
         "managed": true,
-        "provider_type": null,
-        "model_name": null,
-        "recording_mode": "single",
+        "provider_type": settings.asr_provider,
+        "model_name": if engine.mode == "online" { Value::from("bigmodel") } else { Value::Null },
+        "recording_mode": settings.recording_mode,
         "loading": false,
-        "running": false,
-        "ready": false,
-        "error": "引擎将在阶段 3b/3f 接入",
+        "running": engine.ready,
+        "ready": engine.ready,
+        "error": engine.error,
         "pid": null,
         "base_url": null,
-        "streaming_available": false,
-        "streaming_error": "引擎将在阶段 3d 接入",
+        "streaming_available": engine.streaming_available,
+        "streaming_error": engine.error,
         "model_service_supported": true,
-        "model_service_mode": "provider",
-        "streaming_supported": false,
-        "streaming_backend": null,
+        "model_service_mode": engine.mode,
+        "online_ready": engine.ready,
+        "streaming_supported": engine.streaming_supported,
+        "streaming_backend": engine.streaming_backend,
         "health": Value::Null,
-        "components": { "provider": null, "streaming_bridge": null },
+        "components": { "provider": settings.asr_provider, "streaming_bridge": null },
     })
 }
 
-async fn model_service_status() -> Json<Value> {
-    Json(model_service_payload())
+async fn model_service_status(State(state): State<Arc<ServerState>>) -> Json<Value> {
+    Json(model_service_payload(&state.core))
 }
 
-async fn model_service_start() -> impl IntoResponse {
-    err(StatusCode::SERVICE_UNAVAILABLE, "模型服务将在阶段 3b/3f 接入".into())
+/// 在线引擎无需加载：就绪时直接回报状态，否则返回不可用原因。
+async fn model_service_start(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+    let payload = model_service_payload(&state.core);
+    if payload["ready"].as_bool().unwrap_or(false) {
+        return (StatusCode::OK, Json(payload)).into_response();
+    }
+    let detail = payload["error"].as_str().unwrap_or("引擎不可用").to_string();
+    err(StatusCode::SERVICE_UNAVAILABLE, detail).into_response()
 }
 
 async fn model_service_stop() -> Json<Value> {

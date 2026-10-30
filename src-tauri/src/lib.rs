@@ -8,6 +8,9 @@
 
 // 注意：Tauri generate_handler 需要命令模块公开可见（__cmd__ 宏重导出）
 pub mod commands;
+pub mod desktop;
+pub mod floating;
+pub mod recording;
 
 use att_core::{migration, state::CoreState, Platform};
 use std::path::PathBuf;
@@ -24,16 +27,13 @@ pub struct AppState {
     /// 会让接收端 `wait_for` 立刻返回，等于触发 axum 的优雅关闭——曾导致数据面
     /// 在 setup 结束后静默死亡（端口消失、无任何错误日志，界面全部请求失败）。
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// 录音会话 Actor（UI 按钮与全局热键共用同一入口）
+    pub recorder: recording::RecordingController,
+    /// 全局热键不可用的原因（权限缺失等），前端挂载后可查询
+    pub hotkey_error: std::sync::Mutex<Option<String>>,
 }
 
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,att_core=debug,att_server=debug,att_app=debug".into()),
-        )
-        .init();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 二次启动：唤起主窗口（与旧版 second-instance 行为一致）
@@ -44,6 +44,7 @@ pub fn run() {
         }))
         .setup(|app| {
             let data_dir = resolve_data_dir(app);
+            init_logging(&data_dir);
             tracing::info!("数据目录: {}", data_dir.display());
 
             // 一次性迁移：尽力而为，失败不阻断启动
@@ -110,12 +111,18 @@ pub fn run() {
             // 事件桥：核心事件 → 前端（Tauri event，3b 起随录音接入逐步生效）
             spawn_event_bridge(app.handle().clone(), core.clone());
 
+            // 录音 Actor + 全局热键（热键直达 Actor，不经过前端：窗口隐藏/后台时同样可用）
+            let recorder = recording::RecordingController::spawn(app.handle().clone(), core.clone());
+            let hotkey_error = start_hotkey_listener(core.clone(), recorder.clone());
+
             // 状态先注册：保证窗口首屏的 invoke 一定能取到 State
             // （shutdown_tx 放进 AppState 随应用存活，防止数据面被误关）
             app.manage(AppState {
                 core,
                 backend_port: port,
                 shutdown_tx,
+                recorder,
+                hotkey_error: std::sync::Mutex::new(hotkey_error),
             });
 
             // 主窗口在 setup 里手工创建（而非 tauri.conf 声明）：
@@ -134,6 +141,11 @@ pub fn run() {
                 .background_color(tauri::window::Color(10, 10, 11, 255))
                 .initialization_script(&init_script)
                 .build()?;
+
+            // 录音悬浮窗：预创建隐藏，由录音 Actor 直接驱动
+            if let Err(error) = floating::create(app.handle()) {
+                tracing::warn!("创建悬浮窗失败（不影响录音）: {error}");
+            }
 
             Ok(())
         })
@@ -159,9 +171,39 @@ pub fn run() {
             commands::toggle_floating_window,
             commands::update_floating_window_state,
             commands::debug_log,
+            commands::recording_start,
+            commands::recording_stop,
+            commands::recording_cancel,
+            commands::recording_get_state,
+            commands::list_audio_devices,
+            commands::get_hotkey_status,
+            commands::get_floating_state,
+            commands::open_main_settings,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");
+}
+
+/// 日志同时输出到终端与 `data/logs/att-app.log`（每次启动覆盖；打包版没有终端可看）。
+fn init_logging(data_dir: &std::path::Path) {
+    use tracing_subscriber::fmt::writer::MakeWriterExt;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,att_core=debug,att_server=debug,att_app=debug,att_hotkey=debug".into());
+    let log_dir = data_dir.join("logs");
+    let file = std::fs::create_dir_all(&log_dir)
+        .and_then(|_| std::fs::File::create(log_dir.join("att-app.log")));
+    match file {
+        Ok(file) => {
+            let file = std::sync::Arc::new(file);
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(std::io::stdout.and(file))
+                .try_init();
+        }
+        Err(_) => {
+            let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+        }
+    }
 }
 
 /// 数据目录解析：ATT_DATA_DIR > 开发态仓库 data/（编译期锚点）> 应用数据目录。
@@ -181,6 +223,36 @@ fn resolve_data_dir(app: &tauri::App) -> PathBuf {
         .app_data_dir()
         .expect("无法解析应用数据目录")
         .join("data")
+}
+
+/// 启动全局键盘监听：按键匹配当前录音绑定 → 直接驱动录音 Actor。
+/// 返回不可用原因（如 macOS 未授予「输入监控」权限），由设置页/首页提示用户。
+fn start_hotkey_listener(core: Arc<CoreState>, recorder: recording::RecordingController) -> Option<String> {
+    use att_core::settings::hotkey::HotkeyAction;
+    let binding_core = core.clone();
+    let binding: att_hotkey::listener::BindingSource = Arc::new(move || {
+        binding_core
+            .settings()
+            .binding_of(HotkeyAction::Record)
+            .filter(|b| b.enabled)
+            .map(att_hotkey::HotkeySpec::from_binding)
+    });
+    let sink: att_hotkey::listener::EventSink = Arc::new(move |action, phase| recorder.hotkey(action, phase));
+    match att_hotkey::listener::start(binding, sink) {
+        Ok(()) => {
+            let hotkey_display = core
+                .settings()
+                .binding_of(HotkeyAction::Record)
+                .map(|b| b.display(core.platform))
+                .unwrap_or_default();
+            tracing::info!("全局快捷键已启用: {hotkey_display}");
+            None
+        }
+        Err(message) => {
+            tracing::warn!("全局快捷键不可用: {message}");
+            Some(message)
+        }
+    }
 }
 
 /// 核心事件 → 前端 Tauri events（事件名与旧 WS/IPC 对齐，见 events::AppEvent）。

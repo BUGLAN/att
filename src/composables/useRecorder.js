@@ -16,6 +16,7 @@ import * as segmentPolicy from './recorder/segmentPolicy.mjs'
 import * as pollPolicy from './recorder/pollPolicy.mjs'
 import * as streamProtocol from './recorder/streamProtocol.mjs'
 import * as statusCopy from './recorder/statusCopy.mjs'
+import * as nativeSession from './recorder/nativeSession.mjs'
 
 const STREAM_SAMPLE_RATE = 16000
 // 流式连接必须在限定时间内 settle，否则调用方的 finally 永不执行，startPending 会永久为真
@@ -83,6 +84,8 @@ let streamingCaptureGeneration = 0
 // 启动放弃标志：连接/采集就绪前用户已松手时置位（见 stopStreamingRecording），
 // startStreamingRecording 在每个 await 之后检查它，避免开启幽灵录音
 let streamingStartAborted = false
+// 桌面端（Tauri）原生录音事件是否已订阅（模块级单例，多个组件实例共用）
+let nativeRecordingAttached = false
 const completedPhases = new Set()
 
 function logRecorderHotkey(message, details = {}) {
@@ -1763,10 +1766,101 @@ async function cancelOptimization(recordId) {
   }
 }
 
+// ---------------- 桌面端（Tauri）原生录音 ----------------
+// 采集、豆包识别、记录落库、复制粘贴全部在 Rust 录音 Actor（src-tauri/src/recording.rs）内完成，
+// 全局快捷键也在 Rust 侧直达 Actor（窗口隐藏时同样可用）。这里只负责：
+// 发出开始/停止指令、把 recording:* 事件映射成界面状态（映射规则见 recorder/nativeSession.mjs）。
+
+function applyNativeSessionState(payload) {
+  const patch = nativeSession.deriveNativeSessionPatch(payload)
+  if (!patch) {
+    return
+  }
+
+  const appStore = useAppStore()
+  const { tray } = useElectron()
+
+  activeRecordingMode.value = payload.mode === 'streaming' ? 'streaming' : 'single'
+  if (patch.resetTranscript) {
+    liveTranscript.value = ''
+    liveSegments.value = []
+  }
+  if (patch.clock === 'start') {
+    startDurationClock()
+  } else if (patch.clock === 'stop') {
+    clearDurationTimer()
+    audioLevel.value = 0
+  }
+
+  livePhase.value = patch.livePhase
+  sessionStatusText.value = patch.statusText || statusCopy.IDLE_SESSION_STATUS_TEXT
+  appStore.setRecording(patch.recording)
+  appStore.setTranscribing(patch.transcribing)
+
+  if (patch.transcript) {
+    liveTranscript.value = patch.transcript
+  }
+
+  if (patch.record) {
+    syncRecordIntoStore(patch.record)
+    appStore.setCurrentRecordId(patch.record.id)
+    appStore.setCurrentRecord(patch.record)
+    appStore.setRecordStatus({ record_id: patch.record.id, status: patch.record.status })
+  }
+
+  if (patch.toast) {
+    appStore.showToast(patch.toast)
+  }
+
+  tray.setIcon(patch.trayIcon)
+}
+
+function attachNativeRecording() {
+  if (nativeRecordingAttached) {
+    return
+  }
+  nativeRecordingAttached = true
+
+  const { recording } = useElectron()
+  recording.onState(applyNativeSessionState)
+  recording.onPartial((payload) => updateStreamingTranscript(payload?.text || ''))
+  recording.onLevel((payload) => {
+    audioLevel.value = Number(payload?.level) || 0
+  })
+
+  // 页面重载时 Actor 可能正在录音：同步一次当前状态
+  recording.getState()
+    .then((state) => {
+      if (state && ['connecting', 'recording', 'finalizing'].includes(state.phase)) {
+        applyNativeSessionState(state)
+      }
+    })
+    .catch((error) => console.warn('[Recorder] Failed to read native recording state:', error))
+}
+
+function detachNativeRecording() {
+  if (!nativeRecordingAttached) {
+    return
+  }
+  const { removeAllListeners } = useElectron()
+  removeAllListeners('recording:state')
+  removeAllListeners('recording:partial')
+  removeAllListeners('recording:level')
+  nativeRecordingAttached = false
+}
+
 async function startRecording() {
   const startedAt = performance.now()
   const appStore = useAppStore()
   const settingsStore = useSettingsStore()
+
+  if (useElectron().isDesktop) {
+    // 状态由 recording:state 事件驱动；Actor 自己会吞掉录音中/收尾中的重复开始
+    await useElectron().recording.start().catch((error) => {
+      appStore.showToast(error?.message || String(error) || '无法开始录音')
+    })
+    return
+  }
 
   if (
     startPending ||
@@ -1890,6 +1984,11 @@ function stopMultiRecording() {
 }
 
 function stopRecording() {
+  if (useElectron().isDesktop) {
+    void useElectron().recording.stop()
+    return
+  }
+
   if (activeRecordingMode.value === 'streaming') {
     void stopStreamingRecording()
     return
@@ -2348,10 +2447,16 @@ export function useRecorder() {
   const appStore = useAppStore()
   const settingsStore = useSettingsStore()
   const { connect, addMessageHandler, removeMessageHandler } = useGlobalWebSocket()
-  const { onHotkeyPress, onHotkeyRelease, removeAllListeners } = useElectron()
+  const { isDesktop, onHotkeyPress, onHotkeyRelease, removeAllListeners } = useElectron()
 
   onMounted(async () => {
     mountedInstances += 1
+
+    if (isDesktop) {
+      // 桌面端：全局热键与录音全在 Rust 侧，这里只订阅状态事件
+      attachNativeRecording()
+    }
+
     await connect()
 
     if (!wsAttached) {
@@ -2359,7 +2464,7 @@ export function useRecorder() {
       wsAttached = true
     }
 
-    if (!desktopHotkeyAttached) {
+    if (!isDesktop && !desktopHotkeyAttached) {
       onHotkeyPress((payload) => {
         logRecorderHotkey('Received desktop hotkey press', {
           payload
@@ -2404,6 +2509,7 @@ export function useRecorder() {
       removeAllListeners('hotkey:press')
       removeAllListeners('hotkey:release')
       desktopHotkeyAttached = false
+      detachNativeRecording()
 
       // 原实现只摘 WS 与热键，定时器 / WebSocket / AudioContext / 麦克风轨道全部泄漏，
       // 组件卸载后仍会继续轮询与采集。

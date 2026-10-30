@@ -10,7 +10,8 @@ import { api as httpApi, getBackendPort } from '@/api/client'
  * - `isElectron` 名称保留（语义 = 「桌面环境」），新增 `isDesktop` 别名
  * - 事件通道名沿用旧名（hotkey:press / paste-text / clipboard:changed …），
  *   Rust 侧事件桥按同名发射
- * - 3g 待接入项：openMediaFile / filePathForFile / pasteActive 返回降级值
+ * - 录音走 `recording.*`（Rust 录音 Actor），全局快捷键在 Rust 侧直达 Actor
+ * - 待接入项：openMediaFile / filePathForFile 返回降级值
  */
 
 const isElectron = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
@@ -216,6 +217,29 @@ export function useElectron() {
     void addChannelListener('desktop:agent-error', callback)
   }
 
+  // 原生录音（Tauri）：采集/识别/落库/粘贴都在 Rust 录音 Actor，前端只发指令与订阅状态
+  const recording = {
+    start: () => (isDesktop ? invoke('recording_start') : Promise.resolve()),
+    stop: () => (isDesktop ? invoke('recording_stop') : Promise.resolve()),
+    cancel: () => (isDesktop ? invoke('recording_cancel') : Promise.resolve()),
+    getState: () => (isDesktop ? invoke('recording_get_state') : Promise.resolve({ phase: 'idle' })),
+    onState: (callback) => void addChannelListener('recording:state', callback),
+    onPartial: (callback) => void addChannelListener('recording:partial', callback),
+    onLevel: (callback) => void addChannelListener('recording:level', callback)
+  }
+
+  // 麦克风列表（Rust cpal 枚举，返回设备名数组）
+  async function listAudioDevices() {
+    if (!isDesktop) return []
+    return invoke('list_audio_devices')
+  }
+
+  // 全局快捷键状态：{ enabled, error }
+  async function getHotkeyStatus() {
+    if (!isDesktop) return { enabled: false, error: null }
+    return invoke('get_hotkey_status')
+  }
+
   function removeAllListeners(channel) {
     void removeAllChannelListeners(channel)
   }
@@ -282,6 +306,9 @@ export function useElectron() {
     tray,
     floatingWindow,
     clipboard,
+    recording,
+    listAudioDevices,
+    getHotkeyStatus,
     onHotkeyPress,
     onHotkeyRelease,
     onPasteText,

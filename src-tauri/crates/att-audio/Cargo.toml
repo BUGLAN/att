@@ -1,0 +1,13 @@
+[package]
+name = "att-audio"
+description = "ATT 原生麦克风采集（cpal）：设备回调 → SPSC 环 → 16k 单声道 i16 分块"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+att-core = { path = "../att-core" }
+tracing = { workspace = true }
+cpal = "0.16"
+# 回调 → 处理线程的无锁 SPSC 环（回调内零分配零锁）
+rtrb = "0.3"

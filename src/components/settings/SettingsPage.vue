@@ -290,7 +290,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">录音时暂停其他音频</span>
-              <span class="setting-desc">通过 Electron 系统层通知桌面端处理。</span>
+              <span class="setting-desc">录音期间静音系统输出，结束后自动恢复。</span>
             </div>
             <label class="toggle-switch">
               <input v-model="form.pause_audio_on_recording" type="checkbox">
@@ -423,7 +423,7 @@ const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const { settings, saveSettings } = useSettings()
 const { presets, defaultPresetId, loadPresets, setDefaultPreset } = usePresets()
-const { syncDesktopSettings, syncInputSettings, platform } = useElectron()
+const { syncDesktopSettings, syncInputSettings, platform, isDesktop, listAudioDevices } = useElectron()
 
 const form = ref({})
 const audioInputDevices = ref([])
@@ -677,9 +677,15 @@ function runSyncUpdate(callback) {
 
 async function loadAudioInputDevices() {
   // Tauri 模式下不触碰 getUserMedia：页面是 v-show 常驻挂载，挂载即请求麦克风
-  // 会触发系统权限弹窗（3a 实机验收暴露）。设备枚举在 3b 改为 Rust 命令。
-  if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
-    audioInputDevices.value = []
+  // 会触发系统权限弹窗。采集在 Rust 侧（cpal），设备按名称选择，枚举也走 Rust 命令。
+  if (isDesktop) {
+    try {
+      const names = await listAudioDevices()
+      audioInputDevices.value = (names || []).map((name) => ({ deviceId: name, label: name }))
+    } catch (error) {
+      console.error('Failed to list audio input devices:', error)
+      audioInputDevices.value = []
+    }
     return
   }
 

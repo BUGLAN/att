@@ -13,11 +13,16 @@
     "windows": [],
     "security": {
       "csp": null
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.ico", "icons/icon.png", "icons/icon.icns"]
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png",
+      "icons/icon.icns"
+    ]
   }
 }

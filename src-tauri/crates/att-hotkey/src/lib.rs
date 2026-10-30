@@ -1,13 +1,22 @@
 //! 全局热键平台后端抽象（架构文档 §4.6 / §6.3）。
 //!
-//! 3a 阶段只定义契约与空实现（保证工作区可编译、app 可启动）；
-//! 3c 阶段落三平台注册：
+//! 当前可用实现：[`listener`]——底层键盘监听（macOS CGEventTap / Windows WH_KEYBOARD_LL）
+//! + [`matcher`] 触发状态机（支持纯修饰键组合，如旧版默认的 Win+Alt）。
+//! 下列系统级注册（吞键 + 冲突检测）仍按设计在后续阶段落地：
 //! - Windows：RegisterHotKey（系统级吞键+冲突检测）+ WH_KEYBOARD_LL（key-up）
 //! - macOS：Carbon RegisterEventHotKey + CGEventTap（key-up，需辅助功能权限）
 //! - Linux X11：XGrabKey（抓取即吞键，天然同时收到 KeyPress/KeyRelease）
 //! - Linux Wayland：XDG portal GlobalShortcuts（activated/deactivated 双信号）
 
-use att_core::settings::hotkey::{HotkeyAction, HotkeyBinding, ModSet};
+pub mod listener;
+pub mod matcher;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(windows)]
+mod windows;
+
+pub use att_core::settings::hotkey::HotkeyAction;
+use att_core::settings::hotkey::{HotkeyBinding, ModSet};
 use std::sync::mpsc;
 
 /// 绑定句柄（unregister 用）。
@@ -15,7 +24,7 @@ use std::sync::mpsc;
 pub struct BindingId(pub u32);
 
 /// 待注册的组合（后端把它翻译成平台 API 的键码集合）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotkeySpec {
     pub action: HotkeyAction,
     pub modifiers: ModSet,

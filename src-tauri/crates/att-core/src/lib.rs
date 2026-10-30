@@ -10,13 +10,16 @@
 //! - [`migration`]：一次性迁移（热键合并 / 音频错位修复 / 报告）
 //! - [`events`]：进程内事件总线
 //! - [`state`]：CoreState 组装（服务层共享句柄）
+//! - [`stt`]：语音识别引擎（豆包 SAUC 流式/批量）
 
+pub mod audio;
 pub mod events;
 pub mod migration;
 pub mod records;
 pub mod settings;
 pub mod state;
 pub mod storage;
+pub mod stt;
 
 /// 平台标识：沿用 Electron/Node 的命名（前端 stores/settings.js 按
 /// 'win32' | 'darwin' | 'linux' 分支默认热键），保持前端零改动。
