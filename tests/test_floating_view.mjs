@@ -28,7 +28,7 @@ test('录音中：聽；没说话时没有文字，单段模式始终没有文�
   assert.equal(deriveFloatingView({ phase: 'recording', mode: 'single', text: '不该显示' }).text, '')
 })
 
-test('识别与优化：轉；沿用上一句（变淡）撑住胶囊，优化结果出来后替换', () => {
+test('识别与优化：轉；沿用上一句（变淡）撑住胶囊，优化稿不回填', () => {
   const session = { previousText: '嗯明天下午三点开会' }
   const transcribing = deriveFloatingView({ phase: 'transcribing' }, session)
   assert.equal(transcribing.glyph, '轉')
@@ -37,12 +37,12 @@ test('识别与优化：轉；沿用上一句（变淡）撑住胶囊，优化�
   assert.equal(transcribing.dim, true)
 
   const waiting = deriveFloatingView({ phase: 'optimizing', text: '' }, session)
-  assert.equal(waiting.text, '嗯明天下午三点开会', '优化首字前仍沿用上一句')
+  assert.equal(waiting.text, '嗯明天下午三点开会', '优化中仍沿用上一句')
   assert.equal(waiting.dim, true)
 
   const optimizing = deriveFloatingView({ phase: 'optimizing', text: '明天下午三点开会。' }, session)
-  assert.equal(optimizing.text, '明天下午三点开会。')
-  assert.equal(optimizing.dim, false)
+  assert.equal(optimizing.text, '嗯明天下午三点开会', '优化稿即使带过来也不显示')
+  assert.equal(optimizing.dim, true)
 
   const single = deriveFloatingView({ phase: 'transcribing' })
   assert.equal(single.text, '', '单段模式没有上一句：只剩印章与处理点')
@@ -110,4 +110,12 @@ test('声纹门限：底噪不触发，过门限立即出现，停顿片刻内�
 
   // 安静后再次说话立即恢复
   assert.equal(nextVoiceState(voice, 0.5, 5000).loud, true)
+})
+
+test('进入优化：转写原文作为淡色草稿显示到结束', () => {
+  const session = { previousText: '明天下午三点开' }
+  const begin = deriveFloatingView({ phase: 'optimizing', text: '', draft: '明天下午三点开会' }, session)
+  assert.equal(begin.glyph, '轉')
+  assert.equal(begin.text, '明天下午三点开会', '草稿比上一句中间结果更新，优先显示')
+  assert.equal(begin.dim, true)
 })

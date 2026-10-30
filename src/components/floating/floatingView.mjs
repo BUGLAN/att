@@ -5,7 +5,8 @@
 //   錄 待命 · 聽 录音中 · 轉 识别 / 优化中 · 成 已输入 · 敗 失败
 // 一次会话里胶囊只变两次大小：没有文字时只有印章（识别 / 优化中带处理点），
 // 出现第一个字后展开到固定宽度并保持（见 FloatingWindow.vue），始终单行、超出裁掉开头；
-// 松开后进入「轉」沿用上一句（变淡）撑住宽度，优化结果出来再替换；
+// 松开后进入「轉」沿用识别稿（变淡）撑住宽度，直到结束都不换：
+// 优化稿不回填悬浮窗（它停留很短，一闪而过反而突兀），优化结果直接打进输入框；
 // 结果态（成 / 敗）只剩印章，停留片刻后隐藏；失败原因放在 title 里悬停可见。
 
 export const SEALS = Object.freeze({
@@ -57,22 +58,20 @@ function working(seal, { text = '', dim = false, busy = false }) {
 }
 
 /**
- * @param {{ phase?: string, mode?: string, text?: string, ok?: boolean }} state
+ * @param {{ phase?: string, mode?: string, text?: string, draft?: string, ok?: boolean }} state
+ *   draft：进入优化时的转写原文，变淡显示；优化阶段的 text 一律不显示
  * @param {{ previousText?: string }} session 本次会话上一次显示的文字：
- *   松开后进入「轉」时后端不再带文字，沿用它（变淡）撑住胶囊，直到优化结果出来替换。
+ *   松开后进入「轉」时后端不再带文字，沿用它（变淡）撑住胶囊直到结束。
  */
-export function deriveFloatingView({ phase, mode, text, ok } = {}, { previousText = '' } = {}) {
+export function deriveFloatingView({ phase, mode, text, draft, ok } = {}, { previousText = '' } = {}) {
   switch (phase) {
     case 'recording':
       // 单段模式录完才识别：录音中只有印章
       return working('listening', { text: mode === 'streaming' || mode === 'multi' ? tailText(text) : '' })
     case 'transcribing':
-      return working('converting', { text: previousText, dim: Boolean(previousText), busy: true })
     case 'optimizing': {
-      const optimized = tailText(text)
-      return optimized
-        ? working('converting', { text: optimized, busy: true })
-        : working('converting', { text: previousText, dim: Boolean(previousText), busy: true })
+      const pending = tailText(draft) || previousText
+      return working('converting', { text: pending, dim: Boolean(pending), busy: true })
     }
     case 'complete':
       // 旧载荷没有 ok 字段：按成功处理

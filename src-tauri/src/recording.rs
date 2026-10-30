@@ -134,6 +134,9 @@ struct Active {
     muted_by_us: bool,
     /// 听到过说话（电平高于静音阈值，或流式已出字）；松开时据此决定要不要进入转写
     heard: Arc<AtomicBool>,
+    /// 仍在录音：松开 / 取消后置否。识别结果会在松开后继续到达（豆包末包、多段的尾段），
+    /// 那时悬浮窗已进入「轉」，中间结果不能再把它推回「聽」
+    live: Arc<AtomicBool>,
     /// 松开时判定为误触或整场没说话：会话任务被直接取消，按这里的原因安静结束（不进「轉」）
     quiet_end: Option<&'static str>,
     /// 收尾看门狗已触发：会话任务被强制取消，按「识别超时」收尾并保留已识别内容
@@ -351,6 +354,7 @@ impl Actor {
         };
 
         let (cancel_tx, cancel_rx) = oneshot::channel();
+        let live = Arc::new(AtomicBool::new(true));
         self.active = Some(Active {
             id,
             mode,
@@ -358,6 +362,7 @@ impl Actor {
             cancel: Some(cancel_tx),
             muted_by_us: false,
             heard: heard.clone(),
+            live: live.clone(),
             quiet_end: None,
             timed_out: false,
             started: Instant::now(),
@@ -370,7 +375,7 @@ impl Actor {
                 self.emit_state("connecting", json!({ "message": "正在连接豆包语音服务" }));
                 let app = self.app.clone();
                 let config = streaming_config.expect("流式模式已校验为豆包");
-                tauri::async_runtime::spawn(streaming_task(id, config, language, audio_rx, cancel_rx, heard, app, tx));
+                tauri::async_runtime::spawn(streaming_task(id, config, language, audio_rx, cancel_rx, heard, live, app, tx));
             }
             Mode::Batch => {
                 self.phase = Phase::Recording;
@@ -382,7 +387,7 @@ impl Actor {
                 self.emit_state("recording", json!({ "message": "静音切段监听中" }));
                 let segmenter = att_core::audio::Segmenter::new(settings.silence_level as f64, settings.silence_threshold);
                 let app = self.app.clone();
-                tauri::async_runtime::spawn(multi_task(id, engine, language, audio_rx, cancel_rx, segmenter, app, tx));
+                tauri::async_runtime::spawn(multi_task(id, engine, language, audio_rx, cancel_rx, segmenter, live, app, tx));
             }
         }
 
@@ -410,6 +415,7 @@ impl Actor {
         }
         self.phase = Phase::Finalizing;
         let Some(active) = self.active.as_mut() else { return };
+        active.live.store(false, Ordering::SeqCst);
         if let Some(capture) = active.capture.take() {
             std::thread::spawn(move || capture.stop());
         }
@@ -469,6 +475,7 @@ impl Actor {
             return;
         }
         if let Some(active) = self.active.as_mut() {
+            active.live.store(false, Ordering::SeqCst);
             if let Some(cancel) = active.cancel.take() {
                 let _ = cancel.send(());
             }
@@ -577,7 +584,7 @@ impl Actor {
             record_id: record_id.clone(),
             raw_text: raw_text.clone(),
             transcribe_error,
-            detached: detached.clone(),
+            detached,
             typing_halt,
         });
         self.emit_state(
@@ -594,19 +601,13 @@ impl Actor {
             let outcome = optimizer::optimize_record(&core, &record_id, &raw_text, |event| {
                 let OptimizeEvent::Delta(chunk) = event else { return };
                 accumulated.push_str(&chunk);
-                // 输入框与悬浮窗都只出「收尾清洗不会剥掉」的部分（套话 / 思考块不上屏）
+                // 输入框只出「收尾清洗不会剥掉」的部分（套话 / 思考块不上屏）。
+                // 悬浮窗不回填优化稿：它停留很短，一闪而过反而突兀，「轉」期间一直显示淡色识别稿
                 let stable = cleaning::stable_prefix(&accumulated);
                 if let Some(typing) = typing.as_mut() {
                     typing.advance(&stable);
                 }
                 let _ = app.emit("recording:optimization", json!({ "record_id": &delta_record, "text": chunk }));
-                if !detached.load(Ordering::SeqCst) {
-                    crate::floating::update(
-                        &app,
-                        json!({ "phase": "optimizing", "mode": mode.as_str(), "text": stable, "duration": 0 }),
-                        false,
-                    );
-                }
             })
             .await;
             let _ = tx.send(Cmd::Optimized(session_id, delta_record, outcome, typing));
@@ -827,6 +828,7 @@ async fn streaming_task(
     mut audio_rx: mpsc::UnboundedReceiver<Vec<i16>>,
     mut cancel_rx: oneshot::Receiver<()>,
     heard: Arc<AtomicBool>,
+    live: Arc<AtomicBool>,
     app: AppHandle,
     tx: mpsc::UnboundedSender<Cmd>,
 ) {
@@ -842,11 +844,13 @@ async fn streaming_task(
             heard.store(true, Ordering::Relaxed);
             let _ = first_text_mark.set(started.elapsed());
         }
-        crate::floating::update(
-            &partial_app,
-            json!({ "phase": "recording", "mode": "streaming", "text": text, "duration": 0 }),
-            false,
-        );
+        if live.load(Ordering::SeqCst) {
+            crate::floating::update(
+                &partial_app,
+                json!({ "phase": "recording", "mode": "streaming", "text": text, "duration": 0 }),
+                false,
+            );
+        }
         let _ = partial_app.emit("recording:partial", json!({ "text": text }));
     });
     let connect = doubao::DoubaoSession::connect(&config, &language, "", Some(on_partial));
@@ -1017,6 +1021,7 @@ async fn multi_task(
     mut audio_rx: mpsc::UnboundedReceiver<Vec<i16>>,
     mut cancel_rx: oneshot::Receiver<()>,
     mut segmenter: att_core::audio::Segmenter,
+    live: Arc<AtomicBool>,
     app: AppHandle,
     tx: mpsc::UnboundedSender<Cmd>,
 ) {
@@ -1035,7 +1040,9 @@ async fn multi_task(
         texts.iter().filter_map(|t| t.as_ref().and_then(|r| r.as_ref().ok())).filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join("\n\n")
     };
     let emit_partial = |text: &str| {
-        crate::floating::update(&app, json!({ "phase": "recording", "mode": "multi", "text": text, "duration": 0 }), false);
+        if live.load(Ordering::SeqCst) {
+            crate::floating::update(&app, json!({ "phase": "recording", "mode": "multi", "text": text, "duration": 0 }), false);
+        }
         let _ = app.emit("recording:partial", json!({ "text": text }));
     };
 
