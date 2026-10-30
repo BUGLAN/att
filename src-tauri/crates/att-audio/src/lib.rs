@@ -13,7 +13,7 @@
 use att_core::audio::{f32_to_i16, LinearResampler, TARGET_RATE};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -24,6 +24,8 @@ pub type ChunkCallback = Box<dyn FnMut(&[i16], f32) + Send + 'static>;
 pub struct CaptureHandle {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    /// 设备中途不可用（拔出麦克风/耳机）的原因；置位后采集线程自行结束并关闭输出
+    device_error: Arc<Mutex<Option<String>>>,
     pub device_name: String,
     pub device_rate: u32,
 }
@@ -31,6 +33,11 @@ pub struct CaptureHandle {
 impl CaptureHandle {
     pub fn stop(mut self) {
         self.shutdown();
+    }
+
+    /// 采集途中设备失效的原因（正常运行/正常停止为 None）。
+    pub fn device_error(&self) -> Option<String> {
+        self.device_error.lock().ok().and_then(|e| e.clone())
     }
 
     fn shutdown(&mut self) {
@@ -75,15 +82,17 @@ fn pick_device(host: &cpal::Host, preferred: Option<&str>) -> Result<cpal::Devic
 /// 启动采集。设备打开失败（无设备/无权限/格式不支持）同步返回错误。
 pub fn start_capture(device: Option<String>, on_chunk: ChunkCallback) -> Result<CaptureHandle, String> {
     let stop = Arc::new(AtomicBool::new(false));
+    let device_error = Arc::new(Mutex::new(None));
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(String, u32), String>>();
     let thread_stop = stop.clone();
+    let thread_error = device_error.clone();
     let thread = std::thread::Builder::new()
         .name("att-audio-capture".into())
-        .spawn(move || capture_thread(device, on_chunk, thread_stop, ready_tx))
+        .spawn(move || capture_thread(device, on_chunk, thread_stop, thread_error, ready_tx))
         .map_err(|e| format!("无法启动采集线程: {e}"))?;
 
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(Ok((device_name, device_rate))) => Ok(CaptureHandle { stop, thread: Some(thread), device_name, device_rate }),
+        Ok(Ok((device_name, device_rate))) => Ok(CaptureHandle { stop, thread: Some(thread), device_error, device_name, device_rate }),
         Ok(Err(message)) => {
             let _ = thread.join();
             Err(message)
@@ -99,6 +108,7 @@ fn capture_thread(
     device: Option<String>,
     mut on_chunk: ChunkCallback,
     stop: Arc<AtomicBool>,
+    device_error: Arc<Mutex<Option<String>>>,
     ready_tx: mpsc::Sender<Result<(String, u32), String>>,
 ) {
     let host = cpal::default_host();
@@ -122,7 +132,7 @@ fn capture_thread(
     // 环容量 ≈2s 设备原生率单声道（回调永不阻塞；理论溢出视为处理线程死亡）
     let (producer, mut consumer) = rtrb::RingBuffer::<f32>::new((sample_rate as usize * 2).next_power_of_two());
 
-    let stream = match build_stream(&device, &config, channels, producer) {
+    let stream = match build_stream(&device, &config, channels, producer, device_error.clone()) {
         Ok(stream) => stream,
         Err(message) => {
             let _ = ready_tx.send(Err(message));
@@ -160,13 +170,18 @@ fn capture_thread(
         on_chunk(&pcm, level);
     };
 
-    while !stop.load(Ordering::SeqCst) {
+    let device_lost = || device_error.lock().map(|e| e.is_some()).unwrap_or(false);
+    while !stop.load(Ordering::SeqCst) && !device_lost() {
         std::thread::sleep(Duration::from_millis(20));
         drain(&mut consumer, &mut on_chunk);
     }
-    // 停止顺序：先停设备，再冲刷环里的尾部样本（不截断）
+    // 停止顺序：先停设备，再冲刷环里的尾部样本（不截断）。
+    // 设备失效时同样走这里：线程结束 → on_chunk 被释放 → 下游音频通道关闭，录音按正常收尾保存已录内容
     drop(stream);
     drain(&mut consumer, &mut on_chunk);
+    if let Some(error) = device_error.lock().ok().and_then(|e| e.clone()) {
+        tracing::warn!("麦克风采集中断: {error}");
+    }
 }
 
 fn build_stream(
@@ -174,9 +189,18 @@ fn build_stream(
     config: &cpal::SupportedStreamConfig,
     channels: usize,
     mut producer: rtrb::Producer<f32>,
+    device_error: Arc<Mutex<Option<String>>>,
 ) -> Result<cpal::Stream, String> {
     let stream_config: cpal::StreamConfig = config.clone().into();
-    let on_error = |error| tracing::error!("麦克风流错误: {error}");
+    // 设备被拔出等致命错误：记下原因，由采集线程据此结束（否则录音会一直「收」空数据且无任何提示）
+    let on_error = move |error: cpal::StreamError| {
+        tracing::error!("麦克风流错误: {error}");
+        if matches!(error, cpal::StreamError::DeviceNotAvailable) {
+            if let Ok(mut slot) = device_error.lock() {
+                slot.get_or_insert_with(|| "麦克风已断开或不可用".to_string());
+            }
+        }
+    };
     macro_rules! build {
         ($sample:ty, $to_f32:expr) => {
             device.build_input_stream(

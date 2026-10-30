@@ -325,9 +325,14 @@ impl Actor {
         self.phase = Phase::Finalizing;
     }
 
-    async fn finish(&mut self, outcome: SessionOutcome) {
+    async fn finish(&mut self, mut outcome: SessionOutcome) {
         let Some(mut active) = self.active.take() else { return };
         if let Some(capture) = active.capture.take() {
+            // 麦克风中途断开：采集线程自行结束 → 音频通道关闭 → 会话按正常收尾走到这里。
+            // 把原因并入结果，界面才会提示「已保存断开前的内容」，而不是当作一次正常完成
+            if let Some(device_error) = capture.device_error() {
+                outcome.error.get_or_insert(device_error);
+            }
             std::thread::spawn(move || capture.stop());
         }
         if active.muted_by_us {
