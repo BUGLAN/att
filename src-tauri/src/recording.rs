@@ -41,6 +41,9 @@ use tokio::sync::{mpsc, oneshot};
 
 /// 低于该时长视为误触（不建记录、不计费）。
 const MIN_DURATION_SECONDS: f64 = 0.3;
+/// 累计这么久的音频高于静音阈值才算「说过话」：按键的咔哒声、麦克风上电的爆音只有一两块（20ms/块），
+/// 单块过阈值就算的话，敲一下热键也会被当成说话、进入「轉」。
+const HEARD_MIN_VOICED: Duration = Duration::from_millis(100);
 const SAMPLE_RATE: f64 = 16_000.0;
 /// 音量事件节流（≈25Hz，足够驱动波形条）。
 const LEVEL_EMIT_INTERVAL: Duration = Duration::from_millis(40);
@@ -131,8 +134,8 @@ struct Active {
     muted_by_us: bool,
     /// 听到过说话（电平高于静音阈值，或流式已出字）；松开时据此决定要不要进入转写
     heard: Arc<AtomicBool>,
-    /// 松开时整场没听到说话：会话任务被直接取消，按「没有检测到说话」安静结束
-    silent: bool,
+    /// 松开时判定为误触或整场没说话：会话任务被直接取消，按这里的原因安静结束（不进「轉」）
+    quiet_end: Option<&'static str>,
     /// 收尾看门狗已触发：会话任务被强制取消，按「识别超时」收尾并保留已识别内容
     timed_out: bool,
     started: Instant,
@@ -325,9 +328,13 @@ impl Actor {
         let heard = Arc::new(AtomicBool::new(false));
         let heard_by_level = heard.clone();
         let silence_db = settings.silence_level as f64;
+        let mut voiced_samples = 0usize;
         let on_chunk: att_audio::ChunkCallback = Box::new(move |pcm, level| {
             if !heard_by_level.load(Ordering::Relaxed) && att_core::audio::chunk_db(pcm) > silence_db {
-                heard_by_level.store(true, Ordering::Relaxed);
+                voiced_samples += pcm.len();
+                if voiced_samples as f64 >= HEARD_MIN_VOICED.as_secs_f64() * SAMPLE_RATE {
+                    heard_by_level.store(true, Ordering::Relaxed);
+                }
             }
             let _ = audio_tx.send(pcm.to_vec());
             if last_level_emit.elapsed() >= LEVEL_EMIT_INTERVAL {
@@ -351,7 +358,7 @@ impl Actor {
             cancel: Some(cancel_tx),
             muted_by_us: false,
             heard: heard.clone(),
-            silent: false,
+            quiet_end: None,
             timed_out: false,
             started: Instant::now(),
         });
@@ -396,7 +403,7 @@ impl Actor {
         self.stop_with(message, true);
     }
 
-    /// `allow_silent`：整场没听到说话时，不进入转写、不调识别（不计费），直接安静结束。
+    /// `allow_silent`：误触或整场没听到说话时，不进入转写、不调识别（不计费），直接安静结束。
     fn stop_with(&mut self, message: &str, allow_silent: bool) {
         if !matches!(self.phase, Phase::Connecting | Phase::Recording) {
             return;
@@ -406,8 +413,9 @@ impl Actor {
         if let Some(capture) = active.capture.take() {
             std::thread::spawn(move || capture.stop());
         }
-        if allow_silent && !active.heard.load(Ordering::Relaxed) {
-            active.silent = true;
+        let quiet_end = quiet_end_reason(active.started.elapsed(), active.heard.load(Ordering::Relaxed));
+        if let (true, Some(reason)) = (allow_silent, quiet_end) {
+            active.quiet_end = Some(reason);
             if let Some(cancel) = active.cancel.take() {
                 let _ = cancel.send(());
             }
@@ -487,7 +495,7 @@ impl Actor {
         self.phase = Phase::Idle;
         // 让 emit_state 仍能带上本次模式
         let mode = active.mode;
-        let (silent, timed_out) = (active.silent, active.timed_out);
+        let (quiet_end, timed_out) = (active.quiet_end, active.timed_out);
         self.active = Some(Active { capture: None, cancel: None, ..active });
         let duration = outcome.samples.len() as f64 / SAMPLE_RATE;
         if outcome.cancelled && timed_out {
@@ -496,9 +504,9 @@ impl Actor {
             outcome.error = Some("识别超时，未等到识别结果".to_string());
         }
 
-        if outcome.cancelled && silent {
-            // 松开时整场没说话：不进转写、不建记录，悬浮窗直接收起
-            self.emit_state("completed", json!({ "message": "没有检测到说话", "text": "", "silent": true }));
+        if let (true, Some(reason)) = (outcome.cancelled, quiet_end) {
+            // 松开时是误触或整场没说话：不进转写、不建记录，悬浮窗直接收起
+            self.emit_state("completed", json!({ "message": reason, "text": "", "silent": true }));
         } else if outcome.cancelled {
             self.emit_state("cancelled", json!({ "message": "已取消本次录音" }));
         } else if outcome.samples.is_empty() && outcome.text.is_empty() && outcome.error.is_some() {
@@ -772,6 +780,17 @@ impl Actor {
 }
 
 /// 收尾看门狗的上限：各引擎自身超时之和再加余量。正常收尾远早于它，只兜卡死。
+/// 松开时要不要跳过转写直接安静结束：按下不到 0.3 秒算误触（哪怕按键声过了阈值），整场没说话同样跳过。
+fn quiet_end_reason(recorded: Duration, heard: bool) -> Option<&'static str> {
+    if recorded.as_secs_f64() < MIN_DURATION_SECONDS {
+        Some("录音时间过短")
+    } else if !heard {
+        Some("没有检测到说话")
+    } else {
+        None
+    }
+}
+
 fn finalize_budget(mode: Mode, recorded: Duration, chatgpt_timeout_seconds: i64) -> Duration {
     // 豆包：建连 + 末包等待（批量另按音频时长加时）+ 关闭
     let doubao = doubao::CONNECT_TIMEOUT + doubao::FINISH_TIMEOUT + Duration::from_secs(2);
@@ -1074,8 +1093,17 @@ async fn multi_task(
 
 #[cfg(test)]
 mod tests {
-    use super::{finalize_budget, Mode};
+    use super::{finalize_budget, quiet_end_reason, Mode};
     use std::time::Duration;
+
+    #[test]
+    fn 短按与没说话_松开即安静结束不进转写() {
+        // 短按：按键声把电平顶过阈值也算误触
+        assert_eq!(quiet_end_reason(Duration::from_millis(150), true), Some("录音时间过短"));
+        assert_eq!(quiet_end_reason(Duration::from_millis(150), false), Some("录音时间过短"));
+        assert_eq!(quiet_end_reason(Duration::from_secs(3), false), Some("没有检测到说话"));
+        assert_eq!(quiet_end_reason(Duration::from_secs(3), true), None);
+    }
 
     #[test]
     fn 收尾看门狗上限_覆盖各引擎自身超时() {
