@@ -112,7 +112,9 @@ test('Windows 托盘：异常缩放值不放大、不报错', () => {
   assert.equal(pickWindowsTraySize(0.5), 16)
 })
 
-test('Windows 托盘：挑出的档位对应文件真实存在且尺寸一致', () => {
+// getIconPath 按 process.platform 选目录：非 Windows 主机上会落到 macos/ 的 22px 图标，
+// 这条断言只在 Windows 上有意义（Windows 位图本身的存在与尺寸由上面的资产用例覆盖）
+test('Windows 托盘：挑出的档位对应文件真实存在且尺寸一致', { skip: process.platform !== 'win32' }, () => {
   const dir = path.join(TRAY_ICON_ROOT, 'win')
   const manager = new TrayManager(null, null)
 
