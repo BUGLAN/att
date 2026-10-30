@@ -9,7 +9,7 @@ license.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "process"] }
 chrono = { workspace = true }
 tracing = { workspace = true }
 # Fernet 兼容加密：纯 Rust 规范实现（不用 fernet crate——它拖 openssl，
@@ -29,6 +29,14 @@ tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 flate2 = "1"
 uuid = { version = "1", features = ["v4"] }
+# LLM 网关：native-tls 与 WebSocket 同一套系统 TLS；system-proxy 读系统代理（与 Python httpx 走代理的行为对齐）
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "http2", "charset", "system-proxy", "multipart"] }
+# LLM 错误文案脱敏
+regex = "1"
+
+[features]
+# 测试支撑（本地 LLM HTTP 桩），供下游 crate 的测试启用
+test-support = []
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }

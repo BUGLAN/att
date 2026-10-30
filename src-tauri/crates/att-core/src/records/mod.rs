@@ -325,6 +325,22 @@ impl RecordRepo {
         Ok(record)
     }
 
+    /// 内部更新（状态机推进 / 优化结果落盘）：锁内读-改-写，不做乐观锁校验，revision 照常自增
+    /// （与 Python `update_record` 一致：任何写入都让前端持有的旧 revision 失效）。
+    pub fn patch(&self, id: &str, mutate: impl FnOnce(&mut Record)) -> Result<Record, RecordError> {
+        if !is_safe_identifier(id) {
+            return Err(RecordError::NotFound);
+        }
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let path = self.record_path(id);
+        let mut record: Record = json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
+        mutate(&mut record);
+        record.revision += 1;
+        record.updated_at = now_rfc3339();
+        json_store::write_json_atomic(&path, &record)?;
+        Ok(record)
+    }
+
     /// 删除记录 + 对应音频（音频路径必须落在 audio_dir 内，防路径穿越）。
     pub fn delete(&self, id: &str) -> Result<(), RecordError> {
         if !is_safe_identifier(id) {

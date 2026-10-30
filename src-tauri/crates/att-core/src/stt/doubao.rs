@@ -381,6 +381,13 @@ impl DoubaoSession {
     }
 }
 
+/// 会话被中途丢弃（如收尾阶段被取消）时停掉读帧任务，不让它挂到服务端断开为止。
+impl Drop for DoubaoSession {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
+}
+
 /// 解析一帧并更新状态；文本有变化时返回新的整场文本（供中间结果回调）。
 fn handle_frame(shared: &Shared, data: &[u8], connect_id: &str) -> Option<String> {
     let mut state = shared.lock();

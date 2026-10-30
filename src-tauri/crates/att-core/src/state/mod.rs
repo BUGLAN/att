@@ -1,12 +1,15 @@
 //! CoreState：服务层共享的核心句柄（axum 与 Tauri 命令共用）。
 
+use crate::clipboard::ClipboardRepo;
 use crate::events::EventBus;
+use crate::llm::optimizer::OptimizationHub;
+use crate::llm::store::LlmStore;
 use crate::records::RecordRepo;
 use crate::settings::{self, UserSettings};
 use crate::storage::crypto::Crypto;
 use crate::Platform;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -20,8 +23,18 @@ pub struct CoreState {
     pub settings_path: PathBuf,
     pub platform: Platform,
     settings: Mutex<UserSettings>,
-    pub crypto: Crypto,
+    pub crypto: Arc<Crypto>,
     pub records: RecordRepo,
+    /// LLM v2 档案 + 模型（data/llm_v2.json）
+    pub llm: LlmStore,
+    /// 剪贴板历史（data/clipboard/）
+    pub clipboard: ClipboardRepo,
+    /// 活动中的记录优化（取消 / 同记录互斥）
+    pub optimizer: OptimizationHub,
+    /// 本地文件转写（任务表 / 单并发闸门 / 结果缓存）
+    pub transcriber: crate::transcribe::FileTranscriber,
+    /// 提示词预设目录（prompts/*.txt；打包版由壳层改指向安装资源目录）
+    pub prompts_dir: PathBuf,
     pub events: EventBus,
 }
 
@@ -35,6 +48,8 @@ impl CoreState {
         }
         let crypto = Crypto::load_or_create(data_dir)
             .map_err(|e| CoreError::Io(std::io::Error::other(e.to_string())))?;
+        let crypto = Arc::new(crypto);
+        let llm = LlmStore::load(data_dir, crypto.clone());
         let settings_path = data_dir.join("settings.json");
         let settings = UserSettings::load(&settings_path, platform);
         Ok(Self {
@@ -44,6 +59,11 @@ impl CoreState {
             settings: Mutex::new(settings),
             crypto,
             records,
+            llm,
+            clipboard: ClipboardRepo::new(data_dir),
+            optimizer: OptimizationHub::default(),
+            transcriber: Default::default(),
+            prompts_dir: crate::prompts::resolve_dir(data_dir, None),
             events: EventBus::default(),
         })
     }
