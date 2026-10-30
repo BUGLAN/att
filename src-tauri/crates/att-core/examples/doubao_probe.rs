@@ -2,7 +2,8 @@
 //!
 //! 用法：`cargo run -p att-core --example doubao_probe -- <data_dir> <wav> [stream] [endpoint]`
 //! 第三个参数为 `stream` 时按实时节奏（100ms/包）推流，模拟录音路径，并打印首字耗时；
-//! 第四个参数覆盖接入点，便于对比 `bigmodel` 与 `bigmodel_async`。
+//! 第四个参数覆盖接入点，便于对比 `bigmodel` 与 `bigmodel_async`；
+//! 环境变量 `DOUBAO_END_WINDOW_SIZE` 覆盖「强制断句静音时长」（ms），便于观察停顿后何时确认。
 
 use att_core::stt::{doubao, doubao_config};
 use std::path::PathBuf;
@@ -20,6 +21,9 @@ async fn main() {
     let mut config = doubao_config(&core);
     if let Some(endpoint) = args.get(4) {
         config.endpoint = endpoint.clone();
+    }
+    if let Some(window) = std::env::var("DOUBAO_END_WINDOW_SIZE").ok().and_then(|v| v.parse().ok()) {
+        config.end_window_size = window;
     }
     println!("配置: {config:?}");
     let samples = att_core::audio::read_wav_16k_mono(&wav).expect("读取 WAV 失败");

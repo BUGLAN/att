@@ -124,6 +124,8 @@ pub fn run_with_legacy(
         map.remove("hotkey"); // 旧键退役
 
         if changed {
+            // 合并默认值会补上最新修订号：先按旧修订号升级默认值，否则这次升级就被跳过了
+            settings::upgrade_legacy_defaults(map);
             let merged = merge_defaults(std::mem::take(map), platform);
             if json_store::write_json_atomic_locked(&settings_path, &merged).is_ok() {
                 report.settings_normalized = true;

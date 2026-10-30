@@ -288,7 +288,7 @@ function normalizeSettings(value = {}) {
     doubao_asr_api_key_set: value.doubao_asr_api_key_set ?? false,
     doubao_asr_resource_id: value.doubao_asr_resource_id || 'volc.seedasr.sauc.duration',
     doubao_asr_endpoint: value.doubao_asr_endpoint || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async',
-    doubao_asr_end_window_size: value.doubao_asr_end_window_size ?? 0,
+    doubao_asr_end_window_size: value.doubao_asr_end_window_size ?? 800,
     // ChatGPT 听写：明文令牌只存在于表单内存里，初始值恒为空
     chatgpt_asr_api_key: '',
     chatgpt_asr_api_key_clear: false,

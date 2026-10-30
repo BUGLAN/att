@@ -74,7 +74,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">强制断句静音时长</span>
-              <span class="setting-desc">毫秒。0 表示跟随服务端语义分段；建议 200–800（最大 1000），超出该范围服务端可能拒绝并断开连接。</span>
+              <span class="setting-desc">毫秒，默认 800：停顿这么久就断句，悬浮窗里这句随即从淡白变为确认色。0 表示跟随服务端语义分段（停顿后基本不断句，要到松开才确认）；建议 200–800（最大 1000），超出该范围服务端可能拒绝并断开连接。</span>
             </div>
             <BaseInput v-model.number="form.doubao_asr_end_window_size" type="number" min="0" max="10000" step="100" aria-label="强制断句静音时长" />
           </div>

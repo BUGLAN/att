@@ -53,6 +53,11 @@ pub const MODEL_RUNTIME_KEYS: &[&str] = &[
     "chatgpt_asr_timeout_seconds",
 ];
 
+/// 设置修订号：默认值变更需要升级旧数据时加一，并在 [`upgrade_legacy_defaults`] 里补一步。
+/// 2：豆包接入点改为 bigmodel_async；强制断句静音时长 0 → 800ms（0 时服务端按语义分段，
+///    停顿后基本不确认，流式的未确认文字要到松开才变色）。
+pub const SETTINGS_REVISION: i64 = 2;
+
 /// 进程级配置（env 覆盖；3a 只需数据目录，后续阶段按需扩展）。
 #[derive(Debug, Clone)]
 pub struct EnvSettings {
@@ -123,6 +128,9 @@ pub struct UserSettings {
     pub last_used_preset_id: Option<String>,
     // ---- 热键（新版多绑定模型，取代旧 hotkey 单对象）----
     pub hotkeys: Vec<HotkeyBinding>,
+    /// 设置修订号（见 [`SETTINGS_REVISION`]）：不在 PUT 白名单里，只由加载升级维护
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub settings_revision: i64,
 }
 
 impl Default for UserSettings {
@@ -149,7 +157,7 @@ impl UserSettings {
             qwen_asr_max_audio_seconds: 30,
             doubao_asr_resource_id: "volc.seedasr.sauc.duration".into(),
             doubao_asr_endpoint: crate::stt::sauc::DEFAULT_ENDPOINT.into(),
-            doubao_asr_end_window_size: 0,
+            doubao_asr_end_window_size: 800,
             chatgpt_asr_endpoint: "https://chatgpt.com/backend-api/transcribe".into(),
             chatgpt_asr_timeout_seconds: 120,
             doubao_asr_api_key_encrypted: None,
@@ -164,6 +172,7 @@ impl UserSettings {
             default_preset_id: None,
             last_used_preset_id: None,
             hotkeys: vec![HotkeyBinding::default_binding(platform)],
+            settings_revision: SETTINGS_REVISION,
         }
     }
 
@@ -448,11 +457,23 @@ fn migrate_legacy_hotkey(object: &mut serde_json::Map<String, Value>, platform: 
     }
 }
 
-/// 仍是旧默认值的设置升级到新默认值（用户改过的不动）。
-fn upgrade_legacy_defaults(object: &mut serde_json::Map<String, Value>) {
+/// 按修订号把旧默认值升级到新默认值，每步只跑一次（用户之后再改回旧值也不会被覆盖）。
+///
+/// 必须在合并默认值之前调用：缺修订号的旧数据按 1 算，合并后就分不出来了。
+/// 加载时只改内存，下次保存设置才落盘；在那之前每次加载都会重跑，结果相同。
+pub(crate) fn upgrade_legacy_defaults(object: &mut serde_json::Map<String, Value>) {
     use crate::stt::sauc::{DEFAULT_ENDPOINT, LEGACY_DEFAULT_ENDPOINT};
-    if object.get("doubao_asr_endpoint").and_then(Value::as_str).map(str::trim) == Some(LEGACY_DEFAULT_ENDPOINT) {
-        object.insert("doubao_asr_endpoint".into(), json!(DEFAULT_ENDPOINT));
+    let revision = object.get("settings_revision").and_then(Value::as_i64).unwrap_or(1);
+    if revision < 2 {
+        if object.get("doubao_asr_endpoint").and_then(Value::as_str).map(str::trim) == Some(LEGACY_DEFAULT_ENDPOINT) {
+            object.insert("doubao_asr_endpoint".into(), json!(DEFAULT_ENDPOINT));
+        }
+        if object.get("doubao_asr_end_window_size").and_then(Value::as_f64) == Some(0.0) {
+            object.insert("doubao_asr_end_window_size".into(), json!(800));
+        }
+    }
+    if revision < SETTINGS_REVISION {
+        object.insert("settings_revision".into(), json!(SETTINGS_REVISION));
     }
 }
 
@@ -513,6 +534,26 @@ mod tests {
 
         std::fs::write(&path, json!({ "doubao_asr_endpoint": "wss://proxy.example/sauc/bigmodel" }).to_string()).unwrap();
         assert_eq!(UserSettings::load(&path, Platform::Macos).doubao_asr_endpoint, "wss://proxy.example/sauc/bigmodel");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 加载_强制断句静音时长旧默认0升级为800_只升一次() {
+        let dir = temp_dir("end-window");
+        let path = dir.join("settings.json");
+        // 旧数据（没有修订号）：0 是旧默认值，升级；用户改过的不动
+        std::fs::write(&path, json!({ "doubao_asr_end_window_size": 0 }).to_string()).unwrap();
+        let upgraded = UserSettings::load(&path, Platform::Macos);
+        assert_eq!(upgraded.doubao_asr_end_window_size, 800);
+        assert_eq!(upgraded.settings_revision, SETTINGS_REVISION);
+        std::fs::write(&path, json!({ "doubao_asr_end_window_size": 500 }).to_string()).unwrap();
+        assert_eq!(UserSettings::load(&path, Platform::Macos).doubao_asr_end_window_size, 500);
+
+        // 升级并保存后，用户主动改回 0：不再被覆盖
+        let mut settings = upgraded;
+        settings.doubao_asr_end_window_size = 0;
+        settings.save(&path).unwrap();
+        assert_eq!(UserSettings::load(&path, Platform::Macos).doubao_asr_end_window_size, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
