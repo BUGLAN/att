@@ -5,12 +5,16 @@
 //! - GET/PUT /api/settings（白名单/脱敏契约保真）
 //! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出）
 //! - GET /api/prompts + PUT /api/prompts/default
-//! - GET /api/llm/state|providers（3f 前返回空态）
+//! - /api/llm/* LLM v2 全套（服务商目录 / 档案 / 模型 / 验证，见 [`llm`]）
 //! - 模型服务三端点（在线引擎凭据配齐即就绪）
 //! - 录音由 Rust 录音 Actor 直接完成（Tauri 命令），上传/会话/转写类 HTTP 端点 → 501
 //!
 //! 两个 WebSocket 端点（/api/ws、/api/asr/stream）按 D4 决策**移除**：
 //! 事件改由 Tauri events 下发（旧事件名重放）。
+
+mod clipboard;
+mod llm;
+mod transcribe;
 
 use att_core::records::{RecordError, RecordUpdate};
 use att_core::state::CoreState;
@@ -58,9 +62,6 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/api/records/{id}/status", get(records_status))
         .route("/api/records/{id}/audio", get(records_audio))
         .route("/api/records/{id}/export", get(records_export))
-        .route("/api/records/{id}/optimize", post(ny_optimize))
-        .route("/api/records/{id}/optimize/stream", post(ny_optimize))
-        .route("/api/records/{id}/optimize/cancel", post(ny_optimize))
         .route("/api/audio/upload", post(ny_upload))
         // 会话（多段）
         .route("/api/sessions", post(ny_sessions))
@@ -74,18 +75,12 @@ pub fn router(state: Arc<ServerState>) -> Router {
         // 提示词
         .route("/api/prompts", get(prompts_list))
         .route("/api/prompts/default", put(prompts_set_default))
-        // LLM v2（3f 前为空态）
-        .route("/api/llm/state", get(llm_state))
-        .route("/api/llm/providers", get(llm_providers))
-        // 剪贴板：只读端点先返回空数据（3g 接入真实域），写操作标注未实现
-        .route("/api/clipboard/items", get(clipboard_items_empty).post(ny_clipboard))
-        .route("/api/clipboard/stats", get(clipboard_stats_empty))
-        .route(
-            "/api/clipboard/items/{id}",
-            get(ny_clipboard).put(ny_clipboard).delete(ny_clipboard),
-        )
-        .route("/api/transcribe", post(ny_transcribe))
-        .route("/api/transcribe/jobs/{job_id}", get(ny_transcribe))
+        // LLM v2（服务商目录 / 档案 / 模型 / 验证）
+        .merge(llm::routes())
+        // 剪贴板历史
+        .merge(clipboard::routes())
+        // 本地文件转写
+        .merge(transcribe::routes())
         .layer(cors)
         .with_state(state)
 }
@@ -200,27 +195,6 @@ async fn ny_sessions() -> impl IntoResponse {
     err(StatusCode::NOT_IMPLEMENTED, "多段会话将在阶段 3e 接入".into())
 }
 
-async fn ny_optimize() -> impl IntoResponse {
-    err(StatusCode::NOT_IMPLEMENTED, "LLM 优化将在阶段 3f 接入".into())
-}
-
-async fn ny_transcribe() -> impl IntoResponse {
-    err(StatusCode::NOT_IMPLEMENTED, "文件转写将在阶段 3f 接入".into())
-}
-
-async fn ny_clipboard() -> impl IntoResponse {
-    err(StatusCode::NOT_IMPLEMENTED, "剪贴板域将在阶段 3g 接入".into())
-}
-
-/// 空剪贴板列表（3a 占位：避免前端出现「加载剪贴板记录失败」的错误提示）。
-async fn clipboard_items_empty() -> Json<Value> {
-    Json(json!([]))
-}
-
-async fn clipboard_stats_empty() -> Json<Value> {
-    Json(json!({ "total": 0, "today": 0, "favorites": 0, "pinned": 0 }))
-}
-
 fn map_record_error(error: RecordError) -> impl IntoResponse {
     match error {
         RecordError::NotFound => err(StatusCode::NOT_FOUND, "记录不存在".into()),
@@ -254,25 +228,33 @@ struct EngineStatus {
 
 fn engine_status(core: &CoreState) -> EngineStatus {
     let settings = core.settings();
-    if let Some(message) = att_core::stt::unsupported_provider_message(&settings.asr_provider) {
-        return EngineStatus {
+    let streaming = settings.recording_mode == "streaming";
+    match att_core::stt::Engine::from_settings(core) {
+        Err(message) => EngineStatus {
             ready: false,
             error: Some(message),
             streaming_supported: false,
             streaming_available: false,
             streaming_backend: None,
-            mode: "provider",
-        };
-    }
-    let error = att_core::stt::doubao_config(core).ensure().err().map(|e| e.to_string());
-    let streaming = settings.recording_mode == "streaming";
-    EngineStatus {
-        ready: error.is_none(),
-        streaming_supported: streaming,
-        streaming_available: streaming && error.is_none(),
-        streaming_backend: Some("doubao_sauc"),
-        mode: "online",
-        error,
+            mode: if att_core::stt::unsupported_provider_message(&settings.asr_provider).is_some() { "provider" } else { "online" },
+        },
+        Ok(engine) if engine.supports_streaming() => EngineStatus {
+            ready: true,
+            error: None,
+            streaming_supported: streaming,
+            streaming_available: streaming,
+            streaming_backend: Some("doubao_sauc"),
+            mode: "online",
+        },
+        // ChatGPT 听写：批量接口，流式模式下不可用（与 Python get_runtime_capabilities 一致）
+        Ok(engine) => EngineStatus {
+            ready: !streaming,
+            error: streaming.then(|| format!("{}暂不支持流式录音，请使用单段或多段录音模式", engine.label())),
+            streaming_supported: false,
+            streaming_available: false,
+            streaming_backend: None,
+            mode: "online",
+        },
     }
 }
 
@@ -490,7 +472,11 @@ fn model_service_payload(core: &CoreState) -> Value {
     json!({
         "managed": true,
         "provider_type": settings.asr_provider,
-        "model_name": if engine.mode == "online" { Value::from("bigmodel") } else { Value::Null },
+        "model_name": match settings.asr_provider.as_str() {
+            "doubao_asr" => Value::from("bigmodel"),
+            "chatgpt_asr" => Value::from("chatgpt-dictation"),
+            _ => Value::Null,
+        },
         "recording_mode": settings.recording_mode,
         "loading": false,
         "running": engine.ready,
@@ -531,48 +517,18 @@ async fn model_service_stop() -> Json<Value> {
 // ---- 提示词（只读，真相源 prompts/*.txt） ----
 
 /// 定位提示词目录：优先数据目录同级的 prompts/（仓库布局），其次可执行文件旁。
-fn prompts_dir(core: &CoreState) -> std::path::PathBuf {
-    let sibling = core.data_dir.parent().map(|p| p.join("prompts"));
-    if let Some(dir) = sibling.filter(|d| d.is_dir()) {
-        return dir;
-    }
-    std::path::PathBuf::from("prompts")
-}
-
 async fn prompts_list(State(state): State<Arc<ServerState>>) -> Json<Value> {
-    let dir = prompts_dir(&state.core);
-    let mut presets = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        let mut files: Vec<_> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("txt"))
-            .collect();
-        files.sort();
-        for path in files {
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("preset").to_string();
-            let Ok(template) = std::fs::read_to_string(&path) else { continue };
-            presets.push(json!({
-                "id": format!("preset-{stem}"),
-                "name": stem.clone(),
-                "description": format!("{stem} 预设"),
-                "category": "general",
-                "prompt_template": template,
-                "is_builtin": true,
-            }));
-        }
-    }
+    let presets = att_core::prompts::load_all(&state.core.prompts_dir);
     let settings = state.core.settings();
-    let valid_ids: Vec<&str> = presets.iter().filter_map(|p| p["id"].as_str()).collect();
+    // 设置里的默认预设已不存在（文件被删/改名）时回退内置默认，与 Python normalize 行为一致
     let default_id = settings
         .default_preset_id
-        .clone()
-        .filter(|id| valid_ids.contains(&id.as_str()))
-        .or_else(|| valid_ids.first().map(|s| s.to_string()));
+        .filter(|id| presets.iter().any(|p| &p.id == id))
+        .or_else(|| att_core::prompts::default_id(&presets));
     Json(json!({
-        "presets": presets,
+        "presets": presets.iter().map(|p| p.to_json()).collect::<Vec<_>>(),
         "default_preset_id": default_id,
-        "last_used_preset_id": settings.last_used_preset_id,
+        "last_used_preset_id": default_id,
     }))
 }
 
@@ -584,9 +540,7 @@ async fn prompts_set_default(
         return Err(err(StatusCode::BAD_REQUEST, "preset_id 不能为空".into()));
     };
     // 校验预设存在（真相源是 prompts/*.txt）
-    let dir = prompts_dir(&state.core);
-    let stem = preset_id.strip_prefix("preset-").unwrap_or(&preset_id);
-    if !dir.join(format!("{stem}.txt")).is_file() {
+    if !att_core::prompts::load_all(&state.core.prompts_dir).iter().any(|p| p.id == preset_id) {
         return Err(err(StatusCode::NOT_FOUND, "预设不存在".into()));
     }
     let result = state.core.update_settings(|settings| {
@@ -597,24 +551,6 @@ async fn prompts_set_default(
         Ok(()) => Ok(Json(json!({ "status": "updated", "default_preset_id": preset_id }))),
         Err(e) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
-}
-
-// ---- LLM v2（3f 前空态） ----
-
-async fn llm_state() -> Json<Value> {
-    Json(json!({
-        "version": 2,
-        "profiles": [],
-        "models": [],
-        "default_model_id": Value::Null,
-        "fallback_model_id": Value::Null,
-        "skipped_entries": [],
-        "note": "LLM 配置将在阶段 3f 接入；届时自动迁移 data/llm_v2.json"
-    }))
-}
-
-async fn llm_providers() -> Json<Value> {
-    Json(json!({ "providers": [], "note": "服务商注册表将在阶段 3f 接入" }))
 }
 
 // ---------------- 契约测试 ----------------
@@ -671,6 +607,57 @@ mod tests {
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn llm_目录_档案_模型全链路且不外发密钥() {
+        let state = test_state("llm").await;
+        let (status, catalog) = get_json(&state, "/api/llm/providers").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(catalog["providers"].as_array().unwrap().len(), 14, "默认服务商目录不能为空");
+
+        let (status, profile) = request_with_body(&state, "POST", "/api/llm/profiles", json!({
+            "provider": "deepseek", "name": "DS", "api_key": "sk-secret-123456"
+        })).await;
+        assert_eq!(status, StatusCode::OK, "{profile}");
+        assert!(profile.get("api_key_encrypted").is_none());
+        assert_eq!(profile["api_key_hint"], json!("sk-****3456"));
+        let profile_id = profile["id"].as_str().unwrap().to_string();
+
+        let (status, created) = request_with_body(&state, "POST", "/api/llm/models", json!({
+            "items": [{"profile_id": profile_id, "model": "deepseek-chat"}]
+        })).await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        let model_id = created["created"][0]["id"].as_str().unwrap().to_string();
+        assert_eq!(created["created"][0]["model"], json!("deepseek/deepseek-chat"));
+
+        let (_, overview) = get_json(&state, "/api/llm/state").await;
+        assert_eq!(overview["default_model_id"], json!(model_id));
+        assert!(!overview.to_string().contains("sk-secret-123456"));
+        assert!(!overview.to_string().contains("api_key_encrypted"));
+
+        // 默认模型所在档案不能删
+        let (status, _) = request_with_body(&state, "DELETE", &format!("/api/llm/profiles/{profile_id}"), json!({})).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        // fallback 显式 null = 清除；指向不存在的模型 404
+        let (status, body) = request_with_body(&state, "PUT", "/api/llm/settings", json!({"fallback_model_id": null})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["fallback_model_id"], Value::Null);
+        let (status, _) = request_with_body(&state, "PUT", "/api/llm/settings", json!({"fallback_model_id": "nope"})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // 校验错误：缺必填字段 422、custom 无端点 400
+        let (status, _) = request_with_body(&state, "POST", "/api/llm/profiles", json!({"name": "x"})).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, error) = request_with_body(&state, "POST", "/api/llm/profiles", json!({"provider": "custom", "name": "x"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(error["detail"].as_str().unwrap().contains("API Base"));
+        // 不支持列取的服务商：409 + manual_only
+        let (_, anthropic) = request_with_body(&state, "POST", "/api/llm/profiles", json!({"provider": "anthropic", "name": "A"})).await;
+        let (status, error) = request_with_body(
+            &state, "POST", &format!("/api/llm/profiles/{}/remote-models", anthropic["id"].as_str().unwrap()), json!({})
+        ).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(error["detail"]["manual_only"], json!(true));
     }
 
     #[tokio::test]
