@@ -1,8 +1,8 @@
 /**
  * LLM 设置页纯逻辑（不依赖 Vue / 浏览器全局，供 tests/test_llm_logic.mjs 锁定）。
  *
- * 设计对应 docs/LLM配置模块重设计.md §7：
- * - 模型名组装规则必须与后端 app/llm/registry.compose_model_string 一致；
+ * 约定：
+ * - 模型名组装规则必须与后端 att_core::llm::registry::compose_model_string 一致；
  * - 错误分级文案给出可执行建议（P7）；
  * - 状态徽章与延迟格式化是纯展示映射。
  */

@@ -1442,6 +1442,110 @@ textarea:focus-visible {
   word-break: break-word;
 }
 
+/* ------------------------------------------------------------
+   设置页分页（二级导航）共用：一页由若干卡片纵向堆叠
+   ------------------------------------------------------------ */
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+/* 卡片式单选（录音模式 / 识别引擎）：真按钮 + aria-checked，选中态金色描边 */
+.choice-grid {
+  display: grid;
+  gap: var(--s-2);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.choice-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-height: 72px;
+  padding: var(--s-3) var(--s-4);
+  text-align: left;
+  font: inherit;
+  color: var(--text-1);
+  background: var(--bg-card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease);
+}
+
+.choice-card:hover {
+  background: var(--bg-raise);
+}
+
+.choice-card:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.choice-card[aria-checked='true'] {
+  border-color: var(--accent-line-strong);
+  background: var(--accent-veil);
+}
+
+.choice-card.is-muted {
+  opacity: 0.65;
+}
+
+.choice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+
+.choice-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.choice-desc {
+  font-size: var(--fs-cap);
+  color: var(--text-3);
+  line-height: 1.5;
+}
+
+/* 卡片内的轻提示条（info / warn） */
+.settings-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-cap);
+  line-height: 1.6;
+  color: var(--text-2);
+  background: var(--info-soft);
+  border: 1px solid var(--info-line);
+}
+
+.settings-note.warn {
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+}
+
+.settings-advanced {
+  margin-top: var(--s-2);
+}
+
+.settings-advanced > summary {
+  padding: var(--s-2) var(--s-1);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.settings-advanced[open] > summary {
+  margin-bottom: var(--s-2);
+}
+
 .record-edit-display:empty::before {
   content: "暂无内容";
 }

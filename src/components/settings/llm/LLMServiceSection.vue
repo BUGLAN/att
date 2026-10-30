@@ -2,8 +2,8 @@
   <div class="settings-group llm-section">
     <div class="llm-head">
       <div>
-        <h3 class="settings-group-title">LLM 服务</h3>
-        <p class="llm-head-desc">供应商接入由 LiteLLM 统一驱动 · 服务商发布新模型无需更新应用</p>
+        <h3 v-if="showTitle" class="settings-group-title">LLM 服务</h3>
+        <p class="llm-head-desc">模型名原样透传给服务商 · 服务商发布新模型无需更新应用</p>
       </div>
       <div class="llm-head-actions">
         <BaseButton variant="outline" size="sm" @click="openWizard('provider')">添加供应商</BaseButton>
@@ -44,7 +44,7 @@
       <thead>
         <tr>
           <th class="col-model">模型</th>
-          <th class="col-string">LiteLLM 模型串</th>
+          <th class="col-string">模型串</th>
           <th class="col-params">参数</th>
           <th class="col-status">状态</th>
           <th class="col-actions"></th>
@@ -117,6 +117,14 @@ import {
   STATUS_LABELS
 } from './llmLogic.mjs'
 import { useLLMService } from '@/composables/useSettings'
+
+defineProps({
+  // 设置页分页头已给出「LLM 服务」标题时传 false，避免重复
+  showTitle: {
+    type: Boolean,
+    default: true
+  }
+})
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()

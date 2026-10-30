@@ -234,7 +234,11 @@ export function useElectron() {
     getState: () => (isDesktop ? invoke('recording_get_state') : Promise.resolve({ phase: 'idle' })),
     onState: (callback) => void addChannelListener('recording:state', callback),
     onPartial: (callback) => void addChannelListener('recording:partial', callback),
-    onLevel: (callback) => void addChannelListener('recording:level', callback)
+    onLevel: (callback) => void addChannelListener('recording:level', callback),
+    // 自动优化增量 { record_id, text }
+    onOptimization: (callback) => void addChannelListener('recording:optimization', callback),
+    // 已转后台的上一段优化结束 { record, optimized, cancelled, error, message }
+    onBackgroundOptimization: (callback) => void addChannelListener('recording:background-optimization', callback)
   }
 
   // 麦克风列表（Rust cpal 枚举，返回设备名数组）
@@ -247,6 +251,29 @@ export function useElectron() {
   async function getHotkeyStatus() {
     if (!isDesktop) return { enabled: false, error: null }
     return invoke('get_hotkey_status')
+  }
+
+  // 设置页「权限」：{ platform, items: [{ id, label, desc, state }] }（只查询，不触发授权弹窗）
+  async function getPermissionStatus() {
+    if (!isDesktop) return { platform: 'web', items: [] }
+    return invoke('get_permission_status')
+  }
+
+  async function openPermissionSettings(id) {
+    if (!isDesktop) return
+    return invoke('open_permission_settings', { id })
+  }
+
+  // 设置页「诊断与关于」：{ version, data_dir, log_file, prompts_dir, backend_port }
+  async function getAppInfo() {
+    if (!isDesktop) return null
+    return invoke('get_app_info')
+  }
+
+  // 在文件管理器中显示：kind = 'data' | 'log'
+  async function revealAppPath(kind) {
+    if (!isDesktop) return
+    return invoke('reveal_app_path', { kind })
   }
 
   function removeAllListeners(channel) {
@@ -288,14 +315,24 @@ export function useElectron() {
     return invoke('sync_recording_state', { payload: toPlainObject(payload) })
   }
 
-  // 「转文字」页：系统文件选择对话框（3g 接入 dialog 插件；当前返回 null 走路径输入）
+  // 「转文字」页：系统文件选择对话框（Rust 侧 dialog 插件）；取消返回 null
   async function openMediaFile() {
-    return null
+    if (!isDesktop) return null
+    return invoke('open_media_file')
   }
 
-  // 「转文字」页：拖拽落下的 File 对象换本地绝对路径（3g 接入 Tauri onDragDrop）
+  // WebView 拿不到拖入 File 的本地路径：桌面端改由 onFileDrop（原生拖放事件）直接给路径
   function filePathForFile() {
     return ''
+  }
+
+  // 原生拖放：callback({ type: 'enter' | 'over' | 'leave' | 'drop', paths })；返回注销函数
+  async function onFileDrop(callback) {
+    if (!isDesktop) return () => {}
+    const { getCurrentWebview } = await import('@tauri-apps/api/webview')
+    return getCurrentWebview().onDragDropEvent((event) => {
+      callback({ type: event.payload.type, paths: event.payload.paths || [] })
+    })
   }
 
   // 精确平台值（异步）：settings 默认值用同步 detectPlatformSync 即可
@@ -318,11 +355,16 @@ export function useElectron() {
     recording,
     listAudioDevices,
     getHotkeyStatus,
+    getPermissionStatus,
+    openPermissionSettings,
+    getAppInfo,
+    revealAppPath,
     onHotkeyPress,
     onHotkeyRelease,
     onPasteText,
     onNavigateSettings,
     onClipboardChanged,
+    onFileDrop,
     onDesktopPermissionRequired,
     onDesktopAgentError,
     debugLog,

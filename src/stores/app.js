@@ -58,6 +58,8 @@ function loadSidebarLayout() {
 
 export const useAppStore = defineStore('app', () => {
   const currentPage = ref('home')
+  // 设置页的二级页面；为空时由设置页自行决定（上次停留页 / 默认页）
+  const settingsSection = ref('')
   const initialSidebarLayout = loadSidebarLayout()
   const sidebarCollapsed = ref(initialSidebarLayout.collapsed)
   const sidebarWidth = ref(initialSidebarLayout.width)
@@ -113,6 +115,14 @@ export const useAppStore = defineStore('app', () => {
 
   function setCurrentPage(page) {
     currentPage.value = page
+  }
+
+  /** 跳到设置页的指定分页（如 'asr'、'permissions'）。 */
+  function openSettings(section = '') {
+    if (section) {
+      settingsSection.value = section
+    }
+    currentPage.value = 'settings'
   }
 
   function setSidebarWidth(width) {
@@ -252,6 +262,8 @@ export const useAppStore = defineStore('app', () => {
 
   return {
     currentPage,
+    settingsSection,
+    openSettings,
     sidebarCollapsed,
     sidebarDisplayCollapsed,
     sidebarWidth,

@@ -12,7 +12,7 @@
     <!-- 步骤 1：选择供应商 -->
     <div v-if="step === 1">
       <p class="wiz-hint">
-        接入层基于 LiteLLM，支持 100+ 服务商。未列出的 OpenAI 兼容端点（硅基流动、第三方中转等）选择「自定义 OpenAI 兼容」即可，无需等待应用更新。
+        内置 14 家服务商。未列出的 OpenAI 兼容端点（硅基流动、第三方中转等）选择「自定义 OpenAI 兼容」即可，无需等待应用更新。
       </p>
       <div class="wiz-search">
         <input v-model.trim="providerQuery" class="wiz-input" placeholder="搜索供应商，例如 deepseek、ollama、openrouter…">
@@ -31,7 +31,7 @@
           <span class="wiz-cell-tag">{{ provider.requires_key ? '需密钥' : '无需密钥' }}</span>
         </button>
       </div>
-      <p class="wiz-hint dim">目录由后端随 LiteLLM 版本提供，会自动扩充。</p>
+      <p class="wiz-hint dim">目录随应用版本内置。</p>
     </div>
 
     <!-- 步骤 2：填写凭据（保存前验证） -->

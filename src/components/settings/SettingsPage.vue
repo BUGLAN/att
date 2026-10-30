@@ -1,423 +1,125 @@
 <template>
   <div class="settings-page">
-    <PageHeader title="设置" subtitle="配置你的录音、提示词和 LLM 服务" />
+    <!-- 二级导航：放在 fieldset 之外，初始化期间也能切页 / 搜索 -->
+    <aside class="settings-nav" aria-label="设置分组">
+      <div class="settings-nav__head">
+        <h1 class="settings-nav__title">设置</h1>
+        <label class="settings-nav__search">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="M20 20l-3.5-3.5" />
+          </svg>
+          <input
+            v-model="navQuery"
+            type="search"
+            placeholder="搜索设置项"
+            aria-label="搜索设置"
+            @keydown.enter.prevent="goFirstMatch"
+          >
+        </label>
+      </div>
 
-    <section class="settings-section">
+      <nav class="settings-nav__groups">
+        <div v-for="group in navGroups" :key="group.label" class="settings-nav__group">
+          <div class="settings-nav__group-label">{{ group.label }}</div>
+          <button
+            v-for="item in group.items"
+            :key="item.id"
+            type="button"
+            class="settings-nav__item"
+            :aria-current="item.id === activeSection ? 'page' : undefined"
+            @click="goSection(item.id)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path :d="SECTION_ICONS[item.id]" />
+            </svg>
+            <span>{{ item.label }}</span>
+          </button>
+        </div>
+        <p v-if="!navGroups.length" class="settings-nav__empty">没有匹配「{{ navQuery.trim() }}」的设置项</p>
+      </nav>
+
+      <div class="settings-nav__foot" :class="{ saving: isSavingSettings || isSavingPreset }">
+        <span class="settings-nav__dot" aria-hidden="true"></span>
+        {{ isSavingSettings || isSavingPreset ? '正在保存…' : '改动自动保存' }}
+      </div>
+    </aside>
+
+    <div class="settings-main">
+      <header class="settings-main__head">
+        <div class="settings-main__crumb">设置 / {{ currentSection.group }}</div>
+        <h2 class="settings-main__title">{{ currentSection.label }}</h2>
+        <p class="settings-main__desc">{{ currentSection.desc }}</p>
+      </header>
+
       <!-- 初始化完成前禁用全部表单控件：此阶段 watch(form) 的守卫会丢弃改动，
            用户若在这时勾选开关，改动既不会保存也不会提示（真实踩坑） -->
       <p v-if="!isInitialized" class="settings-pending">正在读取已保存的设置，稍后即可修改…</p>
       <fieldset class="settings-fieldset" :disabled="!isInitialized">
-        <div class="settings-group">
-          <h3 class="settings-group-title">语音识别</h3>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">ASR Provider</span>
-              <span class="setting-desc">切换转写实现层。切换后会自动卸载当前模型服务，需重新开启模型。</span>
-            </div>
-            <BaseSelect v-model="form.asr_provider">
-              <option value="whisper">Whisper / faster-whisper</option>
-              <option value="qwen_asr">Qwen3-ASR</option>
-              <option value="doubao_asr">豆包语音（火山引擎 · 在线流式）</option>
-              <option value="chatgpt_asr">ChatGPT 听写（在线 · 批量）</option>
-            </BaseSelect>
-          </div>
-
-          <div v-if="showWhisperSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">Whisper 模型</span>
-              <span class="setting-desc">模型越大识别越准，但速度也会更慢。</span>
-            </div>
-            <BaseSelect v-model="form.whisper_model">
-              <option value="tiny">tiny</option>
-              <option value="base">base</option>
-              <option value="small">small</option>
-              <option value="medium">medium</option>
-              <option value="large-v3">large-v3</option>
-            </BaseSelect>
-          </div>
-
-          <div v-if="showWhisperSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">Whisper 设备</span>
-              <span class="setting-desc">选择用于 Whisper 推理的设备。</span>
-            </div>
-            <BaseSelect v-model="form.whisper_device">
-              <option value="auto">自动</option>
-              <option value="cuda">CUDA</option>
-              <option value="cpu">CPU</option>
-            </BaseSelect>
-          </div>
-
-          <div v-if="showQwenSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">Qwen3-ASR 模型</span>
-              <span class="setting-desc">支持 Hugging Face 模型名或本地模型目录。</span>
-            </div>
-            <BaseInput v-model.trim="form.qwen_asr_model" type="text" placeholder="Qwen/Qwen3-ASR-1.7B" />
-          </div>
-
-          <div v-if="showQwenSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">Qwen 推理设备</span>
-              <span class="setting-desc">`auto` 会优先尝试 CUDA，否则回退到 CPU。</span>
-            </div>
-            <BaseSelect v-model="form.qwen_asr_device">
-              <option value="auto">自动</option>
-              <option value="cuda:0">CUDA:0</option>
-              <option value="cpu">CPU</option>
-            </BaseSelect>
-          </div>
-
-          <div v-if="showQwenSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">Qwen dtype</span>
-              <span class="setting-desc">默认自动推断；显存紧张时可手动调整。</span>
-            </div>
-            <BaseSelect v-model="form.qwen_asr_dtype">
-              <option value="auto">自动</option>
-              <option value="bfloat16">bfloat16</option>
-              <option value="float16">float16</option>
-              <option value="float32">float32</option>
-            </BaseSelect>
-          </div>
-
-          <div v-if="showQwenSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">最大输出 token</span>
-              <span class="setting-desc">限制单次生成长度，避免极端长音频时输出失控。</span>
-            </div>
-            <BaseInput v-model.number="form.qwen_asr_max_new_tokens" type="number" min="32" max="2048" step="32" />
-          </div>
-
-          <div v-if="showQwenSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">返回时间戳</span>
-              <span class="setting-desc">开启后会尝试返回更细粒度的时间信息，代价是更重的推理链路。</span>
-            </div>
-            <label class="toggle-switch">
-              <input v-model="form.qwen_asr_return_timestamps" type="checkbox">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <div v-if="showQwenSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">音频长度上限</span>
-              <span class="setting-desc">用于记录 Qwen3-ASR 的单次音频设计上限，当前先保留为配置项。</span>
-            </div>
-            <BaseInput v-model.number="form.qwen_asr_max_audio_seconds" type="number" min="5" max="600" step="5" />
-          </div>
-
-          <div v-if="showQwenSettings && form.qwen_asr_return_timestamps" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">启用强制对齐器</span>
-              <span class="setting-desc">进一步细化时间戳，但会显著增加显存和加载时间。</span>
-            </div>
-            <label class="toggle-switch">
-              <input v-model="form.qwen_asr_use_forced_aligner" type="checkbox">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <div v-if="showQwenSettings && shouldShowForcedAlignerModel" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">强制对齐器模型</span>
-              <span class="setting-desc">默认使用 `Qwen/Qwen3-ForcedAligner-0.6B`，也可改为本地目录。</span>
-            </div>
-            <BaseInput v-model.trim="form.qwen_asr_forced_aligner_model" type="text" placeholder="Qwen/Qwen3-ForcedAligner-0.6B" />
-          </div>
-
-          <!-- 豆包语音（火山引擎 · 在线流式）：Access Token 只写不读，后端加密落盘 -->
-          <div v-if="showDoubaoSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">Access Token</span>
-              <span class="setting-desc">
-                {{ form.doubao_asr_api_key_set ? '已保存（留空表示不修改）' : '火山语音技术控制台的 Access Token，注意与方舟大模型 key 不通用。' }}
-              </span>
-            </div>
-            <BaseInput
-              v-model.trim="form.doubao_asr_api_key"
-              type="password"
-              autocomplete="new-password"
-              placeholder="请输入 Access Token"
-            />
-          </div>
-
-          <div v-if="showDoubaoSettings && form.doubao_asr_api_key_set" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">清除已保存的 Token</span>
-              <span class="setting-desc">开启后保存设置会删除已加密存储的 Access Token。</span>
-            </div>
-            <label class="toggle-switch">
-              <input v-model="form.doubao_asr_api_key_clear" type="checkbox">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <div v-if="showDoubaoSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">Resource ID</span>
-              <span class="setting-desc">必须与账号实际开通的产品一致，否则握手直接 403。ASR 1.0 用 bigasr，2.0 用 seedasr。</span>
-            </div>
-            <BaseSelect v-model="form.doubao_asr_resource_id">
-              <option value="volc.seedasr.sauc.duration">volc.seedasr.sauc.duration（ASR 2.0 · 时长）</option>
-              <option value="volc.seedasr.sauc.concurrent">volc.seedasr.sauc.concurrent（ASR 2.0 · 并发）</option>
-              <option value="volc.bigasr.sauc.duration">volc.bigasr.sauc.duration（ASR 1.0 · 时长）</option>
-              <option value="volc.bigasr.sauc.concurrent">volc.bigasr.sauc.concurrent（ASR 1.0 · 并发）</option>
-            </BaseSelect>
-          </div>
-
-          <div v-if="showDoubaoSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">接入点</span>
-              <span class="setting-desc">双向流式 WebSocket 地址，默认无需修改。</span>
-            </div>
-            <BaseInput
-              v-model.trim="form.doubao_asr_endpoint"
-              type="text"
-              placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
-            />
-          </div>
-
-          <div v-if="showDoubaoSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">强制断句静音时长</span>
-              <span class="setting-desc">毫秒。0 表示跟随服务端语义分段；建议 200–800（最大 1000），超出该范围服务端可能拒绝并断开连接。</span>
-            </div>
-            <BaseInput v-model.number="form.doubao_asr_end_window_size" type="number" min="0" max="10000" step="100" />
-          </div>
-
-          <!-- ChatGPT 听写（在线批量）：访问令牌只写不读，后端加密落盘 -->
-          <div v-if="showChatGPTSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">访问令牌</span>
-              <span class="setting-desc">
-                {{ form.chatgpt_asr_api_key_set ? '已保存（留空表示不修改）' : 'ChatGPT 网页账号的 access token（等同登录态，注意不是 platform.openai.com 的 API Key）。' }}
-              </span>
-            </div>
-            <BaseInput
-              v-model.trim="form.chatgpt_asr_api_key"
-              type="password"
-              autocomplete="new-password"
-              placeholder="粘贴 ChatGPT 访问令牌（可带 Bearer 前缀）"
-            />
-          </div>
-
-          <div v-if="showChatGPTSettings && form.chatgpt_asr_api_key_set" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">清除已保存的令牌</span>
-              <span class="setting-desc">开启后保存设置会删除已加密存储的访问令牌。</span>
-            </div>
-            <label class="toggle-switch">
-              <input v-model="form.chatgpt_asr_api_key_clear" type="checkbox">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <div v-if="showChatGPTSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">端点</span>
-              <span class="setting-desc">ChatGPT 听写接口地址，默认无需修改。</span>
-            </div>
-            <BaseInput
-              v-model.trim="form.chatgpt_asr_endpoint"
-              type="text"
-              placeholder="https://chatgpt.com/backend-api/transcribe"
-            />
-          </div>
-
-          <div v-if="showChatGPTSettings" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">请求超时</span>
-              <span class="setting-desc">秒。批量转写要等整段音频处理完，长录音可适当调大。</span>
-            </div>
-            <BaseInput v-model.number="form.chatgpt_asr_timeout_seconds" type="number" min="10" max="600" step="10" />
-          </div>
-        </div>
-
-        <div class="settings-group">
-          <h3 class="settings-group-title">录音设置</h3>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">录音模式</span>
-              <span class="setting-desc">支持单段录音、多段录音与流式录音。</span>
-            </div>
-            <div class="setting-actions-inline setting-actions-block">
-              <BaseSelect v-model="form.recording_mode">
-              <option value="single">单段录音</option>
-              <option value="multi">多段录音</option>
-              <option value="streaming">流式录音</option>
-              </BaseSelect>
-            </div>
-          </div>
-
-          <div class="setting-item setting-item-runtime">
-            <div class="setting-info">
-              <span class="setting-label">流式运行时状态</span>
-              <span class="setting-desc">仅在流式录音模式下生效，用来说明当前后端是否可直接进入流式识别。</span>
-            </div>
-            <div class="setting-runtime-card" :class="{ unavailable: !streamingRuntimeAvailable }">
-              <BaseBadge :tone="streamingRuntimeAvailable ? 'ok' : 'neutral'" uppercase>
-                {{ streamingRuntimeAvailable ? '可用' : '不可用' }}
-              </BaseBadge>
-              <span class="setting-runtime-text">{{ streamingRuntimeSummary }}</span>
-            </div>
-          </div>
-
-          <div v-if="form.recording_mode === 'multi'" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">静音分段阈值</span>
-              <span class="setting-desc">静音持续超过该秒数时自动切段。</span>
-            </div>
-            <BaseInput v-model.number="form.silence_threshold" type="number" min="0.5" max="5" step="0.5" />
-          </div>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">麦克风设备</span>
-              <span class="setting-desc">选择录音使用的输入设备。</span>
-            </div>
-            <BaseSelect v-model="form.audio_input_device">
-              <option value="default">系统默认</option>
-              <option v-for="device in audioInputDevices" :key="device.deviceId" :value="device.deviceId">
-                {{ device.label || `麦克风 ${device.deviceId.slice(0, 8)}` }}
-              </option>
-            </BaseSelect>
-          </div>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">录音时暂停其他音频</span>
-              <span class="setting-desc">录音期间静音系统输出，结束后自动恢复。</span>
-            </div>
-            <label class="toggle-switch">
-              <input v-model="form.pause_audio_on_recording" type="checkbox">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">自动 AI 优化</span>
-              <span class="setting-desc">转写完成后自动调用默认 LLM 进行优化。</span>
-            </div>
-            <label class="toggle-switch">
-              <input v-model="form.auto_optimize" type="checkbox">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">自动复制到剪贴板</span>
-              <span class="setting-desc">转写或优化完成后自动复制文本，并尝试粘贴到当前焦点输入框。</span>
-            </div>
-            <label class="toggle-switch">
-              <input v-model="form.auto_copy_to_clipboard" type="checkbox">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">默认优化预设</span>
-              <span class="setting-desc">直接读取 `prompts` 目录中的提示词文件，默认优先使用“通用优化”。</span>
-            </div>
-            <div class="setting-actions-inline">
-              <BaseSelect v-model="selectedPresetId" :disabled="!builtinPresets.length">
-                <option v-if="!builtinPresets.length" value="">未发现 prompts/*.txt</option>
-                <option v-for="preset in builtinPresets" :key="preset.id" :value="preset.id">
-                  {{ preset.name }}
-                </option>
-              </BaseSelect>
-              <BaseButton variant="outline" :disabled="!builtinPresets.length" @click="openPresetModal">
-                查看提示词
-              </BaseButton>
-            </div>
-          </div>
-
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">录音快捷键</span>
-              <span class="setting-desc">点击输入框后按下组合键。现在由桌面端监听热键，长按后开始录音，松开结束；支持 `Win+Alt` 这类无主键组合。</span>
-            </div>
-            <div class="hotkey-input-wrapper">
-              <BaseInput
-                :value="hotkeyDisplay"
-                class="hotkey-input"
-                :class="{ listening: isCapturingHotkey }"
-                type="text"
-                readonly
-                placeholder="点击录入快捷键"
-                @click="startHotkeyCapture"
-              />
-              <BaseButton variant="ghost" icon title="恢复默认快捷键" @click="resetHotkey">
-                <template #icon>
-                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M4 10.5A8 8 0 1 1 6.6 17" />
-                    <path d="M4 5v5.5h5.5" />
-                  </svg>
-                </template>
-              </BaseButton>
-            </div>
-          </div>
-        </div>
-
-        <!-- LLM 服务（v2：供应商档案 + 模型条目，见 docs/LLM配置模块重设计.md） -->
-        <LLMServiceSection />
-
-      <!-- 诊断区：把原先常驻侧边栏的调试信息（WS 客户端数、模型服务状态）折叠到这里 -->
-      <div class="settings-group">
-        <h3 class="settings-group-title">诊断</h3>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">后端连接</span>
-            <span class="setting-desc">WebSocket 与后端服务的实时连接状态。</span>
-          </div>
-          <div class="setting-actions-inline">
-            <BaseBadge :tone="appStore.isConnected ? 'ok' : 'err'">
-              {{ appStore.isConnected ? '已连接' : '未连接' }}
-            </BaseBadge>
-            <BaseBadge tone="neutral" mono>{{ appStore.connectedClients }} 个客户端</BaseBadge>
-          </div>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">运行环境</span>
-            <span class="setting-desc">后端上报的运行时环境与模型服务状态。</span>
-          </div>
-          <div class="setting-actions-inline">
-            <BaseBadge tone="neutral">{{ runtimeEnvironment }}</BaseBadge>
-            <BaseBadge :tone="settingsStore.runtimeStatus.model_service_ready ? 'ok' : 'warn'">
-              {{ settingsStore.runtimeStatus.model_service_ready ? '模型已开启' : '模型未开启' }}
-            </BaseBadge>
-          </div>
-        </div>
-      </div>
-
+        <component :is="SECTION_COMPONENTS[activeSection]" :key="activeSection" />
       </fieldset>
-
-    </section>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useSettings, usePresets } from '@/composables/useSettings'
-import LLMServiceSection from '@/components/settings/llm/LLMServiceSection.vue'
 import { useElectron } from '@/composables/useElectron'
-import BaseBadge from '@/components/common/BaseBadge.vue'
-import BaseButton from '@/components/common/BaseButton.vue'
-import BaseInput from '@/components/common/BaseInput.vue'
-import BaseSelect from '@/components/common/BaseSelect.vue'
-import PageHeader from '@/components/common/PageHeader.vue'
 import { hasPendingSettingsEdits } from './settingsFormSync.mjs'
+import { SETTINGS_CTX } from './settingsContext.js'
+import { DEFAULT_SECTION_ID, buildNavGroups, findSection, resolveSectionId } from './settingsNav.mjs'
+import SettingsRecordingPage from './pages/SettingsRecordingPage.vue'
+import SettingsHotkeyPage from './pages/SettingsHotkeyPage.vue'
+import SettingsOutputPage from './pages/SettingsOutputPage.vue'
+import SettingsAsrPage from './pages/SettingsAsrPage.vue'
+import SettingsLlmPage from './pages/SettingsLlmPage.vue'
+import SettingsPresetsPage from './pages/SettingsPresetsPage.vue'
+import SettingsPermissionsPage from './pages/SettingsPermissionsPage.vue'
+import SettingsDiagnosticsPage from './pages/SettingsDiagnosticsPage.vue'
+
+const SECTION_COMPONENTS = {
+  recording: SettingsRecordingPage,
+  hotkey: SettingsHotkeyPage,
+  output: SettingsOutputPage,
+  asr: SettingsAsrPage,
+  llm: SettingsLlmPage,
+  presets: SettingsPresetsPage,
+  permissions: SettingsPermissionsPage,
+  diagnostics: SettingsDiagnosticsPage
+}
+
+const SECTION_ICONS = {
+  recording: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 11a7 7 0 0 0 14 0M12 18v3',
+  hotkey: 'M3 7h18v10H3zM7 11h.01M11 11h.01M15 11h.01M8 14h8',
+  output: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 17l.8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8z',
+  asr: 'M3 12h2M7 8v8M11 5v14M15 9v6M19 7v10',
+  llm: 'M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4',
+  presets: 'M4 6h16M4 12h10M4 18h7',
+  permissions: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z',
+  diagnostics: 'M3 12h4l3-7 4 14 3-7h4'
+}
+
+// 上次停留的分页：仅作本机便利，读写失败（隐私模式 / 存储被禁）时回落默认页
+const SECTION_STORAGE_KEY = 'att.settings.section'
+
+function readStoredSection() {
+  try {
+    return window.localStorage.getItem(SECTION_STORAGE_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+function writeStoredSection(id) {
+  try {
+    window.localStorage.setItem(SECTION_STORAGE_KEY, id)
+  } catch {
+    // 忽略：不影响切页本身
+  }
+}
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
@@ -439,13 +141,7 @@ const lastSavedPresetId = ref('')
 
 const builtinPresets = computed(() => presets.value.filter((preset) => preset.is_builtin))
 const isSyncing = computed(() => syncDepth.value > 0)
-const showWhisperSettings = computed(() => form.value.asr_provider === 'whisper')
-const showQwenSettings = computed(() => form.value.asr_provider === 'qwen_asr')
-const showDoubaoSettings = computed(() => form.value.asr_provider === 'doubao_asr')
-const showChatGPTSettings = computed(() => form.value.asr_provider === 'chatgpt_asr')
 const streamingRuntimeAvailable = computed(() => settingsStore.runtimeStatus.qwen_streaming_available === true)
-// 诊断区展示：后端上报的运行时环境
-const runtimeEnvironment = computed(() => settingsStore.runtimeStatus.runtime_environment || 'unknown')
 const streamingRuntimeSummary = computed(() => {
   const runtimeEnvironment = settingsStore.runtimeStatus.runtime_environment || 'unknown'
   const backend = settingsStore.runtimeStatus.qwen_streaming_backend
@@ -463,11 +159,27 @@ const streamingRuntimeSummary = computed(() => {
 
   return `当前后端环境：${runtimeEnvironment}，若在 PowerShell 启动后端将自动降级为单段录音`
 })
-const shouldShowForcedAlignerModel = computed(() => (
-  showQwenSettings.value &&
-  form.value.qwen_asr_return_timestamps &&
-  form.value.qwen_asr_use_forced_aligner
-))
+const activeSection = ref(resolveSectionId(appStore.settingsSection || readStoredSection() || DEFAULT_SECTION_ID))
+const currentSection = computed(() => findSection(activeSection.value))
+const navQuery = ref('')
+const navGroups = computed(() => buildNavGroups(navQuery.value))
+
+function goSection(id) {
+  const next = resolveSectionId(id)
+  if (next !== activeSection.value) {
+    // 离开快捷键页时结束录入，否则下一次按键会被悄悄录成快捷键
+    stopHotkeyCapture()
+    activeSection.value = next
+  }
+  writeStoredSection(next)
+}
+
+function goFirstMatch() {
+  const first = navGroups.value[0]?.items[0]
+  if (first) {
+    goSection(first.id)
+  }
+}
 
 const hotkeyDisplay = computed(() => {
   return form.value.hotkey?.display || '点击录入快捷键'
@@ -698,8 +410,10 @@ async function loadAudioInputDevices() {
   }
 }
 
-function openPresetModal() {
-  const currentPreset = builtinPresets.value.find((preset) => preset.id === selectedPresetId.value) ||
+// 传入 preset 时直接查看该预设（提示词预设页逐条「查看」），否则查看当前默认预设
+function openPresetModal(preset) {
+  const currentPreset = (preset?.id ? preset : null) ||
+    builtinPresets.value.find((item) => item.id === selectedPresetId.value) ||
     builtinPresets.value[0] ||
     null
 
@@ -869,6 +583,30 @@ watch(selectedPresetId, () => {
   debouncedSavePreset()
 })
 
+// 外部跳转（转文字页「去设置」、托盘等）：切到指定分页后清空，下次同一目标仍能触发
+watch(() => appStore.settingsSection, (section) => {
+  if (!section) {
+    return
+  }
+  goSection(section)
+  appStore.settingsSection = ''
+}, { immediate: true })
+
+provide(SETTINGS_CTX, {
+  form,
+  audioInputDevices,
+  streamingRuntimeAvailable,
+  streamingRuntimeSummary,
+  builtinPresets,
+  selectedPresetId,
+  openPresetModal,
+  hotkeyDisplay,
+  isCapturingHotkey,
+  startHotkeyCapture,
+  resetHotkey,
+  goSection
+})
+
 onMounted(async () => {
   // 用 allSettled：任意一项初始化失败（健康探测超时、provider 列表异常等）都不能
   // 让下面的 isInitialized 停在 false —— 那会让此后所有设置保存被守卫静默跳过
@@ -900,3 +638,246 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleHotkeyKeydown, true)
 })
 </script>
+
+<style scoped>
+/* 两栏：左侧二级导航随外层 .page-view 滚动时吸顶，右侧为当前分页 */
+.settings-page {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: var(--s-6);
+  align-items: start;
+}
+
+.settings-nav {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - var(--titlebar-height) - 2 * var(--space-xl));
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--edge-hi);
+  overflow: hidden;
+}
+
+.settings-nav__head {
+  padding: var(--s-4) var(--s-3) var(--s-3);
+}
+
+.settings-nav__title {
+  margin: 0 0 var(--s-3);
+  padding: 0 var(--s-1);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.settings-nav__search {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: 34px;
+  padding: 0 var(--s-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-raise);
+  border: 1px solid var(--line-strong);
+  color: var(--text-3);
+  transition: border-color var(--t-fast) var(--ease);
+}
+
+.settings-nav__search:focus-within {
+  border-color: var(--accent-line-strong);
+}
+
+.settings-nav__search svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.settings-nav__search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.settings-nav__groups {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-1) var(--s-2) var(--s-4);
+}
+
+.settings-nav__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav__group-label {
+  padding: 0 var(--s-2) 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+
+.settings-nav__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
+  padding: 0 var(--s-2);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.settings-nav__item span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.settings-nav__item svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.settings-nav__item:hover {
+  background: var(--bg-raise);
+  color: var(--text-1);
+}
+
+.settings-nav__item:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.settings-nav__item[aria-current='page'] {
+  background: var(--accent-dim);
+  color: var(--accent-hi);
+}
+
+.settings-nav__empty {
+  padding: var(--s-2);
+  font-size: var(--fs-cap);
+  color: var(--text-3);
+  line-height: 1.6;
+}
+
+.settings-nav__foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--s-3) var(--s-4);
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-cap);
+  color: var(--text-3);
+}
+
+.settings-nav__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.settings-nav__foot.saving .settings-nav__dot {
+  background: var(--accent);
+}
+
+.settings-main {
+  container: settings-main / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  min-width: 0;
+  max-width: 760px;
+}
+
+/* 内容列过窄（800px 窗口 + 展开的主侧栏只剩约 340px）时，
+   「说明 | 320px 控件」两列会把说明挤成一字一行：改为上下排，开关仍留在右侧 */
+@container settings-main (max-width: 520px) {
+  .settings-main :deep(.setting-item) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-2);
+  }
+
+  .settings-main :deep(.setting-item:has(> .toggle-switch)) {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--s-3);
+  }
+}
+
+.settings-main__head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: var(--s-1);
+}
+
+.settings-main__crumb {
+  font-size: var(--fs-cap);
+  color: var(--text-3);
+}
+
+.settings-main__title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.settings-main__desc {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+/* 外壳里的待加载提示不再挂在卡片顶部，改成独立提示条 */
+.settings-pending {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+/* 最小窗口（800px）下侧栏仍在：导航收窄，内容区留足宽度 */
+@media (max-width: 1100px) {
+  .settings-page {
+    grid-template-columns: 164px minmax(0, 1fr);
+    gap: var(--s-4);
+  }
+
+  .settings-nav__head {
+    padding: var(--s-3) var(--s-2) var(--s-2);
+  }
+
+  .settings-nav__groups {
+    padding-inline: var(--s-1);
+  }
+}
+</style>

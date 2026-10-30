@@ -90,6 +90,7 @@ const {
   onDesktopAgentError,
   removeAllListeners,
   syncDesktopSettings,
+  getHotkeyStatus,
   debugLog
 } = useElectron()
 
@@ -111,7 +112,7 @@ onMounted(async () => {
   })
 
   onNavigateSettings(() => {
-    appStore.setCurrentPage('settings')
+    appStore.openSettings()
   })
 
   onDesktopPermissionRequired((payload) => {
@@ -123,6 +124,16 @@ onMounted(async () => {
     debugLog('renderer.app', 'Desktop agent error', payload)
     appStore.showToast(payload?.error || '本地桌面代理发生错误')
   })
+
+  // 全局快捷键在 Rust 启动期就已注册：权限缺失（macOS「输入监控」）的原因在这里补拉并提示，
+  // 不能只依赖事件（启动期事件发出时前端还没订阅）
+  getHotkeyStatus()
+    .then((status) => {
+      if (status?.error) {
+        appStore.showToast(status.error, { tone: 'error', duration: 8000 })
+      }
+    })
+    .catch(() => {})
 
   await settingsStore.loadSettings()
 
