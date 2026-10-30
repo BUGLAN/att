@@ -1,7 +1,6 @@
 //! Tauri 命令层：对旧 electronAPI 31 个方法的 1:1 替换（前端 useElectron.js 换内核不换形状）。
 //!
-//! 已接入：端口/平台/窗口/桌面设置/剪贴板/粘贴模拟/录音会话/麦克风枚举/热键状态。
-//! 待接入：托盘与悬浮窗（当前为占位）。
+//! 端口/平台/窗口/桌面设置/剪贴板/粘贴模拟/录音会话/麦克风枚举/热键状态/托盘/悬浮窗。
 
 use crate::AppState;
 use serde_json::{json, Value};
@@ -143,8 +142,7 @@ pub fn read_clipboard_text() -> Result<String, String> {
 
 #[tauri::command]
 pub fn write_clipboard_text(text: String) -> Result<bool, String> {
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| err(e.to_string()))?;
-    clipboard.set_text(text).map_err(|e| err(e.to_string()))?;
+    crate::desktop::write_clipboard(&text)?;
     Ok(true)
 }
 
@@ -157,6 +155,7 @@ pub fn write_clipboard_image(state: State<'_, AppState>, payload: Value) -> Resu
     let img = image::load_from_memory(&bytes).map_err(|e| err(format!("图片解码失败: {e}")))?;
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
+    crate::clipboard::mark_internal_image(rgba.as_raw());
     let mut clipboard = arboard::Clipboard::new().map_err(|e| err(e.to_string()))?;
     clipboard
         .set_image(arboard::ImageData {
@@ -233,16 +232,18 @@ pub fn get_hotkey_status(state: State<'_, AppState>) -> Value {
     json!({ "enabled": error.is_none(), "error": error })
 }
 
-// ---------------- 托盘（占位）/ 悬浮窗 ----------------
+// ---------------- 托盘 / 悬浮窗 ----------------
 
 #[tauri::command]
-pub fn set_tray_icon(icon_type: String) {
-    tracing::debug!("托盘图标请求（3g 接入）: {icon_type}");
+pub fn set_tray_icon(app: AppHandle, icon_type: String) {
+    crate::tray::set_icon(&app, &icon_type);
 }
 
+/// 前端记录列表变化时触发；菜单内容以 Rust 记录库为准（载荷忽略）。
 #[tauri::command]
-pub fn update_tray_menu(records: Value) {
-    tracing::debug!("托盘菜单请求（3g 接入）: {} 条", records.as_array().map(Vec::len).unwrap_or(0));
+pub fn update_tray_menu(app: AppHandle, records: Value) {
+    let _ = records;
+    crate::tray::refresh(&app);
 }
 
 #[tauri::command]
@@ -286,6 +287,63 @@ pub fn open_main_settings(app: AppHandle) {
 #[tauri::command]
 pub fn get_floating_state() -> Value {
     crate::floating::last_state()
+}
+
+// ---------------- 转文字页 ----------------
+
+/// 系统「选择文件」对话框：只列音视频容器；用户取消返回 None。
+#[tauri::command]
+pub async fn open_media_file(app: AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let extensions: Vec<&str> = att_core::transcribe::media::VIDEO_EXTENSIONS
+        .iter()
+        .chain(att_core::transcribe::media::AUDIO_EXTENSIONS)
+        .copied()
+        .collect();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog().file().set_title("选择要转写的音视频文件").add_filter("音视频文件", &extensions).blocking_pick_file()
+    })
+    .await
+    .ok()
+    .flatten()?;
+    picked.into_path().ok().map(|path| path.to_string_lossy().into_owned())
+}
+
+// ---------------- 设置页：权限 / 诊断 ----------------
+
+/// 系统权限状态（只查询，不触发授权弹窗）。
+#[tauri::command]
+pub fn get_permission_status() -> Value {
+    crate::permissions::status()
+}
+
+/// 打开对应权限的系统设置面板。
+#[tauri::command]
+pub fn open_permission_settings(id: String) -> Result<(), String> {
+    crate::permissions::open_settings(&id)
+}
+
+/// 诊断信息：版本、数据目录、日志文件、提示词目录、数据面端口。
+#[tauri::command]
+pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> Value {
+    json!({
+        "version": app.package_info().version.to_string(),
+        "data_dir": state.core.data_dir.display().to_string(),
+        "log_file": state.core.data_dir.join("logs").join("att-app.log").display().to_string(),
+        "prompts_dir": state.core.prompts_dir.display().to_string(),
+        "backend_port": state.backend_port,
+    })
+}
+
+/// 在文件管理器中显示数据目录（kind = "data"）或日志文件（kind = "log"）。
+#[tauri::command]
+pub fn reveal_app_path(state: State<'_, AppState>, kind: String) -> Result<(), String> {
+    let path = match kind.as_str() {
+        "data" => state.core.data_dir.clone(),
+        "log" => state.core.data_dir.join("logs").join("att-app.log"),
+        other => return Err(format!("未知路径类型：{other}")),
+    };
+    crate::permissions::reveal(&path)
 }
 
 // ---------------- 调试 ----------------

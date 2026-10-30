@@ -1,4 +1,4 @@
-//! 录音会话 Actor（架构文档 §5 / §7.1，当前接入豆包在线引擎）。
+//! 录音会话 Actor（架构文档 §5 / §7.1）：在线引擎豆包（流式 + 批量）与 ChatGPT 听写（批量）。
 //!
 //! 单个 tokio 任务串行消费命令（UI 按钮 / 全局热键 / 会话任务回报），状态机：
 //!
@@ -6,8 +6,15 @@
 //! Idle ─start→ Connecting(流式建连中，采集已在收数) ─connected→ Recording
 //!      ─start(单段/多段)→ Recording
 //! Connecting/Recording ─stop→ Finalizing ─done→ Idle（completed / error）
-//! 任意非 Idle ─cancel→ Idle（cancelled）
+//!                                         └─(auto_optimize)→ Optimizing ─optimized→ Idle（completed）
+//! 任意非 Idle ─cancel→ Idle（cancelled；Optimizing 下取消的是优化，保留原文）
 //! ```
+//!
+//! 自动优化（设置 `auto_optimize` 且已配置默认 LLM 模型）：转写落库后进入 Optimizing，流式增量经
+//! `recording:optimization` 推给前端与悬浮窗；开启自动输出时同时边生成边打进焦点输入框（typing.rs），
+//! 收尾与最终清洗结果对齐。还没打出任何字就失败时退回粘贴原文，保证总有输出。
+//! 与旧版语义一致：单段模式优化期间不接受新录音；流式模式允许直接开始下一段，
+//! 此时上一段的优化转入后台，结果只入库、不粘贴（避免粘进新输入框）。
 //!
 //! 三防御语义在这里天然成立：
 //! - 不丢开头：采集先于建连启动，建连期间的样本缓存在会话任务里，就绪后统一冲刷；
@@ -20,9 +27,13 @@
 use att_core::records::{Record, RecordStatus};
 use att_core::settings::hotkey::{HotkeyAction, TriggerMode};
 use att_core::state::CoreState;
+use att_core::llm::cleaning;
+use att_core::llm::optimizer::{self, OptimizeEvent, OptimizeOutcome};
 use att_core::stt::{self, doubao};
 use att_hotkey::KeyPhase;
+use crate::typing::StreamTyping;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -40,14 +51,18 @@ enum Phase {
     Connecting,
     Recording,
     Finalizing,
+    /// 转写已落库，LLM 自动优化进行中
+    Optimizing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     /// 真流式：边录边推，实时出字
     Streaming,
-    /// 单段/多段：录完整段后一次性识别（多段的 VAD 分段尚未移植，按单段处理）
+    /// 单段：录完整段后一次性识别
     Batch,
+    /// 多段：静音切段，每段录完即送识别，实时拼接（整场仍落一条记录、一个音频）
+    Multi,
 }
 
 impl Mode {
@@ -55,9 +70,17 @@ impl Mode {
         match self {
             Mode::Streaming => "streaming",
             Mode::Batch => "single",
+            Mode::Multi => "multi",
         }
     }
 }
+
+/// 多段模式：全部分段识别结束的等待上限（每段自身另有建连/收尾超时）。
+const MULTI_DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
+/// 收尾看门狗在各引擎自身超时之外再留的余量：正常情况下永远轮不到它，只兜「卡死」。
+const WATCHDOG_SLACK: Duration = Duration::from_secs(15);
+/// 看门狗取消会话后再等这么久；会话任务仍无回应（卡死 / 已崩溃）就不再等它，直接收尾。
+const WATCHDOG_GRACE: Duration = Duration::from_secs(3);
 
 /// 会话任务的最终产出。
 struct SessionOutcome {
@@ -79,6 +102,24 @@ enum Cmd {
     /// 录音途中识别失败：立即停采集进入收尾（已收文本兜底建记录）
     Failed(u64),
     Done(u64, SessionOutcome),
+    /// 自动优化结束（会话 id, 记录 id, 结果, 流式输入会话）
+    Optimized(u64, String, OptimizeOutcome, Option<StreamTyping>),
+    /// 收尾看门狗到点（会话 id, 是否为宽限后的强制收尾）
+    FinalizeTimeout(u64, bool),
+}
+
+/// 进行中的自动优化（转写记录已落库）。
+struct PendingOptimization {
+    session_id: u64,
+    mode: Mode,
+    record_id: String,
+    raw_text: String,
+    /// 转写阶段的降级原因（识别中断但有部分文本）
+    transcribe_error: Option<String>,
+    /// 已被新一段录音取代：结果只入库、不粘贴、不再驱动界面
+    detached: Arc<AtomicBool>,
+    /// 置位后流式输入立即停手（取消优化 / 被新录音取代）
+    typing_halt: Arc<AtomicBool>,
 }
 
 struct Active {
@@ -88,6 +129,13 @@ struct Active {
     cancel: Option<oneshot::Sender<()>>,
     /// 本次录音由我们静音了系统输出，结束时需要恢复
     muted_by_us: bool,
+    /// 听到过说话（电平高于静音阈值，或流式已出字）；松开时据此决定要不要进入转写
+    heard: Arc<AtomicBool>,
+    /// 松开时整场没听到说话：会话任务被直接取消，按「没有检测到说话」安静结束
+    silent: bool,
+    /// 收尾看门狗已触发：会话任务被强制取消，按「识别超时」收尾并保留已识别内容
+    timed_out: bool,
+    started: Instant,
 }
 
 #[derive(Clone)]
@@ -106,6 +154,7 @@ impl RecordingController {
             tx: tx.clone(),
             phase: Phase::Idle,
             active: None,
+            optimizing: None,
             next_id: 0,
             snapshot: snapshot.clone(),
         };
@@ -141,6 +190,7 @@ struct Actor {
     tx: mpsc::UnboundedSender<Cmd>,
     phase: Phase,
     active: Option<Active>,
+    optimizing: Option<PendingOptimization>,
     next_id: u64,
     snapshot: Arc<Mutex<Value>>,
 }
@@ -161,7 +211,8 @@ impl Actor {
                 }
                 Cmd::Failed(id) => {
                     if self.is_current(id) && matches!(self.phase, Phase::Connecting | Phase::Recording) {
-                        self.stop("识别连接中断，正在保存已识别内容");
+                        // 识别失败要让用户看到原因：不走「没说话安静结束」
+                        self.stop_with("识别连接中断，正在保存已识别内容", false);
                     }
                 }
                 Cmd::Done(id, outcome) => {
@@ -169,6 +220,8 @@ impl Actor {
                         self.finish(outcome).await;
                     }
                 }
+                Cmd::Optimized(id, record_id, outcome, typing) => self.on_optimized(id, record_id, outcome, typing).await,
+                Cmd::FinalizeTimeout(id, hard) => self.on_finalize_timeout(id, hard).await,
             }
         }
     }
@@ -210,7 +263,7 @@ impl Actor {
             (TriggerMode::Hold, KeyPhase::Pressed) => self.start().await,
             (TriggerMode::Hold, KeyPhase::Released) => self.stop("正在完成转写"),
             (TriggerMode::Toggle, KeyPhase::Pressed) => match self.phase {
-                Phase::Idle => self.start().await,
+                Phase::Idle | Phase::Optimizing => self.start().await,
                 Phase::Connecting | Phase::Recording => self.stop("正在完成转写"),
                 Phase::Finalizing => {}
             },
@@ -226,19 +279,40 @@ impl Actor {
     }
 
     async fn start(&mut self) {
+        if self.phase == Phase::Optimizing {
+            // 流式：上一段优化转入后台继续跑，直接开始新录音；单段：优化期间保持「处理中」，吞掉
+            match self.optimizing.as_ref() {
+                Some(pending) if pending.mode == Mode::Streaming => {
+                    pending.detached.store(true, Ordering::SeqCst);
+                    // 新录音的文字要进新的输入框：上一段别再往里打
+                    pending.typing_halt.store(true, Ordering::SeqCst);
+                    self.phase = Phase::Idle;
+                }
+                _ => return,
+            }
+        }
         if self.phase != Phase::Idle {
             // 收尾中的按下与重复按下一律吞掉（与旧版语义一致）
             return;
         }
         let settings = self.core.settings();
-        if let Some(message) = stt::unsupported_provider_message(&settings.asr_provider) {
-            return self.fail_start(message);
-        }
-        let config = stt::doubao_config(&self.core);
-        if let Err(error) = config.ensure() {
-            return self.fail_start(error.to_string());
-        }
-        let mode = if settings.recording_mode == "streaming" { Mode::Streaming } else { Mode::Batch };
+        let engine = match stt::Engine::from_settings(&self.core) {
+            Ok(engine) => engine,
+            Err(message) => return self.fail_start(message),
+        };
+        let mode = match settings.recording_mode.as_str() {
+            "streaming" => Mode::Streaming,
+            "multi" => Mode::Multi,
+            _ => Mode::Batch,
+        };
+        // 流式只有豆包支持（ChatGPT 听写是批量接口）
+        let streaming_config = match (&engine, mode) {
+            (stt::Engine::Doubao(config), Mode::Streaming) => Some(config.clone()),
+            (_, Mode::Streaming) => {
+                return self.fail_start(format!("{}暂不支持流式录音，请在设置中改用单段或多段录音模式", engine.label()));
+            }
+            _ => None,
+        };
         let language = settings.asr_language.clone();
         self.next_id += 1;
         let id = self.next_id;
@@ -247,7 +321,14 @@ impl Actor {
         let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
         let level_app = self.app.clone();
         let mut last_level_emit = Instant::now() - LEVEL_EMIT_INTERVAL;
+        // 与多段切段同一个阈值判定「有没有说话」（多段模式本就据此丢弃无声分片）
+        let heard = Arc::new(AtomicBool::new(false));
+        let heard_by_level = heard.clone();
+        let silence_db = settings.silence_level as f64;
         let on_chunk: att_audio::ChunkCallback = Box::new(move |pcm, level| {
+            if !heard_by_level.load(Ordering::Relaxed) && att_core::audio::chunk_db(pcm) > silence_db {
+                heard_by_level.store(true, Ordering::Relaxed);
+            }
             let _ = audio_tx.send(pcm.to_vec());
             if last_level_emit.elapsed() >= LEVEL_EMIT_INTERVAL {
                 last_level_emit = Instant::now();
@@ -269,6 +350,10 @@ impl Actor {
             capture: Some(capture),
             cancel: Some(cancel_tx),
             muted_by_us: false,
+            heard: heard.clone(),
+            silent: false,
+            timed_out: false,
+            started: Instant::now(),
         });
 
         let tx = self.tx.clone();
@@ -277,12 +362,20 @@ impl Actor {
                 self.phase = Phase::Connecting;
                 self.emit_state("connecting", json!({ "message": "正在连接豆包语音服务" }));
                 let app = self.app.clone();
-                tauri::async_runtime::spawn(streaming_task(id, config, language, audio_rx, cancel_rx, app, tx));
+                let config = streaming_config.expect("流式模式已校验为豆包");
+                tauri::async_runtime::spawn(streaming_task(id, config, language, audio_rx, cancel_rx, heard, app, tx));
             }
             Mode::Batch => {
                 self.phase = Phase::Recording;
                 self.emit_state("recording", json!({ "message": "正在录音" }));
-                tauri::async_runtime::spawn(batch_task(id, config, language, audio_rx, cancel_rx, tx));
+                tauri::async_runtime::spawn(batch_task(id, engine, language, audio_rx, cancel_rx, tx));
+            }
+            Mode::Multi => {
+                self.phase = Phase::Recording;
+                self.emit_state("recording", json!({ "message": "静音切段监听中" }));
+                let segmenter = att_core::audio::Segmenter::new(settings.silence_level as f64, settings.silence_threshold);
+                let app = self.app.clone();
+                tauri::async_runtime::spawn(multi_task(id, engine, language, audio_rx, cancel_rx, segmenter, app, tx));
             }
         }
 
@@ -300,17 +393,70 @@ impl Actor {
 
     /// 停止采集进入收尾：采集线程冲刷完尾部样本后关闭音频通道，会话任务据此发末包。
     fn stop(&mut self, message: &str) {
+        self.stop_with(message, true);
+    }
+
+    /// `allow_silent`：整场没听到说话时，不进入转写、不调识别（不计费），直接安静结束。
+    fn stop_with(&mut self, message: &str, allow_silent: bool) {
         if !matches!(self.phase, Phase::Connecting | Phase::Recording) {
             return;
         }
         self.phase = Phase::Finalizing;
-        if let Some(capture) = self.active.as_mut().and_then(|a| a.capture.take()) {
+        let Some(active) = self.active.as_mut() else { return };
+        if let Some(capture) = active.capture.take() {
             std::thread::spawn(move || capture.stop());
         }
+        if allow_silent && !active.heard.load(Ordering::Relaxed) {
+            active.silent = true;
+            if let Some(cancel) = active.cancel.take() {
+                let _ = cancel.send(());
+            }
+            return;
+        }
+        let (id, mode, recorded) = (active.id, active.mode, active.started.elapsed());
+        let budget = self.finalize_budget(mode, recorded);
         self.emit_state("finalizing", json!({ "message": message }));
+        let tx = self.tx.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(budget).await;
+            let _ = tx.send(Cmd::FinalizeTimeout(id, false));
+            tokio::time::sleep(WATCHDOG_GRACE).await;
+            let _ = tx.send(Cmd::FinalizeTimeout(id, true));
+        });
+    }
+
+    fn finalize_budget(&self, mode: Mode, recorded: Duration) -> Duration {
+        finalize_budget(mode, recorded, self.core.settings().chatgpt_asr_timeout_seconds)
+    }
+
+    /// 看门狗到点仍在收尾：先取消会话任务（它会带着已收到的音频与文字回来）；
+    /// 宽限后仍无回应，就不再等它，直接按超时收尾。
+    async fn on_finalize_timeout(&mut self, id: u64, hard: bool) {
+        if !self.is_current(id) || self.phase != Phase::Finalizing {
+            return;
+        }
+        tracing::warn!("录音收尾超时（会话 {id}，{}）", if hard { "会话任务无回应，强制结束" } else { "取消会话任务" });
+        let Some(active) = self.active.as_mut() else { return };
+        active.timed_out = true;
+        if !hard {
+            if let Some(cancel) = active.cancel.take() {
+                let _ = cancel.send(());
+            }
+            return;
+        }
+        self.finish(SessionOutcome { samples: Vec::new(), text: String::new(), error: None, cancelled: true, processing_time: 0.0 })
+            .await;
     }
 
     fn cancel(&mut self) {
+        if self.phase == Phase::Optimizing {
+            // 取消的是优化：结果按「已取消优化，保留原始文本」收尾（见 on_optimized）
+            if let Some(pending) = self.optimizing.as_ref() {
+                pending.typing_halt.store(true, Ordering::SeqCst);
+                self.core.optimizer.cancel(&pending.record_id);
+            }
+            return;
+        }
         if self.phase == Phase::Idle {
             return;
         }
@@ -341,13 +487,26 @@ impl Actor {
         self.phase = Phase::Idle;
         // 让 emit_state 仍能带上本次模式
         let mode = active.mode;
+        let (silent, timed_out) = (active.silent, active.timed_out);
         self.active = Some(Active { capture: None, cancel: None, ..active });
         let duration = outcome.samples.len() as f64 / SAMPLE_RATE;
+        if outcome.cancelled && timed_out {
+            // 看门狗取消的不算用户取消：带回来的音频与文字照常保存，原因记为超时
+            outcome.cancelled = false;
+            outcome.error = Some("识别超时，未等到识别结果".to_string());
+        }
 
-        if outcome.cancelled {
+        if outcome.cancelled && silent {
+            // 松开时整场没说话：不进转写、不建记录，悬浮窗直接收起
+            self.emit_state("completed", json!({ "message": "没有检测到说话", "text": "", "silent": true }));
+        } else if outcome.cancelled {
             self.emit_state("cancelled", json!({ "message": "已取消本次录音" }));
+        } else if outcome.samples.is_empty() && outcome.text.is_empty() && outcome.error.is_some() {
+            // 会话任务卡死被强制结束：手里什么都没有，只报原因
+            self.emit_state("error", json!({ "message": outcome.error }));
         } else if duration < MIN_DURATION_SECONDS && outcome.text.is_empty() {
-            self.emit_state("completed", json!({ "message": "录音时间过短", "text": "" }));
+            // 误触：同样安静收起
+            self.emit_state("completed", json!({ "message": "录音时间过短", "text": "", "silent": true }));
         } else if outcome.text.is_empty() {
             match outcome.error {
                 // 识别失败且没有任何文本：音频落盘并建失败记录，避免录音丢失
@@ -361,6 +520,14 @@ impl Actor {
             let record = self
                 .save_record(&outcome.samples, duration, Some(outcome.text.clone()), outcome.error.clone(), outcome.processing_time)
                 .await;
+            let record_id = record.get("id").and_then(Value::as_str).map(str::to_string);
+            let auto_optimize = self.core.settings().auto_optimize && optimizer::has_default_model(&self.core);
+            if let (true, Some(record_id)) = (auto_optimize, record_id) {
+                // 自动优化：本次不在转写阶段粘贴，优化结果流式打进输入框（否则原文、优化文各出一遍）
+                self.begin_optimization(mode, record_id, outcome.text.clone(), outcome.error.clone(), record);
+                self.active = None;
+                return;
+            }
             let (copied, pasted, copy_error) = self.auto_copy(&outcome.text).await;
             let message = match &outcome.error {
                 Some(error) => format!("识别中断，已保存已识别内容：{error}"),
@@ -386,6 +553,128 @@ impl Actor {
             outcome.text.chars().count()
         );
         self.active = None;
+    }
+
+    /// 进入 Optimizing：优化在独立任务里跑（不阻塞 Actor 处理新命令），增量直接推给前端与悬浮窗，
+    /// 开启自动输出时同时流式打进焦点输入框。
+    fn begin_optimization(&mut self, mode: Mode, record_id: String, raw_text: String, transcribe_error: Option<String>, record: Value) {
+        let session_id = self.next_id;
+        let detached = Arc::new(AtomicBool::new(false));
+        let typing_halt = Arc::new(AtomicBool::new(false));
+        let mut typing = self.core.settings().auto_copy_to_clipboard.then(|| StreamTyping::spawn(typing_halt.clone()));
+        self.phase = Phase::Optimizing;
+        self.optimizing = Some(PendingOptimization {
+            session_id,
+            mode,
+            record_id: record_id.clone(),
+            raw_text: raw_text.clone(),
+            transcribe_error,
+            detached: detached.clone(),
+            typing_halt,
+        });
+        self.emit_state(
+            "optimizing",
+            json!({ "mode": mode.as_str(), "message": "转写完成，正在优化", "text": raw_text, "record": record }),
+        );
+
+        let core = self.core.clone();
+        let app = self.app.clone();
+        let tx = self.tx.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut accumulated = String::new();
+            let delta_record = record_id.clone();
+            let outcome = optimizer::optimize_record(&core, &record_id, &raw_text, |event| {
+                let OptimizeEvent::Delta(chunk) = event else { return };
+                accumulated.push_str(&chunk);
+                // 输入框与悬浮窗都只出「收尾清洗不会剥掉」的部分（套话 / 思考块不上屏）
+                let stable = cleaning::stable_prefix(&accumulated);
+                if let Some(typing) = typing.as_mut() {
+                    typing.advance(&stable);
+                }
+                let _ = app.emit("recording:optimization", json!({ "record_id": &delta_record, "text": chunk }));
+                if !detached.load(Ordering::SeqCst) {
+                    crate::floating::update(
+                        &app,
+                        json!({ "phase": "optimizing", "mode": mode.as_str(), "text": stable, "duration": 0 }),
+                        false,
+                    );
+                }
+            })
+            .await;
+            let _ = tx.send(Cmd::Optimized(session_id, delta_record, outcome, typing));
+        });
+    }
+
+    /// 自动优化结束：补齐流式输入（失败且没打出字时粘贴原文）；已转后台的只同步记录、不输出。
+    async fn on_optimized(&mut self, session_id: u64, record_id: String, outcome: OptimizeOutcome, typing: Option<StreamTyping>) {
+        let record = self.core.records.get(&record_id).ok().and_then(|r| serde_json::to_value(r).ok()).unwrap_or(Value::Null);
+        let Some(pending) = self.optimizing.take_if(|p| p.session_id == session_id) else {
+            // 已被更新的一段录音（及其优化）取代：只同步记录，不粘贴、不动当前会话
+            abort_typing(typing).await;
+            crate::tray::refresh(&self.app);
+            self.emit_background_optimization(record, &outcome);
+            return;
+        };
+        crate::tray::refresh(&self.app);
+        let (final_text, optimized, optimize_error, base_message) = match &outcome {
+            OptimizeOutcome::Completed(success) => (success.optimized_text.clone(), true, None, "录音已完成，已优化".to_string()),
+            OptimizeOutcome::Failed(error) => (pending.raw_text.clone(), false, Some(error.clone()), format!("优化失败，已保留转写原文：{error}")),
+            OptimizeOutcome::Cancelled => (pending.raw_text.clone(), false, None, "已取消优化，保留原始文本".to_string()),
+        };
+        let truncated = matches!(&outcome, OptimizeOutcome::Completed(s) if s.truncated);
+        let cancelled = matches!(outcome, OptimizeOutcome::Cancelled);
+
+        if pending.detached.load(Ordering::SeqCst) {
+            // 用户已开始下一段录音：上一段结果只入库，不粘贴、不抢占界面状态
+            abort_typing(typing).await;
+            self.emit_background_optimization(record, &outcome);
+            return;
+        }
+
+        self.phase = Phase::Idle;
+        // 用户主动取消优化：与旧版一致只保留原文，不粘贴；已打出的字保留，不再补打
+        let (copied, pasted, copy_error) = if cancelled {
+            abort_typing(typing).await;
+            (false, false, None)
+        } else {
+            self.deliver(&final_text, optimized, typing).await
+        };
+        let message = match &pending.transcribe_error {
+            Some(error) => format!("识别中断，已保存已识别内容：{error}"),
+            None if truncated => "优化完成，但输出已达 Max Tokens 上限被截断，可在设置 → LLM 服务里调优".to_string(),
+            None => base_message,
+        };
+        self.emit_state(
+            "completed",
+            json!({
+                "mode": pending.mode.as_str(),
+                "message": message,
+                "text": final_text,
+                "raw_text": pending.raw_text,
+                "record": record,
+                "copied": copied,
+                "pasted": pasted,
+                "copy_error": copy_error,
+                "degraded": pending.transcribe_error.is_some() || truncated,
+                "optimized": optimized,
+                "optimization_cancelled": cancelled,
+                "optimize_error": optimize_error,
+            }),
+        );
+    }
+
+    fn emit_background_optimization(&self, record: Value, outcome: &OptimizeOutcome) {
+        let optimized = matches!(outcome, OptimizeOutcome::Completed(_));
+        let _ = self.app.emit(
+            "recording:background-optimization",
+            json!({
+                "record": record,
+                "optimized": optimized,
+                "cancelled": matches!(outcome, OptimizeOutcome::Cancelled),
+                "error": match outcome { OptimizeOutcome::Failed(error) => Some(error.clone()), _ => None },
+                "message": if optimized { "上一段录音优化完成，文本已保存到记录集" } else { "上一段录音优化未完成，原文已保留在记录集中" },
+            }),
+        );
     }
 
     /// 音频落盘 + 建记录；返回记录 JSON（失败时返回 null，不阻断提示）。
@@ -421,12 +710,43 @@ impl Actor {
             tracing::error!("保存记录失败: {error}");
             return Value::Null;
         }
+        crate::tray::refresh(&self.app);
         self.core
             .records
             .get(&id)
             .ok()
             .and_then(|r| serde_json::to_value(r).ok())
             .unwrap_or(Value::Null)
+    }
+
+    /// 输出优化收尾的文本。流式输入打出过内容：成功则补齐到最终文本，失败则停在已打出的部分；
+    /// 两种情况都把最终文本（失败时为原文）放进剪贴板。一个字都没打出（未授权 / 失败在首字前）：退回整段粘贴。
+    async fn deliver(&self, final_text: &str, optimized: bool, typing: Option<StreamTyping>) -> (bool, bool, Option<String>) {
+        let Some(typing) = typing else { return self.auto_copy(final_text).await };
+        let typed_any = !typing.typed().is_empty();
+        if !typed_any && !optimized {
+            abort_typing(Some(typing)).await;
+            return self.auto_copy(final_text).await;
+        }
+        let text = final_text.to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            let typed = if optimized { typing.complete(&text) } else { typing.stop() };
+            (typed, crate::desktop::write_clipboard(&text).is_ok())
+        })
+        .await;
+        match result {
+            Ok((Ok(()), copied)) if optimized => (copied, true, None),
+            Ok((Ok(()), copied)) => (copied, false, Some("优化中断：输入框里是部分优化结果，原文已复制到剪贴板".into())),
+            Ok((Err(error), _)) if !typed_any => {
+                tracing::warn!("流式输入不可用，改为整段粘贴: {error}");
+                self.auto_copy(final_text).await
+            }
+            Ok((Err(error), copied)) => {
+                tracing::warn!("流式输入中断: {error}");
+                (copied, false, Some(error))
+            }
+            Err(error) => (false, false, Some(error.to_string())),
+        }
     }
 
     /// 自动复制并粘贴到焦点窗口（设置 auto_copy_to_clipboard）。
@@ -451,6 +771,25 @@ impl Actor {
     }
 }
 
+/// 收尾看门狗的上限：各引擎自身超时之和再加余量。正常收尾远早于它，只兜卡死。
+fn finalize_budget(mode: Mode, recorded: Duration, chatgpt_timeout_seconds: i64) -> Duration {
+    // 豆包：建连 + 末包等待（批量另按音频时长加时）+ 关闭
+    let doubao = doubao::CONNECT_TIMEOUT + doubao::FINISH_TIMEOUT + Duration::from_secs(2);
+    let engine = match mode {
+        Mode::Streaming => doubao,
+        Mode::Multi => MULTI_DRAIN_TIMEOUT,
+        Mode::Batch => Duration::from_secs(chatgpt_timeout_seconds.max(0) as u64).max(doubao + recorded / 2),
+    };
+    engine + WATCHDOG_SLACK
+}
+
+/// 流式输入立即停手（丢弃未发出的按键）。
+async fn abort_typing(typing: Option<StreamTyping>) {
+    if let Some(typing) = typing {
+        let _ = tokio::task::spawn_blocking(move || typing.abort()).await;
+    }
+}
+
 /// 静音系统输出（已静音则不动）；返回是否由本次录音静音。
 async fn mute_output() -> bool {
     tokio::task::spawn_blocking(|| match crate::desktop::output_muted() {
@@ -468,12 +807,17 @@ async fn streaming_task(
     language: String,
     mut audio_rx: mpsc::UnboundedReceiver<Vec<i16>>,
     mut cancel_rx: oneshot::Receiver<()>,
+    heard: Arc<AtomicBool>,
     app: AppHandle,
     tx: mpsc::UnboundedSender<Cmd>,
 ) {
     let started = Instant::now();
     let partial_app = app.clone();
     let on_partial: doubao::PartialCallback = Arc::new(move |text: String| {
+        // 已经出字就算说过话（小声说话电平可能压在阈值下，但识别出来了）
+        if !text.trim().is_empty() {
+            heard.store(true, Ordering::Relaxed);
+        }
         crate::floating::update(
             &partial_app,
             json!({ "phase": "recording", "mode": "streaming", "text": text, "duration": 0 }),
@@ -494,11 +838,13 @@ async fn streaming_task(
     while audio_open || !connect_done {
         tokio::select! {
             _ = &mut cancel_rx => {
+                // 取消也带回已收的音频与文字：用户取消时由 Actor 丢弃，看门狗超时时据此保存
+                let text = session.as_ref().map(doubao::DoubaoSession::current_text).unwrap_or_default();
                 if let Some(session) = session.take() {
                     session.cancel().await;
                 }
                 let _ = tx.send(Cmd::Done(id, SessionOutcome {
-                    samples: Vec::new(), text: String::new(), error: None, cancelled: true, processing_time: 0.0,
+                    samples: all, text, error: None, cancelled: true, processing_time: started.elapsed().as_secs_f64(),
                 }));
                 return;
             }
@@ -544,30 +890,38 @@ async fn streaming_task(
     }
 
     let duration = all.len() as f64 / SAMPLE_RATE;
-    let (text, error) = match (session, failure) {
-        (Some(active), Some(error)) => {
-            let text = active.current_text();
-            active.cancel().await;
-            (text, Some(error))
-        }
-        (None, error) => (String::new(), error),
-        (Some(active), None) if duration < MIN_DURATION_SECONDS => {
-            active.cancel().await;
-            (String::new(), None)
-        }
-        (Some(active), None) => {
-            let partial = active.current_text();
-            match active.finish(doubao::FINISH_TIMEOUT, doubao::FINISH_QUIET).await {
-                Ok(outcome) => (outcome.text, None),
-                Err(error) => (partial, Some(error.to_string())),
+    let partial = session.as_ref().map(doubao::DoubaoSession::current_text).unwrap_or_default();
+    let finalize = async move {
+        match (session, failure) {
+            (Some(active), Some(error)) => {
+                let text = active.current_text();
+                active.cancel().await;
+                (text, Some(error))
+            }
+            (None, error) => (String::new(), error),
+            (Some(active), None) if duration < MIN_DURATION_SECONDS => {
+                active.cancel().await;
+                (String::new(), None)
+            }
+            (Some(active), None) => {
+                let partial = active.current_text();
+                match active.finish(doubao::FINISH_TIMEOUT, doubao::FINISH_QUIET).await {
+                    Ok(outcome) => (outcome.text, None),
+                    Err(error) => (partial, Some(error.to_string())),
+                }
             }
         }
+    };
+    // 等末包期间同样响应取消（悬浮窗 ✕ / 看门狗），不必干等到收尾超时
+    let (text, error, cancelled) = tokio::select! {
+        (text, error) = finalize => (text, error, false),
+        _ = &mut cancel_rx => (partial, None, true),
     };
     let _ = tx.send(Cmd::Done(id, SessionOutcome {
         samples: all,
         text,
         error,
-        cancelled: false,
+        cancelled,
         processing_time: started.elapsed().as_secs_f64(),
     }));
 }
@@ -575,7 +929,7 @@ async fn streaming_task(
 /// 单段会话：录完整段后一次性批量识别。
 async fn batch_task(
     id: u64,
-    config: doubao::DoubaoConfig,
+    engine: stt::Engine,
     language: String,
     mut audio_rx: mpsc::UnboundedReceiver<Vec<i16>>,
     mut cancel_rx: oneshot::Receiver<()>,
@@ -586,7 +940,7 @@ async fn batch_task(
         tokio::select! {
             _ = &mut cancel_rx => {
                 let _ = tx.send(Cmd::Done(id, SessionOutcome {
-                    samples: Vec::new(), text: String::new(), error: None, cancelled: true, processing_time: 0.0,
+                    samples: all, text: String::new(), error: None, cancelled: true, processing_time: 0.0,
                 }));
                 return;
             }
@@ -597,14 +951,118 @@ async fn batch_task(
         }
     }
     let started = Instant::now();
-    let (text, error) = if (all.len() as f64 / SAMPLE_RATE) < MIN_DURATION_SECONDS {
-        (String::new(), None)
+    let (text, error, cancelled) = if (all.len() as f64 / SAMPLE_RATE) < MIN_DURATION_SECONDS {
+        (String::new(), None, false)
     } else {
-        match doubao::transcribe_pcm(&config, &language, "", &all).await {
-            Ok(outcome) => (outcome.text, None),
-            Err(error) => (String::new(), Some(error.to_string())),
+        // 识别期间同样响应取消（ChatGPT 听写默认可等 120s）
+        tokio::select! {
+            result = engine.transcribe_pcm(&language, &all) => match result {
+                Ok(text) => (text, None, false),
+                Err(error) => (String::new(), Some(error), false),
+            },
+            _ = &mut cancel_rx => (String::new(), None, true),
         }
     };
+    let _ = tx.send(Cmd::Done(id, SessionOutcome {
+        samples: all,
+        text,
+        error,
+        cancelled,
+        processing_time: started.elapsed().as_secs_f64(),
+    }));
+}
+
+/// 多段会话：静音切段 → 每段立即并发送批量识别 → 按段序实时拼接推给前端与悬浮窗。
+///
+/// 与旧版「最后一片上传失败就永久卡在转写中」不同：收尾有总等待上限，单段失败只降级（保留其余段文本）。
+#[allow(clippy::too_many_arguments)]
+async fn multi_task(
+    id: u64,
+    engine: stt::Engine,
+    language: String,
+    mut audio_rx: mpsc::UnboundedReceiver<Vec<i16>>,
+    mut cancel_rx: oneshot::Receiver<()>,
+    mut segmenter: att_core::audio::Segmenter,
+    app: AppHandle,
+    tx: mpsc::UnboundedSender<Cmd>,
+) {
+    let started = Instant::now();
+    let mut all: Vec<i16> = Vec::new();
+    let (result_tx, mut result_rx) = mpsc::unbounded_channel::<(usize, Result<String, String>)>();
+    let mut texts: Vec<Option<Result<String, String>>> = Vec::new();
+    let spawn_segment = |index: usize, segment: Vec<i16>| {
+        let (engine, language, result_tx) = (engine.clone(), language.clone(), result_tx.clone());
+        tokio::spawn(async move {
+            let result = engine.transcribe_pcm(&language, &segment).await;
+            let _ = result_tx.send((index, result));
+        });
+    };
+    let joined = |texts: &[Option<Result<String, String>>]| {
+        texts.iter().filter_map(|t| t.as_ref().and_then(|r| r.as_ref().ok())).filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join("\n\n")
+    };
+    let emit_partial = |text: &str| {
+        crate::floating::update(&app, json!({ "phase": "recording", "mode": "multi", "text": text, "duration": 0 }), false);
+        let _ = app.emit("recording:partial", json!({ "text": text }));
+    };
+
+    let mut audio_open = true;
+    while audio_open {
+        tokio::select! {
+            _ = &mut cancel_rx => {
+                let text = joined(&texts);
+                let _ = tx.send(Cmd::Done(id, SessionOutcome {
+                    samples: all, text, error: None, cancelled: true, processing_time: started.elapsed().as_secs_f64(),
+                }));
+                return;
+            }
+            chunk = audio_rx.recv() => match chunk {
+                Some(pcm) => {
+                    all.extend_from_slice(&pcm);
+                    if let Some(segment) = segmenter.push(&pcm) {
+                        texts.push(None);
+                        spawn_segment(texts.len() - 1, segment);
+                    }
+                }
+                None => audio_open = false,
+            },
+            Some((index, result)) = result_rx.recv() => {
+                texts[index] = Some(result);
+                emit_partial(&joined(&texts));
+            }
+        }
+    }
+    if let Some(segment) = segmenter.finish() {
+        texts.push(None);
+        spawn_segment(texts.len() - 1, segment);
+    }
+    drop(result_tx);
+
+    // 收尾：等全部分段识别结束（有总上限，不会永久卡在「正在转写」）
+    let deadline = tokio::time::Instant::now() + MULTI_DRAIN_TIMEOUT;
+    while texts.iter().any(Option::is_none) {
+        tokio::select! {
+            _ = &mut cancel_rx => {
+                let text = joined(&texts);
+                let _ = tx.send(Cmd::Done(id, SessionOutcome {
+                    samples: all, text, error: None, cancelled: true, processing_time: started.elapsed().as_secs_f64(),
+                }));
+                return;
+            }
+            received = tokio::time::timeout_at(deadline, result_rx.recv()) => match received {
+                Ok(Some((index, result))) => {
+                    texts[index] = Some(result);
+                    emit_partial(&joined(&texts));
+                }
+                _ => break,
+            },
+        }
+    }
+    let text = joined(&texts);
+    let pending = texts.iter().filter(|t| t.is_none()).count();
+    let error = texts
+        .iter()
+        .find_map(|t| t.as_ref().and_then(|r| r.as_ref().err()).cloned())
+        .or_else(|| (pending > 0).then(|| format!("{pending} 个分段识别超时")));
     let _ = tx.send(Cmd::Done(id, SessionOutcome {
         samples: all,
         text,
@@ -612,4 +1070,21 @@ async fn batch_task(
         cancelled: false,
         processing_time: started.elapsed().as_secs_f64(),
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{finalize_budget, Mode};
+    use std::time::Duration;
+
+    #[test]
+    fn 收尾看门狗上限_覆盖各引擎自身超时() {
+        // 流式：建连 10 + 末包 6 + 关闭 2 + 余量 15
+        assert_eq!(finalize_budget(Mode::Streaming, Duration::from_secs(30), 120), Duration::from_secs(33));
+        // 多段：分段总等待 120 + 余量
+        assert_eq!(finalize_budget(Mode::Multi, Duration::from_secs(30), 120), Duration::from_secs(135));
+        // 单段：ChatGPT 的超时设置与豆包按时长加时取大
+        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(30), 120), Duration::from_secs(135));
+        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(600), 120), Duration::from_secs(333));
+    }
 }

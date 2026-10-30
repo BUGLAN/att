@@ -7,10 +7,14 @@
 //! 4. 单实例锁（二次启动唤起已有窗口）
 
 // 注意：Tauri generate_handler 需要命令模块公开可见（__cmd__ 宏重导出）
+pub mod clipboard;
 pub mod commands;
 pub mod desktop;
 pub mod floating;
+pub mod permissions;
 pub mod recording;
+pub mod tray;
+pub mod typing;
 
 use att_core::{migration, state::CoreState, Platform};
 use std::path::PathBuf;
@@ -39,6 +43,7 @@ pub fn run() {
             // 二次启动：唤起主窗口（与旧版 second-instance 行为一致）
             show_main_window(app);
         }))
+        .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
             // 关闭主窗口（与旧 electron/main.js 的 close / window-all-closed 行为对齐）：
             // 悬浮窗是预创建的隐藏窗口，任由主窗口销毁会让进程带着全局热键残留在后台，
@@ -78,8 +83,11 @@ pub fn run() {
                 );
             }
 
-            let core = CoreState::init(&data_dir, Platform::current())
+            let mut core = CoreState::init(&data_dir, Platform::current())
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
+            // 提示词预设：开发态用仓库 prompts/，打包版用随包资源（bundle.resources）
+            core.prompts_dir = att_core::prompts::resolve_dir(&data_dir, app.path().resource_dir().ok().as_deref());
+            tracing::info!("提示词目录: {}", core.prompts_dir.display());
             let core = Arc::new(core);
 
             // 数据面：先用同步 bind 占住端口（优先固定端口，占用则回退随机），
@@ -161,6 +169,13 @@ pub fn run() {
             if let Err(error) = floating::create(app.handle()) {
                 tracing::warn!("创建悬浮窗失败（不影响录音）: {error}");
             }
+            // 托盘（四态图标 + 最近记录菜单）与剪贴板后台监控
+            if let Err(error) = tray::create(app.handle()) {
+                tracing::warn!("创建托盘失败: {error}");
+            }
+            if let Some(state) = app.try_state::<AppState>() {
+                clipboard::start(state.core.clone());
+            }
 
             Ok(())
         })
@@ -194,6 +209,11 @@ pub fn run() {
             commands::get_hotkey_status,
             commands::get_floating_state,
             commands::open_main_settings,
+            commands::open_media_file,
+            commands::get_permission_status,
+            commands::open_permission_settings,
+            commands::get_app_info,
+            commands::reveal_app_path,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri 应用启动失败")
