@@ -132,3 +132,51 @@ cpal 采集（SPSC 环 + 重采样 16k）→ WAV 落盘 → whisper.cpp Provider
 **仍未接入**（按原阶段计划）：LLM 优化（3f，`auto_optimize` 暂不生效）、文件转写、剪贴板历史、托盘、
 多段模式的 VAD 实时分段（当前按单段处理）、Windows 端系统静音、Whisper/Qwen/ChatGPT 引擎
 （选中时开始录音会提示切换到豆包）。
+
+## 8. LLM 配置模块（2026-10-30，阶段 3f 的配置管理部分）
+
+现象：设置页「LLM」无法添加供应商，服务商目录与旧配置都是空的。根因：Rust 数据面只有
+`GET /api/llm/state|providers` 两个返回空数据的占位端点，增删改/验证/拉取模型端点不存在，
+旧版 `data/llm_configs.json` 也没有迁移。
+
+| 模块 | 内容 | 测试 |
+| --- | --- | --- |
+| `att-core/llm/registry` | 14 家服务商目录（与 Python `registry.py` 逐项对齐）、模型串组装（custom 恒为 `openai/<ID>` 且幂等）、线上模型名解析 | 3 |
+| `att-core/llm/store` | `data/llm_v2.json`（与 Python 同格式）：逐条容错加载、custom 模型串自愈、默认/备用绑定修复、v1 自动迁移（同 key 同端点聚合档案，v1 改名 `.v1.bak`）、落盘失败回滚内存 | 4 |
+| `att-core/llm/gateway` | reqwest（native-tls + 系统代理）直发：OpenAI 兼容 `/chat/completions`（Ollama 走 `/v1`）、Anthropic `/v1/messages`；模型/档案验证、`GET /models` 列取；`max_tokens` 被拒时改 `max_completion_tokens` 重试 | 5（本地 HTTP 桩） |
+| `att-core/llm/errors` | 错误分级（状态码 + 错误体）、密钥脱敏（字面量 + `api key:`/Bearer/`sk-` 模式） | 2 |
+| `att-server/llm` | `/api/llm/*` 全部 17 个端点，契约同 Python 路由（验证类 200+`{ok,...}`、409 `manual_only`、默认模型删除 409、fallback 显式 null 清除） | 1（全链路） |
+
+**实机验证**：运行中的 `tauri dev` 自动重编译后完成真实迁移（DeepSeek 档案 + 默认模型，密钥解密成功）；
+`POST /api/llm/models/mdl-m0/verify` 真实调用 DeepSeek 通过（≈1.5s），`remote-models` 拉到模型列表；
+假密钥的草稿验证返回 `auth_failed`，上游回显的密钥已被打码。
+
+与 Python 版的差异：v1 迁移时模型显示名改为取各自条目的名字（Python 版会沿用前一条的名字）；
+custom 档案改 API Base 为空会被拒绝（Python 版放行后会导致调用失败）。
+
+记录优化与 `auto_optimize` 已在第 9 节补齐。
+
+## 9. 与 Python/Electron 版的功能对齐（2026-10-30）
+
+逐项对照 `Tauri重写-01-功能梳理清单.md` §1 / §7.1 与 Python 路由全集后补齐的部分：
+
+| 功能 | Rust 实现 | 验证 |
+| --- | --- | --- |
+| **LLM 记录优化** | `att-core/llm/{prompt,cleaning,timeouts,optimizer}`：预设模板 → system/user + `<transcript>` 信封（中和伪造标签、16000 字截断）；SSE 流式（首字 / 块间空闲看门狗）；首字前失败回退非流式、思考吃满预算（`output_truncated`）不回退；三层输出清洗；同记录互斥与取消；失败/取消复位 `transcribed` 并写 `error`。思考强度：DeepSeek「关闭」= `thinking:{type:disabled}`，其余传 `reasoning_effort`，上游不认时自动去掉重试 | 单测 4 + 纯函数 8；真实 DeepSeek + 「程序员模式」预设：26 增量、首字 1.5s、清洗后落盘 `optimized` |
+| 优化端点 | `/api/records/{id}/optimize`（502 + 脱敏）、`/optimize/stream`（NDJSON start/delta/done/error；取消以 error 收尾，避免前端误回退重跑）、`/optimize/cancel` | 实机 404/取消回执 |
+| **录音后自动优化** | 录音 Actor 新增 Optimizing 相位：转写落库 → 流式优化（`recording:optimization` 增量 → 前端优化面板 + 悬浮窗「正在优化」）→ 粘贴**优化后**文本；失败兜底粘贴原文、取消不粘贴；单段模式优化期间吞掉新录音，流式模式允许直接开始下一段（上一段结果转后台只入库，`recording:background-optimization`） | Node 用例 2；Rust 编译 |
+| **托盘** | `src/tray.rs`：四态图标（沿用旧图）+ tooltip；菜单 = 最近 10 条记录（点击复制并粘贴到前台应用）+ 设置 + 退出；macOS 左键弹菜单、Windows 左键唤起主窗口；录音/优化落库后自动重建菜单 | 单测 1 |
+| **剪贴板历史** | `att-core/clipboard`（同 JSON 布局，旧 23 条直接可读）+ `/api/clipboard/*` 全套（含图片预览，路径必须落在 images 目录内）；`src/clipboard.rs` 800ms 监控：文本规范化去重、图片按 PNG SHA-256 落盘、本应用写入 5s 内标记跳过 | 单测 4；实机 23 条 + 图片 200 |
+| **文件转写** | `att-core/transcribe`：ffmpeg 解码为 16k PCM 管道 → 豆包（超 30 分钟按会话分段）→ 缓存（同 `transcribe_file_cache.json` 格式，LRU + 校对变体）→ 202 任务表；LLM 滑窗校对（双上限切窗、键集合 + difflib 同算法相似度验证、反馈重试 3 次、失败窗保留原文、整体不可用降级）；系统选择文件对话框（dialog 插件）+ 原生拖放取路径 | 单测 6；真实 mp3：豆包 10.5s、二次命中缓存、校对任务修正断句 |
+| **多段模式** | `audio::Segmenter`（2.2s 最短 / 10s 强切 / 0.8s 收尾门槛 + 静音阈值设置）→ 每段并发批量识别 → `recording:partial` 实时拼接（`\n\n` 合并，同旧 session merge）；收尾总上限 120s，单段失败只降级（修复旧版「最后一片失败永久卡住」） | 单测 1 |
+| **ChatGPT 听写** | `stt/chatgpt.rs`：multipart + 鉴权四件套（JWT 提取 account id）+ 状态归类；单段/多段可用，流式模式明确提示不支持；健康检查同 Python 语义 | 单测 2（本机未配置令牌，未做实网） |
+| **Windows 录音静音** | Core Audio `IAudioEndpointVolume`，每次取当前默认输出设备（修复旧版 pycaw 句柄固化） | 独立 crate 交叉编译通过，未实机 |
+| 打包版提示词 | `bundle.resources` 带上 `prompts/`，运行时优先仓库目录、其次安装资源目录 | — |
+
+### 仍未对齐（及原因）
+
+| 项 | 原因 / 现状 |
+| --- | --- |
+| 本地 faster-whisper / Qwen3-ASR（录音与文件转写） | 依赖 Python 推理运行时（CTranslate2 / transformers）与本地模型；Rust 侧需要换 whisper.cpp（ggml 模型 + cmake 构建）等方案，属于单独的引擎移植。现在选中会给出明确提示，文件转写页在桌面端缺省改用豆包 |
+| `/api/audio/upload`、`/api/sessions*` | 只服务于「浏览器里跑前端 + Python 后端」的旧录音路径；Tauri 版录音完全在 Rust Actor 内完成，这两组端点保持 501 |
+| 本地模型服务启停（`/api/model-service/start|stop`） | 仅对本地引擎有意义，随本地引擎一起移植 |

@@ -440,7 +440,7 @@ export const api = {
   }),
   stopStreamingService: () => request('POST', '/model-service/stop'),
 
-  // ===== LLM v2（供应商档案 + 模型条目，见 docs/LLM配置模块重设计.md §6）=====
+  // ===== LLM v2（供应商档案 + 模型条目）=====
   getLLMState: () => request('GET', '/llm/state'),
   getLLMProviders: () => request('GET', '/llm/providers'),
   createLLMProfile: (payload) => request('POST', '/llm/profiles', { body: payload }),

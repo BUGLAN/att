@@ -187,7 +187,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const currentPreset = ref(null)
   const defaultPresetId = ref(null)
 
-  // ===== LLM v2 状态（供应商档案 + 模型条目，docs/LLM配置模块重设计.md §5）=====
+  // ===== LLM v2 状态（供应商档案 + 模型条目）=====
   const llmProfiles = ref([])
   const llmModels = ref([])
   const llmProviders = ref([])
