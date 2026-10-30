@@ -94,8 +94,17 @@ impl DoubaoConfig {
     }
 }
 
-/// 中间结果回调（整场当前文本）。
-pub type PartialCallback = Arc<dyn Fn(String) + Send + Sync>;
+/// 中间结果：整场当前文本，及其末尾还没确认（definite）的字数——服务端断句后才确认，
+/// 界面据此把正在说的这句与已确认的句子区分显示。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Partial {
+    pub text: String,
+    /// `text` 末尾未确认部分的字数（按 Unicode 标量计）
+    pub pending_chars: usize,
+}
+
+/// 中间结果回调。
+pub type PartialCallback = Arc<dyn Fn(Partial) + Send + Sync>;
 
 #[derive(Default)]
 struct TranscriptState {
@@ -117,6 +126,13 @@ impl TranscriptState {
     fn final_text(&self) -> String {
         let text = if self.last_text.is_empty() { &self.server_text } else { &self.last_text };
         text.trim().to_string()
+    }
+
+    fn partial(&self) -> Partial {
+        let text = self.final_text();
+        // 首尾空白已被 final_text 剥掉：未确认部分同样去掉尾部空白，且不超过全文
+        let pending_chars = self.pending.trim_end().chars().count().min(text.chars().count());
+        Partial { text, pending_chars }
     }
 
     fn closed_error(&self) -> SttError {
@@ -392,8 +408,8 @@ impl Drop for DoubaoSession {
     }
 }
 
-/// 解析一帧并更新状态；文本有变化时返回新的整场文本（供中间结果回调）。
-fn handle_frame(shared: &Shared, data: &[u8], connect_id: &str) -> Option<String> {
+/// 解析一帧并更新状态；文本或确认进度有变化时返回新的中间结果（供回调）。
+fn handle_frame(shared: &Shared, data: &[u8], connect_id: &str) -> Option<Partial> {
     let mut state = shared.lock();
     match sauc::parse_server_frame(data) {
         ServerFrame::Error { code, message } => {
@@ -411,9 +427,10 @@ fn handle_frame(shared: &Shared, data: &[u8], connect_id: &str) -> Option<String
             if is_last {
                 state.server_final = true;
             }
-            let before = state.final_text();
+            // 文本不变、只是这句被确认了，也要回调（界面要把它从「未确认」改成「已确认」）
+            let before = state.partial();
             state.apply_result(result);
-            let after = state.final_text();
+            let after = state.partial();
             (after != before).then_some(after)
         }
     }
@@ -467,8 +484,9 @@ mod tests {
             false,
             false,
         );
-        assert_eq!(handle_frame(&shared, &frame, "t").as_deref(), Some("你好世"));
-        // 文本不变不重复回调
+        let partial = |text: &str, pending_chars| Some(Partial { text: text.into(), pending_chars });
+        assert_eq!(handle_frame(&shared, &frame, "t"), partial("你好世", 1));
+        // 文本与确认进度都不变：不重复回调
         assert_eq!(handle_frame(&shared, &frame, "t"), None);
         let last = sauc::build_server_result_frame(
             &json!({"audio_info": {"duration": 900}, "result": {"text": "你好世界", "utterances": [
@@ -477,11 +495,27 @@ mod tests {
             true,
             true,
         );
-        assert_eq!(handle_frame(&shared, &last, "t").as_deref(), Some("你好世界"));
+        assert_eq!(handle_frame(&shared, &last, "t"), partial("你好世界", 0));
         let state = shared.lock();
         assert!(state.server_final);
         assert_eq!(state.audio_duration_ms, 900);
         assert_eq!(state.frame_count, 3);
+    }
+
+    #[test]
+    fn 文本不变只是被确认_照样回调() {
+        let shared = Shared { state: Mutex::new(TranscriptState::default()), notify: Notify::new() };
+        let frame = |definite: bool| {
+            sauc::build_server_result_frame(
+                &json!({"result": {"text": "你好世界", "utterances": [
+                    {"text": "你好", "definite": true}, {"text": "世界", "definite": definite}
+                ]}}),
+                false,
+                false,
+            )
+        };
+        assert_eq!(handle_frame(&shared, &frame(false), "t"), Some(Partial { text: "你好世界".into(), pending_chars: 2 }));
+        assert_eq!(handle_frame(&shared, &frame(true), "t"), Some(Partial { text: "你好世界".into(), pending_chars: 0 }));
     }
 
     #[test]

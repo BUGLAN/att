@@ -1,5 +1,5 @@
 // 极简悬浮窗展示模型（src/components/floating/floatingView.mjs）单元测试。
-// 覆盖：各相位对应的印章、「轉」沿用上一句变淡、结果态收起时机、尾部截取、印章字竖直校正、声纹门限。
+// 覆盖：各相位对应的印章、「轉」沿用上一句变淡、结果态收起时机、尾部截取、印章字竖直校正、声纹门限、未确认文字。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -11,6 +11,7 @@ import {
   WAVE_SHOW_LEVEL,
   deriveFloatingView,
   nextVoiceState,
+  tailWithPending,
   sealGlyphNudge,
   tailText
 } from '../src/components/floating/floatingView.mjs'
@@ -118,4 +119,21 @@ test('进入优化：转写原文作为淡色草稿显示到结束', () => {
   assert.equal(begin.glyph, '轉')
   assert.equal(begin.text, '明天下午三点开会', '草稿比上一句中间结果更新，优先显示')
   assert.equal(begin.dim, true)
+})
+
+test('流式未确认文字：末尾那截单独标出，截取后仍是全文的后缀', () => {
+  assert.deepEqual(tailWithPending('你好世界', 2), { text: '你好世界', pending: '世界' })
+  assert.deepEqual(tailWithPending('你好世界', 0), { text: '你好世界', pending: '' })
+  assert.deepEqual(tailWithPending('你好世界', 99), { text: '你好世界', pending: '你好世界' }, '字数越界按全部未确认')
+
+  // 截取末尾：未确认部分落在截取范围内保持原样，比截取范围还长则整行都算未确认
+  assert.deepEqual(tailWithPending('一二三四五六七八九十', 3, 5), { text: '六七八九十', pending: '八九十' })
+  assert.deepEqual(tailWithPending('一二三四五六七八九十', 8, 5), { text: '六七八九十', pending: '六七八九十' })
+
+  const streaming = deriveFloatingView({ phase: 'recording', mode: 'streaming', text: '明天下午三点开会', pending: 2 })
+  assert.equal(streaming.text, '明天下午三点开会')
+  assert.equal(streaming.pending, '开会')
+
+  assert.equal(deriveFloatingView({ phase: 'recording', mode: 'multi', text: '分段定稿' }).pending, '', '多段结果都是定稿')
+  assert.equal(deriveFloatingView({ phase: 'transcribing' }, { previousText: '明天下午三点开会' }).pending, '', '「轉」整行变淡，不再区分')
 })

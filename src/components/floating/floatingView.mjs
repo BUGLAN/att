@@ -7,6 +7,7 @@
 // 出现第一个字后展开到固定宽度并保持（见 FloatingWindow.vue），始终单行、超出裁掉开头；
 // 松开后进入「轉」沿用识别稿（变淡）撑住宽度，直到结束都不换：
 // 优化稿不回填悬浮窗（它停留很短，一闪而过反而突兀），优化结果直接打进输入框；
+// 流式录音中，末尾还没被服务端确认的那截（正在说的这句）带 pending，界面显示成淡白色；
 // 结果态（成 / 敗）只剩印章，停留片刻后隐藏；失败原因放在 title 里悬停可见。
 
 export const SEALS = Object.freeze({
@@ -49,25 +50,46 @@ export function tailText(text, max = TAIL_CHARS) {
   return (chars.length > max ? chars.slice(-max) : chars).join('')
 }
 
-function result(seal, hideAfterMs, detail = '') {
-  return { seal, glyph: SEALS[seal], active: false, text: '', dim: false, busy: false, cancellable: false, hideAfterMs, detail }
+/**
+ * 与 tailText 同样截取末尾，同时算出其中还没确认的那截。
+ * @param {string} text 整场文本
+ * @param {number} pendingChars text 末尾未确认的字数（后端按 Unicode 标量计，与 Array.from 一致）
+ * @returns {{ text: string, pending: string }} pending 恒为 text 的后缀
+ */
+export function tailWithPending(text, pendingChars = 0, max = TAIL_CHARS) {
+  const raw = Array.from(String(text || ''))
+  const cut = raw.length - Math.min(raw.length, Math.max(0, Math.floor(Number(pendingChars) || 0)))
+  const confirmed = raw.slice(0, cut).join('')
+  const full = tailText(text, max)
+  // 未确认部分按同样规则折叠空白，再截成 full 的后缀（不会比截取后的全文更长）
+  const pending = Array.from(tailText(raw.slice(cut).join(''), max))
+  const fullChars = Array.from(full)
+  const pendingLength = confirmed.trim() ? Math.min(pending.length, fullChars.length) : fullChars.length
+  return { text: full, pending: fullChars.slice(fullChars.length - pendingLength).join('') }
 }
 
-function working(seal, { text = '', dim = false, busy = false }) {
-  return { seal, glyph: SEALS[seal], active: true, text, dim, busy, cancellable: true, hideAfterMs: null, detail: '' }
+function result(seal, hideAfterMs, detail = '') {
+  return { seal, glyph: SEALS[seal], active: false, text: '', pending: '', dim: false, busy: false, cancellable: false, hideAfterMs, detail }
+}
+
+function working(seal, { text = '', pending = '', dim = false, busy = false }) {
+  return { seal, glyph: SEALS[seal], active: true, text, pending, dim, busy, cancellable: true, hideAfterMs: null, detail: '' }
 }
 
 /**
- * @param {{ phase?: string, mode?: string, text?: string, draft?: string, ok?: boolean }} state
+ * @param {{ phase?: string, mode?: string, text?: string, pending?: number, draft?: string, ok?: boolean }} state
+ *   pending：录音中 text 末尾未确认的字数（只有流式有，多段的分段结果都是定稿）
  *   draft：进入优化时的转写原文，变淡显示；优化阶段的 text 一律不显示
  * @param {{ previousText?: string }} session 本次会话上一次显示的文字：
  *   松开后进入「轉」时后端不再带文字，沿用它（变淡）撑住胶囊直到结束。
  */
-export function deriveFloatingView({ phase, mode, text, draft, ok } = {}, { previousText = '' } = {}) {
+export function deriveFloatingView({ phase, mode, text, pending, draft, ok } = {}, { previousText = '' } = {}) {
   switch (phase) {
     case 'recording':
       // 单段模式录完才识别：录音中只有印章
-      return working('listening', { text: mode === 'streaming' || mode === 'multi' ? tailText(text) : '' })
+      return mode === 'streaming' || mode === 'multi'
+        ? working('listening', tailWithPending(text, pending))
+        : working('listening', {})
     case 'transcribing':
     case 'optimizing': {
       const pending = tailText(draft) || previousText

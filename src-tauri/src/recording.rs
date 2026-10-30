@@ -838,16 +838,18 @@ async fn streaming_task(
     let first_text_at: Arc<OnceLock<Duration>> = Arc::new(OnceLock::new());
     let first_text_mark = first_text_at.clone();
     let partial_app = app.clone();
-    let on_partial: doubao::PartialCallback = Arc::new(move |text: String| {
+    let on_partial: doubao::PartialCallback = Arc::new(move |partial: doubao::Partial| {
+        let doubao::Partial { text, pending_chars } = partial;
         // 已经出字就算说过话（小声说话电平可能压在阈值下，但识别出来了）
         if !text.trim().is_empty() {
             heard.store(true, Ordering::Relaxed);
             let _ = first_text_mark.set(started.elapsed());
         }
         if live.load(Ordering::SeqCst) {
+            // pending：末尾还没确认的字数，悬浮窗把这截显示成淡白色
             crate::floating::update(
                 &partial_app,
-                json!({ "phase": "recording", "mode": "streaming", "text": text, "duration": 0 }),
+                json!({ "phase": "recording", "mode": "streaming", "text": text, "pending": pending_chars, "duration": 0 }),
                 false,
             );
         }

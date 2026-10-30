@@ -7,6 +7,7 @@
       换印章时底色渐变、新旧字交叠（旧字缩小淡出，新字像盖章一样落下），印章本身轻按一下；
       文字与声纹 / 处理点先淡出，胶囊再收拢，不会一下子跳变。
       优化稿不回填：「轉」期间一直是淡色识别稿，优化结果直接打进输入框。
+      流式录音中，服务端还没确认的那截（正在说的这句）用淡白色，确认后变回正常文字色。
       始终单行，超出宽度后裁掉开头（左侧渐隐），最新的字留在右边。
       胶囊本身不参与排版：内层 .content 排好，胶囊量出它的大小后用过渡追上去。
     -->
@@ -33,7 +34,7 @@
         <span class="sr-only">{{ SEAL_LABELS[view.seal] }}{{ view.detail ? `：${view.detail}` : '' }}</span>
 
         <Transition name="line">
-          <span v-if="expanded" ref="lineEl" class="line" :class="{ clipped, dim: view.dim }"><span>{{ view.text }}</span></span>
+          <span v-if="expanded" ref="lineEl" class="line" :class="{ clipped, dim: view.dim }"><span>{{ confirmedText }}<span v-if="view.pending" class="pending">{{ view.pending }}</span></span></span>
         </Transition>
 
         <!-- 声纹与处理点占同一个位置：先淡出旧的再淡入新的，宽度不会两个叠在一起 -->
@@ -94,6 +95,8 @@ let observer = null
 const view = computed(() => deriveFloatingView(state.value, { previousText: lastText.value }))
 const expanded = computed(() => wide.value && view.value.active)
 // 没展开时 ✕ 收起来保持最小，悬停才露出；展开后常驻
+// pending 恒为 text 的后缀（见 tailWithPending）
+const confirmedText = computed(() => view.value.text.slice(0, view.value.text.length - view.value.pending.length))
 const showCancel = computed(() => view.value.cancellable && (expanded.value || hovered.value))
 // 声纹：录音中音量第一次过门限时出现（不必等出字）
 const showWave = computed(() => voiced.value && view.value.seal === 'listening')

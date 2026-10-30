@@ -182,6 +182,11 @@ button {
   color: var(--text-3);
 }
 
+/* 还没确认的那截（正在说的这句）：淡白色，与「轉」的淡灰区分开——仍是白，只是更透 */
+.line .pending {
+  color: rgba(244, 244, 245, 0.55);
+}
+
 .line > span {
   direction: ltr;
   unicode-bidi: isolate;

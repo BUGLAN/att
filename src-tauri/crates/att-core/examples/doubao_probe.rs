@@ -29,11 +29,11 @@ async fn main() {
     let result = if realtime {
         let first_text: Arc<OnceLock<Duration>> = Arc::new(OnceLock::new());
         let mark = first_text.clone();
-        let on_partial: doubao::PartialCallback = Arc::new(move |text: String| {
-            if !text.trim().is_empty() && mark.set(started.elapsed()).is_ok() {
+        let on_partial: doubao::PartialCallback = Arc::new(move |partial: doubao::Partial| {
+            if !partial.text.trim().is_empty() && mark.set(started.elapsed()).is_ok() {
                 println!("  首字耗时 {:?}", started.elapsed());
             }
-            println!("  partial: {text}");
+            println!("  [{:>5}ms] partial（末尾 {} 字未确认）: {}", started.elapsed().as_millis(), partial.pending_chars, partial.text);
         });
         let mut session = doubao::DoubaoSession::connect(&config, "zh", "", Some(on_partial))
             .await
