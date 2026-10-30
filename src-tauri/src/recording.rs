@@ -34,7 +34,7 @@ use att_hotkey::KeyPhase;
 use crate::typing::StreamTyping;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, oneshot};
@@ -831,11 +831,16 @@ async fn streaming_task(
     tx: mpsc::UnboundedSender<Cmd>,
 ) {
     let started = Instant::now();
+    // 出字耗时埋点（距会话开始 ≈ 按下）：建连就绪 / 首字 / 松开后收尾，会话结束打一行汇总
+    let mut ready_at: Option<Duration> = None;
+    let first_text_at: Arc<OnceLock<Duration>> = Arc::new(OnceLock::new());
+    let first_text_mark = first_text_at.clone();
     let partial_app = app.clone();
     let on_partial: doubao::PartialCallback = Arc::new(move |text: String| {
         // 已经出字就算说过话（小声说话电平可能压在阈值下，但识别出来了）
         if !text.trim().is_empty() {
             heard.store(true, Ordering::Relaxed);
+            let _ = first_text_mark.set(started.elapsed());
         }
         crate::floating::update(
             &partial_app,
@@ -871,6 +876,7 @@ async fn streaming_task(
                 connect_done = true;
                 match result {
                     Ok(mut ready) => {
+                        ready_at = Some(started.elapsed());
                         tracing::info!("豆包流式就绪（{:?}，缓冲 {} 采样）", started.elapsed(), pending.len());
                         if !pending.is_empty() {
                             if let Err(error) = ready.push(&pending).await {
@@ -909,6 +915,7 @@ async fn streaming_task(
     }
 
     let duration = all.len() as f64 / SAMPLE_RATE;
+    let released_at = started.elapsed();
     let partial = session.as_ref().map(doubao::DoubaoSession::current_text).unwrap_or_default();
     let finalize = async move {
         match (session, failure) {
@@ -936,6 +943,14 @@ async fn streaming_task(
         (text, error) = finalize => (text, error, false),
         _ = &mut cancel_rx => (partial, None, true),
     };
+    let ms = |d: Option<Duration>| d.map(|d| format!("{}ms", d.as_millis())).unwrap_or_else(|| "-".into());
+    tracing::info!(
+        "流式出字耗时（距按下）：建连就绪 {}，首字 {}，松开 {}，收尾 {}",
+        ms(ready_at),
+        ms(first_text_at.get().copied()),
+        ms(Some(released_at)),
+        ms(Some(started.elapsed() - released_at)),
+    );
     let _ = tx.send(Cmd::Done(id, SessionOutcome {
         samples: all,
         text,

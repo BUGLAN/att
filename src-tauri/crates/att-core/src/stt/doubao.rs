@@ -2,7 +2,7 @@
 //!
 //! 一条会话的生命周期：
 //! 1. [`DoubaoSession::connect`]：握手（三个鉴权头）→ 发送全量客户端请求；
-//! 2. [`DoubaoSession::push`]：16k 单声道 i16 PCM 按 200ms 切帧推流；
+//! 2. [`DoubaoSession::push`]：16k 单声道 i16 PCM 切帧推流（实时 100ms，批量 200ms）；
 //!    后台读任务持续解析服务端帧，按 definite 前缀推进文本并回调中间结果；
 //! 3. [`DoubaoSession::finish`]：发末包 → 等末包结果/关闭/静默窗口 → 返回整场文字稿；
 //! 4. [`DoubaoSession::cancel`]：用户取消，不算失败。
@@ -183,6 +183,8 @@ pub struct DoubaoSession {
     shared: Arc<Shared>,
     reader: tokio::task::JoinHandle<()>,
     buffer: Vec<i16>,
+    /// 每帧采样数：实时推流 100ms，批量识别 200ms
+    frame_samples: usize,
     pub connect_id: String,
     /// 服务端 X-Tt-Logid：排查时提供给火山侧定位，不含凭据
     pub log_id: String,
@@ -219,6 +221,7 @@ impl DoubaoSession {
             connect_id = %connect_id,
             "连接豆包双向流式 ASR"
         );
+        let handshake_started = Instant::now();
         let connected = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(request)).await;
         let (stream, response) = match connected {
             Err(_) => {
@@ -243,6 +246,7 @@ impl DoubaoSession {
             .unwrap_or("")
             .to_string();
 
+        tracing::info!(connect_id = %connect_id, "豆包流式握手完成（{:?}）", handshake_started.elapsed());
         let (mut writer, mut read) = stream.split();
         let uid = format!("att-desktop-{}", &connect_id[..8]);
         let payload = sauc::build_bigmodel_request(&uid, language, context, config.end_window_size);
@@ -286,7 +290,7 @@ impl DoubaoSession {
             reader_shared.notify.notify_waiters();
         });
 
-        Ok(Self { writer, shared, reader, buffer: Vec::new(), connect_id, log_id })
+        Ok(Self { writer, shared, reader, buffer: Vec::new(), frame_samples: sauc::STREAM_CHUNK_SAMPLES, connect_id, log_id })
     }
 
     /// 当前状态下是否已不可继续推流（错误帧/断连）。
@@ -303,12 +307,12 @@ impl DoubaoSession {
         self.shared.lock().final_text()
     }
 
-    /// 追加 16k 单声道 PCM：按 200ms 切帧发送，不足一帧的留在缓冲里。
+    /// 追加 16k 单声道 PCM：按帧长切帧发送，不足一帧的留在缓冲里。
     pub async fn push(&mut self, pcm: &[i16]) -> Result<(), SttError> {
         self.check_alive()?;
         self.buffer.extend_from_slice(pcm);
-        while self.buffer.len() >= sauc::CHUNK_SAMPLES {
-            let chunk: Vec<i16> = self.buffer.drain(..sauc::CHUNK_SAMPLES).collect();
+        while self.buffer.len() >= self.frame_samples {
+            let chunk: Vec<i16> = self.buffer.drain(..self.frame_samples).collect();
             self.send_audio(&chunk, false).await?;
         }
         Ok(())
@@ -426,6 +430,7 @@ pub async fn transcribe_pcm(
         return Err(SttError::new(ErrorKind::Input, "音频为空，无法转写", false, ""));
     }
     let mut session = DoubaoSession::connect(config, language, context, None).await?;
+    session.frame_samples = sauc::CHUNK_SAMPLES;
     for chunk in samples.chunks(sauc::CHUNK_SAMPLES) {
         session.push(chunk).await?;
     }

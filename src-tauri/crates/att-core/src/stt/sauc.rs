@@ -15,13 +15,18 @@
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 
-pub const DEFAULT_ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel";
+/// 优化版双向流式：结果有变化才回包，首字 / 尾字延迟都比 `bigmodel` 低
+pub const DEFAULT_ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
+/// 旧默认接入点：设置里原样存着它的视为没定制过，加载时升级到 [`DEFAULT_ENDPOINT`]
+pub const LEGACY_DEFAULT_ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel";
 pub const DEFAULT_RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
 pub const MODEL_NAME: &str = "bigmodel";
 
 pub const SAMPLE_RATE: u32 = 16_000;
-/// 200ms / 16kHz / 单声道 = 3200 采样 = 6400 字节
+/// 200ms / 16kHz / 单声道 = 3200 采样 = 6400 字节（批量识别：整段音频一次推完，包大些少发几帧）
 pub const CHUNK_SAMPLES: usize = 3200;
+/// 100ms：录音实时推流用小包，音频早一点到服务端（官方建议 100–200ms）
+pub const STREAM_CHUNK_SAMPLES: usize = 1600;
 /// corpus.context 上限（按码点）
 pub const ASR_CONTEXT_MAX_CHARS: usize = 800;
 

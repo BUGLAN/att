@@ -148,7 +148,7 @@ impl UserSettings {
             qwen_asr_forced_aligner_model: "Qwen/Qwen3-ForcedAligner-0.6B".into(),
             qwen_asr_max_audio_seconds: 30,
             doubao_asr_resource_id: "volc.seedasr.sauc.duration".into(),
-            doubao_asr_endpoint: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel".into(),
+            doubao_asr_endpoint: crate::stt::sauc::DEFAULT_ENDPOINT.into(),
             doubao_asr_end_window_size: 0,
             chatgpt_asr_endpoint: "https://chatgpt.com/backend-api/transcribe".into(),
             chatgpt_asr_timeout_seconds: 120,
@@ -177,6 +177,7 @@ impl UserSettings {
             };
             strip_retired_keys(map);
             migrate_legacy_hotkey(map, platform);
+            upgrade_legacy_defaults(map);
             merge_defaults_into(map, platform);
             serde_json::from_value(object).unwrap_or_else(|error| {
                 tracing::warn!("settings.json 结构异常，回落默认设置: {error}");
@@ -447,6 +448,14 @@ fn migrate_legacy_hotkey(object: &mut serde_json::Map<String, Value>, platform: 
     }
 }
 
+/// 仍是旧默认值的设置升级到新默认值（用户改过的不动）。
+fn upgrade_legacy_defaults(object: &mut serde_json::Map<String, Value>) {
+    use crate::stt::sauc::{DEFAULT_ENDPOINT, LEGACY_DEFAULT_ENDPOINT};
+    if object.get("doubao_asr_endpoint").and_then(Value::as_str).map(str::trim) == Some(LEGACY_DEFAULT_ENDPOINT) {
+        object.insert("doubao_asr_endpoint".into(), json!(DEFAULT_ENDPOINT));
+    }
+}
+
 /// 默认值合并进 JSON 对象（等价 Python `{**DEFAULT_SETTINGS, **payload}`）。
 fn merge_defaults_into(object: &mut serde_json::Map<String, Value>, platform: Platform) {
     let defaults = serde_json::to_value(UserSettings::with_platform(platform))
@@ -491,6 +500,19 @@ mod tests {
         let binding = settings.binding_of(HotkeyAction::Record).unwrap();
         assert_eq!(binding.display(Platform::Linux), "Ctrl+Shift+R");
         assert_eq!(binding.trigger, TriggerMode::Hold);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 加载_豆包旧默认接入点升级_自定义的不动() {
+        let dir = temp_dir("endpoint");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, json!({ "doubao_asr_endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel" }).to_string())
+            .unwrap();
+        assert_eq!(UserSettings::load(&path, Platform::Macos).doubao_asr_endpoint, crate::stt::sauc::DEFAULT_ENDPOINT);
+
+        std::fs::write(&path, json!({ "doubao_asr_endpoint": "wss://proxy.example/sauc/bigmodel" }).to_string()).unwrap();
+        assert_eq!(UserSettings::load(&path, Platform::Macos).doubao_asr_endpoint, "wss://proxy.example/sauc/bigmodel");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

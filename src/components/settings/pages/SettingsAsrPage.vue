@@ -69,7 +69,7 @@
               <span class="setting-label">接入点</span>
               <span class="setting-desc">双向流式 WebSocket 地址，默认无需修改。</span>
             </div>
-            <BaseInput v-model.trim="form.doubao_asr_endpoint" type="text" placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel" aria-label="接入点" />
+            <BaseInput v-model.trim="form.doubao_asr_endpoint" type="text" placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async" aria-label="接入点" />
           </div>
           <div class="setting-item">
             <div class="setting-info">

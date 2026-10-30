@@ -134,7 +134,7 @@ export const useSettingsStore = defineStore('settings', () => {
     // 用户在设置页输入后由后端加密落盘（doubao_asr_api_key_encrypted）。
     doubao_asr_api_key_set: false,
     doubao_asr_resource_id: 'volc.seedasr.sauc.duration',
-    doubao_asr_endpoint: 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel',
+    doubao_asr_endpoint: 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async',
     doubao_asr_end_window_size: 0,
     // ChatGPT 听写 ASR（在线批量）：令牌同样只以「是否已配置」展示，
     // 加密落盘为 chatgpt_asr_api_key_encrypted
