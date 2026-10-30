@@ -35,11 +35,19 @@ function detectPlatformSync() {
 // ---------------- Tauri 事件通道管理（对齐旧 removeAllListeners 语义）----------------
 
 const channelUnlisteners = new Map()
+// 每个通道的「清空代次」：listen 是异步的，注册尚未完成时被 removeAllListeners 清空，
+// 完成后若代次已变就立即注销，否则这个监听会漏网（卸载后仍在回调、重挂载后重复回调）
+const channelGenerations = new Map()
 
 async function addChannelListener(channel, callback) {
   if (!isDesktop) return
+  const generation = channelGenerations.get(channel) || 0
   const { listen } = await import('@tauri-apps/api/event')
   const unlisten = await listen(channel, (event) => callback(event.payload))
+  if ((channelGenerations.get(channel) || 0) !== generation) {
+    unlisten()
+    return
+  }
   if (!channelUnlisteners.has(channel)) {
     channelUnlisteners.set(channel, new Set())
   }
@@ -47,6 +55,7 @@ async function addChannelListener(channel, callback) {
 }
 
 async function removeAllChannelListeners(channel) {
+  channelGenerations.set(channel, (channelGenerations.get(channel) || 0) + 1)
   const set = channelUnlisteners.get(channel)
   if (!set) return
   for (const unlisten of set) {

@@ -11,11 +11,26 @@ if (window.__TAURI_INTERNALS__ && !window.floatingAPI) {
   window.floatingAPI = {
     close: () => import('@tauri-apps/api/core').then(({ invoke }) => invoke('hide_floating_window')),
     openSettings: () => import('@tauri-apps/api/core').then(({ invoke }) => invoke('open_main_settings')),
-    onStateChange: (callback) => {
-      import('@tauri-apps/api/event').then(async ({ listen }) => {
-        unlisteners.push(await listen('floating:state', (event) => callback(event.payload)))
-      })
-      import('@tauri-apps/api/core').then(async ({ invoke }) => callback(await invoke('get_floating_state')))
+    onStateChange: async (callback) => {
+      // 先订阅再补拉，且补拉结果只在尚未收到推送时生效：
+      // 否则补拉的旧快照晚于新推送返回时，会把悬浮窗覆盖回过期状态
+      let receivedPush = false
+      const [{ listen }, { invoke }] = await Promise.all([
+        import('@tauri-apps/api/event'),
+        import('@tauri-apps/api/core')
+      ])
+      unlisteners.push(await listen('floating:state', (event) => {
+        receivedPush = true
+        callback(event.payload)
+      }))
+      try {
+        const snapshot = await invoke('get_floating_state')
+        if (!receivedPush) {
+          callback(snapshot)
+        }
+      } catch (error) {
+        console.warn('[Floating] Failed to read floating state:', error)
+      }
     },
     removeAllListeners: () => {
       while (unlisteners.length) unlisteners.pop()()
