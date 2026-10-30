@@ -23,13 +23,14 @@ function sleep(ms) {
 }
 
 export function useFileTranscribe() {
-  const { openMediaFile, filePathForFile, clipboard } = useElectron()
+  const { openMediaFile, filePathForFile, clipboard, isDesktop } = useElectron()
 
   const filePath = ref('')
   const language = ref('zh')
   const wantSegments = ref(false)
   // M2：引擎与 LLM 校对（设计 §7：UI 不暴露 auto，默认显式 whisper；校对默认关）
-  const engine = ref('whisper')
+  // 桌面端（Tauri）暂无本地 whisper/qwen 引擎，缺省用豆包（未配凭据时卡片置灰并提示）
+  const engine = ref(isDesktop ? 'doubao_asr' : 'whisper')
   const proofreadOn = ref(false)
   const proofreadModelId = ref('')
   const proofreadBatchSegments = ref(40)
@@ -88,7 +89,11 @@ export function useFileTranscribe() {
       return false
     }
 
-    const path = filePathForFile(file)
+    return ingestDroppedPath(filePathForFile(file))
+  }
+
+  /** 桌面端原生拖放直接给出本地路径。 */
+  async function ingestDroppedPath(path) {
     if (!path) {
       error.value = '拿不到拖入文件的本地路径：请在 App 内拖入，或改用粘贴路径'
       return false
@@ -247,6 +252,7 @@ export function useFileTranscribe() {
     history,
     chooseFile,
     ingestDroppedFile,
+    ingestDroppedPath,
     startTranscribe,
     copyResult,
     selectHistoryItem: (item) => {

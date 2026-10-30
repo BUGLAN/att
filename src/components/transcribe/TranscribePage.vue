@@ -271,10 +271,11 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useFileTranscribe } from '@/composables/useFileTranscribe'
+import { useElectron } from '@/composables/useElectron'
 import {
   TRANSCRIBE_ENGINES,
   buildProofreadDiff,
@@ -285,6 +286,7 @@ import BaseInput from '@/components/common/BaseInput.vue'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
+const { onFileDrop } = useElectron()
 const {
   filePath,
   language,
@@ -303,6 +305,7 @@ const {
   history,
   chooseFile,
   ingestDroppedFile,
+  ingestDroppedPath,
   startTranscribe,
   copyResult,
   selectHistoryItem
@@ -324,7 +327,7 @@ function pickEngine(value) {
 }
 
 function goSettings() {
-  appStore.setCurrentPage('settings')
+  appStore.openSettings('asr')
 }
 
 async function toggleProofread() {
@@ -393,6 +396,40 @@ async function onDrop(event) {
 
   await ingestDroppedFile(files[0])
 }
+
+// 桌面端：WebView 拿不到拖入文件的路径，改订阅原生拖放事件（页面常驻挂载，只在本页可见时响应）
+let unlistenFileDrop = null
+
+async function onNativeFileDrop({ type, paths }) {
+  if (appStore.currentPage !== 'transcribe') {
+    return
+  }
+  if (type === 'enter' || type === 'over') {
+    dragDepth.value = 1
+    return
+  }
+  dragDepth.value = 0
+  if (type !== 'drop' || !paths.length) {
+    return
+  }
+  if (isBusy.value) {
+    appStore.showToast('正在转写中，先等这一条跑完', { tone: 'info' })
+    return
+  }
+  if (paths.length > 1) {
+    appStore.showToast('一次转一个：已取第一个文件', { tone: 'info' })
+  }
+  await ingestDroppedPath(paths[0])
+}
+
+onMounted(async () => {
+  unlistenFileDrop = await onFileDrop(onNativeFileDrop)
+})
+
+onUnmounted(() => {
+  unlistenFileDrop?.()
+  unlistenFileDrop = null
+})
 
 async function handleCopy() {
   try {
