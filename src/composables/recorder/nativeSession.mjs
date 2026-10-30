@@ -5,8 +5,12 @@
 // `recording:state` 事件并据此刷新 appStore / 实时转写区 / 计时器。
 // 这里把「事件载荷 → 界面补丁」收敛成纯查表，便于 Node 直接单测。
 //
-// 载荷形状：{ phase, mode, message?, text?, record?, copied?, pasted?, degraded? }
-// phase ∈ idle | connecting | recording | finalizing | completed | error | cancelled
+// 载荷形状：{ phase, mode, message?, text?, raw_text?, record?, copied?, pasted?, degraded?,
+//           optimized?, optimization_cancelled?, optimize_error? }
+// phase ∈ idle | connecting | recording | finalizing | optimizing | completed | error | cancelled
+//
+// 自动优化（auto_optimize）：转写落库后进入 optimizing，增量走 `recording:optimization`；
+// completed 的 text 是最终粘贴的文本（优化成功为优化文，失败/取消为原文）。
 
 import { deriveCompletionToast } from './statusCopy.mjs'
 
@@ -15,6 +19,7 @@ export const NATIVE_PHASES = Object.freeze([
   'connecting',
   'recording',
   'finalizing',
+  'optimizing',
   'completed',
   'error',
   'cancelled'
@@ -30,7 +35,8 @@ export const NATIVE_PHASES = Object.freeze([
  * - resetTranscript：是否清空上一轮实时文本
  * - transcript：最终文本（completed 时覆盖实时文本）
  * - record：新建记录（需同步进记录列表）
- * - toast：轻提示文案
+ * - toast / toastTone：轻提示文案与色调（error 为失败色）
+ * - optimization：优化流面板动作 'begin' | 'finish' | 'fail' | 'cancel' | null
  * - trayIcon：托盘图标状态
  */
 export function deriveNativeSessionPatch(payload = {}) {
@@ -69,17 +75,54 @@ export function deriveNativeSessionPatch(payload = {}) {
         clock: 'stop',
         trayIcon: 'transcribing'
       }
+    case 'optimizing':
+      return {
+        livePhase: 'optimizing',
+        statusText: message || '转写完成，正在优化',
+        recording: false,
+        // 单段模式优化期间保持「处理中」（新录音会被吞掉）；流式允许直接开始下一段
+        transcribing: !streaming,
+        clock: 'stop',
+        transcript: payload.text || '',
+        record: payload.record || null,
+        optimization: 'begin',
+        trayIcon: 'transcribing'
+      }
     case 'completed': {
       const text = payload.text || ''
-      const toast = text
-        ? (payload.degraded
-            ? message
-            : deriveCompletionToast(streaming ? 'streaming' : 'transcription', {
-                attempted: Boolean(payload.copied) || Boolean(payload.copy_error),
-                copied: Boolean(payload.copied),
-                pasted: Boolean(payload.pasted)
-              }))
-        : (message || '没有识别到语音内容')
+      const copyResult = {
+        attempted: Boolean(payload.copied) || Boolean(payload.copy_error),
+        copied: Boolean(payload.copied),
+        pasted: Boolean(payload.pasted)
+      }
+      const optimization = payload.optimized
+        ? 'finish'
+        : payload.optimization_cancelled
+          ? 'cancel'
+          : payload.optimize_error
+            ? 'fail'
+            : null
+      let toast
+      let toastTone
+      if (!text) {
+        toast = message || '没有识别到语音内容'
+      } else if (optimization === 'fail') {
+        // 自动优化失败兜底粘贴原文，保证「总有输出」；已流式输入部分优化文时由后端说明去向（copy_error）。
+        // 完整原因在记录详情的 error 字段
+        toast = copyResult.pasted
+          ? '优化失败，已粘贴转写文本'
+          : (copyResult.copied && payload.copy_error) || '优化失败，转写文本已保留在记录集中'
+        toastTone = 'error'
+      } else if (optimization === 'cancel') {
+        toast = '已取消优化，保留原始文本'
+      } else if (payload.degraded) {
+        toast = message
+      } else {
+        toast = deriveCompletionToast(
+          optimization === 'finish' ? 'optimization' : streaming ? 'streaming' : 'transcription',
+          copyResult
+        )
+      }
       return {
         livePhase: 'completed',
         statusText: text ? (message || '录音已完成') : toast,
@@ -89,6 +132,9 @@ export function deriveNativeSessionPatch(payload = {}) {
         transcript: text,
         record: payload.record || null,
         toast,
+        toastTone,
+        optimization,
+        optimizeError: payload.optimize_error || '',
         trayIcon: 'idle'
       }
     }

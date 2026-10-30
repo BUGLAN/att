@@ -27,8 +27,8 @@ const COMPLETION_TOAST_COPY = Object.freeze({
     plain: '转写完成'
   }),
   optimization: Object.freeze({
-    copied: '优化完成，已复制并粘贴',
-    failed: '优化完成，复制并粘贴失败',
+    copied: '优化完成，已输入并复制',
+    failed: '优化完成，自动输入失败',
     plain: '优化完成'
   }),
   streaming: Object.freeze({

@@ -1,85 +1,43 @@
 <template>
   <div class="floating-shell">
-    <section class="floating-pill" :data-phase="phase">
-      <div class="status-indicator">
-        <div class="status-icon" :class="{ pulsing: phase === 'recording' }" :data-phase="phase">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V7a3.5 3.5 0 1 0-7 0v5a3.5 3.5 0 0 0 3.5 3.5Z"
-              fill="currentColor"
-            />
-            <path
-              d="M7 11.75a.75.75 0 0 1 .75.75 4.25 4.25 0 0 0 8.5 0 .75.75 0 0 1 1.5 0 5.76 5.76 0 0 1-5 5.69V20h2a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5h3v-1.81a5.76 5.76 0 0 1-5-5.69.75.75 0 0 1 .75-.75Z"
-              fill="currentColor"
-            />
-          </svg>
-        </div>
-      </div>
+    <!--
+      极简胶囊：一次会话里只变两次大小——
+      起步只有一枚印章（与托盘同源）；出现第一个字后一口气展开到固定宽度并保持，
+      之后字数增减、识别回改、聽→轉 都只换里面的内容；结束时收回成 成 / 敗 一枚印章。
+      始终单行，超出宽度后裁掉开头（左侧渐隐），最新的字留在右边。
+      胶囊本身不参与排版：内层 .content 排好，胶囊量出它的大小后用过渡追上去。
+    -->
+    <section
+      :key="sessionKey"
+      class="capsule"
+      :class="{ sized, leaving: leaving || view.seal === 'idle' }"
+      :data-seal="view.seal"
+      :style="capsuleStyle"
+      :title="view.detail || undefined"
+      role="status"
+      aria-live="polite"
+      @mouseenter="hovered = true"
+      @mouseleave="hovered = false"
+    >
+      <div :ref="observeContent" class="content" :class="{ expanded }">
+        <span :key="view.seal" ref="sealEl" class="seal" aria-hidden="true">
+          <span class="seal-glyph" :style="{ transform: `translateY(${glyphNudge}px)` }">{{ view.glyph }}</span>
+        </span>
+        <span class="sr-only">{{ SEAL_LABELS[view.seal] }}{{ view.detail ? `：${view.detail}` : '' }}</span>
 
-      <div
-        v-if="showWaveform"
-        class="waveform"
-        :class="{ active: phase === 'recording' }"
-        aria-hidden="true"
-      >
-        <span v-for="bar in 5" :key="bar" class="wave-bar"></span>
-      </div>
+        <span v-if="expanded" ref="lineEl" class="line" :class="{ clipped, dim: view.dim }"><span>{{ view.text }}</span></span>
 
-      <div v-else class="spinner" aria-hidden="true"></div>
+        <span v-if="showWave" class="slot wave" aria-hidden="true">
+          <span v-for="(height, index) in waveHeights" :key="index" class="wave-bar" :style="{ height: `${height}px` }"></span>
+        </span>
 
-      <div class="content">
-        <p v-if="showScrollingTranscript" class="primary-line primary-line-streaming">
-          <span class="prefix-text">{{ prefixText }}</span>
-          <span ref="streamingViewport" class="streaming-viewport">
-            <span class="highlight streaming-text">{{ contentText }}</span><span
-              v-if="showTypingCursor"
-              class="typing-cursor"
-              aria-hidden="true"
-            ></span>
-          </span>
-        </p>
-        <p v-else class="primary-line">
-          {{ prefixText }}<span class="highlight">{{ contentText }}</span>
-        </p>
-      </div>
+        <span v-if="view.busy" class="slot busy" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </span>
 
-      <div class="actions">
-        <BaseButton
-          variant="ghost"
-          icon
-          size="sm"
-          class="action-button"
-          style="--ui-icon-size: 24px"
-          title="打开设置"
-          @click="openSettings"
-        >
-          <template #icon>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="m19.14 12.94.04-.94-.04-.94 2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.4 7.4 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.49-.42h-3.84a.5.5 0 0 0-.49.42l-.36 2.54c-.58.23-1.13.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.84a.5.5 0 0 0 .12.64l2.03 1.58-.04.94.04.94-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.71 1.63.94l.36 2.54a.5.5 0 0 0 .49.42h3.84a.5.5 0 0 0 .49-.42l.36-2.54c.58-.23 1.13-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"
-                fill="currentColor"
-              />
-            </svg>
-          </template>
-        </BaseButton>
-        <BaseButton
-          variant="ghost"
-          icon
-          size="sm"
-          class="action-button close"
-          style="--ui-icon-size: 24px"
-          title="关闭悬浮窗"
-          @click="closeWindow"
-        >
-          <template #icon>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M6.53 5.47a.75.75 0 0 1 1.06 0L12 9.88l4.41-4.41a.75.75 0 1 1 1.06 1.06L13.06 11l4.41 4.41a.75.75 0 0 1-1.06 1.06L12 12.06l-4.41 4.41a.75.75 0 1 1-1.06-1.06L10.94 11 6.53 6.59a.75.75 0 0 1 0-1.12Z"
-                fill="currentColor"
-              />
-            </svg>
-          </template>
-        </BaseButton>
+        <button v-if="showCancel" type="button" class="cancel" aria-label="取消" title="取消" @click="cancel">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
       </div>
     </section>
   </div>
@@ -87,170 +45,156 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import BaseButton from '@/components/common/BaseButton.vue'
+import { deriveFloatingView, sealGlyphNudge } from './floatingView.mjs'
 
-// 完成后至少留出可读完一行结果的时间；错误需要更久，避免一闪而过
-const AUTO_HIDE_MS = 2000
-const ERROR_AUTO_HIDE_MS = 3200
+const SEAL_LABELS = { idle: '待命', listening: '录音中', converting: '处理中', success: '已完成', failure: '失败' }
+const WAVE_BARS = 7
+/** 与 floating.css 的 .capsule.leaving 过渡时长一致：淡出完再真正隐藏窗口 */
+const LEAVE_MS = 200
 
-const phase = ref('idle')
-const text = ref('')
-const mode = ref('single')
-const streamingViewport = ref(null)
+const state = ref({ phase: 'idle' })
+const levels = ref(Array(WAVE_BARS).fill(0))
+const size = ref({ width: 0, height: 0 })
+const sized = ref(false)
+const sessionKey = ref(0)
+const leaving = ref(false)
+const hovered = ref(false)
+const clipped = ref(false)
+const lineEl = ref(null)
+const sealEl = ref(null)
+/** 印章字的竖直校正（px），按当前系统实际用到的字体量出来，见 sealGlyphNudge */
+const glyphNudge = ref(0)
+const nudgeCache = new Map()
+let measureCtx = null
+/** 本次会话是否已展开（出现过文字）；展开后保持到会话结束，不随字数伸缩 */
+const wide = ref(false)
+/** 本次会话最近一次识别 / 优化出的文字：进入「轉」时沿用它撑住胶囊 */
+const lastText = ref('')
 let hideTimer = null
-let scrollAnimationFrame = null
+let leaveTimer = null
+let observer = null
 
-const showWaveform = computed(() => (
-  phase.value === 'recording'
-  || phase.value === 'idle'
-  || phase.value === 'complete'
+const view = computed(() => deriveFloatingView(state.value, { previousText: lastText.value }))
+const expanded = computed(() => wide.value && view.value.active)
+// 没展开时 ✕ 收起来保持最小，悬停才露出；展开后常驻
+const showCancel = computed(() => view.value.cancellable && (expanded.value || hovered.value))
+// 声纹跟着展开出现，只在录音中
+const showWave = computed(() => expanded.value && view.value.seal === 'listening')
+// 音量 0..1 偏小，开方放大低音量段的起伏
+const waveHeights = computed(() => levels.value.map((level) => Math.round(4 + Math.sqrt(Math.min(1, level)) * 18)))
+const capsuleStyle = computed(() => (
+  size.value.width ? { width: `${size.value.width}px`, height: `${size.value.height}px` } : null
 ))
 
-const prefixText = computed(() => {
-  if (phase.value === 'recording' && ['multi', 'streaming'].includes(mode.value)) return '实时记录：'
-  if (phase.value === 'recording') return '正在录音：'
-  if (phase.value === 'transcribing') return '正在转写：'
-  if (phase.value === 'optimizing') return '正在优化：'
-  if (phase.value === 'complete') return '转写完成：'
-  if (phase.value === 'error') return '处理失败：'
-  return '正在录音：'
-})
-
-const contentText = computed(() => {
-  if (phase.value === 'recording' && ['multi', 'streaming'].includes(mode.value)) return text.value || '正在聆听...'
-  if (phase.value === 'recording') return '结束录音后将开始转写...'
-  if (phase.value === 'transcribing') return '正在生成转写结果...'
-  if (phase.value === 'optimizing') return text.value || 'AI 正在整理文本...'
-  if (phase.value === 'complete') return text.value || '文本已生成'
-  if (phase.value === 'error') return text.value || '请稍后重试'
-  return '实时内容正在生成中...'
-})
-
-const showScrollingTranscript = computed(() => (
-  (
-    phase.value === 'optimizing' ||
-    (phase.value === 'recording' && ['multi', 'streaming'].includes(mode.value))
-  ) && Boolean(text.value)
-))
-
-const showTypingCursor = computed(() => phase.value === 'optimizing')
-
-function clearHideTimer() {
-  if (!hideTimer) {
+function observeContent(el) {
+  observer?.disconnect()
+  if (!el) {
     return
   }
-
-  clearTimeout(hideTimer)
-  hideTimer = null
+  observer = new ResizeObserver(() => {
+    // 胶囊有 1px 描边（border-box），比内容各大 2px
+    size.value = { width: el.offsetWidth + 2, height: el.offsetHeight + 2 }
+    if (!sized.value) {
+      // 首帧直接落到初始尺寸，下一帧起才开过渡，避免从 0 长出来
+      requestAnimationFrame(() => { sized.value = true })
+    }
+  })
+  observer.observe(el)
 }
 
-function clearScrollAnimation() {
-  if (scrollAnimationFrame !== null) {
-    cancelAnimationFrame(scrollAnimationFrame)
-    scrollAnimationFrame = null
+function measureGlyphNudge(glyph) {
+  const el = sealEl.value
+  if (!el || !glyph) {
+    return
   }
+  const style = getComputedStyle(el)
+  const font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
+  const key = `${font}|${glyph}`
+  if (!nudgeCache.has(key)) {
+    measureCtx = measureCtx || document.createElement('canvas').getContext('2d')
+    measureCtx.font = font
+    const m = measureCtx.measureText(glyph)
+    nudgeCache.set(key, sealGlyphNudge({
+      fontAscent: m.fontBoundingBoxAscent,
+      fontDescent: m.fontBoundingBoxDescent,
+      inkAscent: m.actualBoundingBoxAscent,
+      inkDescent: m.actualBoundingBoxDescent
+    }, { fontSize: parseFloat(style.fontSize), tile: el.offsetHeight || 36 }))
+  }
+  glyphNudge.value = nudgeCache.get(key)
 }
 
-function scheduleHide(delayMs = AUTO_HIDE_MS) {
-  clearHideTimer()
-  hideTimer = setTimeout(() => {
-    window.floatingAPI?.close()
-  }, delayMs)
+function clearTimers() {
+  clearTimeout(hideTimer)
+  clearTimeout(leaveTimer)
+  hideTimer = null
+  leaveTimer = null
 }
 
 function applyState(payload = {}) {
-  phase.value = payload.phase || 'idle'
-  text.value = payload.text || ''
-  mode.value = payload.mode || 'single'
+  const wasActive = view.value.active && !leaving.value
+  state.value = payload || {}
+  const next = view.value
+  clearTimers()
 
-  if (phase.value === 'complete' || phase.value === 'error') {
-    scheduleHide(phase.value === 'error' ? ERROR_AUTO_HIDE_MS : AUTO_HIDE_MS)
-    return
+  if (next.active && !wasActive) {
+    // 新一次会话：重建胶囊重放入场动效，并从最小尺寸重新生长
+    sessionKey.value += 1
+    sized.value = false
+    size.value = { width: 0, height: 0 }
+    levels.value = Array(WAVE_BARS).fill(0)
+    hovered.value = false
+    wide.value = false
+    lastText.value = ''
   }
+  leaving.value = false
 
-  clearHideTimer()
-}
-
-function closeWindow() {
-  window.floatingAPI?.close()
-}
-
-function openSettings() {
-  window.floatingAPI?.openSettings()
-}
-
-function syncStreamingViewport() {
-  const viewport = streamingViewport.value
-  if (!viewport) {
-    return
-  }
-
-  const targetScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth)
-  const startScrollLeft = viewport.scrollLeft
-
-  if (Math.abs(targetScrollLeft - startScrollLeft) < 1) {
-    viewport.scrollLeft = targetScrollLeft
-    return
-  }
-
-  clearScrollAnimation()
-
-  const startTime = performance.now()
-  const duration = 220
-
-  const step = (timestamp) => {
-    const elapsed = Math.min((timestamp - startTime) / duration, 1)
-    const eased = 1 - ((1 - elapsed) ** 3)
-
-    viewport.scrollLeft = startScrollLeft + ((targetScrollLeft - startScrollLeft) * eased)
-
-    if (elapsed < 1) {
-      scrollAnimationFrame = requestAnimationFrame(step)
-      return
+  if (next.active && next.text) {
+    wide.value = true
+    if (!next.dim) {
+      lastText.value = next.text
     }
-
-    scrollAnimationFrame = null
   }
 
-  scrollAnimationFrame = requestAnimationFrame(step)
+  if (next.hideAfterMs) {
+    hideTimer = setTimeout(() => {
+      leaving.value = true
+      leaveTimer = setTimeout(() => window.floatingAPI?.close(), LEAVE_MS)
+    }, next.hideAfterMs)
+  }
 }
 
-watch([text, phase, mode], async () => {
-  if (!showScrollingTranscript.value) {
+function pushLevel(level) {
+  if (!showWave.value) {
     return
   }
+  levels.value = [...levels.value.slice(1), level]
+}
 
+function cancel() {
+  window.floatingAPI?.cancel?.()
+}
+
+// 开头被裁掉时左侧渐隐，提示前面还有内容（文字比可视宽度长即为被裁）
+watch(() => view.value.text, async () => {
   await nextTick()
-  syncStreamingViewport()
+  const el = lineEl.value
+  clipped.value = Boolean(el?.firstElementChild && el.firstElementChild.offsetWidth > el.clientWidth + 1)
 })
 
-onMounted(() => {
-  window.floatingAPI?.onStateChange((payload) => {
-    applyState(payload)
-  })
+watch(() => view.value.glyph, async (glyph) => {
+  await nextTick()
+  measureGlyphNudge(glyph)
+}, { immediate: true })
 
-  nextTick(() => {
-    syncStreamingViewport()
-  })
+onMounted(() => {
+  window.floatingAPI?.onStateChange(applyState)
+  window.floatingAPI?.onLevel?.(pushLevel)
 })
 
 onUnmounted(() => {
-  clearHideTimer()
-  clearScrollAnimation()
+  clearTimers()
+  observer?.disconnect()
   window.floatingAPI?.removeAllListeners('floating:state')
 })
 </script>
-
-<style scoped>
-/* 关闭按钮保留"悬停变红"的语义（用足够高的复合选择器覆盖原语幽灵态） */
-.floating-pill .action-button.close:hover:not(:disabled) {
-  color: var(--err);
-  background: var(--err-soft);
-}
-
-/* 悬浮窗图标按钮使用实心图标，需要覆盖原语的描边式 svg 规则 */
-.floating-pill .action-button :deep(svg) {
-  fill: currentColor;
-  stroke: none;
-}
-</style>

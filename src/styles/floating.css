@@ -1,7 +1,8 @@
-/* 说明：本文件不再自定义 :root 色值。
-   悬浮窗与主窗口、统一浮层共用 src/styles/tokens.css 的同一套令牌，
-   原私有变量（--floating-*，其中 --floating-accent-soft 从未定义、
-   导致 recording 态背景失效）已全部删除。 */
+/* 极简悬浮窗：一枚印章起步，出字后展开到固定宽度、始终单行（设计稿「ATT 极简悬浮窗」）。
+   通用令牌取自 src/styles/tokens.css；印章五色取自托盘图标（src-tauri/icons/tray），
+   成 / 敗 两色为新增，与托盘同一套饱和度与明度阶。
+   造型与托盘图标一致走方正：印章 5px、胶囊 10px 圆角，不用整圆。
+   动效只动 transform / opacity 与胶囊自身的宽高；全部尊重「减弱动态效果」。 */
 
 * {
   box-sizing: border-box;
@@ -19,9 +20,7 @@ body {
   user-select: none;
 }
 
-button,
-input,
-textarea {
+button {
   font: inherit;
 }
 
@@ -30,273 +29,241 @@ textarea {
   height: 100vh;
 }
 
+/* 窗口比胶囊最大尺寸大一圈，给阴影留位置；胶囊贴底居中，向两侧生长 */
 .floating-shell {
   width: 100%;
   height: 100%;
   display: flex;
   align-items: flex-end;
   justify-content: center;
+  padding-bottom: 12px;
 }
 
-.floating-pill {
-  width: 100%;
-  height: 40px;
-  display: grid;
-  grid-template-columns: 24px 20px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  padding: 0 16px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--line-soft);
-  background: var(--surface-float);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  box-shadow: var(--e-2);
-  animation: float-in 700ms ease-out;
-}
-
-.status-indicator {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.status-icon {
+.capsule {
+  /* 快起慢落的减速曲线，不回弹：宽度只在展开 / 收起时各动一次，落定后纹丝不动 */
+  --grow: cubic-bezier(0.2, 0.9, 0.25, 1);
+  --seal-bg: #c9a227;
+  --seal-fg: #3a2a05;
   position: relative;
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent-hi);
-  background: var(--accent-dim);
+  flex: none;
+  width: 54px;
+  height: 54px;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(22, 23, 27, 0.94);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform-origin: 50% 100%;
+  animation: capsule-in 260ms var(--grow);
+  transition: opacity 180ms ease, transform 200ms ease;
 }
 
-.status-icon::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
+/* 量到首个尺寸后才开宽高过渡（见 FloatingWindow.vue），避免从 0 长出来 */
+.capsule.sized {
+  transition:
+    width 280ms var(--grow),
+    height 280ms var(--grow),
+    opacity 180ms ease,
+    transform 200ms ease;
+}
+
+.capsule.leaving {
   opacity: 0;
+  transform: translateY(4px) scale(0.94);
 }
 
-/* 录音态：原先引用的是从未定义的 --floating-accent-soft，背景实际不生效 */
-.status-icon[data-phase="recording"] {
-  background: var(--accent-dim);
+.capsule[data-seal='listening'] { --seal-bg: #c8463b; --seal-fg: #fbe7c6; }
+.capsule[data-seal='converting'] { --seal-bg: #4257d3; --seal-fg: #f3d27a; }
+.capsule[data-seal='success'] { --seal-bg: #2e9e6b; --seal-fg: #eafbf1; }
+.capsule[data-seal='failure'] { --seal-bg: #6b2a26; --seal-fg: #f6c9bf; }
+
+/* 按自然尺寸排版、贴左下角；胶囊用过渡追它的大小，内容先到位、被胶囊逐步「揭开」 */
+.content {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: max-content;
+  max-width: 400px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
 }
 
-.status-icon.pulsing::after {
-  background: var(--accent-hi);
-  animation: pulse-ring 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  opacity: 0.3;
-}
-
-.status-icon[data-phase="error"] {
-  color: var(--err);
-  background: var(--err-soft);
-}
-
-.status-icon svg {
-  width: 14px;
-  height: 14px;
-  position: relative;
-  z-index: 1;
-}
-
-.waveform {
+.seal {
+  flex: none;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
+  border-radius: 5px;
+  background: var(--seal-bg);
+  color: var(--seal-fg);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), inset 0 -2px 0 rgba(0, 0, 0, 0.18);
+  font-family: 'Songti TC', 'STSongti-TC-Black', 'Noto Serif TC', 'PMingLiU', 'MingLiU', serif;
+  font-weight: 900;
+  font-size: 22px;
+  line-height: 1;
+  /* 换印章（聽→轉→成）时轻轻弹一下 */
+  animation: seal-pop 300ms var(--grow);
+}
+
+/* 竖直校正由脚本按实际字体量出（宋体字形偏下），只移字、不动印章 */
+.seal-glyph {
+  display: block;
+}
+
+/* 展开后固定宽度：一次会话里只展开这一次，字数增减不再改变胶囊大小 */
+.content.expanded {
+  width: 400px;
+}
+
+/* 单行：超出时裁掉开头、保住最新的字——容器 rtl 让溢出落在左侧，文字本身仍按 ltr 排 */
+.line {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-size: 14px;
+  line-height: 21px;
+  color: var(--text-1);
+  transition: color 200ms ease;
+  animation: text-in 200ms ease-out;
+}
+
+.line.dim {
+  color: var(--text-3);
+}
+
+.line > span {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.line.clipped {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 20px);
+  mask-image: linear-gradient(to right, transparent, #000 20px);
+}
+
+.slot {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.wave {
   gap: 2px;
-  height: 16px;
-  padding-inline: 4px;
+  padding-right: 2px;
 }
 
 .wave-bar {
-  width: 2px;
-  border-radius: 999px;
-  background: var(--accent-hi);
-}
-
-.wave-bar:nth-child(1) {
-  height: 6px;
-  opacity: 0.3;
-}
-
-.wave-bar:nth-child(2) {
-  height: 12px;
-  opacity: 0.6;
-}
-
-.wave-bar:nth-child(3) {
-  height: 16px;
-}
-
-.wave-bar:nth-child(4) {
-  height: 8px;
-  opacity: 0.8;
-}
-
-.wave-bar:nth-child(5) {
-  height: 14px;
-  opacity: 0.9;
-}
-
-.waveform.active .wave-bar {
-  animation: wave 0.6s ease-in-out infinite;
-}
-
-.waveform.active .wave-bar:nth-child(1) {
-  animation-delay: 0s;
-}
-
-.waveform.active .wave-bar:nth-child(2) {
-  animation-delay: 0.1s;
-}
-
-.waveform.active .wave-bar:nth-child(3) {
-  animation-delay: 0.2s;
-}
-
-.waveform.active .wave-bar:nth-child(4) {
-  animation-delay: 0.3s;
-}
-
-.waveform.active .wave-bar:nth-child(5) {
-  animation-delay: 0.4s;
-}
-
-.spinner {
-  width: 14px;
-  height: 14px;
-  border: 1.5px solid var(--line-soft-strong);
-  border-top-color: var(--accent-hi);
-  border-radius: 999px;
-  animation: spin 1s linear infinite;
-}
-
-.content {
-  min-width: 0;
-  overflow: hidden;
-}
-
-.primary-line {
-  margin: 0;
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  color: var(--text-1);
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.primary-line-streaming {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  overflow: hidden;
-  text-overflow: clip;
-}
-
-.prefix-text {
-  flex: 0 0 auto;
-}
-
-.streaming-viewport {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-  mask-image: linear-gradient(to right, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
-  -webkit-mask-image: linear-gradient(to right, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
-}
-
-.streaming-viewport::-webkit-scrollbar {
-  display: none;
-}
-
-.streaming-text {
-  display: inline-block;
-  min-width: 100%;
-  padding-right: 12px;
-  white-space: nowrap;
-}
-
-.highlight {
-  color: var(--text-1);
-}
-
-.typing-cursor {
-  display: inline-block;
-  width: 2px;
-  height: 1.1em;
-  margin-left: 2px;
-  vertical-align: text-bottom;
+  width: 3px;
   border-radius: 1px;
-  background: var(--accent-hi);
-  animation: cursorBlink 0.9s steps(1) infinite;
+  background: #f08a7e;
+  transition: height 90ms linear;
 }
 
-.actions {
+.busy {
+  gap: 4px;
+  padding-right: 2px;
+}
+
+.busy span {
+  width: 5px;
+  height: 5px;
+  border-radius: 1px;
+  background: #8fa0ff;
+  animation: busy-dot 1.2s infinite;
+}
+
+.busy span:nth-child(2) { animation-delay: 0.2s; }
+.busy span:nth-child(3) { animation-delay: 0.4s; }
+
+.cancel {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
   display: flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-2);
+  cursor: pointer;
+  animation: text-in 160ms ease-out;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 
-/* 按下反馈：与主窗口按钮族保持同一套触感 */
-
-@keyframes float-in {
-  from {
-    opacity: 0;
-    transform: translateY(2px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.cancel:hover {
+  background: var(--err-soft);
+  color: var(--err);
 }
 
-@keyframes pulse-ring {
-  from {
-    transform: scale(0.8);
-    opacity: 0.3;
-  }
-
-  to {
-    transform: scale(1.4);
-    opacity: 0;
-  }
+.cancel:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+.cancel svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.6;
+  stroke-linecap: round;
 }
 
-@keyframes wave {
-  0%,
-  100% {
-    height: 6px;
-  }
-
-  50% {
-    height: 16px;
-  }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
-@keyframes cursorBlink {
-  0%,
-  49% {
-    opacity: 1;
+@keyframes capsule-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.9); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes seal-pop {
+  from { transform: scale(0.8); opacity: 0.4; }
+  to { transform: none; opacity: 1; }
+}
+
+@keyframes text-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes busy-dot {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .capsule,
+  .capsule.sized,
+  .seal,
+  .line,
+  .cancel,
+  .wave-bar {
+    transition: opacity 120ms linear;
+    animation: none;
   }
 
-  50%,
-  100% {
-    opacity: 0;
+  .capsule.leaving {
+    transform: none;
+  }
+
+  .busy span {
+    animation: none;
+    opacity: 0.6;
   }
 }

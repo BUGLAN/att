@@ -669,7 +669,7 @@ async function prepareRecordingEnvironment() {
     ;[desktopSyncResult, mediaStream] = await Promise.all([desktopSyncPromise, mediaPromise])
   } catch (error) {
     // 关键修复：本函数在 await 之前已经置位 startPending / isRecording / floatingSessionActive，
-    // 若此处直接抛出，热键与录音按钮会被永久静默拦截，用户只能重启应用（docs/todo.md 相关 bug 的根因之一）。
+    // 若此处直接抛出，热键与录音按钮会被永久静默拦截，用户只能重启应用。
     console.error('[Recorder] Failed to prepare recording environment:', error)
 
     const leakedStream = await mediaPromise.catch(() => null)
@@ -1780,7 +1780,7 @@ function applyNativeSessionState(payload) {
   const appStore = useAppStore()
   const { tray } = useElectron()
 
-  activeRecordingMode.value = payload.mode === 'streaming' ? 'streaming' : 'single'
+  activeRecordingMode.value = ['streaming', 'multi'].includes(payload.mode) ? payload.mode : 'single'
   if (patch.resetTranscript) {
     liveTranscript.value = ''
     liveSegments.value = []
@@ -1808,11 +1808,83 @@ function applyNativeSessionState(payload) {
     appStore.setRecordStatus({ record_id: patch.record.id, status: patch.record.status })
   }
 
+  applyNativeOptimization(patch, payload)
+
   if (patch.toast) {
-    appStore.showToast(patch.toast)
+    appStore.showToast(patch.toast, patch.toastTone ? { tone: patch.toastTone } : undefined)
   }
 
   tray.setIcon(patch.trayIcon)
+}
+
+// 自动优化的流式面板（与手动优化共用 optimizationStream，取消按钮走 cancelOptimization → Rust 取消）
+function applyNativeOptimization(patch, payload) {
+  if (!patch.optimization) {
+    return
+  }
+  const optimizationStream = useOptimizationStreamStore()
+  const recordId = patch.record?.id || optimizationStream.recordId
+  if (patch.optimization === 'begin') {
+    if (!(optimizationStream.isActive && optimizationStream.recordId === recordId)) {
+      optimizationStream.begin(recordId, { source: 'auto' })
+    }
+    return
+  }
+  if (optimizationStream.recordId !== recordId) {
+    return
+  }
+  if (patch.optimization === 'finish') {
+    optimizationStream.finish(payload.text || '')
+  } else if (patch.optimization === 'cancel') {
+    // 取消后展示原文 + 「已取消」，不保留半截优化文本
+    optimizationStream.begin(recordId, { source: 'auto' })
+    if (payload.raw_text) {
+      optimizationStream.append(payload.raw_text)
+    }
+    optimizationStream.cancel()
+  } else if (patch.optimization === 'fail') {
+    optimizationStream.begin(recordId, { source: 'auto' })
+    if (payload.raw_text) {
+      optimizationStream.append(payload.raw_text)
+    }
+    optimizationStream.fail(patch.optimizeError || '优化失败')
+  }
+}
+
+function applyNativeOptimizationDelta(payload) {
+  const optimizationStream = useOptimizationStreamStore()
+  const recordId = payload?.record_id
+  const chunk = payload?.text || ''
+  if (!recordId || !chunk || optimizationStream.recordId !== recordId) {
+    return
+  }
+  optimizationStream.append(chunk)
+  if (livePhase.value === 'optimizing') {
+    liveTranscript.value = optimizationStream.text
+    sessionStatusText.value = '正在优化'
+  }
+}
+
+// 用户已开始下一段录音：上一段的优化结果只入库，不打断当前会话
+function applyNativeBackgroundOptimization(payload) {
+  const appStore = useAppStore()
+  const record = payload?.record
+  if (record?.id) {
+    syncRecordIntoStore(record)
+    const optimizationStream = useOptimizationStreamStore()
+    if (optimizationStream.recordId === record.id) {
+      if (payload.optimized) {
+        optimizationStream.finish(record.optimized_text || '')
+      } else if (payload.cancelled) {
+        optimizationStream.cancel()
+      } else {
+        optimizationStream.fail(payload.error || '优化失败')
+      }
+    }
+  }
+  if (payload?.message) {
+    appStore.showToast(payload.message, payload.optimized ? undefined : { tone: 'error' })
+  }
 }
 
 function attachNativeRecording() {
@@ -1827,11 +1899,13 @@ function attachNativeRecording() {
   recording.onLevel((payload) => {
     audioLevel.value = Number(payload?.level) || 0
   })
+  recording.onOptimization(applyNativeOptimizationDelta)
+  recording.onBackgroundOptimization(applyNativeBackgroundOptimization)
 
   // 页面重载时 Actor 可能正在录音：同步一次当前状态
   recording.getState()
     .then((state) => {
-      if (state && ['connecting', 'recording', 'finalizing'].includes(state.phase)) {
+      if (state && ['connecting', 'recording', 'finalizing', 'optimizing'].includes(state.phase)) {
         applyNativeSessionState(state)
       }
     })
@@ -1846,6 +1920,8 @@ function detachNativeRecording() {
   removeAllListeners('recording:state')
   removeAllListeners('recording:partial')
   removeAllListeners('recording:level')
+  removeAllListeners('recording:optimization')
+  removeAllListeners('recording:background-optimization')
   nativeRecordingAttached = false
 }
 

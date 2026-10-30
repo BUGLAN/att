@@ -1,0 +1,87 @@
+// 极简悬浮窗的纯展示模型（不依赖 Vue，供 tests/test_floating_view.mjs 锁定）。
+//
+// 后端推来的 floating:state（见 src-tauri/src/floating.rs 的 from_recording_state）
+// → 一枚印章 + 可选的文字 + 何时收起。印章与托盘图标同源：
+//   錄 待命 · 聽 录音中 · 轉 识别 / 优化中 · 成 已输入 · 敗 失败
+// 一次会话里胶囊只变两次大小：没有文字时只有印章（识别 / 优化中带处理点），
+// 出现第一个字后展开到固定宽度并保持（见 FloatingWindow.vue），始终单行、超出裁掉开头；
+// 松开后进入「轉」沿用上一句（变淡）撑住宽度，优化结果出来再替换；
+// 结果态（成 / 敗）只剩印章，停留片刻后隐藏；失败原因放在 title 里悬停可见。
+
+export const SEALS = Object.freeze({
+  idle: '錄',
+  listening: '聽',
+  converting: '轉',
+  success: '成',
+  failure: '敗'
+})
+
+export const SUCCESS_HOLD_MS = 1400
+export const FAILURE_HOLD_MS = 2400
+
+/** 胶囊单行只显示得下末尾一截：保留这些字足够（空白折叠），更早的由界面从左侧裁掉。 */
+export const TAIL_CHARS = 80
+
+export function tailText(text, max = TAIL_CHARS) {
+  const chars = Array.from(String(text || '').replace(/\s+/g, ' ').trim())
+  return (chars.length > max ? chars.slice(-max) : chars).join('')
+}
+
+function result(seal, hideAfterMs, detail = '') {
+  return { seal, glyph: SEALS[seal], active: false, text: '', dim: false, busy: false, cancellable: false, hideAfterMs, detail }
+}
+
+function working(seal, { text = '', dim = false, busy = false }) {
+  return { seal, glyph: SEALS[seal], active: true, text, dim, busy, cancellable: true, hideAfterMs: null, detail: '' }
+}
+
+/**
+ * @param {{ phase?: string, mode?: string, text?: string, ok?: boolean }} state
+ * @param {{ previousText?: string }} session 本次会话上一次显示的文字：
+ *   松开后进入「轉」时后端不再带文字，沿用它（变淡）撑住胶囊，直到优化结果出来替换。
+ */
+export function deriveFloatingView({ phase, mode, text, ok } = {}, { previousText = '' } = {}) {
+  switch (phase) {
+    case 'recording':
+      // 单段模式录完才识别：录音中只有印章
+      return working('listening', { text: mode === 'streaming' || mode === 'multi' ? tailText(text) : '' })
+    case 'transcribing':
+      return working('converting', { text: previousText, dim: Boolean(previousText), busy: true })
+    case 'optimizing': {
+      const optimized = tailText(text)
+      return optimized
+        ? working('converting', { text: optimized, busy: true })
+        : working('converting', { text: previousText, dim: Boolean(previousText), busy: true })
+    }
+    case 'complete':
+      // 旧载荷没有 ok 字段：按成功处理
+      return ok === false ? result('failure', FAILURE_HOLD_MS, text || '') : result('success', SUCCESS_HOLD_MS)
+    case 'error':
+      return result('failure', FAILURE_HOLD_MS, text || '')
+    default:
+      return result('idle', null)
+  }
+}
+
+/**
+ * 印章字的竖直校正量（px，负数为上移），让字的墨迹中心落在印章受光面的中心。
+ *
+ * 宋体等衬线字体把字画在 em 框偏下的位置（Songti TC 22px 约低 1.2–1.6px），且各平台回退字体不同，
+ * 所以不写死偏移：由调用方用 canvas 按实际字体量出字形度量，这里按 CSS 行盒规则换算。
+ * - `line-height: 1` 的行盒高 = 字号，基线在「半行距 + 字体上伸」处；
+ * - 印章底部有 2px 暗边（内阴影），受光面是上面那 34px，以它的中心为目标。
+ *
+ * @param {{ fontAscent: number, fontDescent: number, inkAscent: number, inkDescent: number }} metrics
+ *   canvas measureText 的 fontBoundingBoxAscent / fontBoundingBoxDescent / actualBoundingBoxAscent / actualBoundingBoxDescent
+ */
+export function sealGlyphNudge(metrics, { fontSize = 22, tile = 36, bevel = 2 } = {}) {
+  const { fontAscent, fontDescent, inkAscent, inkDescent } = metrics || {}
+  const target = (tile - bevel) / 2
+  if (![fontAscent, fontDescent, inkAscent, inkDescent].every(Number.isFinite)) {
+    // 量不到（极老内核）：只扣掉暗边，按字体本身居中处理
+    return target - tile / 2
+  }
+  const baseline = (fontSize - (fontAscent + fontDescent)) / 2 + fontAscent
+  const inkCenter = (tile - fontSize) / 2 + baseline + (inkDescent - inkAscent) / 2
+  return Math.round((target - inkCenter) * 4) / 4
+}

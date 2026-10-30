@@ -10,7 +10,7 @@ import {
   listCompletionStages
 } from '../src/composables/recorder/statusCopy.mjs'
 // 注：deriveOptimizationDegradedToast 已随 LLM v2（移除 .env 内置 key 兜底）删除，
-// 后端不再广播 optimization_degraded，见 docs/LLM配置模块重设计.md §9.2。
+// 后端不再广播 optimization_degraded（降级改由 done 事件的 degraded 字段表达）。
 
 test('deriveRealtimePhaseText：多段录音各阶段文案与原实现一致', () => {
   assert.equal(deriveRealtimePhaseText('listening'), '静音切段已启用，停顿后会自动出字')
@@ -44,8 +44,8 @@ test('deriveCompletionToast：转写阶段三态文案', () => {
 })
 
 test('deriveCompletionToast：优化阶段三态文案', () => {
-  assert.equal(deriveCompletionToast('optimization', { pasted: true }), '优化完成，已复制并粘贴')
-  assert.equal(deriveCompletionToast('optimization', { attempted: true }), '优化完成，复制并粘贴失败')
+  assert.equal(deriveCompletionToast('optimization', { pasted: true }), '优化完成，已输入并复制')
+  assert.equal(deriveCompletionToast('optimization', { attempted: true }), '优化完成，自动输入失败')
   assert.equal(deriveCompletionToast('optimization', {}), '优化完成')
 })
 

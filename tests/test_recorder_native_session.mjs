@@ -73,3 +73,50 @@ test('相位全集都有映射，未知相位忽略', () => {
   }
   assert.equal(deriveNativeSessionPatch({ phase: 'weird' }), null)
 })
+
+test('自动优化：optimizing 开优化流面板；单段保持处理中、流式不锁热键', () => {
+  const single = deriveNativeSessionPatch({ phase: 'optimizing', mode: 'single', text: '原文', record: { id: 'r1' } })
+  assert.equal(single.livePhase, 'optimizing')
+  assert.equal(single.optimization, 'begin')
+  assert.equal(single.transcribing, true)
+  assert.equal(single.recording, false)
+  assert.equal(single.transcript, '原文')
+  assert.deepEqual(single.record, { id: 'r1' })
+
+  const streaming = deriveNativeSessionPatch({ phase: 'optimizing', mode: 'streaming' })
+  assert.equal(streaming.transcribing, false)
+})
+
+test('自动优化完成态：成功输入优化文，失败兜底原文并用失败色，取消不粘贴', () => {
+  const done = deriveNativeSessionPatch({
+    phase: 'completed', mode: 'streaming', text: '优化文', optimized: true, copied: true, pasted: true
+  })
+  assert.equal(done.optimization, 'finish')
+  assert.equal(done.transcript, '优化文')
+  assert.equal(done.toast, '优化完成，已输入并复制')
+
+  const failed = deriveNativeSessionPatch({
+    phase: 'completed', mode: 'single', text: '原文', optimize_error: '鉴权失败', copied: true, pasted: true
+  })
+  assert.equal(failed.optimization, 'fail')
+  assert.equal(failed.optimizeError, '鉴权失败')
+  assert.equal(failed.toast, '优化失败，已粘贴转写文本')
+  assert.equal(failed.toastTone, 'error')
+
+  // 已流式输入部分优化文后失败：不再粘贴原文，提示原文在剪贴板
+  const partial = deriveNativeSessionPatch({
+    phase: 'completed', mode: 'streaming', text: '原文', optimize_error: '超时', copied: true, pasted: false,
+    copy_error: '优化中断：输入框里是部分优化结果，原文已复制到剪贴板'
+  })
+  assert.equal(partial.toast, '优化中断：输入框里是部分优化结果，原文已复制到剪贴板')
+  assert.equal(partial.toastTone, 'error')
+
+  const cancelled = deriveNativeSessionPatch({
+    phase: 'completed', mode: 'single', text: '原文', optimization_cancelled: true
+  })
+  assert.equal(cancelled.optimization, 'cancel')
+  assert.equal(cancelled.toast, '已取消优化，保留原始文本')
+
+  const plain = deriveNativeSessionPatch({ phase: 'completed', mode: 'single', text: '原文', copied: true, pasted: true })
+  assert.equal(plain.optimization, null)
+})
