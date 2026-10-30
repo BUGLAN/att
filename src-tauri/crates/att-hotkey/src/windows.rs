@@ -2,7 +2,7 @@
 
 use crate::listener::Shared;
 use att_core::settings::hotkey::{hid_from_char, ModSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
@@ -12,7 +12,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
-static MODS: Mutex<[bool; 4]> = Mutex::new([false; 4]);
 
 const VK_SHIFT: u32 = 0x10;
 const VK_CONTROL: u32 = 0x11;
@@ -26,15 +25,12 @@ const VK_RMENU: u32 = 0xA5;
 const VK_LWIN: u32 = 0x5B;
 const VK_RWIN: u32 = 0x5C;
 
-/// 修饰键槽位：0=ctrl 1=alt 2=shift 3=meta。
-fn modifier_slot(vk: u32) -> Option<usize> {
-    match vk {
-        VK_CONTROL | VK_LCONTROL | VK_RCONTROL => Some(0),
-        VK_MENU | VK_LMENU | VK_RMENU => Some(1),
-        VK_SHIFT | VK_LSHIFT | VK_RSHIFT => Some(2),
-        VK_LWIN | VK_RWIN => Some(3),
-        _ => None,
-    }
+fn is_modifier(vk: u32) -> bool {
+    matches!(
+        vk,
+        VK_SHIFT | VK_CONTROL | VK_MENU | VK_LSHIFT | VK_RSHIFT | VK_LCONTROL | VK_RCONTROL | VK_LMENU | VK_RMENU
+            | VK_LWIN | VK_RWIN
+    )
 }
 
 fn is_down(vk: u32) -> bool {
@@ -43,12 +39,36 @@ fn is_down(vk: u32) -> bool {
 
 /// 系统真实修饰键状态（防粘滞轮询用）。
 pub fn physical_modifiers() -> Option<ModSet> {
-    Some(ModSet::new(
-        is_down(VK_LCONTROL) || is_down(VK_RCONTROL),
-        is_down(VK_LMENU) || is_down(VK_RMENU),
-        is_down(VK_LSHIFT) || is_down(VK_RSHIFT),
-        is_down(VK_LWIN) || is_down(VK_RWIN),
-    ))
+    Some(modifiers_with(None))
+}
+
+/// 修饰键状态：以系统真实键态为准，`current` 为钩子正在处理的那个键（及其新状态）。
+///
+/// 不能自己记账（旧实现用静态数组随事件翻转）：Win+L 锁屏、UAC 等安全桌面会吞掉
+/// 松开事件，记账值从此卡在「按下」——默认 Win+Alt 绑定下单按 Alt 就会误触发录音。
+/// 低级钩子回调时系统键态尚未包含当前这次按键，因此当前键用事件自身的状态覆盖。
+fn modifiers_with(current: Option<(u32, bool)>) -> ModSet {
+    let current = current.map(|(vk, down)| (canonical_modifier(vk), down));
+    let down = |vk: u32| match current {
+        Some((current_vk, current_down)) if current_vk == vk => current_down,
+        _ => is_down(vk),
+    };
+    ModSet::new(
+        down(VK_LCONTROL) || down(VK_RCONTROL),
+        down(VK_LMENU) || down(VK_RMENU),
+        down(VK_LSHIFT) || down(VK_RSHIFT),
+        down(VK_LWIN) || down(VK_RWIN),
+    )
+}
+
+/// 通用修饰键码归到左侧键（低级钩子通常已给出左右区分的键码）。
+fn canonical_modifier(vk: u32) -> u32 {
+    match vk {
+        VK_CONTROL => VK_LCONTROL,
+        VK_MENU => VK_LMENU,
+        VK_SHIFT => VK_LSHIFT,
+        other => other,
+    }
 }
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -60,14 +80,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             let up = message == WM_KEYUP || message == WM_SYSKEYUP;
             if down || up {
                 let vk = info.vkCode;
-                if let Some(slot) = modifier_slot(vk) {
-                    let mods = {
-                        let mut state = MODS.lock().unwrap_or_else(|e| e.into_inner());
-                        state[slot] = down;
-                        ModSet::new(state[0], state[1], state[2], state[3])
-                    };
-                    shared.on_modifiers(mods);
+                if is_modifier(vk) {
+                    shared.on_modifiers(modifiers_with(Some((vk, down))));
                 } else {
+                    // 非修饰键事件也顺带校正一次修饰键（与 macOS 每个事件带完整 flags 对齐）
+                    shared.on_modifiers(modifiers_with(None));
                     let hid = char::from_u32(vk)
                         .filter(|c| c.is_ascii_alphanumeric())
                         .and_then(hid_from_char);
