@@ -1,5 +1,5 @@
 // 极简悬浮窗展示模型（src/components/floating/floatingView.mjs）单元测试。
-// 覆盖：各相位对应的印章、「轉」沿用上一句变淡、结果态收起时机、尾部截取、印章字竖直校正。
+// 覆盖：各相位对应的印章、「轉」沿用上一句变淡、结果态收起时机、尾部截取、印章字竖直校正、声纹门限。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -7,7 +7,10 @@ import {
   FAILURE_HOLD_MS,
   SUCCESS_HOLD_MS,
   TAIL_CHARS,
+  WAVE_HOLD_MS,
+  WAVE_SHOW_LEVEL,
   deriveFloatingView,
+  nextVoiceState,
   sealGlyphNudge,
   tailText
 } from '../src/components/floating/floatingView.mjs'
@@ -85,4 +88,26 @@ test('印章字校正：量出偏下多少就上移多少，并以暗边之上�
   assert.equal(sealGlyphNudge({ fontAscent: 11, fontDescent: 11, inkAscent: 10, inkDescent: 10 }), -1)
   // 量不到度量：同样只扣暗边
   assert.equal(sealGlyphNudge({}), -1)
+})
+
+test('声纹门限：底噪不触发，过门限立即出现，停顿片刻内保持，安静够久才收起', () => {
+  let voice = nextVoiceState()
+  assert.equal(voice.loud, false)
+
+  // -40 dBFS 左右的底噪（level ≈ 0.06）不算说话
+  voice = nextVoiceState(voice, 0.06, 0)
+  assert.equal(voice.loud, false)
+
+  voice = nextVoiceState(voice, WAVE_SHOW_LEVEL, 100)
+  assert.equal(voice.loud, true)
+
+  // 字与字之间的停顿：门限下但没超过保持时长，声纹不收
+  voice = nextVoiceState(voice, 0.02, 100 + WAVE_HOLD_MS - 1)
+  assert.equal(voice.loud, true)
+
+  voice = nextVoiceState(voice, 0.02, 100 + WAVE_HOLD_MS)
+  assert.equal(voice.loud, false)
+
+  // 安静后再次说话立即恢复
+  assert.equal(nextVoiceState(voice, 0.5, 5000).loud, true)
 })

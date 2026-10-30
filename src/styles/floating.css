@@ -91,6 +91,7 @@ button {
 }
 
 .seal {
+  position: relative;
   flex: none;
   width: 36px;
   height: 36px;
@@ -105,13 +106,43 @@ button {
   font-weight: 900;
   font-size: 22px;
   line-height: 1;
-  /* 换印章（聽→轉→成）时轻轻弹一下 */
+  /* 会话开始时弹出；之后换印章（聽→轉→成）底色渐变过去，轻按一下由脚本播放 */
   animation: seal-pop 300ms var(--grow);
+  transition: background-color 280ms ease, color 280ms ease;
+}
+
+/* 新旧印章字叠在同一格里交替：旧字缩小淡出，新字从稍大落下（像盖章） */
+.seal-glyph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* 竖直校正由脚本按实际字体量出（宋体字形偏下），只移字、不动印章 */
-.seal-glyph {
+.seal-ink {
   display: block;
+}
+
+.glyph-enter-active {
+  transition: opacity 240ms ease-out, transform 280ms var(--grow), filter 240ms ease-out;
+}
+
+.glyph-leave-active {
+  transition: opacity 160ms ease-in, transform 160ms ease-in, filter 160ms ease-in;
+}
+
+.glyph-enter-from {
+  opacity: 0;
+  transform: scale(1.4);
+  filter: blur(2px);
+}
+
+.glyph-leave-to {
+  opacity: 0;
+  transform: scale(0.6);
+  filter: blur(2px);
 }
 
 /* 展开后固定宽度：一次会话里只展开这一次，字数增减不再改变胶囊大小 */
@@ -131,7 +162,20 @@ button {
   line-height: 21px;
   color: var(--text-1);
   transition: color 200ms ease;
-  animation: text-in 200ms ease-out;
+}
+
+.line-enter-active {
+  transition: opacity 200ms ease-out;
+}
+
+/* 收起时文字先淡出，胶囊再收拢 */
+.line-leave-active {
+  transition: opacity 140ms ease-in, color 200ms ease;
+}
+
+.line-enter-from,
+.line-leave-to {
+  opacity: 0;
 }
 
 .line.dim {
@@ -163,7 +207,27 @@ button {
   width: 3px;
   border-radius: 1px;
   background: #f08a7e;
-  transition: height 90ms linear;
+  transition: height 90ms linear, opacity 240ms ease;
+}
+
+/* 安静：声纹收成一排静止的暗点，说话时再跳起来 */
+.wave.quiet .wave-bar {
+  opacity: 0.35;
+  transition: height 220ms var(--grow), opacity 240ms ease;
+}
+
+.slot-enter-active {
+  transition: opacity 200ms ease-out, transform 240ms var(--grow);
+}
+
+.slot-leave-active {
+  transition: opacity 120ms ease-in, transform 120ms ease-in;
+}
+
+.slot-enter-from,
+.slot-leave-to {
+  opacity: 0;
+  transform: scale(0.7);
 }
 
 .busy {
@@ -253,9 +317,25 @@ button {
   .seal,
   .line,
   .cancel,
-  .wave-bar {
+  .wave-bar,
+  .wave.quiet .wave-bar,
+  .glyph-enter-active,
+  .glyph-leave-active,
+  .line-enter-active,
+  .line-leave-active,
+  .slot-enter-active,
+  .slot-leave-active {
     transition: opacity 120ms linear;
     animation: none;
+  }
+
+  /* 只保留淡入淡出：不缩放、不模糊 */
+  .glyph-enter-from,
+  .glyph-leave-to,
+  .slot-enter-from,
+  .slot-leave-to {
+    transform: none;
+    filter: none;
   }
 
   .capsule.leaving {

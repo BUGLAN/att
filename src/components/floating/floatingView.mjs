@@ -19,6 +19,27 @@ export const SEALS = Object.freeze({
 export const SUCCESS_HOLD_MS = 1400
 export const FAILURE_HOLD_MS = 2400
 
+/**
+ * 声纹门限：后端 recording:level = RMS × 6（夹到 0..1），0.19 ≈ -30 dBFS。
+ * 比切段用的静音阈值（默认 -40 dBFS）高一截：环境底噪常在 -35 ~ -40 dBFS，不该让声纹一直跳。
+ */
+export const WAVE_SHOW_LEVEL = 0.19
+/** 音量落回门限下后，声纹再跳这么久才收成静止的点（字与字之间的停顿不闪） */
+export const WAVE_HOLD_MS = 700
+
+/**
+ * 声纹开关（带滞回）：音量过门限立即「有声」，落回门限下持续 WAVE_HOLD_MS 才回到「安静」。
+ * @param {{ loud: boolean, lastLoudAt: number }} prev
+ * @param {number} level 0..1
+ * @param {number} now 毫秒时间戳
+ */
+export function nextVoiceState(prev = { loud: false, lastLoudAt: -Infinity }, level = 0, now = 0) {
+  if (level >= WAVE_SHOW_LEVEL) {
+    return { loud: true, lastLoudAt: now }
+  }
+  return { loud: prev.loud && now - prev.lastLoudAt < WAVE_HOLD_MS, lastLoudAt: prev.lastLoudAt }
+}
+
 /** 胶囊单行只显示得下末尾一截：保留这些字足够（空白折叠），更早的由界面从左侧裁掉。 */
 export const TAIL_CHARS = 80
 
