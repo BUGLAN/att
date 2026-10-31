@@ -23,14 +23,14 @@ function sleep(ms) {
 }
 
 export function useFileTranscribe() {
-  const { openMediaFile, filePathForFile, clipboard, isDesktop } = useElectron()
+  const { openMediaFile, filePathForFile, clipboard } = useElectron()
 
   const filePath = ref('')
   const language = ref('zh')
   const wantSegments = ref(false)
   // M2：引擎与 LLM 校对（设计 §7：UI 不暴露 auto，默认显式 whisper；校对默认关）
-  // 桌面端（Tauri）暂无本地 whisper/qwen 引擎，缺省用豆包（未配凭据时卡片置灰并提示）
-  const engine = ref(isDesktop ? 'doubao_asr' : 'whisper')
+  // 本地引擎（faster-whisper / Qwen3-ASR）已接入 Tauri 版，桌面端与网页端缺省一致
+  const engine = ref('whisper')
   const proofreadOn = ref(false)
   const proofreadModelId = ref('')
   const proofreadBatchSegments = ref(40)

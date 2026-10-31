@@ -4,8 +4,8 @@
 //! - 错误码契约：404 文件不存在 / 415 无法解码 / 413 超时长上限 / 409 引擎或校对不可用 /
 //!   503 引擎忙（Retry-After）/ 500 其他；
 //! - 缓存 `data/transcribe_file_cache.json`（与 Python 同格式：sha256 → engines → 引擎桶 → 校对变体）；
-//! - 引擎：豆包（在线，ffmpeg 解码为 16k PCM 后按会话上限分段推流）；本地 Whisper / Qwen 尚未移植，
-//!   选中时返回 409 并给出可执行提示。
+//! - 引擎：豆包（在线，ffmpeg 解码为 16k PCM 后按会话上限分段推流）；本地 Whisper（faster-whisper）
+//!   与本地 Qwen3-ASR（sherpa-onnx ONNX）走 [`crate::stt::transcribe_local`]，分段时间戳原样返回。
 
 pub mod media;
 pub mod proofread;
@@ -100,17 +100,47 @@ fn variant_key(model_id: Option<&str>) -> String {
     format!("{}@{}", model_id.unwrap_or("default"), proofread::PROMPT_VERSION)
 }
 
-/// 引擎解析：显式 > auto；本地引擎尚未移植 → 409；豆包凭据缺失 → 409。
+/// 引擎解析：显式 > auto（本地优先）；本地模型/推理库缺失、豆包凭据缺失 → 409。
+///
+/// 本地引擎只做**文件是否就位**的探测，不触发模型加载（加载发生在真正转写时）。
 fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, TranscribeError> {
+    use crate::stt::local::LocalKind;
+
+    let whisper = core.local_models.status(core, LocalKind::Whisper);
+    let qwen = core.local_models.status(core, LocalKind::Qwen);
     let doubao_ready = crate::stt::doubao_config(core).ensure().is_ok();
+    let unavailable = |kind: LocalKind, status: &crate::stt::local::LocalStatus| {
+        TranscribeError::new(409, format!("{}不可用：{}", kind.label(), status.error.clone().unwrap_or_default()))
+    };
+
     match requested.trim().to_lowercase().as_str() {
-        // Python 版 auto = 本地优先；Tauri 版暂无本地引擎，凭据齐备时用豆包
-        "auto" | "" if doubao_ready => Ok("doubao_asr"),
-        "auto" | "" => Err(TranscribeError::new(409, "当前没有可用的转写引擎：请在设置页填写豆包语音 Access Token")),
+        // 与 Python 版一致：auto = 本地优先（配置指向本地引擎就用它，否则回落本地 Whisper，最后才用在线引擎）
+        "auto" | "" => {
+            if let Some(kind) = crate::stt::local_kind(&core.settings().asr_provider) {
+                let ready = if kind == LocalKind::Whisper { whisper.available } else { qwen.available };
+                if ready {
+                    return Ok(kind.provider());
+                }
+            }
+            if whisper.available {
+                Ok("whisper")
+            } else if qwen.available {
+                Ok("qwen_asr")
+            } else if doubao_ready {
+                Ok("doubao_asr")
+            } else {
+                Err(TranscribeError::new(
+                    409,
+                    "当前没有可用的转写引擎：本地 Whisper / Qwen3-ASR 模型未就位，豆包凭据也未配置",
+                ))
+            }
+        }
+        "whisper" if whisper.available => Ok("whisper"),
+        "whisper" => Err(unavailable(LocalKind::Whisper, &whisper)),
+        "qwen_asr" if qwen.available => Ok("qwen_asr"),
+        "qwen_asr" => Err(unavailable(LocalKind::Qwen, &qwen)),
         "doubao_asr" if doubao_ready => Ok("doubao_asr"),
         "doubao_asr" => Err(TranscribeError::new(409, "豆包凭据未配置：请在 ATT 设置页填写 Access Token 后重试")),
-        "whisper" => Err(TranscribeError::new(409, "Tauri 版暂未接入本地 faster-whisper 引擎，请选择「豆包·实时大模型」")),
-        "qwen_asr" => Err(TranscribeError::new(409, "Tauri 版暂未接入本地 Qwen3-ASR 引擎，请选择「豆包·实时大模型」")),
         other => Err(TranscribeError::new(422, format!("不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr）"))),
     }
 }
@@ -353,12 +383,52 @@ pub async fn handle(core: Arc<CoreState>, request: TranscribeRequest) -> Result<
 }
 
 /// 单并发执行一次转写并写缓存；忙时 503。
-async fn run_transcription(core: &CoreState, path: &Path, language: &str, duration: f64, hash: &str, engine: &str) -> Result<Value, TranscribeError> {
+async fn run_transcription(
+    core: &Arc<CoreState>,
+    path: &Path,
+    language: &str,
+    duration: f64,
+    hash: &str,
+    engine: &str,
+) -> Result<Value, TranscribeError> {
     let _guard = core.transcriber.busy.try_lock().map_err(|_| TranscribeError::busy("转写引擎忙，请稍后重试"))?;
     let samples = media::decode_pcm16k(path).await?;
     if samples.is_empty() {
         return Err(TranscribeError::new(415, "无法解码：没有音频数据"));
     }
+    let payload = match crate::stt::local_kind(engine) {
+        // 本地引擎（Whisper / Qwen3-ASR）：分段时间戳原样进入 payload，供校对窗口与前端使用
+        Some(kind) => {
+            let (model_label, transcript) =
+                crate::stt::transcribe_local(core.clone(), kind, language.to_string(), samples)
+                    .await
+                    .map_err(|error| TranscribeError::new(500, format!("转写失败：{error}")))?;
+            let segments = transcript
+                .segments
+                .iter()
+                .map(|segment| json!({ "start": segment.start, "end": segment.end, "text": segment.text }))
+                .collect::<Vec<_>>();
+            json!({
+                "text": transcript.text,
+                "duration_seconds": if duration > 0.0 { duration } else { transcript.duration },
+                "engine": model_label,
+                "segments": segments,
+            })
+        }
+        None => run_doubao(core, language, &samples, duration, engine).await?,
+    };
+    core.transcriber.cache_store(core, hash, engine, &payload);
+    Ok(payload)
+}
+
+/// 豆包路径：按单会话上限分段推流，段偏移拼成时间戳。
+async fn run_doubao(
+    core: &CoreState,
+    language: &str,
+    samples: &[i16],
+    duration: f64,
+    engine: &str,
+) -> Result<Value, TranscribeError> {
     let config = crate::stt::doubao_config(core);
     let session_samples = DOUBAO_SESSION_SECONDS * SAMPLE_RATE;
     let mut segments = Vec::new();
@@ -387,7 +457,6 @@ async fn run_transcription(core: &CoreState, path: &Path, language: &str, durati
     if billing_ms > 0 {
         payload["billing"] = json!({ "audio_duration_seconds": (billing_ms as f64 / 1000.0 * 1000.0).round() / 1000.0 });
     }
-    core.transcriber.cache_store(core, hash, engine, &payload);
     Ok(payload)
 }
 

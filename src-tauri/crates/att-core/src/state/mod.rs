@@ -20,6 +20,8 @@ pub enum CoreError {
 /// 核心状态：settings 读写锁持有当前用户设置；其余组件无内部可变态。
 pub struct CoreState {
     pub data_dir: PathBuf,
+    /// 本地模型根目录（`models/`）：`ATT_MODELS_DIR` > 数据目录同级的 `models/` > `<数据目录>/models`
+    pub models_dir: PathBuf,
     pub settings_path: PathBuf,
     pub platform: Platform,
     settings: Mutex<UserSettings>,
@@ -33,9 +35,39 @@ pub struct CoreState {
     pub optimizer: OptimizationHub,
     /// 本地文件转写（任务表 / 单并发闸门 / 结果缓存）
     pub transcriber: crate::transcribe::FileTranscriber,
+    /// 本地引擎常驻池（faster-whisper / Qwen3-ASR）
+    pub local_models: crate::stt::local::LocalModels,
     /// 提示词预设目录（prompts/*.txt；打包版由壳层改指向安装资源目录）
     pub prompts_dir: PathBuf,
     pub events: EventBus,
+}
+
+/// 解析本地模型根目录：环境变量优先，其次数据目录同级的 `models/`（仓库里 `data/` 与 `models/` 平级）。
+pub fn resolve_models_dir(data_dir: &Path) -> PathBuf {
+    if let Ok(dir) = std::env::var("ATT_MODELS_DIR") {
+        if !dir.trim().is_empty() {
+            return tidy(PathBuf::from(dir));
+        }
+    }
+    if let Some(parent) = data_dir.parent() {
+        let sibling = parent.join("models");
+        if sibling.is_dir() {
+            return tidy(sibling);
+        }
+    }
+    data_dir.join("models")
+}
+
+/// 规范化路径：去掉 `..` 段（Windows 的 `\\?\` 前缀也一并去掉，便于日志与错误提示可读）。
+fn tidy(path: PathBuf) -> PathBuf {
+    let resolved = std::fs::canonicalize(&path).unwrap_or(path);
+    #[cfg(windows)]
+    {
+        if let Some(text) = resolved.to_string_lossy().strip_prefix(r"\\?\") {
+            return PathBuf::from(text.to_string());
+        }
+    }
+    resolved
 }
 
 impl CoreState {
@@ -54,6 +86,7 @@ impl CoreState {
         let settings = UserSettings::load(&settings_path, platform);
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
+            models_dir: resolve_models_dir(data_dir),
             settings_path,
             platform,
             settings: Mutex::new(settings),
@@ -63,6 +96,7 @@ impl CoreState {
             clipboard: ClipboardRepo::new(data_dir),
             optimizer: OptimizationHub::default(),
             transcriber: Default::default(),
+            local_models: Default::default(),
             prompts_dir: crate::prompts::resolve_dir(data_dir, None),
             events: EventBus::default(),
         })

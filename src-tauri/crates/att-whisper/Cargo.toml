@@ -1,0 +1,24 @@
+[package]
+name = "att-whisper"
+description = "本地 faster-whisper 引擎：CTranslate2（ct2rs）绑定的 Whisper 推理，复用 Python 版 model.bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tracing = { workspace = true }
+
+# CTranslate2 的 Rust 绑定（build.rs 会用 CMake 静态编译 CTranslate2）。
+# whisper：Whisper 模型支持；dnnl(oneDNN) + OpenMP 是 CPU 上唯一实用的组合——
+# 只开默认的 ruy（纯 float32、无并行）时，large-v3 在 CPU 上要跑约 9 倍音频时长，不可用。
+ct2rs = { version = "0.10.2", features = ["whisper", "dnnl", "openmp-runtime-comp"] }
+
+[features]
+default = []
+# CUDA 推理：需要本机有 CUDA Toolkit + cuDNN，且编译耗时明显更长。
+# cuda-dynamic-loading 让二进制在没有 CUDA 的机器上仍可启动（运行期按需加载）。
+cuda = ["ct2rs/cuda", "ct2rs/cudnn", "ct2rs/cuda-dynamic-loading"]
+
+[dev-dependencies]
+# 集成测试读 WAV
+hound = "3.5"

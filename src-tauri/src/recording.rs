@@ -302,7 +302,8 @@ impl Actor {
             return;
         }
         let settings = self.core.settings();
-        let engine = match stt::Engine::from_settings(&self.core) {
+        // 本地引擎首次使用要加载模型：放到 blocking 线程池里做，别堵住录音 Actor
+        let engine = match stt::Engine::resolve(self.core.clone()).await {
             Ok(engine) => engine,
             Err(message) => return self.fail_start(message),
         };

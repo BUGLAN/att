@@ -29,6 +29,9 @@ tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 flate2 = "1"
 uuid = { version = "1", features = ["v4"] }
+# 本地引擎：faster-whisper（CTranslate2/ct2rs）与 Qwen3-ASR（sherpa-onnx ONNX）
+att-whisper = { path = "../att-whisper" }
+att-qwen = { path = "../att-qwen" }
 # LLM 网关：native-tls 与 WebSocket 同一套系统 TLS；system-proxy 读系统代理（与 Python httpx 走代理的行为对齐）
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "http2", "charset", "system-proxy", "multipart"] }
 # LLM 错误文案脱敏

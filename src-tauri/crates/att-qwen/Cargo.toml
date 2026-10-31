@@ -1,0 +1,20 @@
+[package]
+name = "att-qwen"
+description = "本地 Qwen3-ASR 引擎：sherpa-onnx（C API 动态加载）推理，模型为 ONNX 导出版"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[build-dependencies]
+# 只编译本 crate 自带的 C 桥（shim.c）：真正调用 sherpa-onnx 的动态库由 shim 在运行期 dlopen，
+# 因此构建阶段不需要下载/链接任何原生库，缺库时是运行期可读报错而不是链接失败。
+cc = "1"
+
+[dev-dependencies]
+# 集成测试读 WAV
+hound = "3.5"

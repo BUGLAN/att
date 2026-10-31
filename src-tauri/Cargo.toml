@@ -5,7 +5,9 @@ members = [
     "crates/att-audio",
     "crates/att-core",
     "crates/att-hotkey",
+    "crates/att-qwen",
     "crates/att-server",
+    "crates/att-whisper",
 ]
 
 [workspace.package]

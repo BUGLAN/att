@@ -3,14 +3,20 @@
 //! - [`sauc`]：火山 SAUC 二进制协议编解码（纯函数）
 //! - [`doubao`]：豆包会话（流式推流 / 批量转写）
 //! - [`chatgpt`]：ChatGPT 听写（在线批量，不支持流式）
+//! - [`local`]：本地引擎装配与常驻池（faster-whisper / Qwen3-ASR，进程内推理）
 //!
-//! 本地引擎（faster-whisper / Qwen3-ASR）依赖 Python 推理运行时，尚未移植，见 [`unsupported_provider_message`]。
+//! 在线引擎（豆包 / ChatGPT）凭据齐备即就绪；本地引擎要在后台线程加载模型，
+//! 因此录制入口与文件转写都用 [`Engine::resolve`] / [`transcribe_local`] 这两个异步入口，
+//! 而不是同步的 [`Engine::online_from_settings`]。
 
 pub mod chatgpt;
 pub mod doubao;
+pub mod local;
 pub mod sauc;
 
 use crate::state::CoreState;
+use local::LocalKind;
+use std::sync::Arc;
 
 /// 从用户设置组装豆包配置。密钥优先级：用户设置（密文）> 环境变量 `DOUBAO_ASR_API_KEY`。
 pub fn doubao_config(core: &CoreState) -> doubao::DoubaoConfig {
@@ -52,38 +58,55 @@ pub fn chatgpt_config(core: &CoreState) -> chatgpt::ChatGptConfig {
     }
 }
 
-/// 尚未移植到 Rust 的引擎：给出可读提示（录音入口据此拒绝开始）。
-pub fn unsupported_provider_message(provider: &str) -> Option<String> {
-    match provider {
-        "doubao_asr" | "chatgpt_asr" => None,
-        "whisper" => Some("Tauri 版暂未接入本地 faster-whisper 引擎，请在设置中切换到「豆包语音」或「ChatGPT 听写」".into()),
-        "qwen_asr" => Some("Tauri 版暂未接入本地 Qwen3-ASR 引擎，请在设置中切换到「豆包语音」或「ChatGPT 听写」".into()),
-        other => Some(format!("未知的 ASR 引擎：{other}")),
-    }
+/// provider 是否是本地引擎（`whisper` / `qwen_asr`）。
+pub fn local_kind(provider: &str) -> Option<LocalKind> {
+    LocalKind::from_provider(provider)
 }
 
-/// 录音使用的在线引擎（按设置 `asr_provider` 选择）。
+/// 录音使用的引擎（按设置 `asr_provider` 选择；本地引擎持有已加载的模型句柄）。
 #[derive(Clone, Debug)]
 pub enum Engine {
     Doubao(doubao::DoubaoConfig),
     ChatGpt(chatgpt::ChatGptConfig),
+    Local(local::LocalEngine),
 }
 
 impl Engine {
-    /// 按当前设置选引擎并校验配置；不可用时返回可直接展示的原因。
-    pub fn from_settings(core: &CoreState) -> Result<Self, String> {
+    /// 只解析在线引擎（本地引擎要加载模型，见 [`Engine::resolve`]）。
+    pub fn online_from_settings(core: &CoreState) -> Result<Self, String> {
         let provider = core.settings().asr_provider;
-        if let Some(message) = unsupported_provider_message(&provider) {
-            return Err(message);
+        match provider.trim() {
+            "chatgpt_asr" => {
+                let config = chatgpt_config(core);
+                config.ensure()?;
+                Ok(Engine::ChatGpt(config))
+            }
+            "doubao_asr" | "" => {
+                let config = doubao_config(core);
+                config.ensure().map_err(|error| error.to_string())?;
+                Ok(Engine::Doubao(config))
+            }
+            other if LocalKind::from_provider(other).is_some() => Err(format!(
+                "{} 是本地引擎，请在异步入口（Engine::resolve）中加载",
+                LocalKind::from_provider(other).map(|kind| kind.label()).unwrap_or(other)
+            )),
+            other => Err(format!("未知的 ASR 引擎：{other}")),
         }
-        if provider == "chatgpt_asr" {
-            let config = chatgpt_config(core);
-            config.ensure()?;
-            return Ok(Engine::ChatGpt(config));
+    }
+
+    /// 按当前设置解析引擎：本地引擎在后台线程加载模型（首次使用约 1~5 秒）。
+    pub async fn resolve(core: Arc<CoreState>) -> Result<Self, String> {
+        let provider = core.settings().asr_provider;
+        match LocalKind::from_provider(&provider) {
+            Some(kind) => {
+                let loader = core.clone();
+                let engine = tokio::task::spawn_blocking(move || loader.local_models.get(&loader, kind))
+                    .await
+                    .map_err(|error| format!("加载本地模型任务失败：{error}"))??;
+                Ok(Engine::Local(engine))
+            }
+            None => Self::online_from_settings(&core),
         }
-        let config = doubao_config(core);
-        config.ensure().map_err(|e| e.to_string())?;
-        Ok(Engine::Doubao(config))
     }
 
     pub fn supports_streaming(&self) -> bool {
@@ -94,6 +117,7 @@ impl Engine {
         match self {
             Engine::Doubao(_) => "豆包语音",
             Engine::ChatGpt(_) => "ChatGPT 听写",
+            Engine::Local(engine) => engine.label(),
         }
     }
 
@@ -105,6 +129,56 @@ impl Engine {
                 let wav = crate::audio::wav_bytes_16k(samples).map_err(|e| format!("音频编码失败：{e}"))?;
                 chatgpt::transcribe_wav(config, wav, language).await
             }
+            Engine::Local(engine) => {
+                // 本地推理是纯 CPU/GPU 计算，必须离开异步运行时线程
+                let engine = engine.clone();
+                let language = language.to_string();
+                let samples = samples.to_vec();
+                tokio::task::spawn_blocking(move || engine.transcribe(&language, &samples).map(|outcome| outcome.text))
+                    .await
+                    .map_err(|error| format!("本地引擎任务失败：{error}"))?
+            }
         }
+    }
+}
+
+/// 本地引擎整段转写（阻塞推理丢到 blocking 线程池），返回 `(engine 标签, 结果)`。
+pub async fn transcribe_local(
+    core: Arc<CoreState>,
+    kind: LocalKind,
+    language: String,
+    samples: Vec<i16>,
+) -> Result<(String, local::LocalTranscript), String> {
+    tokio::task::spawn_blocking(move || {
+        let engine = core.local_models.get(&core, kind)?;
+        let model_label = engine.model_label();
+        let transcript = engine.transcribe(&language, &samples)?;
+        Ok::<_, String>((model_label, transcript))
+    })
+    .await
+    .map_err(|error| format!("本地转写任务失败：{error}"))?
+}
+
+/// 预热本地引擎（`/api/model-service/start`）：加载模型并跑一次极短推理。
+pub async fn warmup_local(core: Arc<CoreState>, kind: LocalKind) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let engine = core.local_models.get(&core, kind)?;
+        engine.warmup();
+        Ok::<_, String>(format!("{} 已就绪（{}）", engine.label(), engine.device()))
+    })
+    .await
+    .map_err(|error| format!("预热任务失败：{error}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_kind_识别本地_provider() {
+        assert_eq!(local_kind("whisper"), Some(LocalKind::Whisper));
+        assert_eq!(local_kind("qwen_asr"), Some(LocalKind::Qwen));
+        assert_eq!(local_kind("doubao_asr"), None);
+        assert_eq!(local_kind("chatgpt_asr"), None);
     }
 }

@@ -1,0 +1,10 @@
+# Windows MSVC 构建参数
+#
+# ct2rs（att-whisper 依赖）用 CMake **静态**编译 CTranslate2，且固定按静态 CRT（/MT）编译；
+# Rust 在 Windows 默认用动态 CRT（/MD），链接时会报
+# `error LNK2038: 检测到"RuntimeLibrary"的不匹配项: 值"MT_StaticRelease"不匹配值"MD_DynamicRelease"`。
+# ct2rs 的 README 对 Windows 的建议就是整个二进制统一用静态 CRT，这里照此设置（仅 Windows MSVC 生效）。
+#
+# 注意：改动本文件会让整个工作区重编译（rustflags 变化）。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

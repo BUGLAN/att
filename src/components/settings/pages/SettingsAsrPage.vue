@@ -21,9 +21,6 @@
             <span class="choice-desc">{{ engine.desc }}</span>
           </button>
         </div>
-        <div v-if="selectedPending" class="settings-note warn">
-          <span>桌面版暂未接入本地引擎：选中后录音会提示切换到在线引擎。下方配置会保留，接入后直接生效。</span>
-        </div>
       </div>
     </section>
 
@@ -264,13 +261,11 @@ import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import BaseInput from '@/components/common/BaseInput.vue'
 import BaseSelect from '@/components/common/BaseSelect.vue'
-import { useElectron } from '@/composables/useElectron'
 import { SETTINGS_CTX } from '../settingsContext.js'
 
 const { form, goSection } = inject(SETTINGS_CTX)
-const { isDesktop } = useElectron()
 
-// 桌面版（Tauri）只接入了在线引擎；本地引擎卡片保留但标「待接入」
+// 本地引擎（faster-whisper / Qwen3-ASR）在 Tauri 版已接入：进程内推理，模型目录见设置文档
 const engines = computed(() => [
   {
     value: 'doubao_asr',
@@ -289,20 +284,16 @@ const engines = computed(() => [
   {
     value: 'whisper',
     label: 'faster-whisper',
-    chip: isDesktop ? '本地 · 待接入' : '本地',
+    chip: '本地',
     tone: 'neutral',
-    desc: '离线识别，模型在本机运行',
-    pending: isDesktop
+    desc: '离线识别（CTranslate2 进程内推理），模型目录 models/faster_whisper'
   },
   {
     value: 'qwen_asr',
     label: 'Qwen3-ASR',
-    chip: isDesktop ? '本地 · 待接入' : '本地',
+    chip: '本地',
     tone: 'neutral',
-    desc: '离线识别，需要本地 GPU',
-    pending: isDesktop
+    desc: '离线识别（sherpa-onnx + ONNX，Qwen3-ASR-0.6B），CPU 即可'
   }
 ])
-
-const selectedPending = computed(() => engines.value.some((engine) => engine.pending && engine.value === form.value.asr_provider))
 </script>

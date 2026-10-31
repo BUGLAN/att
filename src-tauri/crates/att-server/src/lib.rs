@@ -229,14 +229,27 @@ struct EngineStatus {
 fn engine_status(core: &CoreState) -> EngineStatus {
     let settings = core.settings();
     let streaming = settings.recording_mode == "streaming";
-    match att_core::stt::Engine::from_settings(core) {
+    // 本地引擎（faster-whisper / Qwen3-ASR）：模型文件就位即可用，流式不支持
+    if let Some(kind) = att_core::stt::local_kind(&settings.asr_provider) {
+        let status = core.local_models.status(core, kind);
+        let streaming_error = streaming.then(|| format!("{}暂不支持流式录音，请使用单段或多段录音模式", kind.label()));
+        return EngineStatus {
+            ready: status.available && !streaming,
+            error: if status.available { streaming_error } else { status.error.or(streaming_error) },
+            streaming_supported: false,
+            streaming_available: false,
+            streaming_backend: None,
+            mode: "provider",
+        };
+    }
+    match att_core::stt::Engine::online_from_settings(core) {
         Err(message) => EngineStatus {
             ready: false,
             error: Some(message),
             streaming_supported: false,
             streaming_available: false,
             streaming_backend: None,
-            mode: if att_core::stt::unsupported_provider_message(&settings.asr_provider).is_some() { "provider" } else { "online" },
+            mode: "online",
         },
         Ok(engine) if engine.supports_streaming() => EngineStatus {
             ready: true,
@@ -464,19 +477,36 @@ async fn records_export(
     (StatusCode::OK, headers, body).into_response()
 }
 
-// ---- 模型服务（在线引擎：凭据配齐即就绪；本地引擎尚未移植） ----
+// ---- 模型服务（在线引擎：凭据配齐即就绪；本地引擎：start 真正加载并预热、stop 释放） ----
 
 fn model_service_payload(core: &CoreState) -> Value {
     let settings = core.settings();
     let engine = engine_status(core);
-    json!({
-        "managed": true,
-        "provider_type": settings.asr_provider,
-        "model_name": match settings.asr_provider.as_str() {
+    let local = att_core::stt::local_kind(&settings.asr_provider).map(|kind| core.local_models.status(core, kind));
+    let local_model_dir = local
+        .as_ref()
+        .and_then(|status| status.model_dir.as_ref())
+        .map(|path| path.display().to_string());
+    let model_name = match &local {
+        Some(status) => status
+            .model_dir
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .map(|name| Value::from(name.to_string()))
+            .unwrap_or(Value::Null),
+        None => match settings.asr_provider.as_str() {
             "doubao_asr" => Value::from("bigmodel"),
             "chatgpt_asr" => Value::from("chatgpt-dictation"),
             _ => Value::Null,
         },
+    };
+    json!({
+        "managed": true,
+        "provider_type": settings.asr_provider,
+        "model_name": model_name,
+        "model_dir": local_model_dir,
+        "device": local.as_ref().and_then(|status| status.device.clone()),
         "recording_mode": settings.recording_mode,
         "loading": false,
         "running": engine.ready,
@@ -500,8 +530,14 @@ async fn model_service_status(State(state): State<Arc<ServerState>>) -> Json<Val
     Json(model_service_payload(&state.core))
 }
 
-/// 在线引擎无需加载：就绪时直接回报状态，否则返回不可用原因。
+/// 本地引擎：加载模型并预热（首次 1~5 秒）；在线引擎：就绪即回报，否则返回不可用原因。
 async fn model_service_start(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+    if let Some(kind) = att_core::stt::local_kind(&state.core.settings().asr_provider) {
+        return match att_core::stt::warmup_local(state.core.clone(), kind).await {
+            Ok(_) => (StatusCode::OK, Json(model_service_payload(&state.core))).into_response(),
+            Err(detail) => err(StatusCode::SERVICE_UNAVAILABLE, detail).into_response(),
+        };
+    }
     let payload = model_service_payload(&state.core);
     if payload["ready"].as_bool().unwrap_or(false) {
         return (StatusCode::OK, Json(payload)).into_response();
@@ -510,7 +546,9 @@ async fn model_service_start(State(state): State<Arc<ServerState>>) -> impl Into
     err(StatusCode::SERVICE_UNAVAILABLE, detail).into_response()
 }
 
-async fn model_service_stop() -> Json<Value> {
+/// 停止：本地引擎释放模型（在线引擎无本地资源，直接回报）。
+async fn model_service_stop(State(state): State<Arc<ServerState>>) -> Json<Value> {
+    state.core.local_models.unload(None);
     Json(json!({ "success": true, "running": false, "loading": false, "ready": false }))
 }
 
