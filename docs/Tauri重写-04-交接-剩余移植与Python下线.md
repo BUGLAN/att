@@ -19,13 +19,17 @@
 
 | # | 能力 | Python 位置 | 状态 |
 | --- | --- | --- | --- |
-| 1 | 本地 faster-whisper 引擎（录音单段/多段 + 文件转写） | `app/stt/providers/whisper_provider.py` | 未移植，选中时报错提示 |
-| 2 | 本地 Qwen3-ASR 引擎（批量 + 流式；本地 vLLM 或远端桥接） | `app/stt/providers/qwen_*`、`scripts/qwen_streaming_service.py` | 未移植 |
-| 3 | 本地模型服务启停 / 预热（`/api/model-service/start|stop` 的本地语义） | `app/services/model_service*.py` | Rust 只有在线引擎语义 |
-| 4 | 浏览器网页模式 + Docker 部署（`/api/audio/upload`、`/api/sessions*`、WS） | `app/api/routers/records.py|sessions.py`、`docker/` | 501 |
-| 5 | 数据维护 CLI：孤儿/残留清理、卡死状态收敛、数据目录迁移 | `scripts/housekeeping.py`、`scripts/migrate_data.py`、`app/repositories/housekeeping.py` | 未移植 |
+| 1 | 本地 faster-whisper 引擎（录音单段/多段 + 文件转写） | `app/stt/providers/whisper_provider.py` | ✅ 已移植（`crates/att-whisper`，ct2rs/CTranslate2，复用旧模型），见 §1 |
+| 2 | 本地 Qwen3-ASR 引擎（批量 + 流式；本地 vLLM 或远端桥接） | `app/stt/providers/qwen_*`、`scripts/qwen_streaming_service.py` | ✅ 批量已移植（`crates/att-qwen`，sherpa-onnx + ONNX，进程内），见 §2；**流式**未移植（保持提示） |
+| 3 | 本地模型服务启停 / 预热（`/api/model-service/start\|stop` 的本地语义） | `app/services/model_service*.py` | ✅ 已实现：`start` 加载+预热、`stop` 释放，见 §1.3 |
+| 4 | 浏览器网页模式 + Docker 部署（`/api/audio/upload`、`/api/sessions*`、WS） | `app/api/routers/records.py\|sessions.py`、`docker/` | 501（建议放弃，见 §3） |
+| 5 | 数据维护 CLI：孤儿/残留清理、卡死状态收敛、数据目录迁移 | `scripts/housekeeping.py`、`scripts/migrate_data.py`、`app/repositories/housekeeping.py` | 未移植（见 §4） |
 
-## 1. 本地 faster-whisper 引擎（建议移植）
+## 1. 本地 faster-whisper 引擎（✅ 已移植，2026-10-31）
+
+> 落地情况见 `docs/Tauri重写-03a-实施记录.md` §10；本节的 1.1/1.2 保留为**设计依据与验收口径**。
+> 实现选了 §1.2 表格里的 **ct2rs**（CTranslate2 Rust 绑定），新增 crate `crates/att-whisper`；
+> 设备/精度按设置推导（`auto` = 有 CUDA 编译时用 GPU float16，否则 CPU int8），CUDA 失败自动回退 CPU。
 
 ### 1.1 必须复刻的 Python 行为
 
@@ -63,7 +67,19 @@
 - 实机：单段录音 / 多段录音 / 文件转写（mp4、mp3）各一次，结果与 Python 版同一文件对比（文本基本一致、分段时间戳合理）。
 - 冷启动预热耗时、显存占用记入实施记录。
 
-## 2. 本地 Qwen3-ASR（需要先决策）
+## 2. 本地 Qwen3-ASR（✅ 批量已移植，2026-10-31；流式仍未支持）
+
+> **结论：两个候选方案（放弃 / 远端桥接）都不必选**。sherpa-onnx 已支持 Qwen3-ASR（C API 有
+> `SherpaOnnxOfflineQwen3ASRModelConfig`），官方还导出了 ONNX 模型
+> `sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`，Windows 有预编译动态库。因此走第三条路：
+> 新增 crate `crates/att-qwen`，C 桥（`src/shim.c`，vendored `c-api.h`）在运行期 dlopen sherpa-onnx，
+> **进程内 CPU 推理**，不引入 Python、不引入外部服务。
+>
+> - 批量（录音单段/多段 + 文件转写）✅ 可用；长音频按 §3.3 的静音切点分块（算法已复刻）。
+> - 流式（`recording_mode=streaming`）仍不支持：ONNX 模型没有流式接口，命中时给出可读提示。
+> - 模型是 **0.6B int8**（Python 版默认 1.7B），中文效果实测接近；语言参数在 sherpa 配置里不存在，由模型自判。
+
+### 原设计（保留备查）
 
 Python 版依赖 `transformers`/vLLM 推理，**Rust 侧没有成熟等价方案**。可选：
 
@@ -122,3 +138,27 @@ Tauri 版录音完全在 Rust Actor 内完成，网页模式只服务旧架构�
 
 验收：`node scripts/run-node-tests.mjs`、`cargo test --workspace`、`npm run build`、`npm run tauri:build` 全部通过；
 `git grep -n "python\|electron"` 只剩历史文档与迁移代码中的合理引用。
+
+> 注意（2026-10-31 之后的现状）：本地 Whisper / Qwen3-ASR 已是 Rust 原生实现（`crates/att-whisper`、
+> `crates/att-qwen`），删 `app/`、`scripts/*.py` **不会**丢引擎能力；只是 `scripts/qwen_streaming_service.py`
+> 对应的「流式 Qwen」能力本就未移植（见 §2），删除后该能力一并消失，设置页在 `streaming` 模式下会提示不支持。
+
+## 7. 本地模型与推理库准备（不随仓库分发）
+
+`models/` 与 `src-tauri/target/` 都在 `.gitignore` 里，换机器/新克隆后按下面准备；路径都可用环境变量改：
+`ATT_MODELS_DIR`（模型根目录，默认 `models/`）、`ATT_SHERPA_ONNX_DIR`（sherpa 动态库目录，默认 `models/sherpa-onnx`）、
+`ATT_WHISPER_COMPUTE_TYPE`（whisper 精度，默认 auto：CUDA→float16、CPU→int8）、`ATT_QWEN_THREADS`（ONNX 线程数，默认 2）。
+
+| 组件 | 位置 | 获取方式 |
+| --- | --- | --- |
+| faster-whisper（CTranslate2 large-v3） | `models/faster_whisper/`（含 `model.bin`、`tokenizer.json`、`preprocessor_config.json`） | 旧版 Python 已下载过就直接复用；否则 `pip install ctranslate2 transformers && ct2-transformers-converter --model openai/whisper-large-v3 --output_dir models/faster_whisper --copy_files tokenizer.json preprocessor_config.json` |
+| Qwen3-ASR（ONNX） | `models/qwen3-asr-0.6B-int8/`（`conv_frontend.onnx` / `encoder.int8.onnx` / `decoder.int8.onnx` / `tokenizer/`） | `wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2 && tar xvf … -C models/` |
+| sherpa-onnx 动态库 | `models/sherpa-onnx/`（`sherpa-onnx-c-api.dll` + `onnxruntime.dll` 等） | Windows：`sherpa-onnx-v2.0.1-win-x64-shared-MD-Release-lib.tar.bz2`（Release 页 assets），解压出 `lib/` 的内容即可；macOS 用 `…-osx-universal2-shared-lib.tar.bz2`、Linux 用 `…-linux-x64-shared-lib.tar.bz2` |
+
+注意：
+
+1. Windows 上**不要**让 `C:\Windows\System32\onnxruntime.dll`（其它软件装的旧版）被解析到——`shim.c` 已会先按绝对路径
+   预加载推理库同目录的 ORT，但如果 `models/sherpa-onnx/` 里缺 `onnxruntime.dll`，仍会崩在 sherpa 的 API 版本检查上。
+2. 打包（`npm run tauri:build`）时 sherpa 的 DLL 必须落到 exe 同目录才找得到，当前**尚未接入打包配置**；
+   未配置时安装版里 Qwen 引擎会因缺库返回可读错误，Whisper 不受影响。
+3. 首次 `cargo build` 会编译 CTranslate2 + oneDNN（Windows i9/16 核约 10~20 分钟），之后增量很快。

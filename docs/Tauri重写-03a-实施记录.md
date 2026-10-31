@@ -177,6 +177,98 @@ custom 档案改 API Base 为空会被拒绝（Python 版放行后会导致调�
 
 | 项 | 原因 / 现状 |
 | --- | --- |
-| 本地 faster-whisper / Qwen3-ASR（录音与文件转写） | 依赖 Python 推理运行时（CTranslate2 / transformers）与本地模型；Rust 侧需要换 whisper.cpp（ggml 模型 + cmake 构建）等方案，属于单独的引擎移植。现在选中会给出明确提示，文件转写页在桌面端缺省改用豆包 |
+| ~~本地 faster-whisper / Qwen3-ASR（录音与文件转写）~~ | **已对齐（2026-10-31）**：`crates/att-whisper`（ct2rs/CTranslate2）与 `crates/att-qwen`（sherpa-onnx ONNX）都是进程内推理，见 §10 |
+| Qwen 流式（`recording_mode=streaming`） | ONNX 导出版没有流式接口；流式仍只支持豆包 |
 | `/api/audio/upload`、`/api/sessions*` | 只服务于「浏览器里跑前端 + Python 后端」的旧录音路径；Tauri 版录音完全在 Rust Actor 内完成，这两组端点保持 501 |
-| 本地模型服务启停（`/api/model-service/start|stop`） | 仅对本地引擎有意义，随本地引擎一起移植 |
+| 本地模型服务启停（`/api/model-service/start\|stop`） | 已对齐：`start` 加载并预热、`stop` 释放（在线引擎仍无本地资源） |
+
+## 10. 本地引擎接入：faster-whisper 与 Qwen3-ASR（2026-10-31，Windows 实机）
+
+### 10.1 结论
+
+| 引擎 | 实现 | 模型 | 状态 |
+| --- | --- | --- | --- |
+| faster-whisper | 新 crate `att-whisper`：CTranslate2 的 Rust 绑定 **ct2rs**，**直接复用旧版 `models/faster_whisper`（CT2 large-v3，2.9GB）** | 无需重下 | 单段/多段/文件转写可用，含真实分段时间戳 |
+| Qwen3-ASR | 新 crate `att-qwen`：sherpa-onnx C API（运行期 `dlopen`）+ C 桥 `src/shim.c` + 官方 ONNX 导出 | `qwen3-asr-0.6B-int8`（940MB） | 批量可用（录音/文件转写），**流式仍不支持** |
+
+两个引擎都是**进程内推理**，不依赖 Python、不依赖外部服务。模型与推理库不随仓库分发（下载清单见 04 号文档 §7）。
+
+### 10.2 方案取舍
+
+| 候选 | 结论 |
+| --- | --- |
+| **ct2rs**（CTranslate2 Rust 绑定） | ✅ Whisper 采用。复用现有 `model.bin`；CMake 静态编译约 3 分钟；提供 `generate_segments`（分段 + 词级时间戳）与 `Config{device, compute_type}` |
+| whisper-rs（whisper.cpp） | ❌ 要另下 ggml 权重（large-v3 约 3GB），与现有 CT2 模型不通用 |
+| Python 桥接 / 远端服务 | ❌ 与「下线 Python」冲突；流式桥接依赖 vLLM，Windows 无官方轮子 |
+| transformers / vLLM 跑 Qwen（Python 路线） | ❌ Rust 侧无对应推理栈 |
+| **sherpa-onnx + ONNX 导出版 Qwen3-ASR** | ✅ Qwen 采用。C API 有 `SherpaOnnxOfflineQwen3ASRModelConfig`，Windows 有预编译动态库（v2.0.1） |
+
+### 10.3 落地的代码
+
+| 位置 | 内容 |
+| --- | --- |
+| `crates/att-whisper` | 模型目录解析（含 `models/faster_whisper` 与 HF `snapshots/` 布局）、设备/精度推导（`auto` = CUDA 可编译则 GPU float16，否则 CPU int8）、CUDA 加载失败回退 CPU、能量法首尾静音裁剪、`generate_segments` 出分段时间戳、内部串行闸门 |
+| `crates/att-qwen` | `build.rs` 只编译自带 C 桥；`src/shim.c` 用 `LoadLibrary/dlopen` 运行期加载 sherpa-onnx（含 ORT 依赖预加载），暴露「Qwen 识别」与「Silero VAD」两组函数；`src/lib.rs` 负责模型/推理库探测、静音切点分块（复刻 Python `_silence_cut_points`/`_plan_chunks`）、结果整形；`src/vad.rs` 是 VAD 封装 |
+| `att-core/stt/local.rs` | 常驻池（懒加载、设置指纹失效、可显式卸载）、就绪性探测（只看文件不动模型）、`LocalEngine` 统一两个引擎的转写入口；**Whisper 前置 Silero VAD**（见 10.5） |
+| `att-core/stt/mod.rs` | `Engine::Local` 变体；`online_from_settings`（同步，只解析在线引擎）与 `resolve`（异步，本地引擎在 blocking 线程池加载）；`transcribe_local` / `warmup_local` |
+| `att-core/transcribe/mod.rs` | `resolve_engine` 恢复「显式 > auto（本地优先）」语义；本地引擎走 `transcribe_local`，分段时间戳原样进 payload；豆包路径抽成 `run_doubao` |
+| `att-server` | `engine_status` 本地语义（`mode="provider"`，流式明确不支持）；`/api/model-service/start` 真正加载+预热、`/stop` 释放；payload 增加 `model_dir`/`device` |
+| 前端 | 设置页去掉「本地 · 待接入」；文件转写缺省引擎改回 `whisper`（桌面端与网页端一致） |
+| `src-tauri/.cargo/config.toml` | Windows MSVC 统一 `+crt-static`（见 10.5） |
+
+### 10.4 实测（RTX 5090 / Windows 11 / large-v3 + Qwen3-ASR-0.6B-int8）
+
+测试音频：`models/qwen3-asr-0.6B-int8/test_wavs/{noise2,raokouling}.wav`（sherpa-onnx 官方样例）。
+
+| 场景 | 实现 | 耗时 | 实时率 |
+| --- | --- | --- | --- |
+| Whisper large-v3，22.8s，CPU（ct2rs 默认 `ruy` 后端、int8） | 首版 | 220.96s | 9.7× ❌ 不可用 |
+| Whisper large-v3，22.8s，CPU（`dnnl` oneDNN + OpenMP、int8） | 现版 | 33.27s | 1.46× |
+| Whisper large-v3，20.8s（VAD 裁到 17.7s 语音），CPU + Silero VAD | 现版 | 40.9s（含约 10s 模型加载 + VAD） | 2.0× |
+| Qwen3-ASR-0.6B-int8，22.8s，CPU 2 线程 | 现版 | 4.7~11.1s（随机器负载） | 0.21~0.49× ✅ |
+| 对照：Python faster-whisper large-v3，CUDA float16，20.8s | 旧版 | 3.47s | 0.17× |
+
+文本对照（同一段 20.8s 中文绕口令，Whisper）：
+
+| 实现 | 输出 |
+| --- | --- |
+| Python（CUDA float16，`vad_filter=True`） | 广西壮族自治区爱吃红鲤鱼绿鲤鱼鱼的出租车司机拉着苗族土家族自治州爱喝自治的流奶奶榴莲牛奶的骨质疏通症患者 遇见别着喇叭的哑巴 打败姚子山前44颗死色狮子树的44只狮子之后… |
+| Rust（CPU int8，Silero VAD 分段） | 广西壮族自治区爱吃红鲤鱼 绿鲤鱼 绿鲤鱼的出租车司机拉着苗族土家族自治州爱喝自治的牛奶奶 榴莲牛奶的骨质疏通症患者遇见别着喇叭的哑巴 打败姚子山前44颗死色狮子树的44只狮子之后… |
+| Rust（去掉 VAD，整段送模型） | **请不吝点赞 订阅 转发 打赏支持明镜与点点栏目** ❌（Whisper 经典幻觉） |
+
+Qwen 文本对照（22.8s 电话语音）：
+
+| 实现 | 输出 |
+| --- | --- |
+| Python `qwen_asr` 1.7B（CUDA） | 拨号。请再说一次，请说出你要拨打的号码。幺三五八幺八八七五五七。一三五八二八八八幺八八。纠正纠正。九六九。纠正纠正，不是九六。 |
+| Rust（0.6B int8，CPU） | 拨号，请再说一次，请说出你要拨打的号码：幺三五八幺八八七五五七。一三五八二八八八幺八八。八七五五。有建筑摄像，有建筑一百公里。纠正，纠正，九六九。纠正，纠正，不是九六。 |
+
+（0.6B 小模型在噪声段多补了半句幻觉，其余一致；要更强中文效果可换 Modelscope 上的 1.7B ONNX 导出版。）
+
+验证命令（断言：文本非空、分段单调、分块不超上限、缓存落盘）：
+
+```bash
+ATT_TEST_WAV=<16k.wav> cargo test -p att-whisper --test real_model -- --ignored --nocapture
+ATT_TEST_WAV=<16k.wav> cargo test -p att-qwen    --test real_model -- --ignored --nocapture
+ATT_TEST_WAV=<任意音频> cargo test -p att-core   --test local_engine_wiring -- --ignored --nocapture
+```
+
+### 10.5 踩坑与修复（都是 Windows 实机才暴露的）
+
+| 坑 | 现象 | 修复 |
+| --- | --- | --- |
+| MSVC 代码页 | `shim.c` 里的中文错误文案按 GBK 解析 → `error C2001: 常量中有换行符` | `build.rs` 给 cl 加 `/utf-8` |
+| CRT 不匹配 | `LNK2038: RuntimeLibrary 值“MT_StaticRelease”不匹配“MD_DynamicRelease”`（ct2rs 固定按 /MT 编 CTranslate2） | `src-tauri/.cargo/config.toml` 对 Windows MSVC 加 `+crt-static`（ct2rs README 的建议做法） |
+| 系统 ORT 抢占 | `C:\Windows\System32\onnxruntime.dll`（1.17，别的软件装的）先被解析 → `requested API version [28] is not available` + `STATUS_ACCESS_VIOLATION` | `shim.c` 加载 sherpa 前，先把推理库同目录的 `onnxruntime.dll` 按绝对路径预加载 |
+| CPU 后端 | 默认 `ruy`（纯 float32、无并行）→ RTF 9.7 | 打开 ct2rs 的 `dnnl` + `openmp-runtime-comp` → RTF 1.46 |
+| 缺 VAD 的幻觉 | 音乐/噪声素材上整段输出固定字幕模板文本；**用 Python `vad_filter=False` 复现同样输出**，证明不是接线问题 | 复用 sherpa-onnx 自带的 Silero VAD（`att-qwen::vad`），Whisper 按语音区间分段推理 |
+| 模型目录布局 | Python 版的 `download_root` 直接就是 `models/faster_whisper` | 探测候选里补上 `faster_whisper` / `faster-whisper` |
+
+### 10.6 已知限制（后续项）
+
+1. **CUDA 未验证**：`att-whisper` 有 `cuda` 特性（`ct2rs/cuda` + `cudnn` + `cuda-dynamic-loading`），但本机没装 cuDNN SDK（Python 的 CT2 wheel 自带运行库、没有头文件），所以 GPU 路径没有实编译验证；CPU 下 large-v3 是 1.5 倍音频时长，实时录音可用、长文件转写偏慢。
+2. **打包**：sherpa-onnx 的 DLL（`sherpa-onnx-c-api.dll` / `onnxruntime.dll`）目前只在开发态从 `models/sherpa-onnx/` 加载，`bundle` 配置未加，安装版里 Qwen 会因缺库报错（Whisper 不受影响）。
+3. **Qwen 流式**：ONNX 模型没有流式接口，`recording_mode=streaming` 下仍提示不支持（豆包才是流式引擎）。
+4. **Qwen 精度/模型**：默认 0.6B int8（Python 版 1.7B）；`qwen_asr_device`/`dtype`/`use_forced_aligner` 等设置项在当前实现里不生效（ONNX CPU + 无强制对齐），设置页字段保留但会被忽略。
+5. **语言概率**：CTranslate2 不返回 `language_probability`，payload 里不体现；Qwen 语言由模型自判（sherpa 配置没有语言参数）。
+6. **首次加载延迟**：本地模型懒加载，首次录音/转写要等 5~15 秒（large-v3 加载），之后常驻。
