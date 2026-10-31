@@ -10,8 +10,8 @@ export const SETTINGS_SECTIONS = Object.freeze([
     id: 'recording',
     group: '通用',
     label: '录音',
-    desc: '录音模式、输入设备与录音期间的系统行为。',
-    keywords: ['录音模式', '单段', '多段', '流式', '静音分段', '阈值', '麦克风', '输入设备', '暂停其他音频', '静音']
+    desc: '输入设备与录音期间的系统行为。',
+    keywords: ['麦克风', '输入设备', '暂停其他音频', '静音']
   },
   {
     id: 'hotkey',
@@ -31,8 +31,8 @@ export const SETTINGS_SECTIONS = Object.freeze([
     id: 'asr',
     group: '语音识别',
     label: '识别引擎',
-    desc: '选择识别引擎；下方只显示当前引擎需要的配置。',
-    keywords: ['引擎', 'asr', '豆包', 'token', 'resource id', '接入点', 'chatgpt', '令牌', 'whisper', 'qwen', '识别语言', '语言']
+    desc: '选择识别引擎与录音模式；下方只显示当前引擎需要的配置。',
+    keywords: ['引擎', 'asr', '豆包', 'token', 'resource id', '接入点', 'chatgpt', '令牌', 'whisper', 'qwen', '识别语言', '语言', '录音模式', '单段', '多段', '流式', '静音分段', '阈值', '本地模型', '加载']
   },
   {
     id: 'llm',

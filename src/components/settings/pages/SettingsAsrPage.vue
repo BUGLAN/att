@@ -1,5 +1,6 @@
 <template>
   <div class="settings-stack">
+    <!-- 引擎与录音模式放在一起选：流式只有豆包支持，切引擎时能立刻看到哪些模式可用 -->
     <section class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">识别引擎</h3>
@@ -9,17 +10,61 @@
             :key="engine.value"
             type="button"
             role="radio"
-            class="choice-card"
-            :class="{ 'is-muted': engine.pending }"
+            class="choice-card engine-card"
+            :class="{ 'is-loading': engine.loading }"
             :aria-checked="form.asr_provider === engine.value ? 'true' : 'false'"
-            @click="form.asr_provider = engine.value"
+            :aria-busy="engine.loading ? 'true' : undefined"
+            @click="selectEngine(engine.value)"
           >
-            <span class="choice-head">
-              <span class="choice-title">{{ engine.label }}</span>
-              <BaseBadge :tone="engine.tone">{{ engine.chip }}</BaseBadge>
+            <span class="choice-title">{{ engine.label }}</span>
+            <!-- 状态只用一个小圆点 + 灰字，不做成像按钮的徽章 -->
+            <span class="engine-meta" :class="`is-${engine.tone}`">
+              <span class="engine-dot" aria-hidden="true"></span>{{ engine.chip }}
             </span>
             <span class="choice-desc">{{ engine.desc }}</span>
+            <!-- 加载中：卡片底边一道扫过的光带，详细状态见下方引擎配置区的「模型状态」 -->
+            <span v-if="engine.loading" class="engine-card-progress" aria-hidden="true"></span>
           </button>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3 class="settings-group-title">录音模式</h3>
+        <div class="choice-grid" role="radiogroup" aria-label="录音模式">
+          <button
+            v-for="mode in recordingModes"
+            :key="mode.value"
+            type="button"
+            role="radio"
+            class="choice-card"
+            :class="{ 'is-muted': mode.disabled }"
+            :aria-checked="form.recording_mode === mode.value ? 'true' : 'false'"
+            :aria-disabled="mode.disabled ? 'true' : undefined"
+            :title="mode.hint || undefined"
+            @click="selectRecordingMode(mode)"
+          >
+            <span class="choice-title">{{ mode.label }}</span>
+            <span class="choice-desc">{{ mode.disabled ? mode.hint : mode.desc }}</span>
+          </button>
+        </div>
+
+        <div v-if="modeConflict" class="settings-note warn">
+          <span>{{ modeConflict }}</span>
+        </div>
+        <div
+          v-else-if="form.recording_mode === 'streaming'"
+          class="settings-note"
+          :class="{ warn: !streamingRuntimeAvailable }"
+        >
+          <span>{{ streamingRuntimeSummary }}</span>
+        </div>
+
+        <div v-if="form.recording_mode === 'multi'" class="setting-item settings-advanced">
+          <div class="setting-info">
+            <span class="setting-label">静音分段阈值</span>
+            <span class="setting-desc">秒。静音持续超过该时长即切出一段送去识别。</span>
+          </div>
+          <BaseInput v-model.number="form.silence_threshold" type="number" min="0.5" max="5" step="0.5" aria-label="静音分段阈值" />
         </div>
       </div>
     </section>
@@ -119,16 +164,13 @@
             <BaseInput v-model.trim="form.chatgpt_asr_endpoint" type="text" placeholder="https://chatgpt.com/backend-api/transcribe" aria-label="端点" />
           </div>
         </details>
-        <div v-if="form.recording_mode === 'streaming'" class="settings-note warn">
-          <span>ChatGPT 听写只支持单段 / 多段录音，当前录音模式是「流式」。</span>
-          <BaseButton variant="outline" size="sm" @click="goSection('recording')">去切换</BaseButton>
-        </div>
       </div>
     </section>
 
     <section v-if="form.asr_provider === 'whisper'" class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">faster-whisper · 本地模型</h3>
+        <LocalModelStatus :view="localView" />
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">模型</span>
@@ -159,6 +201,7 @@
     <section v-if="form.asr_provider === 'qwen_asr'" class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">Qwen3-ASR · 本地模型</h3>
+        <LocalModelStatus :view="localView" />
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">模型</span>
@@ -256,14 +299,107 @@
 </template>
 
 <script setup>
-import { computed, inject } from 'vue'
-import BaseBadge from '@/components/common/BaseBadge.vue'
-import BaseButton from '@/components/common/BaseButton.vue'
+import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import BaseInput from '@/components/common/BaseInput.vue'
 import BaseSelect from '@/components/common/BaseSelect.vue'
+import { useAppStore } from '@/stores/app'
+import LocalModelStatus from '../LocalModelStatus.vue'
+import { useSettingsStore } from '@/stores/settings'
 import { SETTINGS_CTX } from '../settingsContext.js'
+import {
+  localEngineView,
+  recordingModeConflict,
+  recordingModeOptions
+} from '../asrEngineStatus.mjs'
 
-const { form, goSection } = inject(SETTINGS_CTX)
+const { form, streamingRuntimeAvailable, streamingRuntimeSummary } = inject(SETTINGS_CTX)
+const appStore = useAppStore()
+const settingsStore = useSettingsStore()
+
+const LOCAL_STATUS_POLL_MS = 1000
+
+const recordingModes = computed(() => recordingModeOptions(form.value.asr_provider))
+const modeConflict = computed(() => recordingModeConflict(form.value.asr_provider, form.value.recording_mode))
+// 「提前加载 / 重试」请求进行中：后端可能还没来得及置位 loading，前端先按加载中展示
+const isLoadingModel = ref(false)
+const localView = computed(() => {
+  const provider = form.value.asr_provider
+  const status = isLoadingModel.value ? { provider, loading: true } : settingsStore.runtimeStatus.local_engine
+  return localEngineView(provider, status)
+})
+
+// 点引擎卡片：切换引擎；再点已选中的本地引擎 = 提前加载（未加载时）或重试（加载失败时），界面上不另放按钮
+function selectEngine(value) {
+  if (form.value.asr_provider === value && ['idle', 'failed'].includes(localView.value.state)) {
+    loadLocalModel()
+    return
+  }
+  form.value.asr_provider = value
+}
+
+function selectRecordingMode(mode) {
+  if (mode.disabled) {
+    appStore.showToast(`${mode.hint}，请先切换到豆包语音`)
+    return
+  }
+  form.value.recording_mode = mode.value
+}
+
+// 切到本地引擎后后端在后台预加载：加载中每秒刷新一次状态，结束（就绪/失败/缺模型）即停
+let pollTimer = null
+
+function stopPolling() {
+  if (pollTimer) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+watch(() => localView.value.state === 'loading', (loading) => {
+  if (!loading) {
+    stopPolling()
+    return
+  }
+  if (pollTimer) {
+    return
+  }
+  pollTimer = window.setInterval(() => {
+    settingsStore.loadRuntimeStatus(false).catch(() => {
+      // 单次探测失败不打断轮询：下一拍再试
+    })
+  }, LOCAL_STATUS_POLL_MS)
+}, { immediate: true })
+
+onBeforeUnmount(stopPolling)
+
+async function loadLocalModel() {
+  if (isLoadingModel.value) {
+    return
+  }
+  isLoadingModel.value = true
+  try {
+    await settingsStore.startStreamingService(true)
+    await settingsStore.loadRuntimeStatus(false)
+  } catch (error) {
+    appStore.showToast(error.message || '模型加载失败')
+    await settingsStore.loadRuntimeStatus(false).catch(() => {})
+  } finally {
+    isLoadingModel.value = false
+  }
+}
+
+// 本地引擎的卡片徽章跟随加载状态（只描述当前选中的那个；其余显示「本地」）
+function localChip(value) {
+  if (form.value.asr_provider !== value || localView.value.state === 'none') {
+    return { chip: '本地', tone: 'neutral', loading: false }
+  }
+  return {
+    chip: `本地 · ${localView.value.chip}`,
+    // 加载中用强调金，与卡片底边的光带同色
+    tone: localView.value.state === 'loading' ? 'accent' : localView.value.tone,
+    loading: localView.value.state === 'loading'
+  }
+}
 
 // 本地引擎（faster-whisper / Qwen3-ASR）在 Tauri 版已接入：进程内推理，模型目录见设置文档
 const engines = computed(() => [
@@ -284,16 +420,82 @@ const engines = computed(() => [
   {
     value: 'whisper',
     label: 'faster-whisper',
-    chip: '本地',
-    tone: 'neutral',
-    desc: '离线识别（CTranslate2 进程内推理），模型目录 models/faster_whisper'
+    ...localChip('whisper'),
+    desc: '离线识别（CTranslate2 进程内推理），模型放 models/ 下，单段 / 多段'
   },
   {
     value: 'qwen_asr',
     label: 'Qwen3-ASR',
-    chip: '本地',
-    tone: 'neutral',
-    desc: '离线识别（sherpa-onnx + ONNX，Qwen3-ASR-0.6B），CPU 即可'
+    ...localChip('qwen_asr'),
+    desc: '离线识别（sherpa-onnx + ONNX，Qwen3-ASR-0.6B），CPU 即可，单段 / 多段'
   }
 ])
 </script>
+
+<style scoped>
+.engine-card {
+  position: relative;
+  overflow: hidden;
+}
+
+/* 选中的本地引擎加载中：底边 2px 金色光带来回扫过 */
+.engine-card-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent-faint);
+  overflow: hidden;
+}
+
+.engine-card-progress::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: engine-sweep 1.4s var(--ease) infinite;
+}
+
+.engine-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-cap);
+  color: var(--text-3);
+  --dot: var(--text-3);
+}
+
+.engine-meta.is-ok { --dot: var(--ok); }
+.engine-meta.is-warn { --dot: var(--warn); }
+.engine-meta.is-err { --dot: var(--err); }
+.engine-meta.is-accent { --dot: var(--accent); }
+
+.engine-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dot);
+}
+
+.engine-meta.is-accent .engine-dot {
+  animation: engine-pulse 1.4s var(--ease) infinite;
+}
+
+@keyframes engine-pulse {
+  50% { opacity: 0.35; }
+}
+
+@keyframes engine-sweep {
+  from { left: -40%; }
+  to { left: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .engine-meta.is-accent .engine-dot { animation: none; }
+  .engine-card-progress::after { animation: none; left: 0; width: 100%; opacity: 0.5; }
+}
+</style>
