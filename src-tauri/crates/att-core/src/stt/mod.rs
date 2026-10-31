@@ -5,9 +5,10 @@
 //! - [`chatgpt`]：ChatGPT 听写（在线批量，不支持流式）
 //! - [`local`]：本地引擎装配与常驻池（faster-whisper / Qwen3-ASR，进程内推理）
 //!
-//! 在线引擎（豆包 / ChatGPT）凭据齐备即就绪；本地引擎要在后台线程加载模型，
-//! 因此录制入口与文件转写都用 [`Engine::resolve`] / [`transcribe_local`] 这两个异步入口，
-//! 而不是同步的 [`Engine::online_from_settings`]。
+//! 在线引擎（豆包 / ChatGPT）凭据齐备即就绪；本地引擎要在后台线程加载模型（large-v3 在 CPU 上
+//! 要十几秒），所以 [`Engine::resolve`] 只校验模型文件、随即在后台预加载（[`preload_local`]），
+//! 录音立刻开始；真正推理时（[`Engine::transcribe_pcm`] / [`transcribe_local`]）再取常驻句柄，
+//! 若还在加载就在 blocking 线程上等它加载完。
 
 pub mod chatgpt;
 pub mod doubao;
@@ -63,12 +64,25 @@ pub fn local_kind(provider: &str) -> Option<LocalKind> {
     LocalKind::from_provider(provider)
 }
 
-/// 录音使用的引擎（按设置 `asr_provider` 选择；本地引擎持有已加载的模型句柄）。
+/// 本地引擎的延迟句柄：录音开始时不等模型加载，推理时才从常驻池取（必要时等加载完成）。
+#[derive(Clone)]
+pub struct LocalHandle {
+    core: Arc<CoreState>,
+    kind: LocalKind,
+}
+
+impl std::fmt::Debug for LocalHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalHandle").field("kind", &self.kind).finish()
+    }
+}
+
+/// 录音使用的引擎（按设置 `asr_provider` 选择）。
 #[derive(Clone, Debug)]
 pub enum Engine {
     Doubao(doubao::DoubaoConfig),
     ChatGpt(chatgpt::ChatGptConfig),
-    Local(local::LocalEngine),
+    Local(LocalHandle),
 }
 
 impl Engine {
@@ -87,25 +101,26 @@ impl Engine {
                 Ok(Engine::Doubao(config))
             }
             other if LocalKind::from_provider(other).is_some() => Err(format!(
-                "{} 是本地引擎，请在异步入口（Engine::resolve）中加载",
+                "{} 是本地引擎，请用 Engine::resolve 解析",
                 LocalKind::from_provider(other).map(|kind| kind.label()).unwrap_or(other)
             )),
             other => Err(format!("未知的 ASR 引擎：{other}")),
         }
     }
 
-    /// 按当前设置解析引擎：本地引擎在后台线程加载模型（首次使用约 1~5 秒）。
-    pub async fn resolve(core: Arc<CoreState>) -> Result<Self, String> {
+    /// 按当前设置解析引擎；不阻塞：本地引擎只校验模型文件是否就位，并在后台开始预加载。
+    pub fn resolve(core: &Arc<CoreState>) -> Result<Self, String> {
         let provider = core.settings().asr_provider;
         match LocalKind::from_provider(&provider) {
             Some(kind) => {
-                let loader = core.clone();
-                let engine = tokio::task::spawn_blocking(move || loader.local_models.get(&loader, kind))
-                    .await
-                    .map_err(|error| format!("加载本地模型任务失败：{error}"))??;
-                Ok(Engine::Local(engine))
+                let status = core.local_models.status(core, kind);
+                if !status.available {
+                    return Err(status.error.unwrap_or_else(|| format!("{}不可用", kind.label())));
+                }
+                preload_local(core.clone(), kind);
+                Ok(Engine::Local(LocalHandle { core: core.clone(), kind }))
             }
-            None => Self::online_from_settings(&core),
+            None => Self::online_from_settings(core),
         }
     }
 
@@ -117,7 +132,7 @@ impl Engine {
         match self {
             Engine::Doubao(_) => "豆包语音",
             Engine::ChatGpt(_) => "ChatGPT 听写",
-            Engine::Local(engine) => engine.label(),
+            Engine::Local(handle) => handle.kind.label(),
         }
     }
 
@@ -129,15 +144,9 @@ impl Engine {
                 let wav = crate::audio::wav_bytes_16k(samples).map_err(|e| format!("音频编码失败：{e}"))?;
                 chatgpt::transcribe_wav(config, wav, language).await
             }
-            Engine::Local(engine) => {
-                // 本地推理是纯 CPU/GPU 计算，必须离开异步运行时线程
-                let engine = engine.clone();
-                let language = language.to_string();
-                let samples = samples.to_vec();
-                tokio::task::spawn_blocking(move || engine.transcribe(&language, &samples).map(|outcome| outcome.text))
-                    .await
-                    .map_err(|error| format!("本地引擎任务失败：{error}"))?
-            }
+            Engine::Local(handle) => transcribe_local(handle.core.clone(), handle.kind, language.to_string(), samples.to_vec())
+                .await
+                .map(|(_, outcome)| outcome.text),
         }
     }
 }
@@ -157,6 +166,30 @@ pub async fn transcribe_local(
     })
     .await
     .map_err(|error| format!("本地转写任务失败：{error}"))?
+}
+
+/// 后台预加载本地引擎（切换引擎、开始录音时调用）：已加载、正在加载或文件缺失时什么都不做。
+///
+/// 不在 tokio 运行时内（如同步单测）时直接跳过，等真正推理时再加载。
+pub fn preload_local(core: Arc<CoreState>, kind: LocalKind) {
+    let status = core.local_models.status(&core, kind);
+    if status.loaded || status.loading || !status.available {
+        return;
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    if !core.local_models.enqueue_preload(kind) {
+        return;
+    }
+    runtime.spawn_blocking(move || {
+        match core.local_models.get(&core, kind) {
+            Ok(engine) => {
+                engine.warmup();
+                tracing::info!("{} 预加载完成（{}）", engine.label(), engine.device());
+            }
+            Err(error) => tracing::warn!("{} 预加载失败：{error}", kind.label()),
+        }
+        core.local_models.finish_preload(kind);
+    });
 }
 
 /// 预热本地引擎（`/api/model-service/start`）：加载模型并跑一次极短推理。

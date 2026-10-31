@@ -224,22 +224,31 @@ struct EngineStatus {
     streaming_available: bool,
     streaming_backend: Option<&'static str>,
     mode: &'static str,
+    /// 本地引擎：模型是否已加载常驻（在线引擎同 `ready`）
+    running: bool,
+    /// 本地引擎：是否正在后台加载
+    loading: bool,
 }
 
 fn engine_status(core: &CoreState) -> EngineStatus {
     let settings = core.settings();
     let streaming = settings.recording_mode == "streaming";
-    // 本地引擎（faster-whisper / Qwen3-ASR）：模型文件就位即可用，流式不支持
+    // 本地引擎（faster-whisper / Qwen3-ASR）：模型文件就位即可录音（首次推理时懒加载），流式不支持；
+    // 加载失败过（文件在但模型/推理库起不来）则不再报就绪，直到设置变化或「开启模型」重试成功
     if let Some(kind) = att_core::stt::local_kind(&settings.asr_provider) {
         let status = core.local_models.status(core, kind);
         let streaming_error = streaming.then(|| format!("{}暂不支持流式录音，请使用单段或多段录音模式", kind.label()));
+        let load_error = status.load_error.as_ref().map(|error| format!("{}加载失败：{error}", kind.label()));
+        let error = if status.available { load_error.clone() } else { status.error.clone() };
         return EngineStatus {
-            ready: status.available && !streaming,
-            error: if status.available { streaming_error } else { status.error.or(streaming_error) },
+            ready: status.available && load_error.is_none() && !streaming,
+            error: error.or(streaming_error),
             streaming_supported: false,
             streaming_available: false,
             streaming_backend: None,
             mode: "provider",
+            running: status.loaded,
+            loading: status.loading,
         };
     }
     match att_core::stt::Engine::online_from_settings(core) {
@@ -250,6 +259,8 @@ fn engine_status(core: &CoreState) -> EngineStatus {
             streaming_available: false,
             streaming_backend: None,
             mode: "online",
+            running: false,
+            loading: false,
         },
         Ok(engine) if engine.supports_streaming() => EngineStatus {
             ready: true,
@@ -258,6 +269,8 @@ fn engine_status(core: &CoreState) -> EngineStatus {
             streaming_available: streaming,
             streaming_backend: Some("doubao_sauc"),
             mode: "online",
+            running: true,
+            loading: false,
         },
         // ChatGPT 听写：批量接口，流式模式下不可用（与 Python get_runtime_capabilities 一致）
         Ok(engine) => EngineStatus {
@@ -267,8 +280,29 @@ fn engine_status(core: &CoreState) -> EngineStatus {
             streaming_available: false,
             streaming_backend: None,
             mode: "online",
+            running: !streaming,
+            loading: false,
         },
     }
+}
+
+/// 本地引擎详情（设置页的「加载中 / 已加载 / 缺模型」提示用）；在线引擎为 `null`。
+fn local_engine_payload(core: &CoreState) -> Value {
+    let Some(kind) = att_core::stt::local_kind(&core.settings().asr_provider) else {
+        return Value::Null;
+    };
+    let status = core.local_models.status(core, kind);
+    json!({
+        "provider": kind.provider(),
+        "label": kind.label(),
+        "available": status.available,
+        "loaded": status.loaded,
+        "loading": status.loading,
+        "error": status.error,
+        "load_error": status.load_error,
+        "model_dir": status.model_dir.as_ref().map(|path| path.display().to_string()),
+        "device": status.device,
+    })
 }
 
 /// GET /api/health：前端 runtimeStatus 的全部字段（新旧双命名同源）。
@@ -281,10 +315,11 @@ async fn health(State(state): State<Arc<ServerState>>) -> Json<Value> {
         "asr_provider": settings.asr_provider,
         "recording_mode": settings.recording_mode,
         "online_ready": engine.ready,
+        "local_engine": local_engine_payload(&state.core),
         // 新命名
         "model_service_managed": true,
-        "model_service_running": engine.ready,
-        "model_service_loading": false,
+        "model_service_running": engine.running,
+        "model_service_loading": engine.loading,
         "model_service_ready": engine.ready,
         "model_service_error": engine.error,
         "model_service_supported": true,
@@ -298,8 +333,8 @@ async fn health(State(state): State<Arc<ServerState>>) -> Json<Value> {
         "qwen_streaming_backend": engine.streaming_backend,
         "qwen_streaming_error": engine.error,
         "qwen_streaming_service_managed": true,
-        "qwen_streaming_service_running": engine.ready,
-        "qwen_streaming_service_loading": false,
+        "qwen_streaming_service_running": engine.running,
+        "qwen_streaming_service_loading": engine.loading,
         "qwen_streaming_service_ready": engine.ready,
         "qwen_streaming_service_pid": Value::Null,
         "qwen_streaming_service_url": Value::Null,
@@ -318,11 +353,18 @@ async fn settings_put(
     match state.core.apply_settings_update(&body) {
         Ok(outcome) => {
             if !outcome.runtime_keys_changed.is_empty() {
-                // 3f 接引擎后：这里触发停模型服务 + 重建 provider
-                tracing::info!(
-                    "运行时设置变更（引擎重建将在 3f 生效）: {:?}",
-                    outcome.runtime_keys_changed
-                );
+                tracing::info!("运行时设置变更: {:?}", outcome.runtime_keys_changed);
+                // 切到本地引擎（或改了它的模型/设备）就在后台预加载，设置页据 /api/health 的
+                // local_engine.loading 显示「加载中」；不再使用的本地模型释放掉，免得常驻占内存
+                let current = att_core::stt::local_kind(&state.core.settings().asr_provider);
+                for kind in [att_core::stt::local::LocalKind::Whisper, att_core::stt::local::LocalKind::Qwen] {
+                    if Some(kind) != current && state.core.local_models.is_loaded(kind) {
+                        state.core.local_models.unload(Some(kind));
+                    }
+                }
+                if let Some(kind) = current {
+                    att_core::stt::preload_local(state.core.clone(), kind);
+                }
             }
             if outcome.restart_hotkey_backend {
                 // 3c 接热键后：这里触发重绑
@@ -508,8 +550,8 @@ fn model_service_payload(core: &CoreState) -> Value {
         "model_dir": local_model_dir,
         "device": local.as_ref().and_then(|status| status.device.clone()),
         "recording_mode": settings.recording_mode,
-        "loading": false,
-        "running": engine.ready,
+        "loading": engine.loading,
+        "running": engine.running,
         "ready": engine.ready,
         "error": engine.error,
         "pid": null,
@@ -522,6 +564,7 @@ fn model_service_payload(core: &CoreState) -> Value {
         "streaming_supported": engine.streaming_supported,
         "streaming_backend": engine.streaming_backend,
         "health": Value::Null,
+        "local_engine": local_engine_payload(core),
         "components": { "provider": settings.asr_provider, "streaming_bridge": null },
     })
 }

@@ -302,8 +302,8 @@ impl Actor {
             return;
         }
         let settings = self.core.settings();
-        // 本地引擎首次使用要加载模型：放到 blocking 线程池里做，别堵住录音 Actor
-        let engine = match stt::Engine::resolve(self.core.clone()).await {
+        // 本地引擎不在这里等模型加载（只校验文件并在后台预加载），录音按下即开始，推理时再等加载完成
+        let engine = match stt::Engine::resolve(&self.core) {
             Ok(engine) => engine,
             Err(message) => return self.fail_start(message),
         };

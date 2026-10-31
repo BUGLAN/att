@@ -257,6 +257,29 @@ pub struct LocalModels {
     vad: Mutex<Option<Arc<SileroVad>>>,
     /// 加载串行化：并发请求不会同时加载两份模型
     load_gate: Mutex<()>,
+    /// 正在加载的引擎（加载闸门保证同一时刻至多一个）：设置页/首页据此显示「加载中」
+    loading: Mutex<Option<LocalKind>>,
+    /// 已排队、后台线程还没真正开始加载的预加载（与 `loading` 一起算「加载中」，
+    /// 否则切换引擎后立刻轮询会先看到一次「未加载」再跳成「加载中」）
+    queued: Mutex<Option<LocalKind>>,
+    /// 最近一次加载失败：(引擎, 设置指纹, 原因)；设置一变指纹就对不上，自动作废
+    failure: Mutex<Option<(LocalKind, String, String)>>,
+}
+
+/// 加载期间把 `loading` 置位，离开作用域（含 panic 展开）时复位，避免状态卡在「加载中」。
+struct LoadingMark<'a>(&'a Mutex<Option<LocalKind>>);
+
+impl<'a> LoadingMark<'a> {
+    fn new(slot: &'a Mutex<Option<LocalKind>>, kind: LocalKind) -> Self {
+        *slot.lock().unwrap_or_else(|error| error.into_inner()) = Some(kind);
+        Self(slot)
+    }
+}
+
+impl Drop for LoadingMark<'_> {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = None;
+    }
 }
 
 /// 本地引擎就绪性（供 /api/health 与设置页展示；不触发加载）。
@@ -266,8 +289,12 @@ pub struct LocalStatus {
     pub available: bool,
     /// 是否已加载常驻
     pub loaded: bool,
+    /// 是否正在后台加载
+    pub loading: bool,
     /// 不可用原因（available=false 时给出可照做的提示）
     pub error: Option<String>,
+    /// 当前设置下最近一次加载失败的原因（文件在、但模型/推理库加载不起来）
+    pub load_error: Option<String>,
     /// 模型目录（可用时）
     pub model_dir: Option<PathBuf>,
     /// 设备描述（已加载时）
@@ -354,20 +381,55 @@ impl LocalModels {
             return Ok(engine);
         }
         self.invalidate(kind);
+        let _mark = LoadingMark::new(&self.loading, kind);
+        let result = self.load(core, kind, expected.clone());
+        let mut failure = self.failure.lock().unwrap_or_else(|error| error.into_inner());
+        match &result {
+            Ok(_) => *failure = None,
+            Err(error) => *failure = Some((kind, expected, error.clone())),
+        }
+        result
+    }
+
+    fn load(&self, core: &CoreState, kind: LocalKind, fingerprint: String) -> Result<LocalEngine, String> {
         match kind {
             LocalKind::Whisper => {
                 let engine = Arc::new(LocalWhisper::load(&whisper_config(core))?);
                 let vad = self.vad(core);
                 *self.whisper.lock().unwrap_or_else(|error| error.into_inner()) =
-                    Some(Cached { engine: engine.clone(), fingerprint: expected });
+                    Some(Cached { engine: engine.clone(), fingerprint });
                 Ok(LocalEngine::whisper(engine, vad))
             }
             LocalKind::Qwen => {
                 let engine = Arc::new(LocalQwen::load(&qwen_config(core))?);
                 *self.qwen.lock().unwrap_or_else(|error| error.into_inner()) =
-                    Some(Cached { engine: engine.clone(), fingerprint: expected });
+                    Some(Cached { engine: engine.clone(), fingerprint });
                 Ok(LocalEngine::qwen(engine))
             }
+        }
+    }
+
+    /// 指定引擎是否正在后台加载（含已排队的预加载）。
+    pub fn is_loading(&self, kind: LocalKind) -> bool {
+        *self.loading.lock().unwrap_or_else(|error| error.into_inner()) == Some(kind)
+            || *self.queued.lock().unwrap_or_else(|error| error.into_inner()) == Some(kind)
+    }
+
+    /// 登记一次预加载（[`crate::stt::preload_local`] 用）；已有同引擎排队时返回 `false`。
+    pub fn enqueue_preload(&self, kind: LocalKind) -> bool {
+        let mut queued = self.queued.lock().unwrap_or_else(|error| error.into_inner());
+        if *queued == Some(kind) {
+            return false;
+        }
+        *queued = Some(kind);
+        true
+    }
+
+    /// 预加载结束（成功或失败）后清掉排队标记。
+    pub fn finish_preload(&self, kind: LocalKind) {
+        let mut queued = self.queued.lock().unwrap_or_else(|error| error.into_inner());
+        if *queued == Some(kind) {
+            *queued = None;
         }
     }
 
@@ -411,6 +473,23 @@ impl LocalModels {
         let settings = core.settings();
         let expected = fingerprint(kind, &settings, &core.models_dir);
         let loaded = self.cached(kind, &expected).is_some();
+        let loading = self.is_loading(kind);
+        let load_error = self
+            .failure
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .filter(|(failed, fingerprint, _)| *failed == kind && *fingerprint == expected)
+            .map(|(_, _, error)| error.clone());
+        let unavailable = |error: String| LocalStatus {
+            available: false,
+            loaded,
+            loading,
+            error: Some(error),
+            load_error: None,
+            model_dir: None,
+            device: None,
+        };
         match kind {
             LocalKind::Whisper => {
                 let config = whisper_config(core);
@@ -418,11 +497,13 @@ impl LocalModels {
                     Ok(dir) => LocalStatus {
                         available: true,
                         loaded,
+                        loading,
                         error: None,
+                        load_error,
                         model_dir: Some(dir),
                         device: self.device_of(kind),
                     },
-                    Err(error) => LocalStatus { available: false, loaded, error: Some(error), model_dir: None, device: None },
+                    Err(error) => unavailable(error),
                 }
             }
             LocalKind::Qwen => {
@@ -433,13 +514,13 @@ impl LocalModels {
                     (Ok(dir), Ok(_)) => LocalStatus {
                         available: true,
                         loaded,
+                        loading,
                         error: None,
+                        load_error,
                         model_dir: Some(dir),
                         device: self.device_of(kind),
                     },
-                    (Err(error), _) | (_, Err(error)) => {
-                        LocalStatus { available: false, loaded, error: Some(error), model_dir: None, device: None }
-                    }
+                    (Err(error), _) | (_, Err(error)) => unavailable(error),
                 }
             }
         }
@@ -519,6 +600,29 @@ mod tests {
         // Qwen 只看自己的键：改 Whisper 设置不应影响 Qwen 指纹
         let qwen_a = fingerprint(LocalKind::Qwen, &settings, &models_dir);
         assert_eq!(qwen_a, fingerprint(LocalKind::Qwen, &changed, &models_dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 加载失败_记录原因且设置变化后作废() {
+        let (dir, core) = temp_core("failure");
+        let models = LocalModels::default();
+        // 伪造一份「文件齐全但内容损坏」的 Whisper 模型：探测判可用，真正加载会失败
+        let model_dir = core.models_dir.join("faster_whisper");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("model.bin"), b"broken").unwrap();
+        std::fs::write(model_dir.join("tokenizer.json"), b"{}").unwrap();
+        assert!(models.status(&core, LocalKind::Whisper).available);
+
+        assert!(models.get(&core, LocalKind::Whisper).is_err());
+        let status = models.status(&core, LocalKind::Whisper);
+        assert!(!status.loading, "失败后不应停在加载中");
+        assert!(!status.loaded);
+        assert!(status.load_error.unwrap().contains("加载本地 Whisper 模型失败"));
+
+        // 换模型后旧的失败原因不再适用
+        core.apply_settings_update(&serde_json::json!({ "whisper_model": "small" })).unwrap();
+        assert!(models.status(&core, LocalKind::Whisper).load_error.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
