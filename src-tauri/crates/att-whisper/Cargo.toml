@@ -7,10 +7,19 @@ license.workspace = true
 
 [dependencies]
 tracing = { workspace = true }
+# 读 CTranslate2 模型的 config.json（缺 preprocessor_config.json 时推断 mel 维度）
+serde_json = { workspace = true }
 
-# CTranslate2 的 Rust 绑定（build.rs 会用 CMake 静态编译 CTranslate2）。
-# whisper：Whisper 模型支持；dnnl(oneDNN) + OpenMP 是 CPU 上唯一实用的组合——
-# 只开默认的 ruy（纯 float32、无并行）时，large-v3 在 CPU 上要跑约 9 倍音频时长，不可用。
+# CTranslate2 的 Rust 绑定（build.rs 会用 CMake 静态编译 CTranslate2）。CPU 后端按平台区分：
+#
+# - Windows / Linux：dnnl(oneDNN) + OpenMP 是 CPU 上唯一实用的组合——只开默认的 ruy
+#   （纯 float32、无并行）时，large-v3 在 CPU 上要跑约 9 倍音频时长，不可用。
+# - macOS：Apple Clang 不支持 `-fopenmp`，ct2rs 的 openmp-runtime-comp 还会去链 GNU `gomp`，
+#   这里改用 ct2rs 推荐的 Accelerate（Apple 的 BLAS，走 AMX）+ 默认 ruy（int8 GEMM）。
+[target.'cfg(target_os = "macos")'.dependencies]
+ct2rs = { version = "0.10.2", features = ["whisper", "accelerate"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
 ct2rs = { version = "0.10.2", features = ["whisper", "dnnl", "openmp-runtime-comp"] }
 
 [features]

@@ -81,6 +81,9 @@ pub struct Transcript {
     pub elapsed: f64,
 }
 
+/// ct2rs 解码前处理（mel 频谱）的参数文件。
+const PREPROCESSOR_CONFIG: &str = "preprocessor_config.json";
+
 /// 模型目录是否像一份可直接加载的 CTranslate2 Whisper 模型。
 ///
 /// CTranslate2 转换产物必须同时有 `model.bin`（权重）与 `tokenizer.json`（ct2rs 解码用）。
@@ -90,31 +93,36 @@ pub fn looks_like_model_dir(path: &Path) -> bool {
 
 /// 按 Python `_resolve_model_source()` 的顺序列出候选目录（不判存在）。
 ///
-/// 顺序：显式目录 → 模型根目录本身 → `faster_whisper`/`faster-whisper`（Python 版 `download_root`
-/// 直接指向这两个目录）→ 短名/`faster-whisper-<短名>`/`Systran--faster-whisper-<短名>`
+/// 顺序：显式目录 → 模型根目录本身 → `faster_whisper`/`faster-whisper`/`whisper`（Python 版
+/// `download_root` 直接指向这几个目录，各机器上落盘位置不一）→ 每个根目录下的
+/// 短名/`faster-whisper-<短名>`/`Systran--faster-whisper-<短名>`
 /// → HF 缓存 `models--Systran--faster-whisper-<短名>/snapshots/<hash>`。
 pub fn model_candidates(model: &str, models_dir: &Path) -> Vec<PathBuf> {
     let raw = Path::new(model);
     let short = model.replace('\\', "/");
     let short = short.rsplit('/').next().unwrap_or(model).to_string();
-    let mut candidates = vec![raw.to_path_buf(), models_dir.to_path_buf()];
-    for name in ["faster_whisper", "faster-whisper"] {
-        candidates.push(models_dir.join(name));
+    let mut roots = vec![models_dir.to_path_buf()];
+    for name in ["faster_whisper", "faster-whisper", "whisper"] {
+        roots.push(models_dir.join(name));
     }
-    for name in [
-        short.clone(),
-        format!("faster-whisper-{short}"),
-        format!("Systran--faster-whisper-{short}"),
-        format!("models--Systran--faster-whisper-{short}"),
-    ] {
-        candidates.push(models_dir.join(name));
-    }
-    let snapshot_root = models_dir.join(format!("models--Systran--faster-whisper-{short}")).join("snapshots");
-    if let Ok(entries) = std::fs::read_dir(&snapshot_root) {
-        let mut dirs: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect();
-        dirs.sort();
-        dirs.reverse();
-        candidates.extend(dirs);
+    let mut candidates = vec![raw.to_path_buf()];
+    candidates.extend(roots.iter().cloned());
+    for root in &roots {
+        for name in [
+            short.clone(),
+            format!("faster-whisper-{short}"),
+            format!("Systran--faster-whisper-{short}"),
+            format!("models--Systran--faster-whisper-{short}"),
+        ] {
+            candidates.push(root.join(name));
+        }
+        let snapshot_root = root.join(format!("models--Systran--faster-whisper-{short}")).join("snapshots");
+        if let Ok(entries) = std::fs::read_dir(&snapshot_root) {
+            let mut dirs: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect();
+            dirs.sort();
+            dirs.reverse();
+            candidates.extend(dirs);
+        }
     }
     candidates
 }
@@ -135,6 +143,54 @@ pub fn resolve_model_dir(config: &WhisperConfig) -> Result<PathBuf, String> {
         config.models_dir.display(),
         config.model,
     ))
+}
+
+/// 缺 `preprocessor_config.json` 时按 Whisper 官方默认值补写一份。
+///
+/// `Systran/faster-whisper-tiny/medium/…` 这些 HF 仓库不带这个文件，Python faster-whisper 缺了就用
+/// 默认值，ct2rs 却硬性要求它（否则加载报 `No such file or directory`）。mel 维度：large-v3 / turbo
+/// 是 128（这一代多了粤语，`lang_ids` 有 100 个），其余 80。
+pub fn ensure_preprocessor_config(model_dir: &Path) -> Result<(), String> {
+    let path = model_dir.join(PREPROCESSOR_CONFIG);
+    if path.is_file() {
+        return Ok(());
+    }
+    let feature_size = default_mel_bins(model_dir);
+    let body = serde_json::json!({
+        "chunk_length": 30,
+        "feature_extractor_type": "WhisperFeatureExtractor",
+        "feature_size": feature_size,
+        "hop_length": 160,
+        "n_fft": 400,
+        "n_samples": 480000,
+        "nb_max_frames": 3000,
+        "padding_side": "right",
+        "padding_value": 0.0,
+        "processor_class": "WhisperProcessor",
+        "return_attention_mask": false,
+        "sampling_rate": 16000,
+    });
+    let body = serde_json::to_string_pretty(&body).unwrap_or_default();
+    std::fs::write(&path, body)
+        .map_err(|error| format!("模型目录缺少 {PREPROCESSOR_CONFIG}，自动补写失败（{}）：{error}", path.display()))?;
+    tracing::info!("本地 Whisper：模型目录缺少 {PREPROCESSOR_CONFIG}，已按默认值补写（{feature_size} 维 mel）：{}", path.display());
+    Ok(())
+}
+
+/// 推断 mel 维度：优先看 config.json 的 `lang_ids` 数量（large-v3 起为 100），读不到再看目录名。
+fn default_mel_bins(model_dir: &Path) -> usize {
+    let lang_count = std::fs::read_to_string(model_dir.join("config.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|config| config.get("lang_ids").and_then(|ids| ids.as_array()).map(|ids| ids.len()));
+    match lang_count {
+        Some(count) if count >= 100 => 128,
+        Some(_) => 80,
+        None => {
+            let name = model_dir.to_string_lossy().to_lowercase();
+            if name.contains("large-v3") || name.contains("turbo") { 128 } else { 80 }
+        }
+    }
 }
 
 /// 设置里的设备 + 精度 → CTranslate2 的 (设备, 精度)。
@@ -224,6 +280,7 @@ impl LocalWhisper {
     /// 加载模型（同步、耗时数秒）；CUDA 加载失败自动回退 CPU + int8（对齐 Python `_load_model`）。
     pub fn load(config: &WhisperConfig) -> Result<Self, String> {
         let model_dir = resolve_model_dir(config)?;
+        ensure_preprocessor_config(&model_dir)?;
         let started = Instant::now();
         let cuda_built = cfg!(feature = "cuda");
         let (mut device, mut compute, mut label) = resolve_precision(&config.device, &config.compute_type, cuda_built);
@@ -351,11 +408,24 @@ impl LocalWhisper {
         Ok(Transcript { text, segments: out, duration, device: self.device.clone(), elapsed })
     }
 
-    /// 预热：跑一次极短静音推理，迫使 CTranslate2 完成首批计算（对齐 Python `warmup()`）。
+    /// 预热：跑一次极短推理，迫使 CTranslate2 完成首批计算（对齐 Python `warmup()`）。
+    ///
+    /// 直接喂给模型而不走 [`Self::transcribe`]：后者会把静音裁掉、根本不进推理，预热就成了空操作。
+    ///
+    /// 只在 GPU 上做：CUDA/cuDNN 首次调用要初始化内核，值得提前吃掉；CPU 上编码器固定跑满 30s 窗口，
+    /// large-v3 预热一次要十几秒却只省下首个请求约 2 秒（M3 实测），还会占着推理闸门拖慢紧随其后的录音。
     pub fn warmup(&self) {
-        let samples = vec![0i16; SAMPLE_RATE / 2];
-        if let Err(error) = self.transcribe("zh", &samples) {
-            tracing::warn!("本地 Whisper 预热失败：{error}");
+        if !self.device.starts_with("cuda") {
+            return;
+        }
+        let _guard = self.gate.lock().unwrap_or_else(|error| error.into_inner());
+        let started = Instant::now();
+        let mono = vec![0f32; self.sampling_rate.max(1)];
+        // 贪心 + 只解几个 token：目的只是把编码器与解码器各跑一遍，不必真解码
+        let options = WhisperOptions { beam_size: 1, max_length: 8, ..Self::options() };
+        match self.whisper.generate_segments(&mono, Some("zh"), &options) {
+            Ok(_) => tracing::info!("本地 Whisper 预热完成：{:.2}s", started.elapsed().as_secs_f64()),
+            Err(error) => tracing::warn!("本地 Whisper 预热失败：{error}"),
         }
     }
 }
@@ -417,6 +487,15 @@ mod tests {
         let config = WhisperConfig::new("large-v3", "cpu", &root);
         assert_eq!(resolve_model_dir(&config).unwrap(), newest);
         let _ = std::fs::remove_dir_all(&root);
+
+        // 4) download_root 指向 models/whisper 时的 HF 缓存（macOS 开发机的实际布局）
+        let root = temp_dir("resolve4");
+        let snap_root = root.join("whisper").join("models--Systran--faster-whisper-medium").join("snapshots");
+        std::fs::create_dir_all(&snap_root).unwrap();
+        let snapshot = make_model_dir(&snap_root, "08e178d");
+        let config = WhisperConfig::new("medium", "cpu", &root);
+        assert_eq!(resolve_model_dir(&config).unwrap(), snapshot);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -427,6 +506,32 @@ mod tests {
         assert!(error.contains("未找到本地 Whisper 模型"), "{error}");
         assert!(error.contains("ATT_MODELS_DIR"), "{error}");
         assert!(error.contains("ct2-transformers-converter"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 缺预处理配置时按模型代际补写() {
+        let root = temp_dir("preprocessor");
+        let old = root.join("medium");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("config.json"), format!("{{\"lang_ids\": {:?}}}", (0..99).collect::<Vec<_>>())).unwrap();
+        ensure_preprocessor_config(&old).unwrap();
+        let text = std::fs::read_to_string(old.join(PREPROCESSOR_CONFIG)).unwrap();
+        let written: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(written["feature_size"], 80);
+        assert_eq!(written["sampling_rate"], 16000);
+
+        let v3 = root.join("v3");
+        std::fs::create_dir_all(&v3).unwrap();
+        std::fs::write(v3.join("config.json"), format!("{{\"lang_ids\": {:?}}}", (0..100).collect::<Vec<_>>())).unwrap();
+        ensure_preprocessor_config(&v3).unwrap();
+        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(v3.join(PREPROCESSOR_CONFIG)).unwrap()).unwrap();
+        assert_eq!(written["feature_size"], 128);
+
+        // 已有文件不覆盖
+        std::fs::write(v3.join(PREPROCESSOR_CONFIG), "keep").unwrap();
+        ensure_preprocessor_config(&v3).unwrap();
+        assert_eq!(std::fs::read_to_string(v3.join(PREPROCESSOR_CONFIG)).unwrap(), "keep");
         let _ = std::fs::remove_dir_all(&root);
     }
 

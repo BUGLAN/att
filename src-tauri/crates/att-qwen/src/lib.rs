@@ -162,14 +162,27 @@ pub fn resolve_lib_dir(config: &QwenConfig) -> Result<PathBuf, String> {
             return Ok(candidate.clone());
         }
     }
+    let package = library_package_name();
     Err(format!(
         "未找到 sherpa-onnx 推理库（缺少 {}）：请把 sherpa-onnx 的共享库放到 {}（或用环境变量 ATT_SHERPA_ONNX_DIR 指定），例如：\n\
-         \twget https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/sherpa-onnx-v2.0.1-win-x64-shared-MD-Release-lib.tar.bz2\n\
-         \ttar xvf sherpa-onnx-v2.0.1-win-x64-shared-MD-Release-lib.tar.bz2 --strip-components=2 -C {}",
+         \twget https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/{package}\n\
+         \tmkdir -p {} && tar xvf {package} --strip-components=2 -C {}",
         library,
         config.models_dir.join("sherpa-onnx").display(),
         config.models_dir.join("sherpa-onnx").display(),
+        config.models_dir.join("sherpa-onnx").display(),
     ))
+}
+
+/// 当前平台对应的 sherpa-onnx 共享库发布包（Release 页 assets 名）。
+fn library_package_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "sherpa-onnx-v2.0.1-win-x64-shared-MD-Release-lib.tar.bz2"
+    } else if cfg!(target_os = "macos") {
+        "sherpa-onnx-v2.0.1-osx-universal2-shared-lib.tar.bz2"
+    } else {
+        "sherpa-onnx-v2.0.1-linux-x64-shared-lib.tar.bz2"
+    }
 }
 
 /// 静音切点（采样位置）：长静音段的中点。

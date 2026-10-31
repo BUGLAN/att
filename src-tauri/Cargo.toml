@@ -80,6 +80,25 @@ windows = { version = "0.62", features = [
     "Win32_System_Variant",
 ] }
 
+# 本地 Whisper 推理在 dev（tauri dev）下也必须优化编译：cmake crate 按 opt-level/debug 选 CMAKE_BUILD_TYPE，
+# opt-level=0 时 CTranslate2 按 Debug（-O0）编译，large-v3 在 CPU 上要约 9 倍音频时长（实测 7.8s 音频 69s）。
+# mel_spec / rustfft / ndarray / tokenizers 是 Whisper 前处理与解码的纯 Rust 热路径，同理一并优化。
+[profile.dev.package.ct2rs]
+opt-level = 3
+debug = false
+
+[profile.dev.package.mel_spec]
+opt-level = 3
+
+[profile.dev.package.rustfft]
+opt-level = 3
+
+[profile.dev.package.ndarray]
+opt-level = 3
+
+[profile.dev.package.tokenizers]
+opt-level = 3
+
 [profile.release]
 lto = true
 codegen-units = 1

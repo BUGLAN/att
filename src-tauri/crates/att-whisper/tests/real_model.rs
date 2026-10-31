@@ -60,9 +60,15 @@ fn 真实音频_整段转写与分段时间戳() {
     let wav = std::env::var("ATT_TEST_WAV").expect("请用 ATT_TEST_WAV 指定测试音频");
     let models = models_dir();
     assert!(models.is_dir(), "模型根目录不存在：{}", models.display());
-    let config = WhisperConfig::new("large-v3", "auto", &models);
+    // 可用环境变量换模型/精度做对比（与应用侧 ATT_WHISPER_COMPUTE_TYPE 同名）
+    let model = std::env::var("ATT_WHISPER_MODEL").unwrap_or_else(|_| "large-v3".into());
+    let compute = std::env::var("ATT_WHISPER_COMPUTE_TYPE").unwrap_or_else(|_| "auto".into());
+    let config = WhisperConfig::new(model, "auto", &models).with_compute_type(compute);
     let engine = LocalWhisper::load(&config).expect("加载本地 Whisper");
     println!("设备：{}，模型：{}", engine.device(), engine.model_dir().display());
+
+    // 与应用一致：加载后先预热，下面的耗时才是用户实际等待的推理时间
+    engine.warmup();
 
     let samples = read_pcm16k(Path::new(&wav));
     assert!(!samples.is_empty(), "测试音频为空");

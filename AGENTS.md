@@ -74,6 +74,8 @@ models/                本地模型（不入库）：faster_whisper/（CT2 large
 | 思考型模型 | 性能参数（思考强度）只经 `ModelParams.reasoning_effort` → 网关映射；上游不认时网关会自动去掉重试 |
 | 确定性失败不要重试 | 思考 token 吃满预算（`output_truncated`）不得回退重跑，否则耗时翻倍 |
 | 文件转写依赖 ffmpeg | 未在 PATH 时查 Homebrew 常见路径，或用 `ATT_FFMPEG_DIR` 指定 |
+| macOS 构建本地引擎 | 需要 `brew install cmake`；macOS 上 ct2rs 走 Accelerate + ruy（Apple Clang 无 OpenMP，`openmp-runtime-comp` 会去链不存在的 `gomp`），见 `att-whisper/Cargo.toml` |
+| dev 下 Whisper 慢 9 倍 | cmake crate 在 opt-level=0 时按 Debug 编 CTranslate2；根 `Cargo.toml` 用 `[profile.dev.package.ct2rs]` 等强制优化，别删 |
 | 本地引擎首次构建慢 | `att-core` 依赖 `att-whisper`，首次会 CMake 编译 CTranslate2 + oneDNN（约 10~20 分钟）；之后走缓存 |
 | Qwen 引擎与系统 ORT 冲突 | Windows 上 `C:\Windows\System32\onnxruntime.dll`（旧版）会抢占依赖解析导致崩溃；`shim.c` 已按绝对路径预加载 `models/sherpa-onnx/` 里的 ORT，改动加载逻辑时别丢掉这一步 |
 | 本地引擎没有模型时 | 只给 409 + 可照做的下载命令，不 panic；模型不入库，见 `docs/Tauri重写-04-…` §7 的下载清单 |

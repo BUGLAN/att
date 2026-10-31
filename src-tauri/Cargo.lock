@@ -401,6 +401,7 @@ version = "2.0.0"
 dependencies = [
  "ct2rs",
  "hound",
+ "serde_json",
  "tracing",
 ]
 
