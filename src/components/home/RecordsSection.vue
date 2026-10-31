@@ -1,116 +1,91 @@
 <template>
-  <div class="records-section">
-    <div class="section-header">
-      <div class="section-header-left">
-        <h2>历史记录</h2>
-        <BaseBadge tone="neutral" mono>{{ records.length }} 条</BaseBadge>
-      </div>
-      <div class="section-header-right">
-        <BaseButton variant="outline" @click="toggleSelectMode">
-          {{ selectMode ? '退出选择' : '选择模式' }}
-        </BaseButton>
-      </div>
-    </div>
+  <!-- 首页「最近」：只放最新几条，完整列表、搜索与批量操作在记录集 -->
+  <section class="settings-section">
+    <div class="settings-group">
+      <h3 class="settings-group-title">
+        最近
+        <button
+          v-if="records.length"
+          class="ui-tbtn is-gold ui-title-aside"
+          type="button"
+          @click="appStore.setCurrentPage('records')"
+        >
+          查看全部
+        </button>
+      </h3>
 
-    <div class="records-list">
-      <RecordCard
-        v-for="record in records"
+      <RecordRow
+        v-for="record in recentRecords"
         :key="record.id"
         :record="record"
-        :select-mode="selectMode"
-        :selected="selectedRecords.has(record.id)"
+        :expanded="expandedId === record.id"
         :is-playing="isPlaying(record.id)"
-        @select="toggleSelection(record.id)"
+        @toggle="expandedId = expandedId === record.id ? null : record.id"
         @edit="openEditModal(record)"
         @copy="copyText(record)"
         @export="(format) => exportRecord(record, format)"
+        @delete="pendingDelete = record"
         @toggle-audio="toggleAudio(record.id)"
         @optimize="optimizeRecord(record.id)"
         @cancel-optimize="cancelOptimize(record.id)"
         @toggle-favorite="toggleFavorite(record)"
       />
 
-      <EmptyState
-        v-if="!records.length"
-        size="sm"
-        title="暂无录音记录"
-        description="完成一次录音后，转写结果会自动出现在这里。"
-      />
+      <div v-if="!records.length" class="ui-empty">
+        <span class="ui-glyph-tile ui-glyph-tile--lg">{{ NAV_GLYPHS.home }}</span>
+        完成一次录音后，结果会出现在这里
+      </div>
     </div>
+  </section>
 
-    <div v-if="selectMode" class="select-toolbar">
-      <label class="select-all-label">
-        <input :checked="isAllSelected" type="checkbox" @change="toggleSelectAll">
-        全选
-      </label>
-      <BaseButton
-        variant="danger"
-        size="sm"
-        :disabled="!selectedRecords.size"
-        @click="isDeleteConfirmVisible = true"
-      >
-        删除选中 ({{ selectedRecords.size }})
-      </BaseButton>
-      <BaseButton variant="outline" size="sm" @click="toggleSelectMode">
-        取消
-      </BaseButton>
-    </div>
-
-    <ConfirmDialog
-      v-model="isDeleteConfirmVisible"
-      title="删除选中的记录？"
-      :description="`将删除 ${selectedRecords.size} 条记录及其音频文件，该操作不可撤销。`"
-      confirm-text="删除"
-      @confirm="deleteSelected"
-    />
-  </div>
+  <ConfirmDialog
+    :model-value="Boolean(pendingDelete)"
+    title="删除这条记录？"
+    description="将同时删除它的音频文件，该操作不可撤销。"
+    confirm-text="删除"
+    @update:model-value="(open) => { if (!open) pendingDelete = null }"
+    @confirm="confirmDelete"
+  />
 </template>
 
 <script setup>
 import { computed, ref } from 'vue'
 import { useRecords } from '@/composables/useRecords'
 import { useAppStore } from '@/stores/app'
-import RecordCard from './RecordCard.vue'
-import BaseBadge from '@/components/common/BaseBadge.vue'
-import BaseButton from '@/components/common/BaseButton.vue'
+import { NAV_GLYPHS } from '@/components/common/glyphs.mjs'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
-import EmptyState from '@/components/common/EmptyState.vue'
+import RecordRow from '@/components/records/RecordRow.vue'
+
+/** 首页只展示最新的几条 */
+const RECENT_LIMIT = 6
 
 const appStore = useAppStore()
 const {
   records,
-  selectMode,
-  selectedRecords,
-  deleteSelected,
+  deleteRecord,
   copyText,
   toggleFavorite,
   optimizeRecord,
   cancelOptimize,
   exportRecord,
-  toggleSelectMode,
-  toggleSelection,
-  selectAll,
-  clearSelection,
   toggleAudio,
   isPlaying
 } = useRecords()
 
-const isDeleteConfirmVisible = ref(false)
-
-const isAllSelected = computed(() => {
-  return records.value.length > 0 && selectedRecords.value.size === records.value.length
-})
-
-function toggleSelectAll() {
-  if (isAllSelected.value) {
-    clearSelection()
-  } else {
-    selectAll()
-  }
-}
+const expandedId = ref(null)
+const pendingDelete = ref(null)
+const recentRecords = computed(() => records.value.slice(0, RECENT_LIMIT))
 
 function openEditModal(record) {
   appStore.setCurrentRecord(record)
   appStore.openModal('recordEdit')
+}
+
+async function confirmDelete() {
+  const record = pendingDelete.value
+  pendingDelete.value = null
+  if (record) {
+    await deleteRecord(record.id).catch(() => {})
+  }
 }
 </script>

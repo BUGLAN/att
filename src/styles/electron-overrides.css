@@ -23,7 +23,6 @@
   display: flex;
   align-items: center;
   padding: 0 20px 0 16px;
-  -webkit-app-region: drag;
 }
 
 .title-bar-brand {
@@ -32,8 +31,21 @@
   gap: 10px;
 }
 
+/* Tauri 只认按下点所在元素自身的 data-tauri-drag-region：品牌里的印章 / 文字不接收指针，
+   按在它们上面也落到带拖拽标记的父元素上，整条标题栏都能拖动窗口 */
+.title-bar-brand > * {
+  pointer-events: none;
+}
+
 .records-library-page {
   width: 100%;
+}
+
+/* 应用标识：一枚金色小印章「聲」，与导航 / 录音印章同一套文字图标 */
+.title-bar-seal {
+  width: 22px;
+  height: 22px;
+  font-size: 14px;
 }
 
 .title-bar-brand .logo-text {
@@ -87,189 +99,9 @@
   stroke-width: 1.4;
 }
 
-.record-status-group {
-  flex-wrap: wrap;
-}
-
-.settings-records-group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-md);
-}
-
-.settings-records-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-md);
-}
-
-.settings-records-subtitle {
-  margin-top: 6px;
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-}
-
-.settings-records-toolbar {
-  display: flex;
-  gap: var(--space-sm);
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-/* 记录集工具栏：搜索框占满剩余宽度，下拉保持内容宽度 */
-.settings-records-toolbar > .settings-records-search {
-  flex: 1 1 280px;
-  min-width: 220px;
-}
-
-.settings-records-toolbar > .settings-records-select {
-  flex: 0 0 auto;
-  min-width: 150px;
-}
-
-/* 加载态骨架占位卡 */
-.settings-records-skeleton {
-  padding: var(--space-md);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--bg-card);
-}
-
-.settings-records-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: var(--space-md);
-}
-
-.settings-record-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-md);
-  min-height: 190px;
-  padding: var(--space-md);
-  background: var(--grad-card);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  cursor: pointer;
-  transition:
-    transform var(--transition-fast),
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast);
-}
-
-.settings-record-card:hover {
-  transform: translateY(-2px);
-  border-color: var(--accent-line);
-  box-shadow: var(--e-hover);
-}
-
-.settings-record-card-head,
-.settings-record-foot,
-.settings-record-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-sm);
-}
-
-.settings-record-meta {
-  flex-wrap: wrap;
-  justify-content: flex-start;
-}
-
-.settings-record-time,
-.settings-record-kind {
-  font-size: var(--fs-cap);
-  color: var(--text-3);
-}
-
-.settings-record-favorite {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.settings-record-favorite:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.settings-record-favorite.favorited {
-  color: var(--accent);
-  border-color: var(--accent-line-strong);
-  background: var(--accent-faint);
-}
-
-.settings-record-text {
-  flex: 1;
-  color: var(--text-primary);
-  line-height: 1.7;
-  display: -webkit-box;
-  -webkit-line-clamp: 5;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-
-.settings-record-copy {
-  margin-left: auto;
-}
-
-/* 卡片底部动作区：复制 + 两个导出按钮 */
-.settings-record-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin-left: auto;
-}
-
-.settings-record-actions .settings-record-copy {
-  margin-left: 0;
-}
-
-.records-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-sm);
-  padding-top: var(--space-sm);
-}
-
-.records-pagination-status {
-  min-width: 96px;
-  text-align: center;
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-}
-
 @media (max-width: 768px) {
   .title-bar,
   .title-bar.collapsed {
     left: 0;
-  }
-
-  .settings-records-header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .settings-records-toolbar {
-    flex-direction: column;
-  }
-
-  .records-pagination {
-    justify-content: space-between;
-  }
-
-  .settings-records-toolbar > .settings-records-search,
-  .settings-records-toolbar > .settings-records-select {
-    width: 100%;
-    flex: 1 1 auto;
   }
 }

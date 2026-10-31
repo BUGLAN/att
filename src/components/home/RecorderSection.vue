@@ -1,153 +1,111 @@
 <template>
-  <section class="recorder-stage">
-    <!-- 首页页头：统一由 PageHeader 提供，卡片内不再重复放标题 -->
-    <PageHeader
-      title="录音"
-      subtitle="按下录音按钮开始语音输入；转写、优化与历史记录都会在下方实时更新。"
-    >
-      <template #actions>
-        <BaseButton
-          v-if="showServiceButton"
-          size="sm"
-          pill
-          class="service-toggle"
-          :active="serviceReady"
-          :loading="serviceLoading"
-          :disabled="serviceButtonDisabled"
-          @click="toggleModelService"
-        >
-          <template #icon>
-            <span class="service-toggle-dot"></span>
-          </template>
-          {{ serviceButtonLabel }}
-        </BaseButton>
+  <section class="recorder-page">
+    <PageHeader crumb="首页" title="录音" subtitle="按下印章或快捷键开始说话，转写与优化结果会自动复制。" />
 
-        <div class="stage-badges">
-          <BaseBadge tone="accent" uppercase>{{ modeBadge }}</BaseBadge>
-          <BaseBadge :tone="statusTone" uppercase>{{ statusBadge }}</BaseBadge>
+    <!-- 录音：一枚印章 + 计时 / 状态 + 声纹 + 引擎状态；进行中底边流动细线（录音朱红 / 处理靛蓝） -->
+    <section class="settings-section recorder-card">
+      <div class="settings-group">
+        <h3 class="settings-group-title">录音</h3>
+        <div class="recorder-row">
+          <button
+            class="ui-seal recorder-seal"
+            :data-seal="sealState"
+            type="button"
+            :title="buttonText"
+            :aria-label="buttonText"
+            :disabled="recordingButtonDisabled"
+            @click="toggleRecording"
+          >
+            <Transition name="seal-stamp" mode="out-in">
+              <span :key="sealGlyph" class="ui-seal-ink">{{ sealGlyph }}</span>
+            </Transition>
+          </button>
+
+          <div class="recorder-readout">
+            <span class="recorder-timer ui-mono">{{ formattedDuration }}</span>
+            <span class="ui-meta recorder-status">
+              <span class="ui-dot" :class="statusDot"></span>
+              <span>{{ statusLine }}</span>
+            </span>
+          </div>
+
+          <div class="recorder-wave" :class="{ live: isRecording }" aria-hidden="true">
+            <i v-for="(height, index) in waveformHeights" :key="index" :style="{ height: `${height}px` }"></i>
+          </div>
+
+          <div class="recorder-side">
+            <span class="ui-meta" :title="engineStatus.title">
+              <span class="ui-dot" :class="engineStatus.dot"></span>
+              <span>{{ engineStatus.text }}</span>
+            </span>
+            <span class="ui-meta">
+              <span class="ui-dot" :class="optimizeStatus.dot"></span>
+              <span>{{ optimizeStatus.text }}</span>
+            </span>
+          </div>
         </div>
-      </template>
-    </PageHeader>
 
-    <div class="stage-shell">
-      <div class="stage-grid">
-        <article class="recorder-panel" :class="{ active: isRecording }">
-          <div class="panel-aura"></div>
+        <!-- 引擎不可用：一行原因 + 去设置 -->
+        <div v-if="notReadyReason" class="settings-note warn">
+          <span>{{ notReadyReason }}</span>
+          <button class="ui-tbtn" type="button" @click="appStore.openSettings('asr')">
+            <span class="ui-tbtn-glyph">{{ ACTION_GLYPHS.settings }}</span>去设置
+          </button>
+        </div>
 
-          <div class="panel-core">
-            <button
-              class="recorder-toggle"
-              :class="{ active: isRecording }"
-              type="button"
-              :aria-label="buttonText"
-              :disabled="recordingButtonDisabled"
-              @click="toggleRecording"
-            >
-              <span class="toggle-ring"></span>
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V7a3.5 3.5 0 1 0-7 0v5a3.5 3.5 0 0 0 3.5 3.5Z"
-                  fill="currentColor"
-                />
-                <path
-                  d="M7 11.75a.75.75 0 0 1 .75.75 4.25 4.25 0 0 0 8.5 0 .75.75 0 0 1 1.5 0 5.76 5.76 0 0 1-5 5.69V20h2a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5h3v-1.81a5.76 5.76 0 0 1-5-5.69.75.75 0 0 1 .75-.75Z"
-                  fill="currentColor"
-                />
-              </svg>
-            </button>
-
-            <div class="stage-waveform" aria-hidden="true">
-              <span
-                v-for="(barHeight, index) in waveformHeights"
-                :key="index"
-                class="waveform-bar"
-                :style="{ height: `${barHeight}px` }"
-              ></span>
-            </div>
-
-            <div class="panel-meta">
-              <strong class="panel-time">{{ formattedDuration }}</strong>
-              <p class="panel-status">{{ panelStatus }}</p>
-              <p class="panel-hint">{{ panelHint }}</p>
-            </div>
-          </div>
-        </article>
-
-        <article class="live-panel">
-          <div class="live-header">
-            <div class="live-heading">
-              <h2 class="live-title">实时转录</h2>
-            </div>
-            <div class="live-indicator">
-              <span class="live-dot"></span>
-              <span>{{ liveIndicatorText }}</span>
-            </div>
-          </div>
-
-          <div ref="liveScroll" class="live-content" @scroll="handleLiveScroll">
-            <template v-if="showOptimizationStream">
-              <div class="stream-status">
-                <span v-if="optimizationStream.isWaitingForFirstToken" class="stream-spinner" aria-hidden="true"></span>
+        <!-- 实时文本：录音 / 转写 / 优化期间才出现 -->
+        <div v-if="showLivePanel" ref="liveScroll" class="recorder-live" @scroll="handleLiveScroll">
+          <template v-if="showOptimizationStream">
+            <div class="recorder-live-head">
+              <span class="ui-meta">
+                <span class="ui-dot" :class="optimizationDot"></span>
                 <span>{{ optimizationStatusText }}</span>
-                <BaseButton
-                  v-if="canCancelOptimization"
-                  variant="ghost"
-                  size="sm"
-                  class="stream-cancel"
-                  @click="cancelOptimization(optimizationStream.recordId)"
-                >
-                  取消
-                </BaseButton>
-              </div>
-
-              <p v-if="optimizationStream.text" class="live-transcript streaming-transcript">
-                {{ optimizationStream.text }}<span
-                  v-if="optimizationStream.phase === 'streaming'"
-                  class="typing-cursor"
-                  aria-hidden="true"
-                ></span>
-              </p>
-              <p v-else class="live-placeholder">{{ optimizationEmptyText }}</p>
-
-              <p v-if="optimizationStream.phase === 'error'" class="stream-error">
-                {{ optimizationStream.error }}
-              </p>
-              <p
-                v-if="optimizationStream.phase === 'waiting' && displayTranscript"
-                class="stream-raw-preview"
+              </span>
+              <button
+                v-if="canCancelOptimization"
+                class="ui-tbtn"
+                type="button"
+                @click="cancelOptimization(optimizationStream.recordId)"
               >
-                原始转写：{{ displayTranscript }}
-              </p>
-            </template>
-
-            <template v-else>
-              <p v-if="displayTranscript" class="live-transcript">{{ displayTranscript }}</p>
-              <p v-else class="live-placeholder">{{ transcriptPlaceholder }}</p>
-            </template>
-          </div>
-
-          <div class="live-footer">
-            <span class="live-footer-item">状态 {{ sessionStatusShort }}</span>
-            <span class="live-footer-item">片段 {{ segmentCountText }}</span>
-            <span class="live-footer-item">模式 {{ liveModeText }}</span>
-          </div>
-        </article>
+                <span class="ui-tbtn-glyph">{{ ACTION_GLYPHS.cancel }}</span>取消优化
+              </button>
+            </div>
+            <p v-if="optimizationStream.text" class="recorder-live-text">
+              {{ optimizationStream.text }}<span
+                v-if="optimizationStream.phase === 'streaming'"
+                class="typing-cursor"
+                aria-hidden="true"
+              ></span>
+            </p>
+            <p v-else class="recorder-live-placeholder">{{ optimizationEmptyText }}</p>
+            <p v-if="optimizationStream.phase === 'error'" class="recorder-live-error">{{ optimizationStream.error }}</p>
+            <p v-if="optimizationStream.phase === 'waiting' && displayTranscript" class="recorder-live-raw">
+              原始转写：{{ displayTranscript }}
+            </p>
+          </template>
+          <template v-else>
+            <p v-if="displayTranscript" class="recorder-live-text" :class="{ converting: !isRecording }">{{ displayTranscript }}</p>
+            <p v-else class="recorder-live-placeholder">{{ transcriptPlaceholder }}</p>
+          </template>
+        </div>
       </div>
-    </div>
+      <div v-if="flowColor" class="ui-flow" :style="{ '--flow': flowColor }"></div>
+    </section>
   </section>
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRecorder } from '@/composables/useRecorder'
 import { deriveStreamingProviderLabel } from '@/composables/recorder/streamProtocol.mjs'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useOptimizationStreamStore } from '@/stores/optimizationStream'
 import { shouldAutoScroll } from '@/composables/recorder/streamScroll.mjs'
-import BaseBadge from '@/components/common/BaseBadge.vue'
-import BaseButton from '@/components/common/BaseButton.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import { ACTION_GLYPHS, SEALS, recorderSealState } from '@/components/common/glyphs.mjs'
+import { FAILURE_HOLD_MS, SUCCESS_HOLD_MS } from '@/components/floating/floatingView.mjs'
+import { providerLabel } from '@/components/settings/asrEngineStatus.mjs'
 
 const {
   isRecording,
@@ -156,8 +114,6 @@ const {
   audioLevel,
   liveTranscript,
   livePhase,
-  processedSegmentCount,
-  sessionStatusText,
   isMultiModeEnabled,
   isStreamingModeEnabled,
   startRecording,
@@ -167,7 +123,6 @@ const {
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const optimizationStream = useOptimizationStreamStore()
-const serviceActionPending = ref(false)
 const liveScroll = ref(null)
 const autoScrollEnabled = ref(true)
 
@@ -176,12 +131,8 @@ const streamingProviderLabel = computed(() => (
   deriveStreamingProviderLabel(settingsStore.settings.asr_provider)
 ))
 
-const showServiceButton = computed(() => true)
-const serviceLoading = computed(() => (
-  serviceActionPending.value || settingsStore.runtimeStatus.model_service_loading
-))
+const serviceLoading = computed(() => settingsStore.runtimeStatus.model_service_loading)
 const serviceReady = computed(() => settingsStore.runtimeStatus.model_service_ready)
-const serviceRunning = computed(() => settingsStore.runtimeStatus.model_service_running)
 const serviceSupported = computed(() => settingsStore.runtimeStatus.model_service_supported)
 const streamingAvailable = computed(() => settingsStore.runtimeStatus.streaming_available)
 // 在线 provider（豆包）：流式不可用时缺的是凭据，不是「模型没开」，
@@ -191,9 +142,6 @@ const streamingNeedsCredentials = computed(() => (
   !streamingAvailable.value &&
   settingsStore.runtimeStatus.model_service_mode === 'online'
 ))
-const serviceButtonDisabled = computed(() => (
-  serviceLoading.value || isRecording.value || isTranscribing.value
-))
 const recordingButtonDisabled = computed(() => (
   !isRecording.value &&
   (!serviceReady.value || (isStreamingModeEnabled.value && !streamingAvailable.value))
@@ -201,46 +149,12 @@ const recordingButtonDisabled = computed(() => (
 const buttonText = computed(() => {
   if (isRecording.value) return '结束录音'
   if (serviceLoading.value) return '模型加载中'
-  if (!serviceSupported.value) return '当前模式不支持开启模型'
+  if (!serviceSupported.value) return '当前模式不可用'
   if (streamingNeedsCredentials.value) return '请先配置 ASR 密钥'
   if (isStreamingModeEnabled.value && serviceReady.value && !streamingAvailable.value) return '当前环境暂不支持流式'
-  if (recordingButtonDisabled.value) return '请先开启模型'
+  if (recordingButtonDisabled.value) return '识别引擎未就绪'
   return '开始录音'
 })
-const serviceButtonLabel = computed(() => {
-  if (!serviceSupported.value) return '当前模式不可用'
-  if (serviceLoading.value) return '模型加载中'
-  if (serviceReady.value) return '模型已开启'
-  if (serviceRunning.value) return '模型预热中'
-  return '开启模型'
-})
-
-const modeBadge = computed(() => {
-  if (isStreamingModeEnabled.value) return streamingProviderLabel.value
-  if (isMultiModeEnabled.value) return '多段准实时'
-  return '单段录音'
-})
-
-const liveModeText = computed(() => {
-  if (isStreamingModeEnabled.value) return '连续流式'
-  if (isMultiModeEnabled.value) return '自动切段'
-  return '完整录音'
-})
-
-const statusBadge = computed(() => {
-  if (isRecording.value) return '录音中'
-  if (optimizationStream.isActive) return '优化中'
-  if (isTranscribing.value) return '处理中'
-  return '就绪'
-})
-
-// 状态徽章的语义色：录音=错误红（醒目）、转写=警告黄、就绪=成功绿
-const statusTone = computed(() => {
-  if (isRecording.value) return 'err'
-  if (isTranscribing.value || livePhase.value === 'optimizing') return 'warn'
-  return 'ok'
-})
-
 const formattedDuration = computed(() => {
   const mins = Math.floor(duration.value / 60)
   const secs = duration.value % 60
@@ -267,50 +181,19 @@ const panelStatus = computed(() => {
   return '等待开始录音'
 })
 
-const panelHint = computed(() => {
-  if (isStreamingModeEnabled.value) {
-    return `真流式模式会持续发送 16k PCM 音频，并实时刷新${streamingProviderLabel.value}转写结果。`
-  }
-
-  if (isMultiModeEnabled.value) {
-    return '说完一句停顿片刻，系统会自动切段并实时追加文本。'
-  }
-
-  return '单段模式会在结束录音后统一上传并转写。'
-})
-
+// 声纹：36 根细条，空闲时收成一条 3px 的静线；录音时按音量起伏（单段模式没有实时电平，用固定幅度）
+const WAVE_SHAPE = [0.35, 0.6, 0.45, 0.8, 0.55, 0.3, 0.7, 0.95, 0.5, 0.4, 0.75, 0.6,
+  0.85, 0.45, 0.3, 0.65, 1, 0.55, 0.4, 0.7, 0.5, 0.9, 0.6, 0.35, 0.8, 0.45, 0.65, 0.3,
+  0.55, 0.75, 0.4, 0.6, 0.85, 0.5, 0.35, 0.45]
 const waveformHeights = computed(() => {
-  const base = [10, 22, 34, 48, 60, 46, 30, 20, 12]
-  const amplitude = isRecording.value
-    ? ((isMultiModeEnabled.value || isStreamingModeEnabled.value) ? audioLevel.value : 0.72)
-    : 0.18
-
-  return base.map((height, index) => {
-    const pulse = ((index % 3) + 1) * 4
-    return Math.max(8, Math.round(height * (0.42 + amplitude * 0.85) + pulse))
-  })
+  if (!isRecording.value) {
+    return WAVE_SHAPE.map(() => 3)
+  }
+  const amplitude = (isMultiModeEnabled.value || isStreamingModeEnabled.value) ? audioLevel.value : 0.6
+  return WAVE_SHAPE.map((shape) => Math.max(3, Math.round(4 + shape * 22 * Math.min(1, 0.25 + amplitude))))
 })
 
 const displayTranscript = computed(() => liveTranscript.value.trim())
-
-const sessionStatusShort = computed(() => sessionStatusText.value || '待开始')
-
-const segmentCountText = computed(() => {
-  if (isStreamingModeEnabled.value) {
-    if (isRecording.value) return '流式会话进行中'
-    if (livePhase.value === 'optimizing') return '后台优化中'
-    if (isTranscribing.value) return '流式结果收尾中'
-    return '流式模式'
-  }
-
-  if (!isMultiModeEnabled.value) {
-    if (isRecording.value) return '整段采集中'
-    if (isTranscribing.value) return '整段处理中'
-    return '整段模式'
-  }
-
-  return `${processedSegmentCount.value} 段`
-})
 
 const transcriptPlaceholder = computed(() => {
   if (isStreamingModeEnabled.value) {
@@ -336,15 +219,6 @@ const transcriptPlaceholder = computed(() => {
   }
 
   return '按下录音按钮开始一次新的语音输入。'
-})
-
-const liveIndicatorText = computed(() => {
-  if (isRecording.value && isStreamingModeEnabled.value) return 'LIVE STREAM'
-  if (isRecording.value && isMultiModeEnabled.value) return 'LIVE AI'
-  if (isRecording.value) return 'RECORDING'
-  if (optimizationStream.isActive) return 'STREAMING'
-  if (isTranscribing.value) return 'PROCESSING'
-  return 'STANDBY'
 })
 
 const showOptimizationStream = computed(() => (
@@ -377,6 +251,104 @@ const canCancelOptimization = computed(() => (
   optimizationStream.source === 'auto' &&
   Boolean(optimizationStream.recordId)
 ))
+
+// ---- 印章：錄 待命 → 聽 录音中 → 轉 转写 / 优化中 → 成 / 敗（停留片刻）→ 錄 ----
+const sealFlash = ref(null)
+let sealFlashTimer = null
+
+const isProcessing = computed(() => (
+  isTranscribing.value || livePhase.value === 'optimizing' || optimizationStream.isActive
+))
+const sealState = computed(() => recorderSealState({
+  recording: isRecording.value,
+  processing: isProcessing.value,
+  flash: sealFlash.value
+}))
+const sealGlyph = computed(() => SEALS[sealState.value])
+
+watch(livePhase, (phase) => {
+  if (phase !== 'completed' && phase !== 'error') {
+    return
+  }
+  sealFlash.value = phase === 'completed' ? 'success' : 'failure'
+  clearTimeout(sealFlashTimer)
+  sealFlashTimer = setTimeout(() => {
+    sealFlash.value = null
+  }, phase === 'completed' ? SUCCESS_HOLD_MS : FAILURE_HOLD_MS)
+})
+
+onUnmounted(() => clearTimeout(sealFlashTimer))
+
+const hotkeyDisplay = computed(() => settingsStore.settings.hotkey?.display || '')
+
+const statusLine = computed(() => {
+  if (isRecording.value || isProcessing.value) {
+    return panelStatus.value
+  }
+  if (sealState.value === 'success') return '完成'
+  if (sealState.value === 'failure') return '这次没有成功，可以再试一次'
+  if (recordingButtonDisabled.value) return buttonText.value
+  return hotkeyDisplay.value ? `待命 · 快捷键 ${hotkeyDisplay.value}` : '待命 · 点按印章开始'
+})
+
+const statusDot = computed(() => {
+  if (isRecording.value) return 'red pulse'
+  if (isProcessing.value) return 'blue pulse'
+  if (sealState.value === 'success') return 'ok'
+  if (sealState.value === 'failure') return 'err'
+  if (recordingButtonDisabled.value) return 'warn'
+  return 'gold'
+})
+
+// 进行中细线的颜色跟印章走：录音朱红、处理靛蓝；空闲时不显示
+const flowColor = computed(() => {
+  if (isRecording.value) return 'var(--seal-listening-line)'
+  if (isProcessing.value) return 'var(--seal-converting-line)'
+  return ''
+})
+
+const MODE_LABELS = { single: '单段', multi: '多段', streaming: '流式' }
+
+const engineStatus = computed(() => {
+  const text = `${providerLabel(settingsStore.settings.asr_provider)} · ${MODE_LABELS[settingsStore.settings.recording_mode] || '单段'}`
+  if (serviceLoading.value) {
+    return { text: `${text} · 模型加载中`, dot: 'gold pulse', title: '模型加载中' }
+  }
+  if (recordingButtonDisabled.value) {
+    return { text, dot: 'warn', title: buttonText.value }
+  }
+  return { text, dot: 'ok', title: '识别引擎已就绪' }
+})
+
+const optimizeStatus = computed(() => {
+  if (!settingsStore.settings.auto_optimize) {
+    return { text: '自动优化已关闭', dot: '' }
+  }
+  const preset = settingsStore.defaultPreset?.name ||
+    String(settingsStore.settings.default_preset_id || '').replace(/^preset-/, '')
+  return { text: preset ? `自动优化 · ${preset}` : '自动优化', dot: 'ok' }
+})
+
+// 引擎不可用时给出可照做的原因（加载中不算不可用）
+const notReadyReason = computed(() => {
+  if (isRecording.value || isProcessing.value || serviceLoading.value || !recordingButtonDisabled.value) {
+    return ''
+  }
+  const runtime = settingsStore.runtimeStatus
+  return runtime.streaming_error || runtime.model_service_error || buttonText.value
+})
+
+const showLivePanel = computed(() => (
+  showOptimizationStream.value ||
+  (isRecording.value && (isMultiModeEnabled.value || isStreamingModeEnabled.value)) ||
+  ((isRecording.value || isTranscribing.value) && Boolean(displayTranscript.value))
+))
+
+const optimizationDot = computed(() => {
+  if (optimizationStream.phase === 'error') return 'err'
+  if (optimizationStream.phase === 'cancelled') return ''
+  return 'blue pulse'
+})
 
 function handleLiveScroll() {
   const element = liveScroll.value
@@ -421,36 +393,6 @@ async function refreshModelServiceStatus(probeRuntime = true) {
   }
 }
 
-async function toggleModelService() {
-  if (serviceButtonDisabled.value) {
-    return
-  }
-
-  if (!serviceSupported.value) {
-    appStore.showToast(
-      settingsStore.runtimeStatus.model_service_error ||
-      settingsStore.runtimeStatus.streaming_error ||
-      '当前模式不支持开启模型'
-    )
-    return
-  }
-
-  serviceActionPending.value = true
-  try {
-    if (serviceReady.value || serviceRunning.value) {
-      await settingsStore.stopStreamingService()
-      return
-    }
-
-    await settingsStore.startStreamingService(false)
-  } catch (error) {
-    appStore.showToast(error.message || '模型服务启动失败')
-    console.error('[RecorderSection] Failed to toggle streaming service:', error)
-  } finally {
-    serviceActionPending.value = false
-  }
-}
-
 function toggleRecording() {
   if (recordingButtonDisabled.value) {
     return
@@ -478,472 +420,171 @@ watch(
 </script>
 
 <style scoped>
-.recorder-stage {
-  width: 100%;
-  margin-bottom: var(--s-6);
-}
-
-.stage-shell {
-  position: relative;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--r-xl);
-  padding: var(--s-4);
-  background: var(--bg-surface);
-  box-shadow: var(--edge-hi);
-}
-
-.stage-badges {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-/* 服务开关：在原语基线上保留胶囊 + 状态点 */
-.service-toggle-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--r-full);
-  background: var(--gray-300);
-  box-shadow: 0 0 0 4px var(--line-soft);
-}
-
-.service-toggle.is-active .service-toggle-dot {
-  background: var(--accent);
-  box-shadow: 0 0 0 4px var(--accent-dim);
-}
-
-.stage-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
-  gap: var(--s-3);
-  align-items: stretch;
-}
-
-.recorder-panel,
-.live-panel {
-  position: relative;
-  overflow: hidden;
-  min-height: 340px;
-  border-radius: var(--r-lg);
-}
-
-.recorder-panel {
+.recorder-page {
   display: flex;
   flex-direction: column;
-  padding: var(--s-4);
-  border: 1px solid var(--line);
-  background: var(--grad-card);
+  gap: var(--s-4);
 }
 
-.recorder-panel.active {
-  box-shadow:
-    inset 0 0 0 1px var(--accent-tint),
-    var(--e-hover);
-  border-color: var(--accent-line);
-}
-
-.panel-aura {
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle at center, var(--accent-halo), transparent 62%);
-  opacity: 0;
-  transition: opacity var(--t-base) var(--ease);
-  pointer-events: none;
-}
-
-.recorder-panel.active .panel-aura {
-  opacity: 1;
-}
-
-.panel-core {
+.recorder-card {
   position: relative;
-  z-index: 1;
+}
+
+.recorder-row {
   display: flex;
-  flex: 1;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: var(--s-3) 0 var(--s-1);
+  gap: var(--s-6);
 }
 
-.recorder-toggle {
-  position: relative;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 104px;
-  height: 104px;
-  border: 1px solid var(--accent-tint);
-  border-radius: var(--r-full);
-  color: var(--text-1);
-  background:
-    radial-gradient(circle at 30% 30%, var(--accent-tint), var(--bg-raise) 72%);
-  box-shadow:
-    var(--e-hover),
-    var(--edge-hi);
+.recorder-seal {
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  font-size: 36px;
   cursor: pointer;
-  transition:
-    transform var(--t-base) var(--ease),
-    box-shadow var(--t-base) var(--ease),
-    border-color var(--t-base) var(--ease),
-    color var(--t-base) var(--ease);
+  transition: transform var(--t-fast) var(--ease), background-color 280ms ease, color 280ms ease, box-shadow var(--t-base) var(--ease);
 }
 
-.recorder-toggle:hover:not(:disabled) {
-  transform: translateY(-2px);
-  border-color: var(--accent-line);
-  color: var(--accent-hi);
+.recorder-seal[data-seal='idle'] {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), inset 0 -3px 0 rgba(0, 0, 0, 0.18), 0 0 0 6px var(--accent-faint);
 }
 
-.recorder-toggle:disabled {
+.recorder-seal:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.recorder-seal:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.recorder-seal:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.recorder-seal:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
-  transform: none;
-  box-shadow: var(--e-1);
+  filter: saturate(0.35) brightness(0.7);
 }
 
-.recorder-toggle:disabled:hover {
-  transform: none;
-  border-color: var(--accent-tint);
-  color: var(--text-1);
-}
-
-.recorder-toggle:active:not(:disabled) {
-  transform: translateY(1px);
-}
-
-.recorder-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 4px;
-}
-
-.toggle-ring {
+/* 录音中：印章外一圈朱红波纹 */
+.recorder-seal[data-seal='listening']::after {
+  content: '';
   position: absolute;
-  inset: -10px;
-  border: 1px solid var(--line-strong);
-  border-radius: inherit;
-  opacity: 0.5;
-  transition: transform var(--t-base) var(--ease), opacity var(--t-base) var(--ease);
+  inset: -6px;
+  border-radius: 12px;
+  border: 1px solid var(--seal-listening-line);
+  animation: recorder-ring 1.6s var(--ease) infinite;
 }
 
-.recorder-toggle.active {
-  color: var(--accent);
-  border-color: var(--accent-line-strong);
-  box-shadow:
-    0 0 0 8px var(--accent-halo),
-    var(--e-hover);
+@keyframes recorder-ring {
+  from { transform: scale(0.94); opacity: 0.8; }
+  to { transform: scale(1.22); opacity: 0; }
 }
 
-.recorder-toggle.active .toggle-ring {
-  transform: scale(1.04);
-  opacity: 1;
-  border-color: var(--accent-line);
+.recorder-readout {
+  display: grid;
+  gap: 8px;
+  min-width: 160px;
 }
 
-.recorder-toggle svg {
-  width: 38px;
-  height: 38px;
-}
-
-.stage-waveform {
-  display: flex;
-  align-items: end;
-  justify-content: center;
-  gap: var(--s-1);
-  width: 100%;
-  max-width: 220px;
-  height: 44px;
-  margin-top: var(--s-3);
-}
-
-.waveform-bar {
-  width: 3px;
-  border-radius: var(--r-full);
-  background: linear-gradient(180deg, var(--gray-400), var(--accent));
-  transition: height var(--t-fast) var(--ease), opacity var(--t-fast) var(--ease);
-}
-
-.panel-meta {
-  position: relative;
-  z-index: 1;
-  margin-top: var(--s-3);
-  text-align: center;
-}
-
-/* 计时器是这一屏的视觉主角：等宽数字 + 收紧字距，
-   读数变化时不会左右跳动。 */
-.panel-time {
-  display: block;
-  font-family: var(--font-mono);
-  font-size: clamp(var(--fs-2xl), 3vw, 2.75rem);
-  font-weight: 700;
-  letter-spacing: -0.04em;
+.recorder-timer {
+  font-size: 28px;
+  line-height: 1;
+  letter-spacing: 0.04em;
   color: var(--text-1);
-  font-variant-numeric: tabular-nums;
 }
 
-.panel-status {
-  margin: var(--s-2) 0 var(--s-1);
-  font-size: var(--fs-cap);
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--accent);
+.recorder-status {
+  white-space: normal;
 }
 
-.panel-hint {
-  margin: 0;
-  max-width: 320px;
-  color: var(--text-3);
-  font-size: var(--fs-cap);
-  line-height: 1.55;
-}
-
-.live-panel {
+.recorder-wave {
   display: flex;
-  flex-direction: column;
-  padding: var(--s-4);
-  border: 1px solid var(--line);
-  background: var(--grad-card);
+  align-items: center;
+  gap: 3px;
+  height: 28px;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.live-header {
+.recorder-wave i {
+  width: 2px;
+  flex: none;
+  border-radius: 2px;
+  background: var(--gray-600);
+  transition: height 120ms ease-out;
+}
+
+.recorder-wave.live i {
+  background: var(--seal-listening-line);
+}
+
+.recorder-side {
+  margin-left: auto;
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+}
+
+.recorder-live {
+  max-height: 220px;
+  margin-top: var(--s-4);
+  padding: var(--s-4);
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.recorder-live-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--s-2);
+  gap: var(--s-3);
+  margin-bottom: var(--s-2);
 }
 
-.live-heading {
-  min-width: 0;
-}
-
-.live-title {
+.recorder-live-text {
   margin: 0;
   font-size: var(--fs-md);
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  line-height: 1.75;
   color: var(--text-1);
-}
-
-.live-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-2);
-  font-size: var(--fs-cap);
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-3);
-}
-
-.live-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--r-full);
-  background: var(--accent);
-  box-shadow: 0 0 12px var(--accent-glow);
-  animation: blinkDot 1.6s ease-in-out infinite;
-}
-
-.live-content {
-  flex: 1;
-  margin: var(--s-3) 0;
-  padding: var(--s-4);
-  border-radius: var(--r-md);
-  background: var(--bg-base);
-  border: 1px solid var(--line);
-  overflow: auto;
-  box-shadow: var(--edge-hi);
-}
-
-.live-transcript,
-.live-placeholder {
-  margin: 0;
-  font-size: var(--fs-base);
-  line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.live-transcript {
-  color: var(--text-1);
-}
-
-.live-placeholder {
+.recorder-live-text.converting {
   color: var(--text-3);
 }
 
-.stream-status {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  margin-bottom: var(--s-3);
-  padding-bottom: var(--s-2);
-  border-bottom: 1px dashed var(--line);
-  color: var(--accent);
-  font-size: var(--fs-cap);
-  font-weight: 600;
-  letter-spacing: 0.04em;
+.recorder-live-placeholder,
+.recorder-live-raw {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  color: var(--text-3);
 }
 
-.stream-cancel {
-  margin-left: auto;
+.recorder-live-raw {
+  margin-top: var(--s-2);
 }
 
-.stream-spinner {
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid var(--line-soft-strong);
-  border-top-color: var(--accent);
-  border-radius: var(--r-full);
-  animation: streamSpin 0.9s linear infinite;
-}
-
-.streaming-transcript {
-  min-height: 1.7em;
-}
-
-.typing-cursor {
-  display: inline-block;
-  width: 2px;
-  height: 1.1em;
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  border-radius: 1px;
-  background: var(--accent);
-  animation: cursorBlink 0.9s steps(1) infinite;
-}
-
-.stream-error {
-  margin: var(--s-3) 0 0;
+.recorder-live-error {
+  margin: var(--s-2) 0 0;
+  font-size: var(--fs-sm);
   color: var(--err);
-  font-size: var(--fs-cap);
-  line-height: 1.5;
 }
 
-.stream-raw-preview {
-  margin: var(--s-3) 0 0;
-  padding-top: var(--s-3);
-  border-top: 1px dashed var(--line);
-  color: var(--text-3);
-  font-size: var(--fs-cap);
-  line-height: 1.6;
-  white-space: pre-wrap;
-}
-
-@keyframes streamSpin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes cursorBlink {
-  0%,
-  49% {
-    opacity: 1;
-  }
-
-  50%,
-  100% {
-    opacity: 0;
-  }
-}
-
-.live-footer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s-2);
-  padding-top: var(--s-3);
-  border-top: 1px solid var(--line);
-}
-
-.live-footer-item {
-  color: var(--text-2);
-  font-size: var(--fs-cap);
-  font-weight: 500;
-  padding: 3px var(--s-2);
-  border-radius: var(--r-full);
-  background: var(--bg-raise);
-  border: 1px solid var(--line);
-}
-
-@keyframes blinkDot {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
+@media (max-width: 860px) {
+  .recorder-wave {
+    display: none;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .live-dot {
+  .recorder-seal[data-seal='listening']::after {
     animation: none;
-  }
-}
-
-@media (max-width: 1040px) {
-  .stage-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .recorder-panel,
-  .live-panel {
-    min-height: auto;
-  }
-}
-
-@media (max-width: 720px) {
-  .stage-shell {
-    padding: var(--s-3);
-    border-radius: var(--r-lg);
-  }
-
-  .live-header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .recorder-panel {
-    padding: var(--s-3);
-  }
-
-  .recorder-toggle {
-    width: 92px;
-    height: 92px;
-  }
-
-  .recorder-toggle svg {
-    width: 34px;
-    height: 34px;
-  }
-
-  .panel-time {
-    font-size: var(--fs-2xl);
-  }
-
-  .live-content {
-    padding: var(--s-3);
-  }
-}
-
-@media (max-width: 560px) {
-  .stage-badges {
-    justify-content: flex-start;
-  }
-
-  .stage-waveform {
-    max-width: 100%;
-  }
-
-  .live-footer {
-    gap: var(--s-1);
   }
 }
 </style>

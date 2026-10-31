@@ -1,11 +1,11 @@
 <template>
   <!--
-    统一页头原语：标题 + 副标题 + 金色渐变短分隔线，
-    首页 / 记录集 / 剪切板 / 设置共用同一视觉。
-    右侧可选 #actions 插槽放状态徽章或操作按钮。
+    统一页头原语：与设置页页头同一套视觉——面包屑 + 标题 + 一行说明，
+    首页 / 转文字 / 记录集 / 剪贴板共用。右侧可选 #actions 插槽放文字按钮。
   -->
   <header class="page-header">
     <div class="page-header__main">
+      <div v-if="crumb" class="page-header__crumb">{{ crumb }}</div>
       <h1 class="page-header__title">{{ title }}</h1>
       <p v-if="subtitle || $slots.default" class="page-header__subtitle">
         <slot>{{ subtitle }}</slot>
@@ -22,6 +22,11 @@
 defineOptions({ name: 'PageHeader' })
 
 defineProps({
+  // 面包屑（如「首页 / 记录集」），与设置页「设置 / 通用」同款
+  crumb: {
+    type: String,
+    default: ''
+  },
   title: {
     type: String,
     required: true
@@ -39,30 +44,34 @@ defineProps({
   align-items: flex-end;
   justify-content: space-between;
   gap: var(--s-4);
-  margin-bottom: var(--s-6);
+  margin-bottom: var(--s-2);
 }
 
 .page-header__main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   min-width: 0;
   flex: 1;
 }
 
+.page-header__crumb {
+  font-size: var(--fs-cap);
+  color: var(--text-3);
+}
+
 .page-header__title {
   margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 600;
   color: var(--text-1);
-  font-family: var(--font-sans);
-  font-size: clamp(var(--fs-xl), 3vw, var(--fs-2xl));
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
 }
 
 .page-header__subtitle {
-  max-width: 760px;
-  margin: var(--s-2) 0 0;
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
   color: var(--text-2);
-  font-size: var(--fs-base);
-  line-height: 1.7;
 }
 
 .page-header__actions {
@@ -70,32 +79,5 @@ defineProps({
   align-items: center;
   gap: var(--s-2);
   flex-shrink: 0;
-}
-
-.page-header__actions :deep(> *) {
-  flex-shrink: 0;
-}
-
-.page-header {
-  position: relative;
-  padding-bottom: var(--s-4);
-  border-bottom: 1px solid var(--line);
-}
-
-.page-header::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  bottom: -1px;
-  width: 72px;
-  height: 1px;
-  background: linear-gradient(90deg, var(--accent), transparent);
-}
-
-@media (max-width: 960px) {
-  .page-header {
-    flex-wrap: wrap;
-    align-items: flex-start;
-  }
 }
 </style>

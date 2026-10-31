@@ -21,8 +21,10 @@
       }"
     >
       <div v-show="currentPage === 'home'" class="container page-view">
-        <RecorderSection />
-        <RecordsSection />
+        <div class="ui-page">
+          <RecorderSection />
+          <RecordsSection />
+        </div>
       </div>
 
       <div v-show="currentPage === 'transcribe'" class="container page-view">

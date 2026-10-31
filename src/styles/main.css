@@ -113,15 +113,7 @@ body::before {
 
 /* Processing State */
 
-/* Recording Status（.status-text 仍被 Sidebar 连接状态复用；状态胶囊样式已随 RecordingStatus 组件删除） */
-
-.status-text {
-    font-size: var(--fs-sm);
-    color: var(--text-secondary);
-    font-weight: 500;
-    white-space: nowrap;
-    transition: opacity 0.3s ease, transform 0.3s ease;
-}
+/* Recording Status（状态胶囊样式已随 RecordingStatus 组件删除；侧边栏连接状态改用 .ui-meta） */
 
 .status-ready {
     position: absolute;
@@ -596,43 +588,57 @@ textarea:focus-visible {
     width: var(--sidebar-collapsed-width);
 }
 
+/* 拖动调宽时关掉宽度 / 边距过渡（否则每次移动都重新起一段 250ms 动画，跟手性很差），
+   也不让拖动顺手选中页面文字 */
+.app-container.is-sidebar-resizing {
+    cursor: col-resize;
+    user-select: none;
+}
+
+.app-container.is-sidebar-resizing .sidebar,
+.app-container.is-sidebar-resizing .main-content {
+    transition: none;
+}
+
 .app-container.has-title-bar .sidebar {
     top: var(--titlebar-height);
     height: calc(100vh - var(--titlebar-height));
 }
 
-/* 侧边栏头部：品牌标已随标题栏统一收敛到 TitleBar + LogoMark.vue，
+/* 侧边栏头部：品牌标已随标题栏统一收敛到 TitleBar（「聲」印章），
    侧边栏不再重复放 logo，原 .logo-text / .sidebar.collapsed .logo-text 死规则已删除 */
 
-/* 导航菜单 */
+/* 导航菜单：图标是「文字图标」（宋体粗体繁体单字），选中项是一枚金色小印章 */
 .sidebar-nav {
     flex: 1;
-    padding-top: var(--space-md);
+    min-width: 0;
+    overflow: hidden;
+    padding: var(--s-3) var(--s-3) 0;
     display: flex;
     flex-direction: column;
-    gap: var(--space-xs);
+    gap: 2px;
 }
 
 .nav-item {
     display: flex;
     align-items: center;
-    gap: var(--space-md);
+    gap: 10px;
     width: 100%;
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid transparent;
-    border-radius: var(--radius-md);
+    height: 38px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--r-md);
     background: transparent;
-    color: var(--text-secondary);
-    text-decoration: none;
-    transition: all var(--transition-fast);
-    cursor: pointer;
+    color: var(--text-2);
     font: inherit;
     text-align: left;
+    cursor: pointer;
+    transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 
 .nav-item:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    background: var(--bg-card);
+    color: var(--text-1);
 }
 
 .nav-item.active {
@@ -640,129 +646,84 @@ textarea:focus-visible {
     color: var(--accent);
 }
 
-.nav-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    width: 1.5rem;
-    height: 1.5rem;
+.nav-glyph {
+    width: 22px;
+    height: 22px;
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 5px;
+    font-family: var(--font-seal);
+    font-weight: 900;
+    font-size: 14px;
+    line-height: 1;
+    color: var(--text-3);
+    transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 
-.nav-icon svg {
-    width: 1.25rem;
-    height: 1.25rem;
-    stroke: currentColor;
-    stroke-width: 1.75;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+.nav-item:hover .nav-glyph {
+    color: var(--text-1);
+}
+
+.nav-item.active .nav-glyph {
+    background: var(--seal-idle-bg);
+    color: var(--seal-idle-fg);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), inset 0 -2px 0 rgba(0, 0, 0, 0.18);
 }
 
 .nav-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     font-size: var(--fs-base);
-    font-weight: 500;
     white-space: nowrap;
-    opacity: 1;
-    transition: opacity var(--transition-fast);
 }
 
-.sidebar.collapsed .nav-text {
-    opacity: 0;
-    width: 0;
+.sidebar-divider {
+    margin: 10px 4px;
+    border: 0;
+    border-top: 1px solid var(--line);
 }
 
-/* 折叠状态导航项优化 */
 .sidebar.collapsed .sidebar-nav {
-    gap: var(--space-sm);
+    padding: var(--s-3) 0 0;
+    align-items: center;
 }
 
 .sidebar.collapsed .nav-item {
     justify-content: center;
-    padding: var(--space-sm);
+    width: 40px;
+    height: 40px;
+    padding: 0;
     gap: 0;
-    width: 44px;
-    height: 44px;
-    border-radius: var(--radius-sm);
-    margin: 0 auto var(--space-xs);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
 }
 
-.sidebar.collapsed .nav-item:last-child {
-    margin-bottom: 0;
+.sidebar.collapsed .sidebar-divider {
+    width: 28px;
 }
 
-.sidebar.collapsed .nav-item.active {
-    background: var(--accent-dim);
-    color: var(--accent);
-    border-color: var(--accent-line);
-}
-
-/* 连接状态 */
+/* 连接与引擎状态：小圆点 + 灰字；侧边栏变窄时文字截成省略号，不溢出到内容区 */
 .sidebar-status {
-    padding: var(--space-md);
-    border-top: 1px solid var(--border);
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    padding: var(--s-4) var(--s-4) var(--s-4) 20px;
 }
 
-.connection-status {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    padding: var(--space-sm);
-    background: var(--bg-card);
-    border-radius: var(--radius-sm);
+.sidebar-status .ui-meta {
+    max-width: 100%;
 }
 
-.status-indicator {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--gray-500);
-    flex-shrink: 0;
-    transition: all var(--transition-base);
+.sidebar-status .ui-meta > span:not(.ui-dot) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.status-indicator.connected {
-    background: var(--success);
-    box-shadow: 0 0 8px var(--success);
-}
-
-.status-indicator.disconnected {
-    background: var(--danger);
-}
-
-.sidebar-status .status-text {
-    font-size: var(--fs-cap);
-    color: var(--text-muted);
-    white-space: nowrap;
-}
-
-.sidebar.collapsed .sidebar-status .status-text {
-    display: none;
-}
-
-.client-count {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    margin-top: var(--space-sm);
-    padding: var(--space-sm);
-    background: var(--bg-card);
-    border-radius: var(--radius-sm);
-}
-
-.client-icon {
-    font-size: var(--fs-base);
-    flex-shrink: 0;
-}
-
-.client-text {
-    font-size: var(--fs-cap);
-    color: var(--text-muted);
-}
-
-.sidebar.collapsed .client-count {
-    display: none;
+.sidebar.collapsed .sidebar-status {
+    justify-items: center;
+    padding: var(--s-4) 0;
 }
 
 .sidebar-resizer {
@@ -1553,7 +1514,7 @@ textarea:focus-visible {
    统一工具类（本轮新增）
    ============================================ */
 
-/* 侧边栏 / 标题栏品牌图标已由 LogoMark.vue 组件承载（内联 SVG，见 src/assets/logo-mark.svg），
+/* 侧边栏 / 标题栏品牌图标改为 TitleBar 里的「聲」印章（文字图标，见 common/glyphs.mjs），
    原先两处 .logo-icon 的文字方块样式随之删除。 */
 
 /* 快捷键输入：等宽 + 居中 + 可点击录入（其余外观统一由 BaseInput 原语提供） */

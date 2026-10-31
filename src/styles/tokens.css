@@ -161,6 +161,18 @@
   /* ---------- 10. 字体栈：纯系统字体，离线可用（不依赖远程字体） ---------- */
   --font-sans: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: Consolas, 'Cascadia Mono', 'SF Mono', 'Menlo', 'Courier New', monospace;
+  /* 文字图标 / 印章：宋体粗体繁体（与悬浮窗 .seal 同一套字体） */
+  --font-seal: 'Songti TC', 'STSongti-TC-Black', 'Noto Serif TC', 'PMingLiU', 'MingLiU', serif;
+
+  /* ---------- 10b. 印章四态底色 / 字色（与悬浮窗 floating.css 同值；錄 金 · 聽 朱 · 轉 靛 · 成 青 · 敗 赭） ---------- */
+  --seal-idle-bg: #c9a227;      --seal-idle-fg: #3a2a05;
+  --seal-listening-bg: #c8463b; --seal-listening-fg: #fbe7c6;
+  --seal-converting-bg: #4257d3; --seal-converting-fg: #f3d27a;
+  --seal-success-bg: #2e9e6b;   --seal-success-fg: #eafbf1;
+  --seal-failure-bg: #6b2a26;   --seal-failure-fg: #f6c9bf;
+  /* 进行中细线 / 声纹用的亮一档（印章底色直接放在深色背景上偏暗） */
+  --seal-listening-line: #e0574b;
+  --seal-converting-line: #6b7ff0;
 
   /* ---------- 11. 统一滚动条 ---------- */
   --scroll-size: 10px;

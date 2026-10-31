@@ -9,80 +9,38 @@
     }"
     :style="{ width: `${width}px` }"
   >
+    <!-- 导航图标是「文字图标」（字表见 common/glyphs.mjs）：选中项是一枚金色小印章 -->
     <nav class="sidebar-nav">
-      <button class="nav-item" :class="{ active: currentPage === 'home' }" type="button" @click="navigateTo('home')">
-        <span class="nav-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none">
-            <path d="M12 2.5a3.5 3.5 0 0 0-3.5 3.5v6a3.5 3.5 0 1 0 7 0V6A3.5 3.5 0 0 0 12 2.5Z" />
-            <path d="M18.5 11.5V12a6.5 6.5 0 0 1-13 0v-.5" />
-            <path d="M12 18.5v3" />
-            <path d="M9 21.5h6" />
-          </svg>
-        </span>
-        <span v-if="!collapsed" class="nav-text">首页</span>
-      </button>
-      <button class="nav-item" :class="{ active: currentPage === 'transcribe' }" type="button" @click="navigateTo('transcribe')">
-        <span class="nav-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none">
-            <path d="M7 3.5h7.5L19 8v12.5H7z" />
-            <path d="M14.5 3.5V8H19" />
-            <path d="M10 11.5v5" />
-            <path d="M13 10v8" />
-            <path d="M16 12.5v3" />
-          </svg>
-        </span>
-        <span v-if="!collapsed" class="nav-text">转文字</span>
-      </button>
-      <button class="nav-item" :class="{ active: currentPage === 'records' }" type="button" @click="navigateTo('records')">
-        <span class="nav-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none">
-            <rect x="4" y="5" width="16" height="4" rx="1.5" />
-            <rect x="4" y="10" width="16" height="4" rx="1.5" />
-            <rect x="4" y="15" width="16" height="4" rx="1.5" />
-          </svg>
-        </span>
-        <span v-if="!collapsed" class="nav-text">记录集</span>
-      </button>
-      <button class="nav-item" :class="{ active: currentPage === 'clipboard' }" type="button" @click="navigateTo('clipboard')">
-        <span class="nav-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none">
-            <path d="M9 4.75h6" />
-            <path d="M9 3.5h6a1.5 1.5 0 0 1 1.5 1.5v1.25H7.5V5A1.5 1.5 0 0 1 9 3.5Z" />
-            <path d="M7.25 6.25h9.5A2.25 2.25 0 0 1 19 8.5v9.25A2.25 2.25 0 0 1 16.75 20h-9.5A2.25 2.25 0 0 1 5 17.75V8.5a2.25 2.25 0 0 1 2.25-2.25Z" />
-            <path d="M8.5 11h7" />
-            <path d="M8.5 14.5h5.5" />
-          </svg>
-        </span>
-        <span v-if="!collapsed" class="nav-text">剪切板</span>
-      </button>
-      <button class="nav-item" :class="{ active: currentPage === 'settings' }" type="button" @click="navigateTo('settings')">
-        <span class="nav-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M12 2.75v2.5" />
-            <path d="M12 18.75v2.5" />
-            <path d="m4.93 4.93 1.77 1.77" />
-            <path d="m17.3 17.3 1.77 1.77" />
-            <path d="M2.75 12h2.5" />
-            <path d="M18.75 12h2.5" />
-            <path d="m4.93 19.07 1.77-1.77" />
-            <path d="m17.3 6.7 1.77-1.77" />
-          </svg>
-        </span>
-        <span v-if="!collapsed" class="nav-text">设置</span>
-      </button>
+      <template v-for="item in NAV_ITEMS" :key="item.page">
+        <hr v-if="item.page === 'settings'" class="sidebar-divider">
+        <button
+          class="nav-item"
+          :class="{ active: currentPage === item.page }"
+          type="button"
+          :title="collapsed ? item.label : undefined"
+          :aria-current="currentPage === item.page ? 'page' : undefined"
+          @click="navigateTo(item.page)"
+        >
+          <span class="nav-glyph" aria-hidden="true">{{ NAV_GLYPHS[item.page] }}</span>
+          <span v-if="!collapsed" class="nav-text">{{ item.label }}</span>
+        </button>
+      </template>
     </nav>
 
+    <!-- 状态只用小圆点 + 灰字 -->
     <div class="sidebar-status">
-      <div class="connection-status">
-        <span class="status-indicator" :class="isConnected ? 'connected' : 'disconnected'"></span>
-        <span class="status-text">{{ isConnected ? '已连接后端' : '未连接后端' }}</span>
-      </div>
+      <span class="ui-meta" :title="isConnected ? '已连接后端' : '未连接后端'">
+        <span class="ui-dot" :class="isConnected ? 'ok' : 'err'"></span>
+        <span v-if="!collapsed">{{ isConnected ? '已连接' : '未连接后端' }}</span>
+      </span>
+      <span v-if="!collapsed" class="ui-meta" :title="engineStatus.title">
+        <span class="ui-dot" :class="engineStatus.dot"></span>
+        <span>{{ engineStatus.text }}</span>
+      </span>
       <!-- 调试信息不再常驻正式 UI：仅在开发模式（vite dev）下显示 -->
-      <div v-if="showDebugInfo && !collapsed" class="client-count">
-        <span class="client-icon">WS</span>
-        <span class="client-text">{{ connectedClients }} 个客户端在线</span>
-      </div>
+      <span v-if="showDebugInfo && !collapsed" class="ui-meta">
+        <span class="ui-dot"></span><span>WS {{ connectedClients }} 个客户端</span>
+      </span>
     </div>
 
     <button
@@ -118,6 +76,18 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
+import { useSettingsStore } from '@/stores/settings'
+import { NAV_GLYPHS } from '@/components/common/glyphs.mjs'
+import { providerLabel } from '@/components/settings/asrEngineStatus.mjs'
+
+const NAV_ITEMS = [
+  { page: 'home', label: '首页' },
+  { page: 'transcribe', label: '转文字' },
+  { page: 'records', label: '记录集' },
+  { page: 'clipboard', label: '剪贴板' },
+  { page: 'settings', label: '设置' }
+]
+const MODE_LABELS = { single: '单段', multi: '多段', streaming: '流式' }
 
 const props = defineProps({
   collapsed: {
@@ -131,6 +101,7 @@ const props = defineProps({
 })
 
 const appStore = useAppStore()
+const settingsStore = useSettingsStore()
 const resizeHandle = ref(null)
 const isResizing = ref(false)
 const liveWidth = ref(props.width)
@@ -138,6 +109,21 @@ const liveWidth = ref(props.width)
 const currentPage = computed(() => appStore.currentPage)
 const isConnected = computed(() => appStore.isConnected)
 const connectedClients = computed(() => appStore.connectedClients)
+// 当前识别引擎是否可用：就绪绿点；加载中金点闪烁；不可用黄点（原因放在 title 里）
+const engineStatus = computed(() => {
+  const runtime = settingsStore.runtimeStatus
+  const settings = settingsStore.settings
+  const text = `${providerLabel(settings.asr_provider)} · ${MODE_LABELS[settings.recording_mode] || '单段'}`
+  if (runtime.model_service_loading) {
+    return { text, dot: 'gold pulse', title: '模型加载中' }
+  }
+  const streaming = settings.recording_mode === 'streaming'
+  const ready = runtime.model_service_ready && (!streaming || runtime.streaming_available)
+  if (ready) {
+    return { text, dot: 'ok', title: '识别引擎已就绪' }
+  }
+  return { text, dot: 'warn', title: runtime.streaming_error || runtime.model_service_error || '识别引擎不可用' }
+})
 // 调试信息开关：仅开发模式显示，打包后的正式界面不再暴露 WS 连接数
 const showDebugInfo = import.meta.env.DEV
 const collapseThreshold = computed(() => appStore.sidebarCollapseThreshold)
@@ -164,10 +150,25 @@ function clampWidth(width) {
   return Math.min(Math.max(width, minWidth.value), maxWidth.value)
 }
 
+// 拖动时每帧最多改一次宽度：pointermove 往往比刷新率还密，每次都改会让整页反复重排而卡顿
+let pendingWidth = null
+let frameId = 0
+
+function flushWidth() {
+  frameId = 0
+  if (pendingWidth == null) {
+    return
+  }
+  liveWidth.value = pendingWidth
+  appStore.setSidebarWidth(pendingWidth)
+  pendingWidth = null
+}
+
 function handlePointerMove(event) {
-  const nextWidth = clampWidth(event.clientX)
-  liveWidth.value = nextWidth
-  appStore.setSidebarWidth(nextWidth)
+  pendingWidth = clampWidth(event.clientX)
+  if (!frameId) {
+    frameId = window.requestAnimationFrame(flushWidth)
+  }
 }
 
 function stopResize() {
@@ -175,6 +176,11 @@ function stopResize() {
     return
   }
 
+  // 松手前把最后一帧的宽度落下，免得最终宽度比指针慢一拍
+  if (frameId) {
+    window.cancelAnimationFrame(frameId)
+    flushWidth()
+  }
   isResizing.value = false
   appStore.stopSidebarResize()
   window.removeEventListener('pointermove', handlePointerMove)
