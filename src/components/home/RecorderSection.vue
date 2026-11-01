@@ -33,15 +33,26 @@
             <i v-for="(height, index) in waveformHeights" :key="index" :style="{ height: `${height}px` }"></i>
           </div>
 
+          <!-- 引擎 / 优化状态：两枚小标签，点了直接去对应的设置页 -->
           <div class="recorder-side">
-            <span class="ui-meta" :title="engineStatus.title">
+            <button
+              class="recorder-chip"
+              type="button"
+              :title="`${engineStatus.title}，点击调整识别引擎`"
+              @click="appStore.openSettings('asr')"
+            >
               <span class="ui-dot" :class="engineStatus.dot"></span>
               <span>{{ engineStatus.text }}</span>
-            </span>
-            <span class="ui-meta">
+            </button>
+            <button
+              class="recorder-chip"
+              type="button"
+              title="点击调整自动优化"
+              @click="appStore.openSettings('output')"
+            >
               <span class="ui-dot" :class="optimizeStatus.dot"></span>
               <span>{{ optimizeStatus.text }}</span>
-            </span>
+            </button>
           </div>
         </div>
 
@@ -322,11 +333,11 @@ const engineStatus = computed(() => {
 
 const optimizeStatus = computed(() => {
   if (!settingsStore.settings.auto_optimize) {
-    return { text: '自动优化已关闭', dot: '' }
+    return { text: '优化已关闭', dot: '' }
   }
   const preset = settingsStore.defaultPreset?.name ||
     String(settingsStore.settings.default_preset_id || '').replace(/^preset-/, '')
-  return { text: preset ? `自动优化 · ${preset}` : '自动优化', dot: 'ok' }
+  return { text: preset ? `优化 · ${preset}` : '自动优化', dot: 'ok' }
 })
 
 // 引擎不可用时给出可照做的原因（加载中不算不可用）
@@ -522,9 +533,38 @@ watch(
 
 .recorder-side {
   margin-left: auto;
-  display: grid;
-  justify-items: end;
-  gap: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.recorder-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 12px 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-cap);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+
+.recorder-chip:hover {
+  background: var(--bg-raise);
+  color: var(--text-1);
+}
+
+.recorder-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .recorder-live {

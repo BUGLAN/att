@@ -702,28 +702,70 @@ textarea:focus-visible {
     width: 28px;
 }
 
-/* 连接与引擎状态：小圆点 + 灰字；侧边栏变窄时文字截成省略号，不溢出到内容区 */
+/* 底部总体状态：一行，圆点与导航的文字图标同列、文字与导航文字同列；正常时压暗，出问题才醒目 */
 .sidebar-status {
-    display: grid;
-    gap: 6px;
     min-width: 0;
-    overflow: hidden;
-    padding: var(--s-4) var(--s-4) var(--s-4) 20px;
+    margin: 0 var(--s-3);
+    padding: 10px 0 var(--s-3);
+    border-top: 1px solid var(--line);
 }
 
-.sidebar-status .ui-meta {
-    max-width: 100%;
+.sidebar-health {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+    height: 32px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--r-md);
+    background: transparent;
+    color: var(--text-2);
+    font: inherit;
+    font-size: var(--fs-cap);
+    text-align: left;
+    cursor: pointer;
+    transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 
-.sidebar-status .ui-meta > span:not(.ui-dot) {
+.sidebar-health.is-quiet {
+    color: var(--text-3);
+}
+
+.sidebar-health:hover {
+    background: var(--bg-card);
+    color: var(--text-1);
+}
+
+.sidebar-health:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+.sidebar-health-slot {
+    width: 22px;
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+}
+
+.sidebar-health-text {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .sidebar.collapsed .sidebar-status {
-    justify-items: center;
-    padding: var(--s-4) 0;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+}
+
+.sidebar.collapsed .sidebar-health {
+    width: 40px;
+    justify-content: center;
 }
 
 .sidebar-resizer {

@@ -27,20 +27,20 @@
       </template>
     </nav>
 
-    <!-- 状态只用小圆点 + 灰字 -->
+    <!-- 底部只留一行总体状态：正常时一句「已就绪」，出问题才写原因；明细放在 title 里，点击去对应设置页 -->
     <div class="sidebar-status">
-      <span class="ui-meta" :title="isConnected ? '已连接后端' : '未连接后端'">
-        <span class="ui-dot" :class="isConnected ? 'ok' : 'err'"></span>
-        <span v-if="!collapsed">{{ isConnected ? '已连接' : '未连接后端' }}</span>
-      </span>
-      <span v-if="!collapsed" class="ui-meta" :title="engineStatus.title">
-        <span class="ui-dot" :class="engineStatus.dot"></span>
-        <span>{{ engineStatus.text }}</span>
-      </span>
-      <!-- 调试信息不再常驻正式 UI：仅在开发模式（vite dev）下显示 -->
-      <span v-if="showDebugInfo && !collapsed" class="ui-meta">
-        <span class="ui-dot"></span><span>WS {{ connectedClients }} 个客户端</span>
-      </span>
+      <button
+        class="sidebar-health"
+        :class="{ 'is-quiet': health.level === 'ok' }"
+        type="button"
+        :title="health.detail"
+        @click="appStore.openSettings(health.section)"
+      >
+        <span class="sidebar-health-slot" aria-hidden="true">
+          <span class="ui-dot" :class="health.dot"></span>
+        </span>
+        <span v-if="!collapsed" class="sidebar-health-text">{{ health.text }}</span>
+      </button>
     </div>
 
     <button
@@ -109,23 +109,37 @@ const liveWidth = ref(props.width)
 const currentPage = computed(() => appStore.currentPage)
 const isConnected = computed(() => appStore.isConnected)
 const connectedClients = computed(() => appStore.connectedClients)
-// 当前识别引擎是否可用：就绪绿点；加载中金点闪烁；不可用黄点（原因放在 title 里）
-const engineStatus = computed(() => {
-  const runtime = settingsStore.runtimeStatus
-  const settings = settingsStore.settings
-  const text = `${providerLabel(settings.asr_provider)} · ${MODE_LABELS[settings.recording_mode] || '单段'}`
-  if (runtime.model_service_loading) {
-    return { text, dot: 'gold pulse', title: '模型加载中' }
-  }
-  const streaming = settings.recording_mode === 'streaming'
-  const ready = runtime.model_service_ready && (!streaming || runtime.streaming_available)
-  if (ready) {
-    return { text, dot: 'ok', title: '识别引擎已就绪' }
-  }
-  return { text, dot: 'warn', title: runtime.streaming_error || runtime.model_service_error || '识别引擎不可用' }
-})
 // 调试信息开关：仅开发模式显示，打包后的正式界面不再暴露 WS 连接数
 const showDebugInfo = import.meta.env.DEV
+// 后端连接 + 识别引擎合成一条总体状态：断开最严重，其次引擎不可用、加载中，都正常才是「已就绪」
+const health = computed(() => {
+  const runtime = settingsStore.runtimeStatus
+  const settings = settingsStore.settings
+  const engine = `${providerLabel(settings.asr_provider)} · ${MODE_LABELS[settings.recording_mode] || '单段'}`
+  const streaming = settings.recording_mode === 'streaming'
+  const ready = runtime.model_service_ready && (!streaming || runtime.streaming_available)
+
+  let state
+  if (!isConnected.value) {
+    state = { level: 'err', dot: 'err', text: '未连接后端', section: 'diagnostics', engineText: '未知' }
+  } else if (runtime.model_service_loading) {
+    state = { level: 'loading', dot: 'gold pulse', text: '模型加载中', section: 'asr', engineText: '加载中' }
+  } else if (!ready) {
+    const reason = runtime.streaming_error || runtime.model_service_error || '不可用'
+    state = { level: 'warn', dot: 'warn', text: '识别引擎不可用', section: 'asr', engineText: reason }
+  } else {
+    state = { level: 'ok', dot: 'ok', text: '已就绪', section: 'asr', engineText: '已就绪' }
+  }
+
+  const lines = [
+    `后端：${isConnected.value ? '已连接' : '未连接'}`,
+    `识别引擎：${engine}（${state.engineText}）`
+  ]
+  if (showDebugInfo) {
+    lines.push(`WS：${connectedClients.value} 个客户端`)
+  }
+  return { ...state, detail: lines.join('\n') }
+})
 const collapseThreshold = computed(() => appStore.sidebarCollapseThreshold)
 const minWidth = computed(() => appStore.sidebarMinWidth)
 const maxWidth = computed(() => appStore.sidebarMaxWidth)
