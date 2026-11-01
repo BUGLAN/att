@@ -17,18 +17,21 @@
   padding-left: max(12px, env(titlebar-area-x, 0px));
 }
 
+/* 与侧边栏同列：导航文字图标 22px 起于 x=20（.sidebar-nav 12 + .nav-item 8），中心 x=31。
+   品牌标 26px 比它大 4px，左内边距少 2px（12 + 6 = 18）让两者中心对齐；
+   间距随之 8px，「落墨」仍落在 x=52，与导航文字同列 */
 .title-bar-drag {
   flex: 1;
   height: 100%;
   display: flex;
   align-items: center;
-  padding: 0 20px 0 16px;
+  padding: 0 20px 0 6px;
 }
 
 .title-bar-brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--s-2);
 }
 
 /* Tauri 只认按下点所在元素自身的 data-tauri-drag-region：品牌里的印章 / 文字不接收指针，
@@ -45,8 +48,8 @@
 .title-bar-mark {
   display: block;
   flex: none;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
 }
 
 .title-bar-brand .logo-text {
