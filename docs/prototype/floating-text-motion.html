@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>悬浮窗出字动效</title>
+<style>
+  :root {
+    --text-1: #f4f4f5; --text-2: #9d9da6; --text-3: #8b8b96;
+    --accent: #c9a227; --accent-hi: #dcb63a;
+    --r-sm: 6px; --r-md: 10px; --r-seal: 5px;
+    --grow: cubic-bezier(0.2, 0.9, 0.25, 1);
+    --font-sans: 'PingFang SC', 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; padding: 32px 16px 48px;
+    background: radial-gradient(1200px 600px at 50% -10%, #23232a, #0a0a0b 60%);
+    color: var(--text-2); font: 13px/1.6 var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; font-size: 18px; color: var(--text-1); font-weight: 600; }
+  .lead { margin: 0 0 20px; }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+  .bar button {
+    border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.05); color: var(--text-1);
+    border-radius: var(--r-sm); padding: 6px 12px; font: inherit; cursor: pointer;
+  }
+  .bar button:hover { background: rgba(255,255,255,.09); }
+  .bar button.on { border-color: rgba(201,162,39,.42); color: var(--accent-hi); background: rgba(201,162,39,.12); }
+
+  .demo { margin-bottom: 26px; }
+  .demo h2 { margin: 0 0 2px; font-size: 14px; color: var(--text-1); font-weight: 600; }
+  .demo h2 small { margin-left: 6px; font-weight: 400; color: var(--text-3); }
+  .demo p { margin: 0 0 10px; }
+  .stage { height: 70px; display: flex; align-items: flex-end; justify-content: center; }
+
+  /* ---------- 胶囊：与 floating.css 同构 ---------- */
+  .capsule {
+    position: relative; width: 54px; height: 54px; overflow: hidden;
+    border-radius: var(--r-md); border: 1px solid rgba(255,255,255,.09);
+    background: rgba(22,23,27,.94);
+    box-shadow: 0 10px 26px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.05);
+    transition: width 280ms var(--grow);
+  }
+  .capsule.wide { width: 418px; }
+  .content { position: absolute; left: 0; bottom: 0; width: 416px; display: flex; align-items: center; gap: 10px; padding: 8px; }
+  .seal {
+    flex: none; width: 36px; height: 36px; display: grid; place-items: center;
+    border-radius: var(--r-seal); background: #c8463b; color: #fbe7c6;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.18), inset 0 -2px 0 rgba(0,0,0,.18);
+    font: 900 22px/1 'Songti TC', 'STSongti-TC-Black', 'Noto Serif TC', 'PMingLiU', serif;
+  }
+  .seal-ink { display: block; }
+  .line { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 14px; line-height: 21px; color: var(--text-1); }
+  .line.clipped { -webkit-mask-image: linear-gradient(to right, transparent, #000 20px); mask-image: linear-gradient(to right, transparent, #000 20px); }
+  .track { display: inline-block; will-change: transform; }
+  .wave { flex: none; display: flex; align-items: center; gap: 2px; padding-right: 2px; height: 22px; }
+  .wave i { width: 3px; border-radius: 1px; background: #f08a7e; transition: height 90ms linear; }
+
+  .c { display: inline-block; white-space: pre; transition: color 360ms ease; }
+  .c.p { color: rgba(244,244,245,.55); }
+
+  /* 墨晕：从虚到实。A 原版整批同时洇开；A1 由节拍器一个个放出来，时长更短 */
+  .c.ink { animation: ink-in var(--ink-ms, 420ms) cubic-bezier(.2,.7,.2,1) both; }
+  @keyframes ink-in {
+    from { opacity: 0; filter: blur(5px); transform: scale(1.08); }
+    55% { opacity: .85; filter: blur(1px); }
+    to { opacity: 1; filter: none; transform: none; }
+  }
+
+  /* 识别回改：被改掉的字原地淡出 */
+  .c.out { position: absolute; opacity: 0; transition: opacity 140ms ease-in; pointer-events: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>悬浮窗出字动效 · 原型（第二版）</h1>
+  <p class="lead">模拟流式识别按真实节奏「成批到字」：每 300~500ms 一次、每次 3~5 个字，中间有一次回改「山楼 → 三楼」。四条胶囊吃同一段数据。</p>
+  <div class="bar">
+    <button id="replay">重播</button>
+    <button id="slow">0.4× 慢放</button>
+  </div>
+
+  <section class="demo" data-fx="none">
+    <h2>现状 <small>对照</small></h2>
+    <p>一批字同时蹦出来，超宽后整行往左跳。</p>
+    <div class="stage"></div>
+  </section>
+  <section class="demo" data-fx="batch">
+    <h2>A 原版 · 整批墨晕</h2>
+    <p>上一版的做法。字一批批到，就一批批洇开——仍然是「一顿一顿」的。</p>
+    <div class="stage"></div>
+  </section>
+  <section class="demo" data-fx="paced">
+    <h2>A1 · 匀速吐字 + 墨晕 <small>推荐</small></h2>
+    <p>到字先进缓冲，再按稳定节拍一个个放出（约 16 字/秒，积压越多放得越快、绝不落后超过半秒），每个字短促地洇开。批次感被抹平成连续书写。</p>
+    <div class="stage"></div>
+  </section>
+  <section class="demo" data-fx="wipe">
+    <h2>A2 · 柔边扫出</h2>
+    <p>字一到就排好，但被一道 28px 的柔和墨边连续「揭开」，揭开的位置平滑追赶文字末尾。没有逐字节拍，最像墨在纸上一路晕过去。</p>
+    <div class="stage"></div>
+  </section>
+</main>
+
+<script>
+// ---------- 模拟流式识别：成批到字，草稿可能被回改 ----------
+const SCRIPT = (() => {
+  const frames = []
+  const push = (confirmed, pending, gap) => frames.push({ confirmed, pending, gap })
+  const grow = (base, draft) => {
+    const steps = [4, 3, 5, 3, 4]
+    let i = 0, k = 0
+    while (i < draft.length) {
+      i = Math.min(draft.length, i + steps[k % steps.length])
+      push(base, draft.slice(0, i), 320 + (k++ % 3) * 90)
+    }
+  }
+  let c = ''
+  grow(c, '今天下午三点我们在山楼'); push(c, '今天下午三点我们在三楼会议室', 380)
+  grow('今天下午三点我们在三楼会议室', '开个短会，'); c += '今天下午三点我们在三楼会议室开个短会，'; push(c, '', 420)
+  grow(c, '讨论一下下个版本的发布计划，'); c += '讨论一下下个版本的发布计划，'; push(c, '', 420)
+  grow(c, '大家记得带上电脑。'); c += '大家记得带上电脑。'; push(c, '', 1800)
+  return frames
+})()
+
+let speed = 1
+
+// ---------- 印章字竖直居中：与 floatingView.mjs 的 sealGlyphNudge 同一算法 ----------
+function sealGlyphNudge(m, { fontSize = 22, tile = 36, bevel = 2 } = {}) {
+  const target = (tile - bevel) / 2
+  if (![m.fontAscent, m.fontDescent, m.inkAscent, m.inkDescent].every(Number.isFinite)) return target - tile / 2
+  const baseline = (fontSize - (m.fontAscent + m.fontDescent)) / 2 + m.fontAscent
+  const inkCenter = (tile - fontSize) / 2 + baseline + (m.inkDescent - m.inkAscent) / 2
+  return Math.round((target - inkCenter) * 4) / 4
+}
+function centerSeal(seal) {
+  const style = getComputedStyle(seal)
+  const ctx = document.createElement('canvas').getContext('2d')
+  ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
+  const t = ctx.measureText(seal.textContent)
+  const dy = sealGlyphNudge({
+    fontAscent: t.fontBoundingBoxAscent, fontDescent: t.fontBoundingBoxDescent,
+    inkAscent: t.actualBoundingBoxAscent, inkDescent: t.actualBoundingBoxDescent
+  }, { fontSize: parseFloat(style.fontSize), tile: seal.offsetHeight })
+  seal.querySelector('.seal-ink').style.transform = `translateY(${dy}px)`
+}
+
+// 指数平滑：每帧向目标靠拢，τ 越小追得越紧；不回弹
+const approach = (cur, target, dt, tau) => target + (cur - target) * Math.exp(-dt / tau)
+
+function mount(section) {
+  const fx = section.dataset.fx
+  const stage = section.querySelector('.stage')
+  stage.innerHTML = `<div class="capsule"><div class="content"><span class="seal"><span class="seal-ink">聽</span></span><span class="line"><span class="track"></span></span><span class="wave">${'<i></i>'.repeat(7)}</span></div></div>`
+  const capsule = stage.querySelector('.capsule')
+  const line = stage.querySelector('.line')
+  const track = stage.querySelector('.track')
+  const bars = [...stage.querySelectorAll('.wave i')]
+  document.fonts.ready.then(() => centerSeal(stage.querySelector('.seal')))
+
+  let target = { text: '', confirmedLen: 0 } // 识别给到的
+  let chars = []    // 已上屏的 { ch, el }
+  let budget = 0    // A1：节拍器累计的可放字数
+  let shift = 0     // 整行左移量（平滑后）
+  let reveal = 0    // A2：揭开到的位置（px）
+
+  function receive({ confirmed, pending }) {
+    target = { text: confirmed + pending, confirmedLen: confirmed.length }
+    if (target.text) capsule.classList.add('wide')
+    // 公共前缀之后已上屏的字视为被回改：淡出移除
+    let p = 0
+    while (p < chars.length && p < target.text.length && chars[p].ch === target.text[p]) p++
+    for (const old of chars.slice(p)) {
+      if (fx === 'none') { old.el.remove(); continue }
+      old.el.classList.add('out')
+      setTimeout(() => old.el.remove(), 160)
+    }
+    chars = chars.slice(0, p)
+    // 除 A1 外，到多少字立刻上屏多少字
+    if (fx !== 'paced') emit(target.text.length - chars.length)
+    if (fx === 'wipe') reveal = Math.min(reveal, chars.reduce((w, c) => w + c.el.offsetWidth, 0))
+    paint()
+  }
+
+  function emit(n) {
+    for (let k = 0; k < n && chars.length < target.text.length; k++) {
+      const el = document.createElement('span')
+      el.className = 'c'
+      el.textContent = target.text[chars.length]
+      if (fx === 'batch') el.classList.add('ink')
+      if (fx === 'paced') { el.classList.add('ink'); el.style.setProperty('--ink-ms', `${260 / speed}ms`) }
+      track.appendChild(el)
+      chars.push({ ch: el.textContent, el })
+    }
+  }
+
+  function paint() {
+    chars.forEach((c, i) => c.el.classList.toggle('p', i >= target.confirmedLen))
+  }
+
+  function frame(dt) {
+    if (fx === 'paced') {
+      // 基础 16 字/秒；积压越多越快，保证落后不超过约半秒
+      const backlog = target.text.length - chars.length
+      if (backlog > 0) {
+        budget += dt / 1000 * speed * Math.max(16, backlog / 0.5)
+        const n = Math.floor(budget)
+        if (n > 0) { budget -= n; emit(n); paint() }
+      } else budget = 0
+    }
+    const full = track.scrollWidth
+    const view = line.clientWidth
+    if (fx === 'wipe') {
+      reveal = approach(reveal, full, dt * speed, 140)
+      const edge = reveal + 28
+      track.style.webkitMaskImage = track.style.maskImage =
+        `linear-gradient(to right, #000 ${edge - 28}px, transparent ${edge}px)`
+    }
+    // 左移追的是「当前可见末尾」：A2 追揭开位置，其余追真实宽度
+    const want = Math.max(0, (fx === 'wipe' ? reveal : full) - view)
+    shift = fx === 'none' ? want : approach(shift, want, dt * speed, 110)
+    track.style.transform = `translateX(${-shift}px)`
+    line.classList.toggle('clipped', shift > 0.5)
+  }
+
+  function reset() {
+    capsule.classList.remove('wide')
+    track.innerHTML = ''
+    track.style.transform = ''
+    target = { text: '', confirmedLen: 0 }
+    chars = []; budget = 0; shift = 0; reveal = 0
+    line.classList.remove('clipped')
+  }
+
+  function wave(t) {
+    bars.forEach((b, i) => { b.style.height = `${4 + Math.abs(Math.sin(t / 140 + i * 1.3)) * 16}px` })
+  }
+
+  return { receive, frame, reset, wave }
+}
+
+const demos = [...document.querySelectorAll('.demo')].map(mount)
+
+function applySpeed() {
+  const style = document.getElementById('speed-style') || document.head.appendChild(Object.assign(document.createElement('style'), { id: 'speed-style' }))
+  style.textContent = speed === 1 ? '' : `
+    [data-fx='batch'] .c.ink { animation-duration: ${420 / speed}ms }
+    .c { transition-duration: ${360 / speed}ms }
+    .capsule { transition-duration: ${280 / speed}ms }`
+}
+
+let timer = null
+function play() {
+  clearTimeout(timer)
+  demos.forEach((d) => d.reset())
+  let i = 0
+  const step = () => {
+    if (i >= SCRIPT.length) { timer = setTimeout(play, 600); return }
+    const f = SCRIPT[i++]
+    demos.forEach((d) => d.receive(f))
+    timer = setTimeout(step, f.gap / speed)
+  }
+  timer = setTimeout(step, 500 / speed)
+}
+
+let last = performance.now()
+;(function loop(t) {
+  const dt = Math.min(50, t - last); last = t
+  demos.forEach((d) => { d.frame(dt); d.wave(t * speed) })
+  requestAnimationFrame(loop)
+})(last)
+
+document.getElementById('replay').onclick = play
+document.getElementById('slow').onclick = (e) => {
+  speed = speed === 1 ? 0.4 : 1
+  e.currentTarget.classList.toggle('on', speed !== 1)
+  applySpeed()
+  play()
+}
+play()
+</script>
+</body>
+</html>

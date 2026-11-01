@@ -9,6 +9,7 @@
       优化稿不回填：「轉」期间一直是淡色识别稿，优化结果直接打进输入框。
       流式录音中，服务端还没确认的那截（正在说的这句）用淡白色，确认后变回正常文字色。
       始终单行，超出宽度后裁掉开头（左侧渐隐），最新的字留在右边。
+      出字：到字先进缓冲，按稳定节拍逐字放出、每个字墨晕洇开；超宽后整行平滑左移（见 floatingView.mjs 的 paceStep）。
       胶囊本身不参与排版：内层 .content 排好，胶囊量出它的大小后用过渡追上去。
     -->
     <section
@@ -34,7 +35,7 @@
         <span class="sr-only">{{ SEAL_LABELS[view.seal] }}{{ view.detail ? `：${view.detail}` : '' }}</span>
 
         <Transition name="line">
-          <span v-if="expanded" ref="lineEl" class="line" :class="{ clipped, dim: view.dim }"><span>{{ confirmedText }}<span v-if="view.pending" class="pending">{{ view.pending }}</span></span></span>
+          <span v-if="expanded" ref="lineEl" class="line" :class="{ clipped, dim: view.dim }"><span ref="trackEl" class="track" :style="{ transform: `translateX(${-shift}px)` }"><span v-for="(c, index) in shownChars" :key="c.id" class="ch" :class="{ pending: index >= pendingFrom }">{{ c.ch }}</span></span></span>
         </Transition>
 
         <!-- 声纹与处理点占同一个位置：先淡出旧的再淡入新的，宽度不会两个叠在一起 -->
@@ -57,7 +58,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { deriveFloatingView, nextVoiceState, sealGlyphNudge } from './floatingView.mjs'
+import { deriveFloatingView, glideToward, nextVoiceState, paceStep, reconcileLine, sealGlyphNudge } from './floatingView.mjs'
 
 const SEAL_LABELS = { idle: '待命', listening: '录音中', converting: '处理中', success: '已完成', failure: '失败' }
 const WAVE_BARS = 7
@@ -73,8 +74,16 @@ const sized = ref(false)
 const sessionKey = ref(0)
 const leaving = ref(false)
 const hovered = ref(false)
-const clipped = ref(false)
 const lineEl = ref(null)
+const trackEl = ref(null)
+/** 已上屏的字：识别文本的前缀，由节拍器逐字补齐（id 让新字才播墨晕，旧字不重播） */
+const shownChars = ref([])
+/** 整行左移量（px），平滑追赶「文字宽 − 可视宽」 */
+const shift = ref(0)
+let charSeq = 0
+let paceBudget = 0
+let rafId = 0
+let lastFrameAt = 0
 const sealEl = ref(null)
 /** 各印章字的竖直校正（px），按当前系统实际用到的字体量出来，见 sealGlyphNudge；新旧字交叠时各用各的 */
 const glyphNudges = ref({})
@@ -95,8 +104,12 @@ let observer = null
 const view = computed(() => deriveFloatingView(state.value, { previousText: lastText.value }))
 const expanded = computed(() => wide.value && view.value.active)
 // 没展开时 ✕ 收起来保持最小，悬停才露出；展开后常驻
-// pending 恒为 text 的后缀（见 tailWithPending）
-const confirmedText = computed(() => view.value.text.slice(0, view.value.text.length - view.value.pending.length))
+// pending 恒为 text 的后缀（见 tailWithPending）：下标从这里起的字是还没确认的淡白草稿
+const pendingFrom = computed(() => Array.from(view.value.text).length - Array.from(view.value.pending).length)
+/** 展开时才有要上屏的字；收起后清空，下次展开从头写 */
+const targetChars = computed(() => (expanded.value ? Array.from(view.value.text) : []))
+// 开头被裁掉时左侧渐隐，提示前面还有内容
+const clipped = computed(() => shift.value > 0.5)
 const showCancel = computed(() => view.value.cancellable && (expanded.value || hovered.value))
 // 声纹：录音中音量第一次过门限时出现（不必等出字）
 const showWave = computed(() => voiced.value && view.value.seal === 'listening')
@@ -230,12 +243,66 @@ function cancel() {
   window.floatingAPI?.cancel?.()
 }
 
-// 开头被裁掉时左侧渐隐，提示前面还有内容（文字比可视宽度长即为被裁）
-watch(() => view.value.text, async () => {
-  await nextTick()
-  const el = lineEl.value
-  clipped.value = Boolean(el?.firstElementChild && el.firstElementChild.offsetWidth > el.clientWidth + 1)
-})
+function emitChars(count, target) {
+  const next = shownChars.value.slice()
+  for (let i = 0; i < count && next.length < target.length; i++) {
+    next.push({ id: ++charSeq, ch: target[next.length] })
+  }
+  shownChars.value = next
+}
+
+/** 识别文本变了：对齐已上屏的字，裁掉的开头直接去掉、被回改的末尾换掉，新字交给节拍器 */
+function syncLine(target) {
+  if (!target.length) {
+    shownChars.value = []
+    shift.value = 0
+    paceBudget = 0
+    return
+  }
+  const { drop, keep } = reconcileLine(shownChars.value.map((c) => c.ch), target)
+  if (drop) {
+    // 开头裁掉的字本就在左侧可视区外：左移量同步扣掉它们的宽度，画面不跳
+    const nodes = trackEl.value?.children || []
+    let width = 0
+    for (let i = 0; i < drop && i < nodes.length; i++) {
+      width += nodes[i].getBoundingClientRect().width
+    }
+    shift.value = Math.max(0, shift.value - width)
+  }
+  shownChars.value = shownChars.value.slice(drop, drop + keep)
+  if (prefersReducedMotion()) {
+    emitChars(target.length, target)
+  }
+  startLineLoop()
+}
+
+function startLineLoop() {
+  if (!rafId) {
+    lastFrameAt = performance.now()
+    rafId = requestAnimationFrame(lineFrame)
+  }
+}
+
+function lineFrame(now) {
+  const dt = Math.min(50, now - lastFrameAt)
+  lastFrameAt = now
+  const target = targetChars.value
+  const step = paceStep(paceBudget, dt, target.length - shownChars.value.length)
+  paceBudget = step.budget
+  if (step.emit) {
+    emitChars(step.emit, target)
+  }
+  const line = lineEl.value
+  const track = trackEl.value
+  const want = line && track ? Math.max(0, track.offsetWidth - line.clientWidth) : 0
+  shift.value = prefersReducedMotion() ? want : glideToward(shift.value, want, dt)
+  // 还有字没放完、或左移没追上（含刚放出的字下一帧才排好版）就继续
+  rafId = target.length > shownChars.value.length || shift.value !== want || step.emit
+    ? requestAnimationFrame(lineFrame)
+    : 0
+}
+
+watch(targetChars, syncLine)
 
 watch(() => view.value.glyph, async (glyph) => {
   await nextTick()
@@ -256,6 +323,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   clearTimers()
+  cancelAnimationFrame(rafId)
   observer?.disconnect()
   window.floatingAPI?.removeAllListeners('floating:state')
 })

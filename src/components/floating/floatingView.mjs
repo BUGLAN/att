@@ -127,3 +127,60 @@ export function sealGlyphNudge(metrics, { fontSize = 22, tile = 36, bevel = 2 } 
   const inkCenter = (tile - fontSize) / 2 + baseline + (inkDescent - inkAscent) / 2
   return Math.round((target - inkCenter) * 4) / 4
 }
+
+// ---------- 出字动效：匀速吐字 + 墨晕（设计稿 docs/prototype/floating-text-motion.html 方案 A1） ----------
+// 流式识别是「几个字一批」到的，直接上屏会一顿一顿。到字先进缓冲，再按稳定节拍一个个放出，
+// 每个字自己短促地洇开（floating.css .ch）；整行超宽后的左移也改成平滑追赶，不再一格一格跳。
+
+/** 平时的吐字速度（字/秒） */
+export const PACE_CPS = 16
+/** 最多落后识别结果这么久（秒）：积压越多放得越快 */
+export const PACE_MAX_LAG_S = 0.5
+/** 整行左移的平滑时间常数（ms）：指数逼近，不回弹 */
+export const GLIDE_TAU_MS = 110
+
+/**
+ * 把已上屏的字对齐到新的识别文本。
+ * 新文本可能是：末尾追加、末尾回改、或因 tailText 只留末尾而从开头裁掉了几个字。
+ * 在已上屏的字里找一个开头裁掉量 drop，使剩下的字与新文本的公共前缀最长（同长取最小 drop）。
+ * @param {string[]} shown 已上屏的字（按 Array.from 切分）
+ * @param {string[]} target 新的识别文本（按 Array.from 切分）
+ * @returns {{ drop: number, keep: number }} 开头去掉 drop 个、再保留 keep 个，其余视为被回改
+ */
+export function reconcileLine(shown, target) {
+  let best = { drop: 0, keep: 0 }
+  for (let drop = 0; drop < shown.length; drop++) {
+    let keep = 0
+    while (drop + keep < shown.length && keep < target.length && shown[drop + keep] === target[keep]) {
+      keep++
+    }
+    if (keep > best.keep) {
+      best = { drop, keep }
+    }
+  }
+  // 一个字都对不上：整行都算回改，不当作裁头
+  return best.keep ? best : { drop: 0, keep: 0 }
+}
+
+/**
+ * 吐字节拍器：按经过的时间累计可放出的字数。
+ * @param {number} budget 上一帧剩下的零头
+ * @param {number} dtMs 距上一帧的毫秒数
+ * @param {number} backlog 还没上屏的字数
+ * @returns {{ emit: number, budget: number }}
+ */
+export function paceStep(budget, dtMs, backlog) {
+  if (backlog <= 0) {
+    return { emit: 0, budget: 0 }
+  }
+  const cps = Math.max(PACE_CPS, backlog / PACE_MAX_LAG_S)
+  const next = budget + (Math.max(0, dtMs) / 1000) * cps
+  const emit = Math.min(backlog, Math.floor(next))
+  return { emit, budget: next - emit }
+}
+
+/** 整行左移量向目标指数逼近；足够近时直接落定，好让动画循环停下来 */
+export function glideToward(current, target, dtMs, tau = GLIDE_TAU_MS) {
+  const next = target + (current - target) * Math.exp(-Math.max(0, dtMs) / tau)
+  return Math.abs(next - target) < 0.25 ? target : next
+}

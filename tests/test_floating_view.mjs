@@ -1,16 +1,22 @@
 // 极简悬浮窗展示模型（src/components/floating/floatingView.mjs）单元测试。
-// 覆盖：各相位对应的印章、「轉」沿用上一句变淡、结果态收起时机、尾部截取、印章字竖直校正、声纹门限、未确认文字。
+// 覆盖：各相位对应的印章、「轉」沿用上一句变淡、结果态收起时机、尾部截取、印章字竖直校正、声纹门限、未确认文字、
+// 出字动效（对齐已上屏的字、吐字节拍、整行左移逼近）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
   FAILURE_HOLD_MS,
+  PACE_CPS,
+  PACE_MAX_LAG_S,
   SUCCESS_HOLD_MS,
   TAIL_CHARS,
   WAVE_HOLD_MS,
   WAVE_SHOW_LEVEL,
   deriveFloatingView,
+  glideToward,
   nextVoiceState,
+  paceStep,
+  reconcileLine,
   tailWithPending,
   sealGlyphNudge,
   tailText
@@ -136,4 +142,42 @@ test('流式未确认文字：末尾那截单独标出，截取后仍是全文�
 
   assert.equal(deriveFloatingView({ phase: 'recording', mode: 'multi', text: '分段定稿' }).pending, '', '多段结果都是定稿')
   assert.equal(deriveFloatingView({ phase: 'transcribing' }, { previousText: '明天下午三点开会' }).pending, '', '「轉」整行变淡，不再区分')
+})
+
+test('出字对齐：追加保留全部、回改换掉末尾、裁头只去开头', () => {
+  const chars = (t) => Array.from(t)
+  assert.deepEqual(reconcileLine(chars('今天下午'), chars('今天下午三点')), { drop: 0, keep: 4 }, '末尾追加')
+  assert.deepEqual(reconcileLine(chars('我们在山楼'), chars('我们在三楼会议室')), { drop: 0, keep: 3 }, '回改「山楼」')
+  assert.deepEqual(reconcileLine(chars('一二三四五'), chars('三四五六七')), { drop: 2, keep: 3 }, 'tailText 裁掉开头')
+  assert.deepEqual(reconcileLine(chars('天天天'), chars('天天天天')), { drop: 0, keep: 3 }, '重复字取最小裁头')
+  assert.deepEqual(reconcileLine(chars('甲乙'), chars('丙丁')), { drop: 0, keep: 0 }, '完全对不上整行回改')
+  assert.deepEqual(reconcileLine([], chars('新')), { drop: 0, keep: 0 })
+})
+
+test('吐字节拍：平时匀速，积压多时加速，落后不超过上限', () => {
+  // 平时 16 字/秒：一帧 16ms 攒不够一个字，攒满后放一个
+  let step = paceStep(0, 16, 3)
+  assert.equal(step.emit, 0)
+  let budget = 0
+  let emitted = 0
+  for (let t = 0; t < 1000; t += 16) {
+    step = paceStep(budget, 16, 100)
+    budget = step.budget
+    emitted += step.emit
+  }
+  assert.ok(emitted >= 100 * 0.9, `积压 100 字时一秒内应基本放完，实际 ${emitted}`)
+
+  // 一次到 3 个字：按 PACE_CPS 放，约 3/16 秒放完而不是一下全出
+  step = paceStep(0, 1000 / PACE_CPS, 3)
+  assert.equal(step.emit, 1)
+  assert.equal(paceStep(0.9, 1000 / PACE_CPS, 1).emit, 1, '不超过积压数')
+  assert.deepEqual(paceStep(0.7, 16, 0), { emit: 0, budget: 0 }, '没有积压时清零')
+  assert.ok(PACE_MAX_LAG_S <= 0.5)
+})
+
+test('整行左移：向目标逼近、足够近时落定', () => {
+  const half = glideToward(0, 100, 110 * Math.LN2)
+  assert.ok(Math.abs(half - 50) < 0.01, '一个半衰期走一半')
+  assert.equal(glideToward(99.9, 100, 16), 100, '差距很小直接落定')
+  assert.equal(glideToward(40, 40, 16), 40)
 })
