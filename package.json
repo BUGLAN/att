@@ -1,6 +1,6 @@
 {
   "name": "audio-to-text",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "Audio to Text - Electron App",
   "main": "electron/main.js",
   "scripts": {
