@@ -1,11 +1,15 @@
-//! Windows 底层键盘监听：WH_KEYBOARD_LL（只监听不吞键，无需特权）。
+//! Windows 底层键盘监听：WH_KEYBOARD_LL（无需特权）。
+//!
+//! 命中快捷键的主键事件在钩子里吞掉（返回非零），不再送给前台应用。
 
 use crate::listener::Shared;
 use att_core::settings::hotkey::{hid_from_char, ModSet};
 use std::sync::{Arc, OnceLock};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, KBDLLHOOKSTRUCT, MSG,
     WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -24,6 +28,8 @@ const VK_LMENU: u32 = 0xA4;
 const VK_RMENU: u32 = 0xA5;
 const VK_LWIN: u32 = 0x5B;
 const VK_RWIN: u32 = 0x5C;
+/// 未分配的虚拟键码：吞掉 Alt / Win 组合的主键后补发一次，免得单独的 Alt / Win 松开时激活菜单栏或开始菜单
+const VK_MASK_KEY: u16 = 0xE8;
 
 fn is_modifier(vk: u32) -> bool {
     matches!(
@@ -76,6 +82,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         if let Some(shared) = SHARED.get() {
             let info = &*(lparam as *const KBDLLHOOKSTRUCT);
             let message = wparam as u32;
+            // 自己补发的掩护键不参与匹配（否则会被当成「又按了一个键」把组合判成松开）
+            if info.vkCode == VK_MASK_KEY as u32 {
+                return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
+            }
             let down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
             let up = message == WM_KEYUP || message == WM_SYSKEYUP;
             if down || up {
@@ -88,12 +98,31 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     let hid = char::from_u32(vk)
                         .filter(|c| c.is_ascii_alphanumeric())
                         .and_then(hid_from_char);
-                    shared.on_key(vk, hid, down);
+                    if shared.on_key(vk, hid, down) {
+                        if down {
+                            let mods = modifiers_with(None);
+                            if mods.alt || mods.meta {
+                                send_mask_key();
+                            }
+                        }
+                        return 1;
+                    }
                 }
             }
         }
     }
     CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+}
+
+fn send_mask_key() {
+    let key = |flags| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT { wVk: VK_MASK_KEY, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+        },
+    };
+    let inputs = [key(0), key(KEYEVENTF_KEYUP)];
+    unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
 }
 
 /// 在专用线程上安装低级键盘钩子并泵消息。

@@ -198,6 +198,20 @@ export function useElectron() {
     }
   }
 
+  // 剪贴板悬浮框（clipboard-panel 窗口用）：条目由页面写进剪贴板，收起 / 还焦点 / 模拟粘贴在 Rust 侧
+  const clipboardPanel = {
+    getContext: () => (isDesktop ? invoke('get_clipboard_panel_context') : Promise.resolve({ enter_action: 'paste', hotkey_display: '' })),
+    hide: () => (isDesktop ? invoke('hide_clipboard_panel') : Promise.resolve()),
+    finish: (paste) => (isDesktop ? invoke('clipboard_panel_finish', { paste: Boolean(paste) }) : Promise.resolve()),
+    // 拖动调整面板尺寸（逻辑像素）；save 时记进设置，返回夹取后的实际尺寸
+    resize: (width, height, save = false) => (isDesktop ? invoke('clipboard_panel_resize', { width, height, save }) : Promise.resolve(null)),
+    resetSize: () => (isDesktop ? invoke('clipboard_panel_reset_size') : Promise.resolve()),
+    // 上下拖动：离屏幕底边的距离（逻辑像素）；save 时记进设置，返回夹取后的实际距离
+    move: (bottomOffset, save = false) => (isDesktop ? invoke('clipboard_panel_move', { bottomOffset, save }) : Promise.resolve(null)),
+    resetPosition: () => (isDesktop ? invoke('clipboard_panel_reset_position') : Promise.resolve()),
+    onShow: (callback) => void addChannelListener('clipboard-panel:show', callback)
+  }
+
   function onHotkeyPress(callback) {
     void addChannelListener('hotkey:press', callback)
   }
@@ -352,6 +366,7 @@ export function useElectron() {
     tray,
     floatingWindow,
     clipboard,
+    clipboardPanel,
     recording,
     listAudioDevices,
     getHotkeyStatus,

@@ -9,14 +9,16 @@
 use crate::Platform;
 use serde::{Deserialize, Serialize};
 
-/// 快捷键动作（v1 只接录音；架构支持扩展更多动作）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// 快捷键动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HotkeyAction {
     /// 录音（点按=切换开始/停止；按住=按下开始松开结束）
     Record,
     /// 显示/唤起主窗口（预留给 3c）
     ShowMainWindow,
+    /// 唤起 / 收起剪贴板悬浮框（点按切换）
+    ClipboardPanel,
 }
 
 /// 触发模式（任务书要求 a 点按 / b 按住）。
@@ -132,6 +134,26 @@ impl HotkeyBinding {
         }
     }
 
+    /// 各动作的平台默认绑定。剪贴板悬浮框默认 `⌃⌥V` / `Ctrl+Alt+V`：
+    /// 监听是只听不吞的，组合键同时会送到前台应用，所以避开会打出字符的 `⌥V` 和常见的 `⌘⇧V`。
+    pub fn default_for(action: HotkeyAction, platform: Platform) -> Self {
+        match action {
+            HotkeyAction::ClipboardPanel => Self {
+                action,
+                trigger: TriggerMode::Toggle,
+                modifiers: ModSet::new(true, true, false, false),
+                hid_key: hid_from_char('v'),
+                enabled: true,
+            },
+            _ => Self { action, ..Self::default_binding(platform) },
+        }
+    }
+
+    /// 两条绑定是否是同一组按键（不看动作、触发模式与开关）。
+    pub fn same_combo(&self, other: &HotkeyBinding) -> bool {
+        self.modifiers == other.modifiers && self.hid_key == other.hid_key
+    }
+
     /// 兼容旧版的主键字符（仅字母数字在旧格式里存在）。
     pub fn legacy_key_char(&self) -> Option<String> {
         self.hid_key.and_then(char_from_hid).map(|c| c.to_string())
@@ -241,6 +263,19 @@ pub fn char_from_hid(hid: u16) -> Option<char> {
 /// 旧版 `{modifiers, key, display}` → 新绑定（迁移 & 前端 PUT 兼容入口）。
 /// key 仅接受单字母数字（旧版约束）；不合法时回落平台默认。
 pub fn binding_from_legacy(platform: Platform, value: &serde_json::Value) -> HotkeyBinding {
+    combo_from_legacy(value)
+        .map(|(modifiers, hid_key)| HotkeyBinding {
+            action: HotkeyAction::Record,
+            trigger: TriggerMode::Hold,
+            modifiers,
+            hid_key,
+            enabled: true,
+        })
+        .unwrap_or_else(|| HotkeyBinding::default_binding(platform))
+}
+
+/// 旧版 `{modifiers, key}` → 组合键；不合法（单修饰键且无主键等）返回 None。
+pub fn combo_from_legacy(value: &serde_json::Value) -> Option<(ModSet, Option<u16>)> {
     let modifiers = value
         .get("modifiers")
         .and_then(|m| m.as_array())
@@ -252,22 +287,13 @@ pub fn binding_from_legacy(platform: Platform, value: &serde_json::Value) -> Hot
         .and_then(|s| s.chars().next())
         .and_then(hid_from_char);
 
-    // 旧版规则：无主键时至少 2 个修饰键，否则视为非法回退默认
+    // 旧版规则：无主键时至少 2 个修饰键，否则视为非法
     let valid = if hid_key.is_some() {
         !modifiers.is_empty()
     } else {
         modifiers.len() >= 2
     };
-    if !valid {
-        return HotkeyBinding::default_binding(platform);
-    }
-    HotkeyBinding {
-        action: HotkeyAction::Record,
-        trigger: TriggerMode::Hold,
-        modifiers,
-        hid_key,
-        enabled: true,
-    }
+    valid.then_some((modifiers, hid_key))
 }
 
 #[cfg(test)]
@@ -309,6 +335,15 @@ mod tests {
         let bad = serde_json::json!({"modifiers": ["ctrl"], "key": null});
         let binding = binding_from_legacy(Platform::Windows, &bad);
         assert_eq!(binding, HotkeyBinding::default_binding(Platform::Windows));
+    }
+
+    #[test]
+    fn 剪贴板悬浮框默认_点按的_ctrl_alt_v() {
+        let binding = HotkeyBinding::default_for(HotkeyAction::ClipboardPanel, Platform::Macos);
+        assert_eq!(binding.trigger, TriggerMode::Toggle);
+        assert_eq!(binding.display(Platform::Macos), "⌃⌥V");
+        assert_eq!(binding.display(Platform::Windows), "Ctrl+Alt+V");
+        assert!(!binding.same_combo(&HotkeyBinding::default_binding(Platform::Macos)));
     }
 
     #[test]

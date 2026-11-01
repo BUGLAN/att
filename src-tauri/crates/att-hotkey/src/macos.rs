@@ -1,4 +1,8 @@
-//! macOS 底层键盘监听：CGEventTap（listen-only，需要「输入监控」权限）。
+//! macOS 底层键盘监听：CGEventTap。
+//!
+//! 优先装「可拦截」的监听（需要「辅助功能」权限）：命中快捷键的主键事件直接吞掉，
+//! 不再送给前台应用（否则 ⌥V 唤起剪贴板时还会打出一个「√」）。
+//! 没有辅助功能权限时退回只读监听（只需「输入监控」）：快捷键照常触发，只是不吞键。
 
 use crate::listener::Shared;
 use att_core::settings::hotkey::{hid_from_char, ModSet};
@@ -52,6 +56,40 @@ fn char_from_keycode(code: i64) -> Option<char> {
     TABLE.iter().find(|(k, _)| *k == code).map(|(_, c)| *c)
 }
 
+fn make_tap(shared: Arc<Shared>, options: CGEventTapOptions) -> Result<CGEventTap<'static>, ()> {
+    CGEventTap::new(
+        CGEventTapLocation::Session,
+        CGEventTapPlacement::HeadInsertEventTap,
+        options,
+        vec![CGEventType::KeyDown, CGEventType::KeyUp, CGEventType::FlagsChanged],
+        move |_proxy, event_type, event| {
+            match event_type {
+                CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput => {
+                    // 系统因超时停用了监听：立即重新启用（否则热键静默失效）
+                    let port = TAP_PORT.load(Ordering::SeqCst);
+                    if !port.is_null() {
+                        unsafe { CGEventTapEnable(port, true) };
+                    }
+                }
+                CGEventType::FlagsChanged => {
+                    shared.on_modifiers(mods_from_flags(event.get_flags()));
+                }
+                CGEventType::KeyDown | CGEventType::KeyUp => {
+                    let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+                    let hid = char_from_keycode(code).and_then(hid_from_char);
+                    shared.on_modifiers(mods_from_flags(event.get_flags()));
+                    if shared.on_key(code as u32, hid, matches!(event_type, CGEventType::KeyDown)) {
+                        // 只读监听下 Drop 无效，事件照常送达
+                        return CallbackResult::Drop;
+                    }
+                }
+                _ => {}
+            }
+            CallbackResult::Keep
+        },
+    )
+}
+
 /// 在专用线程上安装事件监听并运行 CFRunLoop。权限缺失时返回 Err（附引导文案）。
 pub fn spawn(shared: Arc<Shared>) -> Result<(), String> {
     if !unsafe { CGPreflightListenEventAccess() } {
@@ -65,35 +103,10 @@ pub fn spawn(shared: Arc<Shared>) -> Result<(), String> {
     std::thread::Builder::new()
         .name("att-hotkey-macos".into())
         .spawn(move || {
-            let callback_shared = shared.clone();
-            let tap = CGEventTap::new(
-                CGEventTapLocation::Session,
-                CGEventTapPlacement::HeadInsertEventTap,
-                CGEventTapOptions::ListenOnly,
-                vec![CGEventType::KeyDown, CGEventType::KeyUp, CGEventType::FlagsChanged],
-                move |_proxy, event_type, event| {
-                    match event_type {
-                        CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput => {
-                            // 系统因超时停用了监听：立即重新启用（否则热键静默失效）
-                            let port = TAP_PORT.load(Ordering::SeqCst);
-                            if !port.is_null() {
-                                unsafe { CGEventTapEnable(port, true) };
-                            }
-                        }
-                        CGEventType::FlagsChanged => {
-                            callback_shared.on_modifiers(mods_from_flags(event.get_flags()));
-                        }
-                        CGEventType::KeyDown | CGEventType::KeyUp => {
-                            let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
-                            let hid = char_from_keycode(code).and_then(hid_from_char);
-                            callback_shared.on_modifiers(mods_from_flags(event.get_flags()));
-                            callback_shared.on_key(code as u32, hid, matches!(event_type, CGEventType::KeyDown));
-                        }
-                        _ => {}
-                    }
-                    CallbackResult::Keep
-                },
-            );
+            let tap = make_tap(shared.clone(), CGEventTapOptions::Default).or_else(|()| {
+                tracing::warn!("可拦截的键盘监听创建失败（缺少「辅助功能」权限？），退回只读监听：快捷键的按键会同时送到前台应用");
+                make_tap(shared.clone(), CGEventTapOptions::ListenOnly)
+            });
             let tap = match tap {
                 Ok(tap) => tap,
                 Err(()) => {

@@ -17,9 +17,9 @@
               readonly
               aria-label="录音快捷键"
               placeholder="点击录入快捷键"
-              @click="startHotkeyCapture"
+              @click="startHotkeyCapture('hotkey')"
             />
-            <BaseButton variant="ghost" icon title="恢复默认快捷键" aria-label="恢复默认快捷键" @click="resetHotkey">
+            <BaseButton variant="ghost" icon title="恢复默认快捷键" aria-label="恢复默认快捷键" @click="resetHotkey('hotkey')">
               <template #icon>
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path d="M4 10.5A8 8 0 1 1 6.6 17" />
@@ -33,8 +33,16 @@
           <span>{{ status.error || '全局快捷键已启用：窗口在后台或最小化时同样生效。' }}</span>
           <BaseButton v-if="status.error" variant="outline" size="sm" @click="goSection('permissions')">查看权限</BaseButton>
         </div>
+        <div class="settings-note">
+          <span>剪贴板悬浮框的快捷键在「剪贴板」页设置。</span>
+          <BaseButton variant="outline" size="sm" @click="goSection('clipboard')">去设置</BaseButton>
+        </div>
       </div>
     </section>
+
+    <div v-if="hotkeyError" class="settings-note warn">
+      <span>{{ hotkeyError }}</span>
+    </div>
   </div>
 </template>
 
@@ -45,7 +53,7 @@ import BaseInput from '@/components/common/BaseInput.vue'
 import { useElectron } from '@/composables/useElectron'
 import { SETTINGS_CTX } from '../settingsContext.js'
 
-const { hotkeyDisplay, isCapturingHotkey, startHotkeyCapture, resetHotkey, goSection } = inject(SETTINGS_CTX)
+const { hotkeyDisplay, isCapturingHotkey, hotkeyError, startHotkeyCapture, resetHotkey, goSection } = inject(SETTINGS_CTX)
 const { getHotkeyStatus } = useElectron()
 const status = ref({ enabled: true, error: null })
 

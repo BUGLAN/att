@@ -53,6 +53,11 @@ pub const MODEL_RUNTIME_KEYS: &[&str] = &[
     "chatgpt_asr_timeout_seconds",
 ];
 
+/// 剪贴板悬浮框高度的允许范围（逻辑像素）：再矮放不下卡片内容，再高就挡住大半个屏幕。
+pub const CLIPBOARD_PANEL_HEIGHT_RANGE: (i64, i64) = (200, 480);
+/// 剪贴板悬浮框最大宽度的允许范围（逻辑像素）；0 单独表示铺满屏幕。
+pub const CLIPBOARD_PANEL_WIDTH_RANGE: (i64, i64) = (720, 3840);
+
 /// 设置修订号：默认值变更需要升级旧数据时加一，并在 [`upgrade_legacy_defaults`] 里补一步。
 /// 2：豆包接入点改为 bigmodel_async；强制断句静音时长 0 → 800ms（0 时服务端按语义分段，
 ///    停顿后基本不确认，流式的未确认文字要到松开才变色）。
@@ -116,6 +121,20 @@ pub struct UserSettings {
     pub pause_audio_on_recording: bool,
     pub auto_optimize: bool,
     pub auto_copy_to_clipboard: bool,
+    /// 剪贴板悬浮框里按回车：`paste` 粘贴到唤起前的应用；`copy` 只复制。
+    /// 开关与快捷键存在 `hotkeys` 的 ClipboardPanel 绑定里（enabled 即开关）
+    pub clipboard_panel_enter_action: String,
+    /// 剪贴板悬浮框高度（逻辑像素，卡片随之缩放），见 [`CLIPBOARD_PANEL_HEIGHT_RANGE`]。
+    /// 尺寸两项只由悬浮框拖动写入（[`UserSettings::set_clipboard_panel_size`]），不在 PUT 白名单里：
+    /// 设置页保存时会把整份旧设置带回来，若接受这两项会把刚拖好的尺寸覆盖掉
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub clipboard_panel_height: i64,
+    /// 剪贴板悬浮框最大宽度（逻辑像素，水平居中）；0 = 铺满屏幕，见 [`CLIPBOARD_PANEL_WIDTH_RANGE`]
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub clipboard_panel_max_width: i64,
+    /// 剪贴板悬浮框离屏幕底边的距离（逻辑像素，0 = 贴底）；同样只由悬浮框拖动写入，显示时再按屏幕高度夹取
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub clipboard_panel_bottom_offset: i64,
     /// 透明透传键：仅存在于 PUT 白名单（与 Python 行为一致），UI 选择后原样保存。
     pub audio_input_device: Option<String>,
     // ---- 录音 ----
@@ -165,13 +184,20 @@ impl UserSettings {
             pause_audio_on_recording: true,
             auto_optimize: false,
             auto_copy_to_clipboard: true,
+            clipboard_panel_enter_action: "paste".into(),
+            clipboard_panel_height: 244,
+            clipboard_panel_max_width: 1280,
+            clipboard_panel_bottom_offset: 0,
             audio_input_device: None,
             recording_mode: "single".into(),
             silence_threshold: 1.5,
             silence_level: -40,
             default_preset_id: None,
             last_used_preset_id: None,
-            hotkeys: vec![HotkeyBinding::default_binding(platform)],
+            hotkeys: vec![
+                HotkeyBinding::default_binding(platform),
+                HotkeyBinding::default_for(HotkeyAction::ClipboardPanel, platform),
+            ],
             settings_revision: SETTINGS_REVISION,
         }
     }
@@ -188,11 +214,20 @@ impl UserSettings {
             migrate_legacy_hotkey(map, platform);
             upgrade_legacy_defaults(map);
             merge_defaults_into(map, platform);
-            serde_json::from_value(object).unwrap_or_else(|error| {
+            let mut settings: Self = serde_json::from_value(object).unwrap_or_else(|error| {
                 tracing::warn!("settings.json 结构异常，回落默认设置: {error}");
                 Self::with_platform(platform)
-            })
+            });
+            settings.ensure_default_bindings(platform);
+            settings
         })
+    }
+
+    /// 旧数据只有录音绑定：补上后来新增动作的默认绑定（只改内存，下次保存才落盘）。
+    pub fn ensure_default_bindings(&mut self, platform: Platform) {
+        if self.binding_of(HotkeyAction::ClipboardPanel).is_none() {
+            self.hotkeys.push(HotkeyBinding::default_for(HotkeyAction::ClipboardPanel, platform));
+        }
     }
 
     /// 原子写回。
@@ -214,16 +249,63 @@ impl UserSettings {
 
     /// 用旧版 hotkey 对象更新 Record 绑定（保持触发模式不变）。
     pub fn update_record_binding_from_legacy(&mut self, platform: Platform, value: &Value) {
-        let trigger = self
-            .binding_of(HotkeyAction::Record)
-            .map(|b| b.trigger)
-            .unwrap_or(TriggerMode::Hold);
-        let mut binding = binding_from_legacy(platform, value);
-        binding.trigger = trigger;
-        match self.hotkeys.iter_mut().find(|b| b.action == HotkeyAction::Record) {
+        self.update_binding_from_legacy(HotkeyAction::Record, platform, value);
+    }
+
+    /// 用旧版 `{modifiers, key}` 更新某个动作的组合键：触发模式与开关保持不变，不合法时回落该动作的默认组合。
+    pub fn update_binding_from_legacy(&mut self, action: HotkeyAction, platform: Platform, value: &Value) {
+        let mut binding = self
+            .binding_of(action)
+            .cloned()
+            .unwrap_or_else(|| HotkeyBinding::default_for(action, platform));
+        let (modifiers, hid_key) = hotkey::combo_from_legacy(value).unwrap_or_else(|| {
+            let fallback = HotkeyBinding::default_for(action, platform);
+            (fallback.modifiers, fallback.hid_key)
+        });
+        binding.modifiers = modifiers;
+        binding.hid_key = hid_key;
+        self.set_binding(binding);
+    }
+
+    fn set_binding(&mut self, binding: HotkeyBinding) {
+        match self.hotkeys.iter_mut().find(|b| b.action == binding.action) {
             Some(slot) => *slot = binding,
             None => self.hotkeys.push(binding),
         }
+    }
+
+    /// 写入剪贴板悬浮框尺寸（夹到允许范围；`max_width` ≤ 0 表示铺满屏幕）。
+    pub fn set_clipboard_panel_size(&mut self, max_width: i64, height: i64) {
+        let (min_h, max_h) = CLIPBOARD_PANEL_HEIGHT_RANGE;
+        let (min_w, max_w) = CLIPBOARD_PANEL_WIDTH_RANGE;
+        self.clipboard_panel_height = height.clamp(min_h, max_h);
+        self.clipboard_panel_max_width = if max_width <= 0 { 0 } else { max_width.clamp(min_w, max_w) };
+    }
+
+    /// 写入剪贴板悬浮框离底距离（只保证不为负；上限取决于当时的屏幕，由窗口层夹取）。
+    pub fn set_clipboard_panel_offset(&mut self, bottom_offset: i64) {
+        self.clipboard_panel_bottom_offset = bottom_offset.max(0);
+    }
+
+    pub fn reset_clipboard_panel_position(&mut self) {
+        self.clipboard_panel_bottom_offset = Self::default().clipboard_panel_bottom_offset;
+    }
+
+    pub fn reset_clipboard_panel_size(&mut self) {
+        let defaults = Self::default();
+        self.clipboard_panel_height = defaults.clipboard_panel_height;
+        self.clipboard_panel_max_width = defaults.clipboard_panel_max_width;
+    }
+
+    /// 剪贴板悬浮框是否启用（ClipboardPanel 绑定的 enabled）。
+    pub fn clipboard_panel_enabled(&self) -> bool {
+        self.binding_of(HotkeyAction::ClipboardPanel).is_some_and(|b| b.enabled)
+    }
+
+    fn clipboard_panel_binding(&self, platform: Platform) -> HotkeyBinding {
+        self.binding_of(HotkeyAction::ClipboardPanel)
+            .cloned()
+            .unwrap_or_else(|| HotkeyBinding::default_for(HotkeyAction::ClipboardPanel, platform))
     }
 
     /// GET /api/settings 响应视图：脱敏（密文 → *_set 布尔）+ 旧 hotkey 兼容字段。
@@ -242,6 +324,8 @@ impl UserSettings {
         view["doubao_asr_api_key_set"] = json!(self.doubao_asr_api_key_encrypted.is_some());
         view["chatgpt_asr_api_key_set"] = json!(self.chatgpt_asr_api_key_encrypted.is_some());
         view["hotkey"] = self.legacy_hotkey_view(platform);
+        view["clipboard_panel_hotkey"] = self.clipboard_panel_binding(platform).to_legacy(platform);
+        view["clipboard_panel_enabled"] = json!(self.clipboard_panel_enabled());
         view
     }
 }
@@ -269,6 +353,16 @@ pub fn apply_settings_update(
     let body = json_store::ensure_object(body.clone());
     let map = body.as_object().ok_or("请求体必须是对象")?;
     let mut outcome = SettingsUpdate::default();
+
+    // 整组绑定先落：前端常把 GET 回来的 hotkeys 原样带回，
+    // 若按键名顺序在 hotkey / clipboard_panel_* 之后处理，会把同一请求里的改键覆盖回旧值
+    if let Some(value) = map.get("hotkeys").filter(|v| !v.is_null()) {
+        let parsed: Vec<HotkeyBinding> = serde_json::from_value(value.clone())
+            .map_err(|e| format!("字段 hotkeys 结构非法: {e}"))?;
+        settings.hotkeys = parsed;
+        settings.ensure_default_bindings(platform);
+        outcome.restart_hotkey_backend = true;
+    }
 
     // 通用字段：key → （读取器）逐个显式处理，保证类型契约
     for (key, value) in map {
@@ -304,12 +398,28 @@ pub fn apply_settings_update(
                 settings.update_record_binding_from_legacy(platform, value);
                 outcome.restart_hotkey_backend = true;
             }
-            "hotkeys" => {
-                // 新版绑定数组（3c 起设置页使用；此处做结构校验）
-                let parsed: Vec<HotkeyBinding> = serde_json::from_value(value.clone())
-                    .map_err(|e| format!("字段 hotkeys 结构非法: {e}"))?;
-                settings.hotkeys = parsed;
+            // 已在循环前处理
+            "hotkeys" => {}
+            "clipboard_panel_hotkey" => {
+                if !value.is_object() {
+                    return Err(type_error("对象"));
+                }
+                settings.update_binding_from_legacy(HotkeyAction::ClipboardPanel, platform, value);
                 outcome.restart_hotkey_backend = true;
+            }
+            "clipboard_panel_enabled" => {
+                let enabled = value.as_bool().ok_or_else(|| type_error("布尔值"))?;
+                let mut binding = settings.clipboard_panel_binding(platform);
+                binding.enabled = enabled;
+                settings.set_binding(binding);
+                outcome.restart_hotkey_backend = true;
+            }
+            "clipboard_panel_enter_action" => {
+                let action = value.as_str().ok_or_else(|| type_error("字符串"))?;
+                if !matches!(action, "paste" | "copy") {
+                    return Err(format!("字段 clipboard_panel_enter_action 取值非法: {action}"));
+                }
+                settings.clipboard_panel_enter_action = action.into();
             }
 
             // ---- 字符串键 ----
@@ -383,6 +493,16 @@ pub fn apply_settings_update(
             outcome.runtime_keys_changed.push(
                 MODEL_RUNTIME_KEYS.iter().find(|k| **k == key.as_str()).copied().unwrap_or(""),
             );
+        }
+    }
+
+    // 两个全局快捷键撞键时只会触发其中一个：直接拒绝，让用户换一个
+    if let (Some(record), Some(panel)) = (
+        settings.binding_of(HotkeyAction::Record),
+        settings.binding_of(HotkeyAction::ClipboardPanel),
+    ) {
+        if record.enabled && panel.enabled && record.same_combo(panel) {
+            return Err("剪贴板悬浮框的快捷键与录音快捷键相同，请换一个".into());
         }
     }
 
@@ -655,6 +775,91 @@ mod tests {
         let bad = serde_json::json!({ "silence_level": "loud" });
         let err = apply_settings_update(&mut settings, &bad, Platform::Windows, &crypto).unwrap_err();
         assert!(err.contains("silence_level") && err.contains("整数"), "错误信息应包含字段名与期望类型: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 剪贴板悬浮框_旧数据补默认绑定_公共视图带开关与快捷键() {
+        let dir = temp_dir("panel-load");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, serde_json::json!({
+            "hotkeys": [{"action": "record", "trigger": "hold", "modifiers": {"alt": true, "meta": true}, "enabled": true}]
+        }).to_string()).unwrap();
+
+        let settings = UserSettings::load(&path, Platform::Macos);
+        assert!(settings.clipboard_panel_enabled());
+        assert_eq!(settings.clipboard_panel_enter_action, "paste");
+        assert_eq!((settings.clipboard_panel_height, settings.clipboard_panel_max_width), (244, 1280), "旧数据补默认尺寸");
+        let view = settings.public_view(Platform::Macos);
+        assert_eq!(view["clipboard_panel_enabled"], true);
+        assert_eq!(view["clipboard_panel_hotkey"]["display"], "⌃⌥V");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 剪贴板悬浮框_改键开关回车行为_带回旧hotkeys也不覆盖() {
+        let dir = temp_dir("panel-update");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::with_platform(Platform::Macos);
+        let stale_hotkeys = serde_json::to_value(&settings.hotkeys).unwrap();
+
+        let body = serde_json::json!({
+            "hotkeys": stale_hotkeys,
+            "clipboard_panel_hotkey": {"modifiers": ["cmd", "shift"], "key": "b"},
+            "clipboard_panel_enabled": false,
+            "clipboard_panel_enter_action": "copy"
+        });
+        apply_settings_update(&mut settings, &body, Platform::Macos, &crypto).unwrap();
+        let binding = settings.binding_of(HotkeyAction::ClipboardPanel).unwrap();
+        assert_eq!(binding.display(Platform::Macos), "⌘⇧B");
+        assert_eq!(binding.trigger, TriggerMode::Toggle, "改键不改触发模式");
+        assert!(!settings.clipboard_panel_enabled());
+        assert_eq!(settings.clipboard_panel_enter_action, "copy");
+
+        // 尺寸只由悬浮框拖动写入：设置页 PUT 带回的旧值被忽略
+        settings.set_clipboard_panel_size(1600, 300);
+        let stale = serde_json::json!({"clipboard_panel_height": 244, "clipboard_panel_max_width": 1280});
+        apply_settings_update(&mut settings, &stale, Platform::Macos, &crypto).unwrap();
+        assert_eq!((settings.clipboard_panel_max_width, settings.clipboard_panel_height), (1600, 300));
+        settings.set_clipboard_panel_size(100, 999);
+        assert_eq!(settings.clipboard_panel_height, CLIPBOARD_PANEL_HEIGHT_RANGE.1, "高度夹到范围内");
+        assert_eq!(settings.clipboard_panel_max_width, CLIPBOARD_PANEL_WIDTH_RANGE.0, "宽度夹到范围内");
+        settings.set_clipboard_panel_size(0, 244);
+        assert_eq!(settings.clipboard_panel_max_width, 0, "0 = 铺满屏幕");
+        settings.reset_clipboard_panel_size();
+        assert_eq!((settings.clipboard_panel_max_width, settings.clipboard_panel_height), (1280, 244));
+
+        // 位置同理：只由拖动写入，PUT 带回的旧值忽略；负数夹成贴底，恢复默认回到贴底
+        settings.set_clipboard_panel_offset(320);
+        let stale = serde_json::json!({"clipboard_panel_bottom_offset": 0});
+        apply_settings_update(&mut settings, &stale, Platform::Macos, &crypto).unwrap();
+        assert_eq!(settings.clipboard_panel_bottom_offset, 320);
+        settings.set_clipboard_panel_offset(-5);
+        assert_eq!(settings.clipboard_panel_bottom_offset, 0);
+        settings.set_clipboard_panel_offset(200);
+        settings.reset_clipboard_panel_position();
+        assert_eq!(settings.clipboard_panel_bottom_offset, 0);
+
+        let bad = serde_json::json!({"clipboard_panel_enter_action": "type"});
+        assert!(apply_settings_update(&mut settings, &bad, Platform::Macos, &crypto).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 剪贴板悬浮框_与录音撞键时拒绝_关掉后放行() {
+        let dir = temp_dir("panel-conflict");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::with_platform(Platform::Macos);
+        let same = serde_json::json!({"clipboard_panel_hotkey": {"modifiers": ["cmd", "shift"], "key": "r"}});
+        let err = apply_settings_update(&mut settings, &same, Platform::Macos, &crypto).unwrap_err();
+        assert!(err.contains("录音快捷键"), "{err}");
+
+        let mut settings = UserSettings::with_platform(Platform::Macos);
+        let disabled = serde_json::json!({
+            "clipboard_panel_hotkey": {"modifiers": ["cmd", "shift"], "key": "r"},
+            "clipboard_panel_enabled": false
+        });
+        assert!(apply_settings_update(&mut settings, &disabled, Platform::Macos, &crypto).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -397,6 +397,13 @@ export const api = {
     if (params.limit) {
       searchParams.set('limit', String(params.limit))
     }
+    // 分段加载：offset 跳过前若干条；with_total 时返回 { items, total }
+    if (params.offset) {
+      searchParams.set('offset', String(params.offset))
+    }
+    if (params.with_total) {
+      searchParams.set('with_total', 'true')
+    }
 
     const query = searchParams.toString()
     return request('GET', `/clipboard/items${query ? `?${query}` : ''}`)

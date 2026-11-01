@@ -8,6 +8,7 @@
 
 // 注意：Tauri generate_handler 需要命令模块公开可见（__cmd__ 宏重导出）
 pub mod clipboard;
+pub mod clipboard_panel;
 pub mod commands;
 pub mod desktop;
 pub mod floating;
@@ -50,6 +51,13 @@ pub fn run() {
             // 二次启动也找不到 "main" 可唤起。
             // - macOS：只隐藏，点 Dock 图标（RunEvent::Reopen）再显示；Cmd+Q 照常退出
             // - 其他平台：关闭即退出应用
+            if window.label() == clipboard_panel::LABEL {
+                // 剪贴板悬浮框点到别处即收起（Spotlight 式）
+                if let tauri::WindowEvent::Focused(false) = event {
+                    clipboard_panel::on_blur(window.app_handle());
+                }
+                return;
+            }
             if window.label() != "main" {
                 return;
             }
@@ -136,7 +144,7 @@ pub fn run() {
 
             // 录音 Actor + 全局热键（热键直达 Actor，不经过前端：窗口隐藏/后台时同样可用）
             let recorder = recording::RecordingController::spawn(app.handle().clone(), core.clone());
-            let hotkey_error = start_hotkey_listener(core.clone(), recorder.clone());
+            let hotkey_error = start_hotkey_listener(app.handle().clone(), core.clone(), recorder.clone());
 
             // 状态先注册：保证窗口首屏的 invoke 一定能取到 State
             // （shutdown_tx 放进 AppState 随应用存活，防止数据面被误关）
@@ -169,6 +177,10 @@ pub fn run() {
             if let Err(error) = floating::create(app.handle()) {
                 tracing::warn!("创建悬浮窗失败（不影响录音）: {error}");
             }
+            // 剪贴板悬浮框：预创建隐藏，由全局快捷键唤起
+            if let Err(error) = clipboard_panel::create(app.handle(), port) {
+                tracing::warn!("创建剪贴板悬浮框失败: {error}");
+            }
             // 托盘（四态图标 + 最近记录菜单）与剪贴板后台监控
             if let Err(error) = tray::create(app.handle()) {
                 tracing::warn!("创建托盘失败: {error}");
@@ -194,6 +206,13 @@ pub fn run() {
             commands::write_clipboard_text,
             commands::write_clipboard_image,
             commands::paste_active,
+            commands::get_clipboard_panel_context,
+            commands::hide_clipboard_panel,
+            commands::clipboard_panel_finish,
+            commands::clipboard_panel_resize,
+            commands::clipboard_panel_move,
+            commands::clipboard_panel_reset_size,
+            commands::clipboard_panel_reset_position,
             commands::set_tray_icon,
             commands::update_tray_menu,
             commands::show_floating_window,
@@ -276,27 +295,43 @@ fn resolve_data_dir(app: &tauri::App) -> PathBuf {
         .join("data")
 }
 
-/// 启动全局键盘监听：按键匹配当前录音绑定 → 直接驱动录音 Actor。
+/// 启动全局键盘监听：按键匹配当前启用的绑定 → 录音交给录音 Actor，剪贴板悬浮框直接切换显示。
 /// 返回不可用原因（如 macOS 未授予「输入监控」权限），由设置页/首页提示用户。
-fn start_hotkey_listener(core: Arc<CoreState>, recorder: recording::RecordingController) -> Option<String> {
+fn start_hotkey_listener(
+    app: tauri::AppHandle,
+    core: Arc<CoreState>,
+    recorder: recording::RecordingController,
+) -> Option<String> {
     use att_core::settings::hotkey::HotkeyAction;
     let binding_core = core.clone();
-    let binding: att_hotkey::listener::BindingSource = Arc::new(move || {
+    let bindings: att_hotkey::listener::BindingSource = Arc::new(move || {
         binding_core
             .settings()
-            .binding_of(HotkeyAction::Record)
-            .filter(|b| b.enabled)
+            .hotkeys
+            .iter()
+            .filter(|b| b.enabled && matches!(b.action, HotkeyAction::Record | HotkeyAction::ClipboardPanel))
             .map(att_hotkey::HotkeySpec::from_binding)
+            .collect()
     });
-    let sink: att_hotkey::listener::EventSink = Arc::new(move |action, phase| recorder.hotkey(action, phase));
-    match att_hotkey::listener::start(binding, sink) {
+    let sink: att_hotkey::listener::EventSink = Arc::new(move |action, phase| match action {
+        HotkeyAction::ClipboardPanel => {
+            // 不在键盘钩子线程里同步操作窗口：可拦截的监听回调超时会被系统停用
+            if phase == att_hotkey::KeyPhase::Pressed {
+                let app = app.clone();
+                std::thread::spawn(move || clipboard_panel::toggle(&app));
+            }
+        }
+        _ => recorder.hotkey(action, phase),
+    });
+    match att_hotkey::listener::start(bindings, sink) {
         Ok(()) => {
-            let hotkey_display = core
-                .settings()
-                .binding_of(HotkeyAction::Record)
-                .map(|b| b.display(core.platform))
-                .unwrap_or_default();
-            tracing::info!("全局快捷键已启用: {hotkey_display}");
+            let settings = core.settings();
+            let combo = |action| settings.binding_of(action).map(|b| b.display(core.platform)).unwrap_or_default();
+            tracing::info!(
+                "全局快捷键已启用: 录音 {} / 剪贴板悬浮框 {}",
+                combo(HotkeyAction::Record),
+                combo(HotkeyAction::ClipboardPanel)
+            );
             None
         }
         Err(message) => {

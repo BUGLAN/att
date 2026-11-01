@@ -36,6 +36,9 @@ test('搜索：关键词大小写不敏感，只保留命中页并去掉空分�
   assert.equal(hotkey.length, 1)
   assert.equal(hotkey[0].items[0].id, 'hotkey')
 
+  const clipboard = buildNavGroups('悬浮框')
+  assert.deepEqual(clipboard.flatMap((group) => group.items.map((item) => item.id)), ['clipboard'])
+
   assert.deepEqual(buildNavGroups('完全不存在的设置'), [])
   assert.ok(sectionMatches(findSection('permissions'), '辅助功能'))
 })

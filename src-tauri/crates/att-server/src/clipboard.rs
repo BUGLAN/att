@@ -40,24 +40,35 @@ struct ListParams {
     #[serde(default)]
     pinned_only: bool,
     limit: Option<usize>,
+    /// 分段加载：跳过前多少条
+    #[serde(default)]
+    offset: usize,
+    /// true 时返回 `{ items, total }`（剪贴板悬浮框分段加载用）；默认仍是数组，旧调用方不受影响
+    #[serde(default)]
+    with_total: bool,
 }
 
 async fn list(State(state): Shared, Query(params): Query<ListParams>) -> Result<Json<Value>, Response> {
     let item_type = params.item_type.filter(|t| !t.is_empty());
-    if item_type.as_deref().map(|t| !ITEM_TYPES.contains(&t)).unwrap_or(false) {
+    // 逗号分隔表示多个类型（悬浮框「文本」= text,code）
+    if item_type.as_deref().is_some_and(|t| t.split(',').map(str::trim).any(|t| !ITEM_TYPES.contains(&t))) {
         return Err(detail(StatusCode::UNPROCESSABLE_ENTITY, "item_type 只能是 text/link/code/file/image"));
     }
     let limit = params.limit.unwrap_or(100);
     if !(1..=500).contains(&limit) {
         return Err(detail(StatusCode::UNPROCESSABLE_ENTITY, "limit 必须在 1~500 之间"));
     }
-    let items = state.core.clipboard.list(&ListQuery {
+    let (items, total) = state.core.clipboard.list_page(&ListQuery {
         query: params.query,
         item_type,
         favorite_only: params.favorite_only,
         pinned_only: params.pinned_only,
+        offset: params.offset,
         limit,
     });
+    if params.with_total {
+        return Ok(Json(json!({ "items": items, "total": total })));
+    }
     Ok(Json(json!(items)))
 }
 

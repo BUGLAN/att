@@ -26,6 +26,12 @@ impl Matcher {
         self.latched
     }
 
+    /// 这个主键事件该不该吞掉：绑定有主键、正是这个键、且组合处于锁存（按下 / 自动重复 / 松开前）。
+    /// 纯修饰键组合不吞（修饰键本身不会打出字）。
+    pub fn owns_key(&self, hid: Option<u16>) -> bool {
+        self.latched && hid.is_some() && self.spec.as_ref().is_some_and(|spec| spec.hid_key == hid)
+    }
+
     /// 切换绑定：变化时清空状态，锁存中则合成一次 release（换键不留粘滞，缺陷 #9）。
     pub fn set_spec(&mut self, spec: Option<HotkeySpec>) -> Option<KeyPhase> {
         if self.spec == spec {
@@ -154,6 +160,26 @@ mod tests {
         assert_eq!(m.on_key(15, r, true), Some(KeyPhase::Pressed));
         assert_eq!(m.on_key(15, r, true), None, "自动重复");
         assert_eq!(m.on_key(15, r, false), Some(KeyPhase::Released));
+    }
+
+    #[test]
+    fn 主键吞键_按下重复松开都归绑定_纯修饰键不吞() {
+        const ALT: ModSet = ModSet { ctrl: false, alt: true, shift: false, meta: false };
+        let mut m = Matcher::default();
+        m.set_spec(spec(ALT, Some('v')));
+        let v = hid_from_char('v');
+        m.on_modifiers(ALT);
+        m.on_key(9, v, true);
+        assert!(m.owns_key(v), "按下即锁存，吞掉");
+        m.on_key(9, v, true);
+        assert!(m.owns_key(v), "自动重复也吞");
+        assert!(!m.owns_key(hid_from_char('c')), "别的键不吞");
+
+        let mut pure = Matcher::default();
+        pure.set_spec(spec(CMD_ALT, None));
+        pure.on_modifiers(CMD_ALT);
+        assert!(pure.is_latched());
+        assert!(!pure.owns_key(None));
     }
 
     #[test]

@@ -100,9 +100,12 @@ pub struct UpdateRequest {
 #[derive(Debug, Default)]
 pub struct ListQuery {
     pub query: Option<String>,
+    /// 类型筛选；逗号分隔表示「任一」（如 `text,code`）
     pub item_type: Option<String>,
     pub favorite_only: bool,
     pub pinned_only: bool,
+    /// 跳过前多少条（分段加载）
+    pub offset: usize,
     pub limit: usize,
 }
 
@@ -270,13 +273,23 @@ impl ClipboardRepo {
 
     /// 置顶在前，其余按更新时间倒序。
     pub fn list(&self, query: &ListQuery) -> Vec<ClipboardItem> {
+        self.list_page(query).0
+    }
+
+    /// 分段加载：按 offset / limit 取一页，同时返回筛选后的总条数。
+    pub fn list_page(&self, query: &ListQuery) -> (Vec<ClipboardItem>, usize) {
+        let types: Vec<&str> = query
+            .item_type
+            .as_deref()
+            .map(|t| t.split(',').map(str::trim).filter(|t| !t.is_empty()).collect())
+            .unwrap_or_default();
         let needle = query.query.as_deref().map(|q| q.trim().to_lowercase()).unwrap_or_default();
         let mut items: Vec<ClipboardItem> = self
             .load_all()
             .into_iter()
             .filter(|item| !query.favorite_only || item.is_favorite)
             .filter(|item| !query.pinned_only || item.is_pinned)
-            .filter(|item| query.item_type.as_deref().map(|t| item.item_type == t).unwrap_or(true))
+            .filter(|item| types.is_empty() || types.contains(&item.item_type.as_str()))
             .filter(|item| needle.is_empty() || format!("{} {} {}", item.title, item.summary, item.content).to_lowercase().contains(&needle))
             .collect();
         items.sort_by(|a, b| {
@@ -284,8 +297,9 @@ impl ClipboardRepo {
                 .cmp(&a.is_pinned)
                 .then_with(|| parse_time(&b.updated_at).cmp(&parse_time(&a.updated_at)))
         });
-        items.truncate(query.limit.max(1));
-        items
+        let total = items.len();
+        let page = items.into_iter().skip(query.offset).take(query.limit.max(1)).collect();
+        (page, total)
     }
 
     pub fn update(&self, id: &str, request: UpdateRequest) -> std::io::Result<Option<ClipboardItem>> {
@@ -410,6 +424,18 @@ mod tests {
         assert_eq!(items[0].id, first.id, "置顶在前");
         assert_eq!(repo.list(&ListQuery { item_type: Some("link".into()), limit: 10, ..Default::default() }).len(), 1);
         assert_eq!(repo.list(&ListQuery { query: Some("EXAMPLE".into()), limit: 10, ..Default::default() }).len(), 1);
+
+        // 分段加载：offset 跳过、total 是筛选后的总数；逗号分隔的类型取并集
+        let (first, total) = repo.list_page(&ListQuery { limit: 1, ..Default::default() });
+        let (second, _) = repo.list_page(&ListQuery { offset: 1, limit: 1, ..Default::default() });
+        assert_eq!(total, items.len());
+        assert_eq!(first.len(), 1);
+        assert_ne!(first[0].id, second.first().map(|i| i.id.clone()).unwrap_or_default());
+        let (beyond, _) = repo.list_page(&ListQuery { offset: total, limit: 10, ..Default::default() });
+        assert!(beyond.is_empty());
+        let (_, link_or_text) = repo.list_page(&ListQuery { item_type: Some("link, text".into()), limit: 10, ..Default::default() });
+        let singles = ["link", "text"].iter().map(|t| repo.list(&ListQuery { item_type: Some((*t).into()), limit: 100, ..Default::default() }).len()).sum::<usize>();
+        assert_eq!(link_or_text, singles);
         let stats = repo.stats();
         assert_eq!(stats["total"], 2);
         assert_eq!(stats["today"], 2);

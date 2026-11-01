@@ -21,6 +21,13 @@ export const SETTINGS_SECTIONS = Object.freeze([
     keywords: ['快捷键', '热键', '按住', '组合键', 'hotkey']
   },
   {
+    id: 'clipboard',
+    group: '通用',
+    label: '剪贴板',
+    desc: '剪贴板悬浮框：唤起快捷键、选中条目后的动作、尺寸与位置。',
+    keywords: ['剪贴板', '剪切板', '悬浮框', '剪贴板快捷键', '粘贴', '复制', '尺寸', '高度', '宽度', '位置']
+  },
+  {
     id: 'output',
     group: '通用',
     label: '输出与优化',

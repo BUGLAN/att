@@ -195,6 +195,56 @@ pub async fn paste_active() -> Result<Value, String> {
     Ok(json!({ "success": true }))
 }
 
+// ---------------- 剪贴板悬浮框 ----------------
+
+/// 悬浮框页面的上下文（回车行为、唤起快捷键），每次唤起时读取。
+#[tauri::command]
+pub fn get_clipboard_panel_context(state: State<'_, AppState>) -> Value {
+    crate::clipboard_panel::context(&state.core)
+}
+
+/// Esc 收起：焦点还给唤起前的应用。
+#[tauri::command]
+pub fn hide_clipboard_panel(app: AppHandle) {
+    crate::clipboard_panel::hide(&app, true);
+}
+
+/// 拖动调整悬浮框尺寸（面板宽高，逻辑像素）；`save` 时记进设置。返回夹取后的实际尺寸。
+#[tauri::command]
+pub fn clipboard_panel_resize(app: AppHandle, width: f64, height: f64, save: bool) -> Value {
+    crate::clipboard_panel::resize(&app, width, height, save)
+}
+
+/// 上下拖动悬浮框（离屏幕底边的距离，逻辑像素）；`save` 时记进设置。返回夹取后的实际距离。
+#[tauri::command]
+pub fn clipboard_panel_move(app: AppHandle, bottom_offset: f64, save: bool) -> Value {
+    crate::clipboard_panel::move_to(&app, bottom_offset, save)
+}
+
+/// 设置页「恢复默认尺寸」。
+#[tauri::command]
+pub fn clipboard_panel_reset_size(app: AppHandle) {
+    crate::clipboard_panel::reset_size(&app);
+}
+
+/// 设置页「恢复默认位置」/ 悬浮框头部双击：回到贴底。
+#[tauri::command]
+pub fn clipboard_panel_reset_position(app: AppHandle) {
+    crate::clipboard_panel::reset_position(&app);
+}
+
+/// 选中条目后收尾（条目已由页面写进系统剪贴板）：收起并还焦点，`paste` 时再模拟一次粘贴。
+#[tauri::command]
+pub async fn clipboard_panel_finish(app: AppHandle, paste: bool) -> Result<Value, String> {
+    crate::clipboard_panel::hide(&app, true);
+    if paste {
+        tauri::async_runtime::spawn_blocking(crate::desktop::paste_active)
+            .await
+            .map_err(|e| err(e.to_string()))??;
+    }
+    Ok(json!({ "success": true }))
+}
+
 // ---------------- 录音（Rust 侧采集 + 识别，前端只做展示）----------------
 
 #[tauri::command]
