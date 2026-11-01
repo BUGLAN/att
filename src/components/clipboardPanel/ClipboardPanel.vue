@@ -328,7 +328,9 @@ async function commit(item, alternate) {
     }
   } catch (error) {
     console.error('[ClipboardPanel] 写入剪贴板失败:', error)
-    errorText.value = '写入剪贴板失败'
+    // 把后端原因也显示出来（多为剪贴板被其他程序占用 / 图片文件丢失），别只给一句「失败」
+    const reason = typeof error === 'string' ? error : (error?.message || '')
+    errorText.value = reason ? `写入剪贴板失败：${reason.slice(0, 80)}` : '写入剪贴板失败'
     committing = false
     return
   }

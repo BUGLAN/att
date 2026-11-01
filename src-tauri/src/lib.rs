@@ -1,6 +1,6 @@
-//! Tauri 壳：装配核心 → 迁移 → 内嵌数据面 → 命令注册（阶段 3a）。
+//! Tauri 壳：装配核心 → 迁移 → 内嵌数据面 → 命令注册。
 //!
-//! 启动顺序（对应旧 electron/main.js 的 whenReady 链，架构文档 §1.1）：
+//! 启动顺序（与旧 Electron 版 whenReady 链一致，详见 `docs/架构.md` §2）：
 //! 1. 解析数据目录（env > 开发态仓库 data/ > 应用数据目录）
 //! 2. 一次性迁移（幂等）
 //! 3. CoreState 初始化 + axum 数据面（127.0.0.1 随机端口）
@@ -8,6 +8,7 @@
 
 // 注意：Tauri generate_handler 需要命令模块公开可见（__cmd__ 宏重导出）
 pub mod clipboard;
+pub mod clipboard_image;
 pub mod clipboard_panel;
 pub mod commands;
 pub mod desktop;
@@ -46,7 +47,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
-            // 关闭主窗口（与旧 electron/main.js 的 close / window-all-closed 行为对齐）：
+            // 关闭主窗口（与旧 Electron 版的 close / window-all-closed 行为对齐）：
             // 悬浮窗是预创建的隐藏窗口，任由主窗口销毁会让进程带着全局热键残留在后台，
             // 二次启动也找不到 "main" 可唤起。
             // - macOS：只隐藏，点 Dock 图标（RunEvent::Reopen）再显示；Cmd+Q 照常退出

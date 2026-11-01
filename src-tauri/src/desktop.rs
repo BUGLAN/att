@@ -11,11 +11,28 @@ use std::time::Duration;
 const PASTE_DELAY: Duration = Duration::from_millis(120);
 
 /// 写剪贴板文本。
+///
+/// 重试几次：Windows 上剪贴板同一时刻只允许一个线程打开，别的程序（含剪贴板监控、历史记录）
+/// 正在读写时 `set_text` 会失败；arboard 自己用 NULL owner 打开剪贴板，偶发 1418
+/// 「线程没有打开的剪贴板」——失败发生在 `EmptyClipboard` 之后，等于把剪贴板清空了，重试能把内容放回去。
 pub fn write_clipboard(text: &str) -> Result<(), String> {
-    // 本应用写入不进剪贴板历史（监控据此跳过）
+    /// 与 `clipboard_image` 一致：覆盖别的程序短暂占用的窗口
+    const ATTEMPTS: usize = 5;
+    const INTERVAL: Duration = Duration::from_millis(40);
+    // 本应用写入不进剪贴板历史（监控据此跳过）：标记只做一次，重试不重复占用
     crate::clipboard::mark_internal_write(text);
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    clipboard.set_text(text.to_string()).map_err(|e| e.to_string())
+    let mut last = String::new();
+    for attempt in 0..ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(INTERVAL);
+        }
+        let result = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text.to_string()));
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => last = error.to_string(),
+        }
+    }
+    Err(last)
 }
 
 /// 模拟系统粘贴快捷键（阻塞约 200ms，调用方放到阻塞线程）。

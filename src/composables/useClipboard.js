@@ -87,17 +87,23 @@ export function useClipboard() {
   }
 
   async function copyItemContent(item) {
-    if (item?.item_type === 'image' && item?.metadata?.image_path) {
-      await clipboard.writeImage({
-        imagePath: item.metadata.image_path,
-        imageToken: item.content || ''
-      })
-      appStore.showToast('已复制图片到系统剪切板')
-      return
-    }
+    try {
+      if (item?.item_type === 'image' && item?.metadata?.image_path) {
+        await clipboard.writeImage({
+          imagePath: item.metadata.image_path,
+          imageToken: item.content || ''
+        })
+        appStore.showToast('已复制图片到系统剪切板')
+        return
+      }
 
-    await clipboard.writeText(item.content || '')
-    appStore.showToast('已复制到系统剪切板')
+      await clipboard.writeText(item.content || '')
+      appStore.showToast('已复制到系统剪切板')
+    } catch (error) {
+      // 剪贴板被其他程序占用、图片文件丢失等：说清原因，不要静默失败
+      console.error('[Clipboard] Failed to copy item:', error)
+      appStore.showToast(typeof error === 'string' ? error : '复制失败，剪贴板可能正被其他程序占用', { tone: 'error' })
+    }
   }
 
   return {

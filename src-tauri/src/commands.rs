@@ -147,8 +147,11 @@ pub fn write_clipboard_text(text: String) -> Result<bool, String> {
 }
 
 /// 写图片剪贴板：imagePath 解析（相对路径锚定 data/clipboard/），PNG 解码为 RGBA。
+///
+/// 落剪贴板的格式由 `clipboard_image` 决定：Windows 上必须同时给 CF_DIB / CF_DIBV5（BI_RGB）+ PNG，
+/// 否则 Chromium/Skia 系应用（含网页输入框）粘不出图。
 #[tauri::command]
-pub fn write_clipboard_image(state: State<'_, AppState>, payload: Value) -> Result<bool, String> {
+pub fn write_clipboard_image(app: AppHandle, state: State<'_, AppState>, payload: Value) -> Result<bool, String> {
     let raw_path = payload.get("imagePath").and_then(|v| v.as_str()).unwrap_or("");
     let resolved = resolve_clipboard_image_path(&state.core.data_dir, raw_path)?;
     let bytes = std::fs::read(&resolved).map_err(|e| err(format!("读取图片失败: {e}")))?;
@@ -156,14 +159,7 @@ pub fn write_clipboard_image(state: State<'_, AppState>, payload: Value) -> Resu
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     crate::clipboard::mark_internal_image(rgba.as_raw());
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| err(e.to_string()))?;
-    clipboard
-        .set_image(arboard::ImageData {
-            width: width as usize,
-            height: height as usize,
-            bytes: rgba.into_raw().into(),
-        })
-        .map_err(|e| err(e.to_string()))?;
+    crate::clipboard_image::write_rgba(&app, rgba.as_raw(), width, height)?;
     Ok(true)
 }
 
