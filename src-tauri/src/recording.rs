@@ -632,7 +632,7 @@ impl Actor {
                 let OptimizeEvent::Delta(chunk) = event else { return };
                 accumulated.push_str(&chunk);
                 // 输入框只出「收尾清洗不会剥掉」的部分（套话 / 思考块不上屏）。
-                // 悬浮窗不回填优化稿：它停留很短，一闪而过反而突兀，「轉」期间一直显示淡色识别稿
+                // 悬浮窗不回填优化稿：它停留很短，一闪而过反而突兀，「轉」期间一直显示识别稿
                 let stable = cleaning::stable_prefix(&accumulated);
                 if let Some(typing) = typing.as_mut() {
                     typing.advance(&stable);

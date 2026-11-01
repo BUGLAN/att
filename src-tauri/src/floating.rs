@@ -261,7 +261,7 @@ pub fn last_state() -> Value {
 
 /// 录音 Actor 状态 → 悬浮窗状态（悬浮窗页面的相位词表：recording/transcribing/optimizing/complete/error）。
 ///
-/// optimizing：载荷里的是转写原文，放进 `draft`，整个「轉」阶段变淡显示；
+/// optimizing：载荷里的是转写原文，放进 `draft`，整个「轉」阶段照常显示；
 /// 优化稿不回填悬浮窗（停留很短，一闪而过反而突兀），优化增量也不再推过来。
 ///
 /// complete 带 `ok`：有结果且优化、输出都没出错才算「成」，否则「敗」并把原因放进 text。
@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn 进入优化_原文作为淡色草稿_不当成优化结果() {
+    fn 进入优化_原文作为草稿_不当成优化结果() {
         let (state, show) = from_recording_state(&json!({ "phase": "optimizing", "mode": "streaming", "text": "原文" })).unwrap();
         assert!(show);
         assert_eq!(state["phase"], "optimizing");

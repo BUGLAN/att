@@ -1,5 +1,5 @@
 // 极简悬浮窗展示模型（src/components/floating/floatingView.mjs）单元测试。
-// 覆盖：各相位对应的印章、「轉」沿用上一句变淡、结果态收起时机、尾部截取、印章字竖直校正、声纹门限、未确认文字、
+// 覆盖：各相位对应的印章、「轉」沿用上一句（保持正文色）、结果态收起时机、尾部截取、印章字竖直校正、声纹门限、未确认文字、
 // 出字动效（对齐已上屏的字、吐字节拍、整行左移逼近）、新会话判定。
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -31,30 +31,26 @@ test('录音中：聽；没说话时没有文字，单段模式始终没有文�
 
   const speaking = deriveFloatingView({ phase: 'recording', mode: 'multi', text: '明天下午三点开会' })
   assert.equal(speaking.text, '明天下午三点开会')
-  assert.equal(speaking.dim, false)
 
   assert.equal(deriveFloatingView({ phase: 'recording', mode: 'single', text: '不该显示' }).text, '')
 })
 
-test('识别与优化：轉；沿用上一句（变淡）撑住胶囊，优化稿不回填', () => {
+test('识别与优化：轉；沿用上一句撑住胶囊（不变淡），优化稿不回填', () => {
   const session = { previousText: '嗯明天下午三点开会' }
   const transcribing = deriveFloatingView({ phase: 'transcribing' }, session)
   assert.equal(transcribing.glyph, '轉')
   assert.equal(transcribing.busy, true)
   assert.equal(transcribing.text, '嗯明天下午三点开会')
-  assert.equal(transcribing.dim, true)
+  assert.ok(!('dim' in transcribing), '「轉」沿用的识别稿保持正文色，不再变淡')
 
   const waiting = deriveFloatingView({ phase: 'optimizing', text: '' }, session)
   assert.equal(waiting.text, '嗯明天下午三点开会', '优化中仍沿用上一句')
-  assert.equal(waiting.dim, true)
 
   const optimizing = deriveFloatingView({ phase: 'optimizing', text: '明天下午三点开会。' }, session)
   assert.equal(optimizing.text, '嗯明天下午三点开会', '优化稿即使带过来也不显示')
-  assert.equal(optimizing.dim, true)
 
   const single = deriveFloatingView({ phase: 'transcribing' })
   assert.equal(single.text, '', '单段模式没有上一句：只剩印章与处理点')
-  assert.equal(single.dim, false)
 })
 
 test('结果态：成 / 敗 只剩印章，按各自时长收起', () => {
@@ -120,12 +116,11 @@ test('声纹门限：底噪不触发，过门限立即出现，停顿片刻内�
   assert.equal(nextVoiceState(voice, 0.5, 5000).loud, true)
 })
 
-test('进入优化：转写原文作为淡色草稿显示到结束', () => {
+test('进入优化：转写原文作为草稿显示到结束', () => {
   const session = { previousText: '明天下午三点开' }
   const begin = deriveFloatingView({ phase: 'optimizing', text: '', draft: '明天下午三点开会' }, session)
   assert.equal(begin.glyph, '轉')
   assert.equal(begin.text, '明天下午三点开会', '草稿比上一句中间结果更新，优先显示')
-  assert.equal(begin.dim, true)
 })
 
 test('流式未确认文字：末尾那截单独标出，截取后仍是全文的后缀', () => {
@@ -142,7 +137,7 @@ test('流式未确认文字：末尾那截单独标出，截取后仍是全文�
   assert.equal(streaming.pending, '开会')
 
   assert.equal(deriveFloatingView({ phase: 'recording', mode: 'multi', text: '分段定稿' }).pending, '', '多段结果都是定稿')
-  assert.equal(deriveFloatingView({ phase: 'transcribing' }, { previousText: '明天下午三点开会' }).pending, '', '「轉」整行变淡，不再区分')
+  assert.equal(deriveFloatingView({ phase: 'transcribing' }, { previousText: '明天下午三点开会' }).pending, '', '「轉」不再区分未确认的那截')
 })
 
 test('出字对齐：追加保留全部、回改换掉末尾、裁头只去开头', () => {

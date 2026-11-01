@@ -186,10 +186,6 @@ button {
   cursor: pointer;
 }
 
-.line.dim {
-  color: var(--text-3);
-}
-
 .track {
   display: inline-block;
   vertical-align: top;

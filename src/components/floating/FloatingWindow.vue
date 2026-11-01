@@ -6,7 +6,7 @@
       之后字数增减、识别回改、聽→轉 都只换里面的内容；结束时收回成 成 / 敗 一枚印章。
       换印章时底色渐变、新旧字交叠（旧字缩小淡出，新字像盖章一样落下），印章本身轻按一下；
       文字与声纹 / 处理点先淡出，胶囊再收拢，不会一下子跳变。
-      优化稿不回填：「轉」期间一直是淡色识别稿，优化结果直接打进输入框。
+      优化稿不回填：「轉」期间一直是识别稿（正文色，不变淡），优化结果直接打进输入框。
       敗：原因直接写在印章旁（出过字的会话保持原宽度，没出过字的按原因长短展开），悬停时暂停收起，点一下唤起主窗口。
       流式录音中，服务端还没确认的那截（正在说的这句）用淡白色，确认后变回正常文字色。
       始终单行，超出宽度后裁掉开头（左侧渐隐），最新的字留在右边。
@@ -37,7 +37,7 @@
         <span class="sr-only">{{ SEAL_LABELS[view.seal] }}{{ view.detail ? `：${view.detail}` : '' }}</span>
 
         <Transition name="line" mode="out-in">
-          <span v-if="expanded" key="line" ref="lineEl" class="line" :class="{ clipped, dim: view.dim }"><span ref="trackEl" class="track" :style="{ transform: `translateX(${-shift}px)` }"><span v-for="(c, index) in shownChars" :key="c.id" class="ch" :class="{ pending: index >= pendingFrom }">{{ c.ch }}</span></span></span>
+          <span v-if="expanded" key="line" ref="lineEl" class="line" :class="{ clipped }"><span ref="trackEl" class="track" :style="{ transform: `translateX(${-shift}px)` }"><span v-for="(c, index) in shownChars" :key="c.id" class="ch" :class="{ pending: index >= pendingFrom }">{{ c.ch }}</span></span></span>
           <span v-else-if="reason" key="reason" class="line reason">{{ reason }}</span>
         </Transition>
 
@@ -104,7 +104,7 @@ const wide = ref(false)
 const voice = ref(nextVoiceState())
 /** 本次会话说过话：声纹位从此保留到录音结束，安静时收成静止的点，胶囊不随说停伸缩 */
 const voiced = ref(false)
-/** 本次会话最近一次显示的文字（含淡色草稿）：进入「轉」、优化增量还没出字时沿用它撑住胶囊 */
+/** 本次会话最近一次显示的文字（含未确认的草稿）：进入「轉」、优化增量还没出字时沿用它撑住胶囊 */
 const lastText = ref('')
 let hideTimer = null
 let leaveTimer = null
@@ -245,7 +245,7 @@ function applyState(payload = {}) {
 
   if (next.active && next.text) {
     wide.value = true
-    // 淡色的草稿也记下：否则下一个空增量会退回更早的识别中间结果，文字跳一下
+    // 未确认的草稿也记下：否则下一个空增量会退回更早的识别中间结果，文字跳一下
     lastText.value = next.text
   }
 
