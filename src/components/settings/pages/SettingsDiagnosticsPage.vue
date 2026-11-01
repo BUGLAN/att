@@ -59,7 +59,7 @@
         <h3 class="settings-group-title">关于</h3>
         <div class="setting-item">
           <div class="setting-info">
-            <span class="setting-label">Audio to Text</span>
+            <span class="setting-label">落墨 Luomo</span>
             <span class="setting-desc">{{ appInfo ? `版本 ${appInfo.version} · Tauri 桌面版` : '浏览器模式' }}</span>
           </div>
         </div>

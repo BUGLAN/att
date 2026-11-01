@@ -1,16 +1,14 @@
 // 主窗口的「文字图标」表（不依赖 Vue，供 tests/test_page_glyphs.mjs 锁定）。
 //
 // 图标统一用宋体粗体繁体字，与悬浮窗的印章是同一套语言：
-// - 录音按钮就是一枚印章，四态与悬浮窗 / 托盘同源（SEALS：錄 待命 · 聽 录音中 · 轉 处理中 · 成 完成 · 敗 失败）；
+// - 录音按钮就是一枚印章，四态与悬浮窗同源（SEALS：錄 待命 · 聽 录音中 · 轉 处理中 · 成 完成 · 敗 失败）；
+//   托盘的录音 / 转写也用聽 / 轉，待命则是品牌标「墨」（见 scripts/generate_brand_icons.py）；
 // - 导航、操作按钮、剪贴板类型都用单字，操作按钮的全称放在 title / aria-label 里。
 // 改字只改这里，界面各处跟着变。
 
 import { SEALS } from '../floating/floatingView.mjs'
 
 export { SEALS }
-
-/** 应用标识（标题栏） */
-export const BRAND_GLYPH = '聲'
 
 /** 侧边栏导航 */
 export const NAV_GLYPHS = Object.freeze({

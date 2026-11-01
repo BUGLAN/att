@@ -2,8 +2,8 @@
   <header class="title-bar">
     <div class="title-bar-drag" data-tauri-drag-region @dblclick="windowControl.maximize()">
       <div class="title-bar-brand" data-tauri-drag-region>
-        <span class="ui-seal title-bar-seal" aria-hidden="true"><span class="ui-seal-ink">{{ BRAND_GLYPH }}</span></span>
-        <span class="logo-text">Audio To Text</span>
+        <img class="title-bar-mark" :src="brandMark" alt="" aria-hidden="true" draggable="false" data-tauri-drag-region>
+        <span class="logo-text">落墨</span>
       </div>
     </div>
 
@@ -27,7 +27,7 @@
 
 <script setup>
 import { useElectron } from '@/composables/useElectron'
-import { BRAND_GLYPH } from '@/components/common/glyphs.mjs'
+import brandMark from '@/assets/brand-mark.svg'
 
 const { windowControl } = useElectron()
 </script>

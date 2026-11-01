@@ -41,11 +41,12 @@
   width: 100%;
 }
 
-/* 应用标识：一枚金色小印章「聲」，与导航 / 录音印章同一套文字图标 */
-.title-bar-seal {
+/* 应用标识：落墨品牌标（墨底金字「墨」，与应用图标同源的矢量，见 scripts/generate_brand_icons.py） */
+.title-bar-mark {
+  display: block;
+  flex: none;
   width: 22px;
   height: 22px;
-  font-size: 14px;
 }
 
 .title-bar-brand .logo-text {

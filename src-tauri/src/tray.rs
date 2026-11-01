@@ -1,4 +1,4 @@
-//! 系统托盘：四态图标 + 最近 10 条记录菜单（点击 = 复制并粘贴）+ 设置 + 退出。
+//! 系统托盘：四态图标（待命 = 品牌标「墨」，录音 / 转写 / 断开 = 状态章「聽 轉 斷」）+ 最近 10 条记录菜单（点击 = 复制并粘贴）+ 设置 + 退出。
 //!
 //! 菜单直接读 Rust 记录库（不依赖主窗口前端是否加载），录音/优化落库后由 Actor 调 [`refresh`]；
 //! 前端的 `update_tray_menu` 也只触发一次重建。
@@ -16,20 +16,51 @@ const LABEL_MAX_CHARS: usize = 40;
 /// 当前图标状态（避免重复设置同一张图）。
 static CURRENT: Mutex<&str> = Mutex::new("");
 
-fn icon_bytes(state: &str) -> &'static [u8] {
+/// Windows 托盘位图档位：系统托盘小图标边长 = 16 × 显示缩放（100%~300%），
+/// 每档都由 scripts/generate_brand_icons.py 按像素单独出图，避免系统把 32px 缩成 16 / 20px 发糊。
+#[cfg(windows)]
+const WIN_SIZES: [u32; 6] = [16, 20, 24, 32, 40, 48];
+
+/// 按主屏缩放挑「不小于 16×缩放」的最小档（只缩小不放大；读不到缩放给最大档）。
+#[cfg(windows)]
+fn win_tray_px(app: &AppHandle) -> u32 {
+    let scale = app.primary_monitor().ok().flatten().map(|m| m.scale_factor()).unwrap_or(3.0);
+    let want = (16.0 * scale).round() as u32;
+    WIN_SIZES.iter().copied().find(|&px| px >= want).unwrap_or(48)
+}
+
+fn icon_bytes(app: &AppHandle, state: &str) -> &'static [u8] {
     #[cfg(windows)]
-    match state {
-        "recording" => include_bytes!("../icons/tray/win-recording.png"),
-        "transcribing" => include_bytes!("../icons/tray/win-transcribing.png"),
-        "disconnected" => include_bytes!("../icons/tray/win-disconnected.png"),
-        _ => include_bytes!("../icons/tray/win-idle.png"),
+    {
+        let px = win_tray_px(app);
+        macro_rules! sized {
+            ($state:literal) => {
+                match px {
+                    16 => &include_bytes!(concat!("../icons/tray/win-", $state, "-16.png"))[..],
+                    20 => &include_bytes!(concat!("../icons/tray/win-", $state, "-20.png"))[..],
+                    24 => &include_bytes!(concat!("../icons/tray/win-", $state, "-24.png"))[..],
+                    32 => &include_bytes!(concat!("../icons/tray/win-", $state, "-32.png"))[..],
+                    40 => &include_bytes!(concat!("../icons/tray/win-", $state, "-40.png"))[..],
+                    _ => &include_bytes!(concat!("../icons/tray/win-", $state, "-48.png"))[..],
+                }
+            };
+        }
+        match state {
+            "recording" => sized!("recording"),
+            "transcribing" => sized!("transcribing"),
+            "disconnected" => sized!("disconnected"),
+            _ => sized!("idle"),
+        }
     }
     #[cfg(not(windows))]
-    match state {
-        "recording" => include_bytes!("../icons/tray/macos-recording.png"),
-        "transcribing" => include_bytes!("../icons/tray/macos-transcribing.png"),
-        "disconnected" => include_bytes!("../icons/tray/macos-disconnected.png"),
-        _ => include_bytes!("../icons/tray/macos-idle.png"),
+    {
+        let _ = app;
+        match state {
+            "recording" => include_bytes!("../icons/tray/macos-recording.png"),
+            "transcribing" => include_bytes!("../icons/tray/macos-transcribing.png"),
+            "disconnected" => include_bytes!("../icons/tray/macos-disconnected.png"),
+            _ => include_bytes!("../icons/tray/macos-idle.png"),
+        }
     }
 }
 
@@ -44,16 +75,16 @@ fn normalize(state: &str) -> &'static str {
 
 fn tooltip(state: &str) -> &'static str {
     match state {
-        "recording" => "Audio to Text - 录音中...",
-        "transcribing" => "Audio to Text - 转写中...",
-        "disconnected" => "Audio to Text - 未连接",
-        _ => "Audio to Text - 就绪",
+        "recording" => "落墨 - 录音中...",
+        "transcribing" => "落墨 - 转写中...",
+        "disconnected" => "落墨 - 未连接",
+        _ => "落墨 - 就绪",
     }
 }
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app)?;
-    let image = tauri::image::Image::from_bytes(icon_bytes("idle"))?;
+    let image = tauri::image::Image::from_bytes(icon_bytes(app, "idle"))?;
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(image)
         .tooltip(tooltip("idle"))
@@ -85,7 +116,7 @@ pub fn set_icon(app: &AppHandle, state: &str) {
         *current = state;
     }
     let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
-    if let Ok(image) = tauri::image::Image::from_bytes(icon_bytes(state)) {
+    if let Ok(image) = tauri::image::Image::from_bytes(icon_bytes(app, state)) {
         let _ = tray.set_icon(Some(image));
     }
     let _ = tray.set_tooltip(Some(tooltip(state)));

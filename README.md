@@ -1,4 +1,4 @@
-# Audio to Text（ATT）
+# 落墨 Luomo（原 Audio to Text / ATT）
 
 Windows / macOS 桌面**录音笔记**工具：**录音 → 语音识别 →（可选）LLM 优化 → 落库 / 复制粘贴**，附带剪贴板历史与本地文件转写。
 数据全部落在本地 `data/` 目录的 JSON 文件里（在线识别与 LLM 只上传音频 / 文本）。

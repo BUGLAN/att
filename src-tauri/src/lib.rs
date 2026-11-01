@@ -165,7 +165,7 @@ pub fn run() {
                 "window.__ATT_BACKEND_PORT__ = {port}; window.__ATT_IS_DESKTOP__ = true;"
             );
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-                .title("Audio to Text")
+                .title("落墨")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(800.0, 600.0)
                 .decorations(false)

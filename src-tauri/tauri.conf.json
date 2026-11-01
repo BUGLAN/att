@@ -29,7 +29,8 @@
     },
     "windows": {
       "wix": {
-        "language": "zh-CN"
+        "language": "zh-CN",
+        "upgradeCode": "7d1c25af-2d66-5be0-b96a-72ebab18ea36"
       }
     }
   }
