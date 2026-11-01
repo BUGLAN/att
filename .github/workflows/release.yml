@@ -2,7 +2,8 @@
 #
 #   macOS    aarch64-apple-darwin（Apple Silicon）→ .dmg 与 .app.tar.gz；未签名 / 未公证，
 #            首次打开需在「系统设置 → 隐私与安全性」里放行
-#   Windows  x86_64-pc-windows-msvc → NSIS 安装包（.exe）与 .msi；未签名，SmartScreen 会提示
+#   Windows  x86_64-pc-windows-msvc → NSIS 安装包（.exe）与 .msi；未签名，SmartScreen 会提示。
+#            随包的 prompts/ 是中文文件名，MSI 必须用中文代码页（tauri.conf.json 的 wix.language = zh-CN）
 #
 # 构建耗时主要在本地 Whisper 引擎：att-whisper 依赖的 ct2rs 会用 CMake 从源码编译 CTranslate2
 # （Windows 上还有 oneDNN），首次约 20–40 分钟；rust-cache 缓存 target 后会快很多。
@@ -20,6 +21,9 @@ on:
       tag:
         description: '要发布的标签（如 v2.1.0，需已存在）'
         required: true
+      ref:
+        description: '用哪个提交 / 分支的代码打包（留空 = 标签本身；只修了打包配置时可填 main 补发安装包）'
+        required: false
 
 concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
@@ -51,7 +55,7 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.inputs.ref || github.event.inputs.tag || github.ref }}
 
       - name: 准备 Node.js
         uses: actions/setup-node@v4
@@ -69,6 +73,8 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
           key: ${{ matrix.target }}
+          # 打包失败（多在最后的安装包环节）也保存编译缓存：Windows 从头编一次 CTranslate2 + oneDNN 要 40 分钟
+          cache-on-failure: true
 
       - name: 安装前端依赖
         run: npm ci

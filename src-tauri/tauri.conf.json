@@ -26,6 +26,11 @@
     ],
     "resources": {
       "../prompts/": "prompts/"
+    },
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      }
     }
   }
 }
