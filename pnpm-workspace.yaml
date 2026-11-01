@@ -1,4 +1,0 @@
-allowBuilds:
-  electron: true
-  esbuild: false
-  vue-demi: false

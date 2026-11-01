@@ -1,8 +1,7 @@
 //! 设置域：Settings(env) + UserSettings(data/settings.json)。
 //!
-//! 这是**全应用唯一的设置归一化实现**（旧版同一逻辑散落在 Python config.py、
-//! electron/desktop/settings.js、desktop_agent.py、前端 stores/settings.js 四处，
-//! 见阶段①文档 §4.3-18——重写收敛于此）。
+//! 这是**全应用唯一的设置归一化实现**（旧版同一逻辑散落在 Python 后端、旧 Electron 主进程、
+//! 桌面代理与前端 stores 四处，重写时收敛于此）。
 
 pub mod hotkey;
 

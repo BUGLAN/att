@@ -9,7 +9,7 @@
 // 等录音结束、仍是未连接状态时才会落到「斷」。
 //
 // 状态字符串必须与托盘图标文件名一一对应
-// （见 electron/tray/icons/ 与 scripts/generate_app_icon.py 的 TRAY_STATES）。
+// （见 src-tauri/icons/tray/ 下的 win-*.png / macos-*.png）。
 
 export const TRAY_ICON_STATES = Object.freeze([
   'idle',

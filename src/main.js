@@ -5,7 +5,7 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import './styles/main.css'
 import './styles/page-atoms.css'
-import './styles/electron-overrides.css'
+import './styles/desktop-overrides.css'
 
 const app = createApp(App)
 const pinia = createPinia()

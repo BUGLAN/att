@@ -1,8 +1,7 @@
 {
   "name": "audio-to-text",
   "version": "2.1.0",
-  "description": "Audio to Text - Electron App",
-  "main": "electron/main.js",
+  "description": "Audio to Text — 录音转文字（Tauri 2 + Rust + Vue 3）",
   "scripts": {
     "dev": "vite --strictPort",
     "build": "vite build",
@@ -10,19 +9,9 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "codex:backend": "powershell -ExecutionPolicy Bypass -File scripts/start_dev_with_codex.ps1 -Preset backend",
-    "codex:frontend": "powershell -ExecutionPolicy Bypass -File scripts/start_dev_with_codex.ps1 -Preset frontend",
-    "backend:dev:uv": "cross-env UV_PROJECT_ENVIRONMENT=.venv UV_CACHE_DIR=tmp/uv-cache uv run --no-sync python -m uvicorn app.main:app --reload",
-    "qwen:streaming:uv": "cross-env UV_PROJECT_ENVIRONMENT=.venv UV_CACHE_DIR=tmp/uv-cache uv run --no-sync python -m uvicorn scripts.qwen_streaming_service:app --host 0.0.0.0 --port 9000",
-    "electron:dev": "concurrently -k \"vite --strictPort\" \"wait-on http://127.0.0.1:8090 && cross-env NODE_ENV=development electron .\"",
-    "electron:dev:existing-backend": "cross-env ATT_REQUIRE_EXISTING_BACKEND=1 concurrently -k \"vite --strictPort\" \"wait-on http://127.0.0.1:8090 && cross-env ATT_REQUIRE_EXISTING_BACKEND=1 NODE_ENV=development electron .\"",
-    "electron:build": "vite build && electron-builder",
-    "electron:build:win": "vite build && electron-builder --win",
-    "electron:build:mac": "vite build && electron-builder --mac",
-    "test": "npm run test:node && npm run test:python",
+    "test": "npm run test:node && npm run test:rust",
     "test:node": "node scripts/run-node-tests.mjs",
-    "test:python": "uv run python -m pytest tests -q",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
+    "test:rust": "cd src-tauri && cargo test --workspace"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",
@@ -32,13 +21,6 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.0",
     "@vitejs/plugin-vue": "^5.0.4",
-    "vite": "^5.2.0",
-    "electron": "^29.1.0",
-    "electron-builder": "^24.13.3",
-    "concurrently": "^8.2.2",
-    "wait-on": "^7.2.0",
-    "cross-env": "^7.0.3",
-    "form-data": "^4.0.0",
-    "node-fetch": "^2.7.0"
+    "vite": "^5.2.0"
   }
 }

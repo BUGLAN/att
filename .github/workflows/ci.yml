@@ -1,19 +1,10 @@
-# ATT 质量门禁（任务 T3：P2 质量门禁）
+# ATT 质量门禁（前端）
 #
-# 本仓库此前没有任何 CI（报告 §六：CI ❌ 不存在、无 lint/format、无 npm test），
-# 历史上曾有测试用例红灯约 6 个月无人发现。
-# 本 workflow 的目标是「最小可用门禁」，各 job 的取舍如下：
+# 用例全部是纯 Node 的静态/单元断言（纯函数、只读源码正则），不需要显示器、不需要 Rust 工具链，
+# 因此用 ubuntu-latest 即可。
 #
-#   frontend      必跑、快速（约 2-3 分钟）：npm ci + Node 串行测试 + vite 构建。
-#                 用例全部是纯 Node 的静态/单元断言（注入 FakeBrowserWindow、只读源码正则），
-#                 不需要显示器、不需要 Electron 可执行文件、不依赖平台，因此用 ubuntu-latest 即可。
-#   backend-lint  非阻塞基线：uvx 直接拉取 ruff，无需 uv sync，因此完全不受后端重依赖影响。
-#                 continue-on-error = true，本轮只用于把既存告警数量暴露出来。
-#   backend-test  后端依赖过重（torch==2.8.0+cu128、qwen-asr、vllm、pycaw、llguidance 等，
-#                 pyproject 通过 pytorch-cu128 index 固定 CUDA wheel），托管 runner 上
-#                 uv sync 需要下载数 GB 且 CUDA/vllm wheel 与托管镜像不匹配（超时或磁盘不足），
-#                 因此改为「仅 workflow_dispatch 手动触发 + 需要自带完整环境的 self-hosted runner」。
-#                 若要改回托管 runner，需先把后端依赖拆分为 CPU 版可选组，属于下一轮工作。
+# Rust 侧（`cargo test --workspace`）依赖 CTranslate2 / sherpa-onnx 的本地编译与系统库，
+# 托管 runner 上构建代价过高，目前由本机测试与 release.yml 的打包流程覆盖（见 docs/遗留与下线.md §4）。
 
 name: CI
 
@@ -46,12 +37,10 @@ jobs:
           cache: npm
 
       - name: 安装前端依赖
-        # 必须完整安装（不能跳过 Electron 二进制下载）：
-        # tests/ 里的用例会 require('electron')，缺少 path.txt 时会直接抛错。
         run: npm ci
 
       - name: Node 单元测试
-        # 走自研串行 runner：tests/ 下有两个手写 main() 的用例会 process.exit(0)，
+        # 走自研串行 runner：tests/ 下有手写 main() 的用例会 process.exit(0)，
         # 直接用 node --test 会被截断收集与汇总。
         run: npm run test:node
 
@@ -65,52 +54,3 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 7
-
-  backend-lint:
-    name: 后端 Lint 基线（非阻塞）
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # 本轮定位为「基线可见」而非「合并门禁」：
-    # 既存代码从未跑过 lint，先以非阻塞方式暴露问题，收敛后再改为 false。
-    continue-on-error: true
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 安装 uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: ruff 静态检查
-        # uvx 按需拉取 ruff，读取仓库根目录的 ruff.toml，不需要 uv sync
-        run: uvx ruff check --output-format=github .
-
-      - name: ruff 格式检查（仅提示）
-        # 本轮不强制 ruff format（避免一次性重排后端代码），仅输出差异供后续排期
-        continue-on-error: true
-        run: uvx ruff format --check .
-
-  backend-test:
-    name: 后端测试（重依赖，仅手动触发）
-    # 手动触发 + self-hosted：见文件头部说明。
-    # 若本仓库尚未注册 self-hosted runner，手动触发会一直排队，这属于预期行为（不是失败）。
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, windows, x64]
-    timeout-minutes: 60
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 安装 uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: 准备 Python 3.12
-        run: uv python install 3.12
-
-      - name: 同步后端依赖
-        run: uv sync
-
-      - name: 后端测试
-        # pytest 配置来自 pyproject.toml 的 [tool.pytest.ini_options]（testpaths = ["tests"]）
-        run: uv run python -m pytest tests -q
