@@ -78,6 +78,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          # 仓库里同时有 pnpm-lock.yaml，不指定的话 tauri-action 会改用 pnpm（runner 上没装）
+          tauriScript: npm run tauri
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: Audio to Text ${{ env.RELEASE_TAG }}
           releaseBody: |
