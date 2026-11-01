@@ -343,7 +343,7 @@ function close() {
 .wiz-search { margin-bottom: 10px; }
 .wiz-input {
   width: 100%; background: var(--bg-raise); border: 1px solid var(--line-strong);
-  border-radius: var(--r-md); color: var(--text-1); font: inherit; font-size: 13px;
+  border-radius: var(--r-sm); color: var(--text-1); font: inherit; font-size: 13px;
   padding: 8px 12px; outline: none; box-sizing: border-box;
 }
 .wiz-input:focus { border-color: var(--accent-line-strong); box-shadow: 0 0 0 2px var(--accent); }

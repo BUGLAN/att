@@ -77,6 +77,8 @@ windows-sys = { version = "0.61", features = [
     # 写图片剪贴板：CF_DIB/CF_DIBV5 + 注册 PNG（OpenClipboard/SetClipboardData + GMEM）
     "Win32_System_DataExchange",
     "Win32_System_Memory",
+    # 主窗口圆角：Windows 11 DWM 窗口圆角偏好
+    "Win32_Graphics_Dwm",
 ] }
 # 录音期间系统静音：Core Audio IAudioEndpointVolume（COM 接口只在 windows crate 里）
 windows = { version = "0.62", features = [

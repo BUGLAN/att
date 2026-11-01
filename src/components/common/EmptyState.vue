@@ -68,7 +68,7 @@ defineProps({
   justify-content: center;
   width: 40px;
   height: 40px;
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   background: var(--accent-dim);
   color: var(--accent);
 }

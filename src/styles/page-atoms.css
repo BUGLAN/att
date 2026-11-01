@@ -220,7 +220,7 @@
   right: 0;
   bottom: -1px;
   height: 2px;
-  border-radius: 2px;
+  border-radius: var(--r-hair);
   background: var(--accent);
 }
 
@@ -242,7 +242,7 @@
   padding: 0 12px;
   background: var(--bg-card);
   border: 1px solid var(--line);
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   transition: border-color var(--t-fast) var(--ease);
 }
 
@@ -374,7 +374,7 @@
   height: 1.05em;
   margin-left: 2px;
   vertical-align: text-bottom;
-  border-radius: 1px;
+  border-radius: var(--r-hair);
   background: var(--accent);
   animation: ui-cursor-blink 0.9s steps(1) infinite;
 }

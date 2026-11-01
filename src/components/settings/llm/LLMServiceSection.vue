@@ -281,7 +281,7 @@ defineExpose({ deleteProfile })
   background: var(--bg-surface); padding: 11px 14px;
 }
 .llm-profile-logo {
-  width: 30px; height: 30px; border-radius: var(--r-md); flex: none;
+  width: 30px; height: 30px; border-radius: var(--r-sm); flex: none;
   display: flex; align-items: center; justify-content: center;
   background: var(--bg-hover); color: var(--text-1); font-weight: 700; font-size: 14px;
 }

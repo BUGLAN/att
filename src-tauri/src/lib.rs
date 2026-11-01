@@ -17,6 +17,7 @@ pub mod permissions;
 pub mod recording;
 pub mod tray;
 pub mod typing;
+pub mod window_shape;
 
 use att_core::{migration, state::CoreState, Platform};
 use std::path::PathBuf;
@@ -61,6 +62,10 @@ pub fn run() {
             }
             if window.label() != "main" {
                 return;
+            }
+            // 进出全屏：全屏贴满屏幕不留圆角，退出后恢复
+            if let tauri::WindowEvent::Resized(_) = event {
+                window_shape::apply(window);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -164,7 +169,7 @@ pub fn run() {
             let init_script = format!(
                 "window.__ATT_BACKEND_PORT__ = {port}; window.__ATT_IS_DESKTOP__ = true;"
             );
-            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+            let main = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
                 .title("落墨")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(800.0, 600.0)
@@ -173,6 +178,7 @@ pub fn run() {
                 .background_color(tauri::window::Color(10, 10, 11, 255))
                 .initialization_script(&init_script)
                 .build()?;
+            window_shape::apply(&main.as_ref().window());
 
             // 录音悬浮窗：预创建隐藏，由录音 Actor 直接驱动
             if let Err(error) = floating::create(app.handle()) {

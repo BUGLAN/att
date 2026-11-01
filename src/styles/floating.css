@@ -223,7 +223,7 @@ button {
 
 .wave-bar {
   width: 3px;
-  border-radius: 1px;
+  border-radius: var(--r-hair);
   background: #f08a7e;
   transition: height 90ms linear, opacity 240ms ease;
 }
@@ -256,7 +256,7 @@ button {
 .busy span {
   width: 5px;
   height: 5px;
-  border-radius: 1px;
+  border-radius: var(--r-xs);
   background: #8fa0ff;
   animation: busy-dot 1.2s infinite;
 }

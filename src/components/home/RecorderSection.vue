@@ -522,7 +522,7 @@ watch(
 .recorder-wave i {
   width: 2px;
   flex: none;
-  border-radius: 2px;
+  border-radius: var(--r-hair);
   background: var(--gray-600);
   transition: height 120ms ease-out;
 }

@@ -90,7 +90,7 @@
   width: 10px;
   height: 1.5px;
   background: currentColor;
-  border-radius: 999px;
+  border-radius: var(--r-full);
 }
 
 .title-bar-btn svg {

@@ -540,7 +540,7 @@ onBeforeUnmount(() => {
   left: 50%;
   width: 36px;
   height: 3px;
-  border-radius: 2px;
+  border-radius: var(--r-hair);
   background: var(--line-soft-strong);
   transform: translateX(-50%);
   transition: background-color var(--t-fast) var(--ease), width var(--t-fast) var(--ease);

@@ -184,7 +184,7 @@ function close() {
 .med-label { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 6px; }
 .med-input {
   width: 100%; background: var(--bg-raise); border: 1px solid var(--line-strong);
-  border-radius: var(--r-md); color: var(--text-1); font: inherit; font-size: 13px;
+  border-radius: var(--r-sm); color: var(--text-1); font: inherit; font-size: 13px;
   padding: 8px 12px; outline: none; box-sizing: border-box;
 }
 .med-input:focus { border-color: var(--accent-line-strong); box-shadow: 0 0 0 2px var(--accent); }

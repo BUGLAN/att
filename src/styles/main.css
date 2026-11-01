@@ -262,7 +262,7 @@ body::before {
 .modal-close {
     width: 32px;
     height: 32px;
-    border-radius: var(--radius-sm);
+    border-radius: var(--r-sm);
     border: none;
     background: transparent;
     color: var(--text-muted);
@@ -397,7 +397,7 @@ textarea:focus-visible {
 .preset-list::-webkit-scrollbar-thumb,
 .llm-config-list::-webkit-scrollbar-thumb {
     background: var(--scroll-thumb);
-    border-radius: var(--radius-full);
+    border-radius: var(--r-full);
 }
 
 .records-list::-webkit-scrollbar-thumb:hover,
@@ -414,7 +414,7 @@ textarea:focus-visible {
     padding: var(--space-md);
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: var(--radius-md);
+    border-radius: var(--r-md);
     margin-bottom: var(--space-sm);
     cursor: pointer;
     transition: all var(--transition-fast);
@@ -557,7 +557,7 @@ textarea:focus-visible {
     height: 10px;
     border: 2px solid var(--border);
     border-top-color: currentColor;
-    border-radius: 50%;
+    border-radius: var(--r-full);
     animation: spin 1s linear infinite;
     margin-right: var(--space-xs);
 }
@@ -627,7 +627,7 @@ textarea:focus-visible {
     height: 38px;
     padding: 0 8px;
     border: 0;
-    border-radius: var(--r-md);
+    border-radius: var(--r-sm);
     background: transparent;
     color: var(--text-2);
     font: inherit;
@@ -1174,7 +1174,7 @@ textarea:focus-visible {
     padding: var(--space-md);
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: var(--radius-md);
+    border-radius: var(--r-md);
     margin-bottom: var(--space-sm);
     cursor: pointer;
     transition: all var(--transition-fast);
@@ -1253,7 +1253,7 @@ textarea:focus-visible {
     padding: var(--space-md);
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: var(--radius-md);
+    border-radius: var(--r-md);
     margin-bottom: var(--space-sm);
     transition: all var(--transition-fast);
 }
@@ -1342,7 +1342,7 @@ textarea:focus-visible {
 .record-edit-display {
     background: var(--bg-elevated);
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--r-sm);
     padding: var(--space-sm);
     font-size: var(--fs-base);
     color: var(--text-secondary);
@@ -1429,7 +1429,7 @@ textarea:focus-visible {
   padding: var(--space-sm) var(--space-md);
   background: var(--grad-accent);
   border: 1px solid var(--accent-line);
-  border-radius: var(--radius-md);
+  border-radius: var(--r-md);
   box-shadow: var(--edge-hi);
 }
 
