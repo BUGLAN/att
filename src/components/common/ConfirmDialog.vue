@@ -171,7 +171,7 @@ onBeforeUnmount(() => {
   width: min(420px, 100%);
   padding: var(--s-6);
   border: 1px solid var(--line);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   background: var(--bg-surface);
   box-shadow: var(--e-3), var(--edge-hi);
 }

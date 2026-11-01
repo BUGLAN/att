@@ -450,7 +450,7 @@ watch(
 .recorder-seal {
   width: 64px;
   height: 64px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   font-size: 36px;
   cursor: pointer;
   transition: transform var(--t-fast) var(--ease), background-color 280ms ease, color 280ms ease, box-shadow var(--t-base) var(--ease);
@@ -483,7 +483,7 @@ watch(
   content: '';
   position: absolute;
   inset: -6px;
-  border-radius: 12px;
+  border-radius: calc(var(--r-md) + 6px);
   border: 1px solid var(--seal-listening-line);
   animation: recorder-ring 1.6s var(--ease) infinite;
 }
@@ -547,7 +547,7 @@ watch(
   height: 28px;
   padding: 0 12px 0 10px;
   border: 1px solid var(--line-strong);
-  border-radius: 999px;
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--text-2);
   font: inherit;

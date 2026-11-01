@@ -68,7 +68,7 @@ const hint = computed(() => splitHint(props.view.message))
   width: 6px;
   height: 6px;
   margin-top: 8px;
-  border-radius: 50%;
+  border-radius: var(--r-xs);
   background: var(--status-color);
 }
 

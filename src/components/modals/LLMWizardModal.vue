@@ -359,7 +359,7 @@ function close() {
 .wiz-cell.selected { border-color: var(--accent); background: var(--accent-dim); }
 .wiz-cell-name { font-size: 13px; font-weight: 600; }
 .wiz-cell-prefix { font-size: 11px; color: var(--text-3); }
-.wiz-cell-tag { font-size: 10px; color: var(--text-3); border: 1px solid var(--line-strong); border-radius: var(--r-full); padding: 0 6px; }
+.wiz-cell-tag { font-size: 10px; color: var(--text-3); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 0 6px; }
 
 .wiz-field { margin-bottom: 14px; }
 .wiz-label { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 6px; }

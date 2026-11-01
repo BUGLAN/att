@@ -703,7 +703,7 @@ onUnmounted(() => {
   max-height: calc(100vh - var(--titlebar-height) - 2 * var(--space-xl));
   background: var(--bg-surface);
   border: 1px solid var(--line);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   box-shadow: var(--edge-hi);
   overflow: hidden;
 }
@@ -849,7 +849,7 @@ onUnmounted(() => {
 .settings-nav__dot {
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--r-xs);
   background: var(--ok);
 }
 

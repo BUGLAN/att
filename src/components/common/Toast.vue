@@ -48,7 +48,7 @@ const toasts = computed(() => appStore.toasts)
   max-width: min(560px, 90vw);
   padding: var(--s-2) var(--s-4);
   border: 1px solid var(--line-strong);
-  border-radius: var(--r-full);
+  border-radius: var(--r-md);
   background: var(--bg-raise);
   color: var(--text-1);
   font-size: var(--fs-sm);
@@ -59,7 +59,7 @@ const toasts = computed(() => appStore.toasts)
   width: 8px;
   height: 8px;
   flex-shrink: 0;
-  border-radius: var(--r-full);
+  border-radius: var(--r-xs);
   background: var(--info);
 }
 

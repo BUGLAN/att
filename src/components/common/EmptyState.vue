@@ -56,7 +56,7 @@ defineProps({
 .ui-empty--lg {
   min-height: 300px;
   padding: var(--s-8) var(--s-6);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   background: var(--bg-surface);
   border-style: solid;
   border-color: var(--line);
@@ -68,7 +68,7 @@ defineProps({
   justify-content: center;
   width: 40px;
   height: 40px;
-  border-radius: var(--r-full);
+  border-radius: var(--r-md);
   background: var(--accent-dim);
   color: var(--accent);
 }

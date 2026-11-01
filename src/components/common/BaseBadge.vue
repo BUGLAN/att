@@ -66,7 +66,7 @@ defineProps({
 }
 
 .ui-badge.is-pill {
-  border-radius: var(--r-full);
+  border-radius: var(--r-sm);
 }
 
 .ui-badge.is-mono {

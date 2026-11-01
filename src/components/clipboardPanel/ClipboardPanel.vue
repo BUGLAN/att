@@ -514,7 +514,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line-soft-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   background: var(--surface-float);
   backdrop-filter: blur(24px) saturate(1.2);
   -webkit-backdrop-filter: blur(24px) saturate(1.2);

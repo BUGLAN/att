@@ -291,7 +291,7 @@ defineExpose({ deleteProfile })
 
 .llm-chip {
   font-size: 10px; font-weight: 500; color: var(--text-3);
-  border: 1px solid var(--line-strong); border-radius: var(--r-full); padding: 1px 8px; white-space: nowrap;
+  border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 1px 8px; white-space: nowrap;
 }
 .llm-chip-gold { color: var(--accent-hi); background: var(--accent-dim); border-color: var(--accent-line); }
 

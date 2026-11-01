@@ -477,7 +477,7 @@ const engines = computed(() => [
   flex: none;
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--r-xs);
   background: var(--dot);
 }
 
