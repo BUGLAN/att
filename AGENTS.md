@@ -2,17 +2,16 @@
 
 给 AI 编码代理（Codex / Claude Code 等）的工作指引。项目：Audio to Text（ATT），**Tauri 2 + Rust + Vue 3** 桌面语音转文字应用。
 
-详细设计与现状以 `docs/` 下的 Tauri 重写系列为准：
+详细设计与遗留清单见 `docs/`：
 
 | 文档 | 内容 |
 | --- | --- |
-| `docs/Tauri重写-01-功能梳理清单.md` / `01a-前端审计附录.md` | 功能对齐基线（用户可见功能全清单） |
-| `docs/Tauri重写-02-架构与模块设计.md` | 架构、模块划分、关键决策 |
-| `docs/Tauri重写-03a-实施记录.md` | 已落地内容、踩坑与修复、§9 与旧版的功能对齐表 |
-| `docs/Tauri重写-04-交接-剩余移植与Python下线.md` | **剩余移植任务**（本地 Whisper/Qwen 等）与 Python/Electron 下线清单 |
+| [`docs/架构.md`](docs/架构.md) | **当前实现**：三条平面、启动链路、crate 与模块分工、录音三模式与状态机、识别/LLM/存储/桌面壳/前端的结构与关键取舍 |
+| [`docs/遗留与下线.md`](docs/遗留与下线.md) | 已知限制、待办优先级、旧栈删除留档（2026-11-01）、新机器模型准备、Windows 实机验收表 |
 
-> 仓库里的 `app/`（Python 后端）、`electron/` 是旧架构，Tauri 版运行时不再使用；按 04 号文档完成剩余移植后删除。
-> 改动请落在 `src-tauri/` 与 `src/`，不要再往旧代码里加功能。
+> 旧 Electron / Python 栈已于 **2026-11-01** 从仓库删除（留档见 `docs/遗留与下线.md` §2），运行时只依赖 `src-tauri/` 与 `src/`。
+> 不要从 git 历史恢复旧代码再改；需要参考旧实现时只读不写。
+> 不要再新增「重写阶段 / 交接」类过程文档：现状写进 `docs/架构.md`，没做完的事写进 `docs/遗留与下线.md`。
 
 ## 1. 命令
 
@@ -20,14 +19,18 @@
 npm install
 npm run tauri:dev                      # Vite(8090) + Tauri 壳 + 内嵌 axum 数据面（127.0.0.1:17890）
 npm run build                          # 前端构建
-cargo test --workspace --manifest-path src-tauri/Cargo.toml   # Rust 测试
+npm run test:rust                      # = cd src-tauri && cargo test --workspace
 node scripts/run-node-tests.mjs        # 前端纯逻辑测试（必须走这个脚本，见下）
 
 # 本地引擎的真实模型测试（默认 #[ignore]，需要模型与音频就位）
+cd src-tauri
 ATT_TEST_WAV=/abs/path/audio.wav cargo test -p att-whisper --test real_model -- --ignored --nocapture
 ATT_TEST_WAV=/abs/path/audio.wav cargo test -p att-qwen    --test real_model -- --ignored --nocapture
 ATT_TEST_WAV=/abs/path/audio.wav cargo test -p att-core    --test local_engine_wiring -- --ignored --nocapture
 ```
+
+> `cargo` 必须在 `src-tauri/` 目录内执行：`.cargo/config.toml` 的 `+crt-static` 只在工作目录位于其下时生效，
+> 从仓库根加 `--manifest-path` 跑会撞 `LNK2038`（CTranslate2 是 /MT，Rust 默认 /MD）。
 
 `tests/` 里有手写 `main()` 的 Node 用例会 `process.exit(0)`，直接 `node --test` 会截断汇总。
 
@@ -43,7 +46,7 @@ src-tauri/
   crates/att-qwen/     本地 Qwen3-ASR：sherpa-onnx C API（运行期 dlopen）+ ONNX 模型；C 桥见 src/shim.c
   crates/att-server/   axum 数据面（仅回环），HTTP 契约与旧 Python 版一致
   crates/att-audio/    cpal 麦克风采集
-  crates/att-hotkey/   全局热键（macOS CGEventTap / Windows WH_KEYBOARD_LL）
+  crates/att-hotkey/   全局热键（macOS CGEventTap / Windows RegisterHotKey + WH_KEYBOARD_LL）
 src/                   Vue 前端；桌面能力只经 composables/useElectron.js，HTTP 只经 api/client.js
 prompts/*.txt          提示词预设唯一真相源（打包时作为资源随包）
 data/                  用户数据（开发态即仓库 data/），不入库
@@ -78,4 +81,6 @@ models/                本地模型（不入库）：faster_whisper/（CT2 large
 | dev 下 Whisper 慢 9 倍 | cmake crate 在 opt-level=0 时按 Debug 编 CTranslate2；根 `Cargo.toml` 用 `[profile.dev.package.ct2rs]` 等强制优化，别删 |
 | 本地引擎首次构建慢 | `att-core` 依赖 `att-whisper`，首次会 CMake 编译 CTranslate2 + oneDNN（约 10~20 分钟）；之后走缓存 |
 | Qwen 引擎与系统 ORT 冲突 | Windows 上 `C:\Windows\System32\onnxruntime.dll`（旧版）会抢占依赖解析导致崩溃；`shim.c` 已按绝对路径预加载 `models/sherpa-onnx/` 里的 ORT，改动加载逻辑时别丢掉这一步 |
-| 本地引擎没有模型时 | 只给 409 + 可照做的下载命令，不 panic；模型不入库，见 `docs/Tauri重写-04-…` §7 的下载清单 |
+| 本地引擎没有模型时 | 只给 409 + 可照做的下载命令，不 panic；模型不入库，见 `docs/遗留与下线.md` §5 |
+| 图片写剪贴板 | Windows 上必须自己写 `CF_DIB`(BI_RGB) + `CF_DIBV5`(BI_RGB) + `PNG`（`src-tauri/src/clipboard_image.rs`）；换回 arboard 的 BI_BITFIELDS 写法会让 Chromium 系应用粘不出图 |
+| 剪贴板偶发写失败 | 剪贴板同一时刻只允许一个线程打开，写入要重试；失败发生在 `EmptyClipboard` 之后会把用户剪贴板清空 |

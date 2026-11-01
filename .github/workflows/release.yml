@@ -8,7 +8,7 @@
 # 构建耗时主要在本地 Whisper 引擎：att-whisper 依赖的 ct2rs 会用 CMake 从源码编译 CTranslate2
 # （Windows 上还有 oneDNN），首次约 20–40 分钟；rust-cache 缓存 target 后会快很多。
 # 两个平台都自带 CMake；Windows 的静态 CRT（+crt-static）由 src-tauri/.cargo/config.toml 提供。
-# 模型文件不随包（见 docs/Tauri重写-04-…），安装后在设置页按提示下载。
+# 模型文件不随包（见 docs/遗留与下线.md §5），安装后在设置页按提示下载。
 
 name: Release
 
@@ -84,7 +84,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # 仓库里同时有 pnpm-lock.yaml，不指定的话 tauri-action 会改用 pnpm（runner 上没装）
+          # 显式用 npm 调 tauri：runner 的包管理器探测可能选错，仓库统一用 npm（package-lock.json）
           tauriScript: npm run tauri
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: Audio to Text ${{ env.RELEASE_TAG }}
