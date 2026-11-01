@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Audio to Text",
+  "productName": "落墨",
   "version": "2.1.0",
   "identifier": "com.att.audio-to-text",
   "build": {

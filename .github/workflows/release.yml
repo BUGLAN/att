@@ -88,6 +88,8 @@ jobs:
           tauriScript: npm run tauri
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: 落墨 ${{ env.RELEASE_TAG }}
+          # productName 是中文，GitHub 会把附件名里的非 ASCII 字符替换掉：附件统一用拼音名
+          releaseAssetNamePattern: Luomo_[version]_[arch][setup][ext]
           releaseBody: |
             ## 安装
             - **macOS（Apple Silicon）**：下载 `.dmg`。安装包未签名，首次打开若提示「无法验证开发者」，到「系统设置 → 隐私与安全性」点「仍要打开」。
