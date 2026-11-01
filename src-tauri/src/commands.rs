@@ -297,9 +297,10 @@ pub fn show_floating_window(app: AppHandle) {
     crate::floating::update(&app, crate::floating::last_state(), true);
 }
 
+/// 悬浮窗结果态停留到点后自行收起：只收已结束的会话（与新一次录音并发时不误藏）。
 #[tauri::command]
 pub fn hide_floating_window(app: AppHandle) {
-    crate::floating::hide(&app);
+    crate::floating::dismiss(&app);
 }
 
 #[tauri::command]
@@ -319,6 +320,18 @@ pub fn toggle_floating_window(app: AppHandle) {
 #[tauri::command]
 pub fn update_floating_window_state(payload: Value) {
     let _ = payload;
+}
+
+/// 悬浮窗页面上报胶囊区域 [x, y, 宽, 高]（CSS px）；null = 胶囊不可见。用于透明部分点击穿透。
+#[tauri::command]
+pub fn floating_hit_rect(rect: Option<[f64; 4]>) {
+    crate::floating::set_hit_rect(rect);
+}
+
+/// 悬浮窗失败态点胶囊：唤起主窗口（看完整原因与失败记录）。
+#[tauri::command]
+pub fn open_main_window(app: AppHandle) {
+    crate::show_main_window(&app);
 }
 
 /// 悬浮窗「设置」按钮：唤起主窗口并跳到设置页（旧 main:open-settings 通道）。

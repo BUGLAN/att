@@ -176,6 +176,16 @@ button {
   opacity: 0;
 }
 
+/* 失败原因：与「敗」印章同色系，超长时末尾省略（完整原因在 title 里） */
+.line.reason {
+  text-overflow: ellipsis;
+  color: rgba(246, 201, 191, 0.92);
+}
+
+.capsule.clickable {
+  cursor: pointer;
+}
+
 .line.dim {
   color: var(--text-3);
 }

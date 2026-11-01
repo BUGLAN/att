@@ -141,6 +141,8 @@ struct Active {
     quiet_end: Option<&'static str>,
     /// 收尾看门狗已触发：会话任务被强制取消，按「识别超时」收尾并保留已识别内容
     timed_out: bool,
+    /// 用户点了取消：看门狗强制收尾时仍按取消处理（丢弃），不算识别超时
+    user_cancelled: bool,
     started: Instant,
 }
 
@@ -271,7 +273,7 @@ impl Actor {
             (TriggerMode::Toggle, KeyPhase::Pressed) => match self.phase {
                 Phase::Idle | Phase::Optimizing => self.start().await,
                 Phase::Connecting | Phase::Recording => self.stop("正在完成转写"),
-                Phase::Finalizing => {}
+                Phase::Finalizing => crate::floating::nudge(&self.app),
             },
             (TriggerMode::Toggle, KeyPhase::Released) => {}
         }
@@ -294,11 +296,15 @@ impl Actor {
                     pending.typing_halt.store(true, Ordering::SeqCst);
                     self.phase = Phase::Idle;
                 }
-                _ => return,
+                _ => return crate::floating::nudge(&self.app),
             }
         }
         if self.phase != Phase::Idle {
-            // 收尾中的按下与重复按下一律吞掉（与旧版语义一致）
+            // 收尾中的按下与重复按下一律吞掉（与旧版语义一致）。
+            // 收尾中的按下多半是想开始下一段：摇一下印章表示这下没生效；录音中的是按住热键的自动重复，不提示
+            if self.phase == Phase::Finalizing {
+                crate::floating::nudge(&self.app);
+            }
             return;
         }
         let settings = self.core.settings();
@@ -347,6 +353,9 @@ impl Actor {
             }
         });
         let device = settings.audio_input_device.clone();
+        // 按下即亮「聽」：打开麦克风可能要几百毫秒（蓝牙耳机切换通话模式更久），别让用户干等没有反馈。
+        // 打不开时 fail_start 推「敗」接上；之后的 connecting / recording 映射成同一状态，胶囊不会重播
+        crate::floating::update(&self.app, json!({ "phase": "recording", "mode": mode.as_str(), "text": "", "duration": 0 }), true);
         let opened = tokio::task::spawn_blocking(move || att_audio::start_capture(device, on_chunk)).await;
         let capture = match opened {
             Ok(Ok(capture)) => capture,
@@ -366,6 +375,7 @@ impl Actor {
             live: live.clone(),
             quiet_end: None,
             timed_out: false,
+            user_cancelled: false,
             started: Instant::now(),
         });
 
@@ -426,15 +436,28 @@ impl Actor {
             if let Some(cancel) = active.cancel.take() {
                 let _ = cancel.send(());
             }
+            let id = active.id;
+            // 不进「轉」：悬浮窗当场收起，不必等会话任务关掉连接回来
+            crate::floating::hide(&self.app);
+            self.arm_watchdog(id, None);
             return;
         }
         let (id, mode, recorded) = (active.id, active.mode, active.started.elapsed());
         let budget = self.finalize_budget(mode, recorded);
         self.emit_state("finalizing", json!({ "message": message }));
+        self.arm_watchdog(id, Some(budget));
+    }
+
+    /// 收尾看门狗：`budget` 到点先取消会话任务（它会带着已收内容回来），再过 [`WATCHDOG_GRACE`] 仍无回应就强制收尾。
+    /// 已经发过取消（用户取消 / 安静结束）时传 None，只留强制收尾这一步——
+    /// 否则会话任务卡在关连接上，Actor 会永远停在收尾中，之后的热键全被吞掉。
+    fn arm_watchdog(&self, id: u64, budget: Option<Duration>) {
         let tx = self.tx.clone();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(budget).await;
-            let _ = tx.send(Cmd::FinalizeTimeout(id, false));
+            if let Some(budget) = budget {
+                tokio::time::sleep(budget).await;
+                let _ = tx.send(Cmd::FinalizeTimeout(id, false));
+            }
             tokio::time::sleep(WATCHDOG_GRACE).await;
             let _ = tx.send(Cmd::FinalizeTimeout(id, true));
         });
@@ -452,7 +475,7 @@ impl Actor {
         }
         tracing::warn!("录音收尾超时（会话 {id}，{}）", if hard { "会话任务无回应，强制结束" } else { "取消会话任务" });
         let Some(active) = self.active.as_mut() else { return };
-        active.timed_out = true;
+        active.timed_out = counts_as_timeout(active.quiet_end, active.user_cancelled);
         if !hard {
             if let Some(cancel) = active.cancel.take() {
                 let _ = cancel.send(());
@@ -475,16 +498,22 @@ impl Actor {
         if self.phase == Phase::Idle {
             return;
         }
-        if let Some(active) = self.active.as_mut() {
-            active.live.store(false, Ordering::SeqCst);
-            if let Some(cancel) = active.cancel.take() {
-                let _ = cancel.send(());
-            }
-            if let Some(capture) = active.capture.take() {
-                std::thread::spawn(move || capture.stop());
-            }
+        let Some(active) = self.active.as_mut() else { return };
+        active.live.store(false, Ordering::SeqCst);
+        active.user_cancelled = true;
+        // 收尾看门狗可能已按「超时」标过（软取消后还在等宽限）：用户随后点了 ✕，就按取消丢弃，不再存超时记录
+        active.timed_out = false;
+        if let Some(cancel) = active.cancel.take() {
+            let _ = cancel.send(());
         }
+        if let Some(capture) = active.capture.take() {
+            std::thread::spawn(move || capture.stop());
+        }
+        let id = active.id;
         self.phase = Phase::Finalizing;
+        // 点了 ✕ 当场收起；会话任务回来后照常发 cancelled（主窗口据此复位）
+        crate::floating::hide(&self.app);
+        self.arm_watchdog(id, None);
     }
 
     async fn finish(&mut self, mut outcome: SessionOutcome) {
@@ -781,7 +810,11 @@ impl Actor {
     }
 }
 
-/// 收尾看门狗的上限：各引擎自身超时之和再加余量。正常收尾远早于它，只兜卡死。
+/// 看门狗强制结束会话时，算不算「识别超时」：用户取消与安静结束本就要丢弃，仍按原因收尾。
+fn counts_as_timeout(quiet_end: Option<&'static str>, user_cancelled: bool) -> bool {
+    quiet_end.is_none() && !user_cancelled
+}
+
 /// 松开时要不要跳过转写直接安静结束：按下不到 0.3 秒算误触（哪怕按键声过了阈值），整场没说话同样跳过。
 fn quiet_end_reason(recorded: Duration, heard: bool) -> Option<&'static str> {
     if recorded.as_secs_f64() < MIN_DURATION_SECONDS {
@@ -793,6 +826,7 @@ fn quiet_end_reason(recorded: Duration, heard: bool) -> Option<&'static str> {
     }
 }
 
+/// 收尾看门狗的上限：各引擎自身超时之和再加余量。正常收尾远早于它，只兜卡死。
 fn finalize_budget(mode: Mode, recorded: Duration, chatgpt_timeout_seconds: i64) -> Duration {
     // 豆包：建连 + 末包等待（批量另按音频时长加时）+ 关闭
     let doubao = doubao::CONNECT_TIMEOUT + doubao::FINISH_TIMEOUT + Duration::from_secs(2);
@@ -847,11 +881,11 @@ async fn streaming_task(
             let _ = first_text_mark.set(started.elapsed());
         }
         if live.load(Ordering::SeqCst) {
-            // pending：末尾还没确认的字数，悬浮窗把这截显示成淡白色
-            crate::floating::update(
+            // pending：末尾还没确认的字数，悬浮窗把这截显示成淡白色。
+            // live 只挡已结束的旧会话；与松开并发的那一刻由 update_partial 在锁内按「仍是聽」再判一次
+            crate::floating::update_partial(
                 &partial_app,
                 json!({ "phase": "recording", "mode": "streaming", "text": text, "pending": pending_chars, "duration": 0 }),
-                false,
             );
         }
         let _ = partial_app.emit("recording:partial", json!({ "text": text }));
@@ -1044,7 +1078,7 @@ async fn multi_task(
     };
     let emit_partial = |text: &str| {
         if live.load(Ordering::SeqCst) {
-            crate::floating::update(&app, json!({ "phase": "recording", "mode": "multi", "text": text, "duration": 0 }), false);
+            crate::floating::update_partial(&app, json!({ "phase": "recording", "mode": "multi", "text": text, "duration": 0 }));
         }
         let _ = app.emit("recording:partial", json!({ "text": text }));
     };
@@ -1118,7 +1152,7 @@ async fn multi_task(
 
 #[cfg(test)]
 mod tests {
-    use super::{finalize_budget, quiet_end_reason, Mode};
+    use super::{counts_as_timeout, finalize_budget, quiet_end_reason, Mode};
     use std::time::Duration;
 
     #[test]
@@ -1128,6 +1162,13 @@ mod tests {
         assert_eq!(quiet_end_reason(Duration::from_millis(150), false), Some("录音时间过短"));
         assert_eq!(quiet_end_reason(Duration::from_secs(3), false), Some("没有检测到说话"));
         assert_eq!(quiet_end_reason(Duration::from_secs(3), true), None);
+    }
+
+    #[test]
+    fn 看门狗强制收尾_取消与安静结束不算识别超时() {
+        assert!(counts_as_timeout(None, false));
+        assert!(!counts_as_timeout(None, true));
+        assert!(!counts_as_timeout(Some("没有检测到说话"), false));
     }
 
     #[test]

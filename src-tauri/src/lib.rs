@@ -218,6 +218,8 @@ pub fn run() {
             commands::update_tray_menu,
             commands::show_floating_window,
             commands::hide_floating_window,
+            commands::open_main_window,
+            commands::floating_hit_rect,
             commands::toggle_floating_window,
             commands::update_floating_window_state,
             commands::debug_log,

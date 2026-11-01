@@ -1,6 +1,6 @@
 // 极简悬浮窗展示模型（src/components/floating/floatingView.mjs）单元测试。
 // 覆盖：各相位对应的印章、「轉」沿用上一句变淡、结果态收起时机、尾部截取、印章字竖直校正、声纹门限、未确认文字、
-// 出字动效（对齐已上屏的字、吐字节拍、整行左移逼近）。
+// 出字动效（对齐已上屏的字、吐字节拍、整行左移逼近）、新会话判定。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -19,6 +19,7 @@ import {
   reconcileLine,
   tailWithPending,
   sealGlyphNudge,
+  startsNewSession,
   tailText
 } from '../src/components/floating/floatingView.mjs'
 
@@ -180,4 +181,17 @@ test('整行左移：向目标逼近、足够近时落定', () => {
   assert.ok(Math.abs(half - 50) < 0.01, '一个半衰期走一半')
   assert.equal(glideToward(99.9, 100, 16), 100, '差距很小直接落定')
   assert.equal(glideToward(40, 40, 16), 40)
+})
+
+test('新会话判定：从收起进入工作态，或流式在「轉」时直接开始下一段', () => {
+  const listening = deriveFloatingView({ phase: 'recording', mode: 'streaming', text: '' })
+  const converting = deriveFloatingView({ phase: 'optimizing', mode: 'streaming', draft: '上一段' })
+  const success = deriveFloatingView({ phase: 'complete', ok: true })
+
+  assert.equal(startsNewSession({ wasActive: false, prevSeal: 'idle', next: listening }), true, '从待命开始')
+  assert.equal(startsNewSession({ wasActive: false, prevSeal: 'success', next: listening }), true, '结果态停留中又按下')
+  assert.equal(startsNewSession({ wasActive: true, prevSeal: 'converting', next: listening }), true, '上一段优化转入后台')
+  assert.equal(startsNewSession({ wasActive: true, prevSeal: 'listening', next: listening }), false, '录音中的中间结果')
+  assert.equal(startsNewSession({ wasActive: true, prevSeal: 'listening', next: converting }), false, '松开进入轉')
+  assert.equal(startsNewSession({ wasActive: true, prevSeal: 'converting', next: success }), false, '结果态不是会话开头')
 })

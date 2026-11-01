@@ -19,7 +19,8 @@ export const SEALS = Object.freeze({
 })
 
 export const SUCCESS_HOLD_MS = 1400
-export const FAILURE_HOLD_MS = 2400
+// 失败原因直接写在胶囊里，多留一会儿读（悬停时还会暂停收起）
+export const FAILURE_HOLD_MS = 3200
 
 /**
  * 声纹门限：后端 recording:level = RMS × 6（夹到 0..1），0.19 ≈ -30 dBFS。
@@ -103,6 +104,20 @@ export function deriveFloatingView({ phase, mode, text, pending, draft, ok } = {
     default:
       return result('idle', null)
   }
+}
+
+/**
+ * 这条状态是不是新一次会话的开头（页面据此重建胶囊、重放入场动效、清掉上一段的宽度与文字）。
+ * - 胶囊此前不在显示（待命 / 结果态 / 正在淡出）时进入工作态；
+ * - 或在「轉」时直接回到「聽」：流式模式允许上一段优化转入后台、立即开始下一段，
+ *   而同一次会话里「聽」只会在开头，不会跟在「轉」后面。
+ * @param {{ wasActive: boolean, prevSeal: string, next: { active: boolean, seal: string } }} transition
+ */
+export function startsNewSession({ wasActive, prevSeal, next }) {
+  if (!next.active) {
+    return false
+  }
+  return !wasActive || (next.seal === 'listening' && prevSeal === 'converting')
 }
 
 /**

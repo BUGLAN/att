@@ -7,6 +7,7 @@
       换印章时底色渐变、新旧字交叠（旧字缩小淡出，新字像盖章一样落下），印章本身轻按一下；
       文字与声纹 / 处理点先淡出，胶囊再收拢，不会一下子跳变。
       优化稿不回填：「轉」期间一直是淡色识别稿，优化结果直接打进输入框。
+      敗：原因直接写在印章旁（出过字的会话保持原宽度，没出过字的按原因长短展开），悬停时暂停收起，点一下唤起主窗口。
       流式录音中，服务端还没确认的那截（正在说的这句）用淡白色，确认后变回正常文字色。
       始终单行，超出宽度后裁掉开头（左侧渐隐），最新的字留在右边。
       出字：到字先进缓冲，按稳定节拍逐字放出、每个字墨晕洇开；超宽后整行平滑左移（见 floatingView.mjs 的 paceStep）。
@@ -15,7 +16,7 @@
     <section
       :key="sessionKey"
       class="capsule"
-      :class="{ sized, leaving: leaving || view.seal === 'idle' }"
+      :class="{ sized, leaving: leaving || view.seal === 'idle', clickable: Boolean(reason) }"
       :data-seal="view.seal"
       :style="capsuleStyle"
       :title="view.detail || undefined"
@@ -23,8 +24,9 @@
       aria-live="polite"
       @mouseenter="hovered = true"
       @mouseleave="hovered = false"
+      @click="onCapsuleClick"
     >
-      <div :ref="observeContent" class="content" :class="{ expanded }">
+      <div :ref="observeContent" class="content" :class="{ expanded: expanded || (wide && reason) }">
         <span ref="sealEl" class="seal" aria-hidden="true">
           <Transition name="glyph">
             <span :key="view.glyph" class="seal-glyph">
@@ -34,8 +36,9 @@
         </span>
         <span class="sr-only">{{ SEAL_LABELS[view.seal] }}{{ view.detail ? `：${view.detail}` : '' }}</span>
 
-        <Transition name="line">
-          <span v-if="expanded" ref="lineEl" class="line" :class="{ clipped, dim: view.dim }"><span ref="trackEl" class="track" :style="{ transform: `translateX(${-shift}px)` }"><span v-for="(c, index) in shownChars" :key="c.id" class="ch" :class="{ pending: index >= pendingFrom }">{{ c.ch }}</span></span></span>
+        <Transition name="line" mode="out-in">
+          <span v-if="expanded" key="line" ref="lineEl" class="line" :class="{ clipped, dim: view.dim }"><span ref="trackEl" class="track" :style="{ transform: `translateX(${-shift}px)` }"><span v-for="(c, index) in shownChars" :key="c.id" class="ch" :class="{ pending: index >= pendingFrom }">{{ c.ch }}</span></span></span>
+          <span v-else-if="reason" key="reason" class="line reason">{{ reason }}</span>
         </Transition>
 
         <!-- 声纹与处理点占同一个位置：先淡出旧的再淡入新的，宽度不会两个叠在一起 -->
@@ -58,7 +61,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { deriveFloatingView, glideToward, nextVoiceState, paceStep, reconcileLine, sealGlyphNudge } from './floatingView.mjs'
+import { deriveFloatingView, glideToward, nextVoiceState, paceStep, reconcileLine, sealGlyphNudge, startsNewSession } from './floatingView.mjs'
 
 const SEAL_LABELS = { idle: '待命', listening: '录音中', converting: '处理中', success: '已完成', failure: '失败' }
 const WAVE_BARS = 7
@@ -66,6 +69,12 @@ const WAVE_BARS = 7
 const WAVE_REST = 3
 /** 与 floating.css 的 .capsule.leaving 过渡时长一致：淡出完再真正隐藏窗口 */
 const LEAVE_MS = 200
+/** 结果态悬停时暂停收起（读失败原因），移开后再停留这么久 */
+const HOVER_REHIDE_MS = 1200
+/** 胶囊贴底的边距，与 floating.css .floating-shell 的 padding-bottom 一致 */
+const SHELL_PADDING_BOTTOM = 12
+/** 量到尺寸前胶囊的默认边长，与 floating.css .capsule 的 width / height 一致 */
+const CAPSULE_MIN = 54
 
 const state = ref({ phase: 'idle' })
 const levels = ref(Array(WAVE_BARS).fill(0))
@@ -110,6 +119,8 @@ const pendingFrom = computed(() => Array.from(view.value.text).length - Array.fr
 const targetChars = computed(() => (expanded.value ? Array.from(view.value.text) : []))
 // 开头被裁掉时左侧渐隐，提示前面还有内容
 const clipped = computed(() => shift.value > 0.5)
+// 失败原因直接显示在印章旁（完整内容仍在 title 里）
+const reason = computed(() => (view.value.seal === 'failure' ? view.value.detail : ''))
 const showCancel = computed(() => view.value.cancellable && (expanded.value || hovered.value))
 // 声纹：录音中音量第一次过门限时出现（不必等出字）
 const showWave = computed(() => voiced.value && view.value.seal === 'listening')
@@ -117,6 +128,15 @@ const showWave = computed(() => voiced.value && view.value.seal === 'listening')
 const waveHeights = computed(() => levels.value.map((level) => (
   voice.value.loud ? Math.round(4 + Math.sqrt(Math.min(1, level)) * 18) : WAVE_REST
 )))
+// 胶囊在窗口里的区域（贴底居中）；淡出 / 待命时为 null，整窗点击穿透。按目标尺寸算，不等宽高过渡走完
+const hitRect = computed(() => {
+  if (leaving.value || view.value.seal === 'idle') {
+    return null
+  }
+  const width = size.value.width || CAPSULE_MIN
+  const height = size.value.height || CAPSULE_MIN
+  return [(window.innerWidth - width) / 2, window.innerHeight - SHELL_PADDING_BOTTOM - height, width, height]
+})
 const capsuleStyle = computed(() => (
   size.value.width ? { width: `${size.value.width}px`, height: `${size.value.height}px` } : null
 ))
@@ -127,8 +147,11 @@ function observeContent(el) {
     return
   }
   observer = new ResizeObserver(() => {
-    // 胶囊有 1px 描边（border-box），比内容各大 2px
-    size.value = { width: el.offsetWidth + 2, height: el.offsetHeight + 2 }
+    // 胶囊有 1px 描边（border-box），比内容各大 2px；尺寸没变就不换对象，免得下游（命中区域上报）空跑
+    const next = { width: el.offsetWidth + 2, height: el.offsetHeight + 2 }
+    if (next.width !== size.value.width || next.height !== size.value.height) {
+      size.value = next
+    }
     if (!sized.value) {
       // 首帧直接落到初始尺寸，下一帧起才开过渡，避免从 0 长出来
       requestAnimationFrame(() => { sized.value = true })
@@ -187,6 +210,11 @@ function pressSeal(seal) {
   })
 }
 
+/** 这次按键没生效（收尾 / 优化中又按了录音键）：印章摇一下，与失败同一个动作 */
+function nudgeSeal() {
+  pressSeal('failure')
+}
+
 function clearTimers() {
   clearTimeout(hideTimer)
   clearTimeout(leaveTimer)
@@ -196,11 +224,12 @@ function clearTimers() {
 
 function applyState(payload = {}) {
   const wasActive = view.value.active && !leaving.value
+  const prevSeal = view.value.seal
   state.value = payload || {}
   const next = view.value
   clearTimers()
 
-  if (next.active && !wasActive) {
+  if (startsNewSession({ wasActive, prevSeal, next })) {
     // 新一次会话：重建胶囊重放入场动效，并从最小尺寸重新生长
     sessionKey.value += 1
     sized.value = false
@@ -220,11 +249,22 @@ function applyState(payload = {}) {
     lastText.value = next.text
   }
 
-  if (next.hideAfterMs) {
-    hideTimer = setTimeout(() => {
-      leaving.value = true
-      leaveTimer = setTimeout(() => window.floatingAPI?.close(), LEAVE_MS)
-    }, next.hideAfterMs)
+  if (next.hideAfterMs && !hovered.value) {
+    scheduleHide(next.hideAfterMs)
+  }
+}
+
+function scheduleHide(delay) {
+  clearTimers()
+  hideTimer = setTimeout(() => {
+    leaving.value = true
+    leaveTimer = setTimeout(() => window.floatingAPI?.close(), LEAVE_MS)
+  }, delay)
+}
+
+function onCapsuleClick() {
+  if (reason.value) {
+    window.floatingAPI?.openMain?.()
   }
 }
 
@@ -304,6 +344,28 @@ function lineFrame(now) {
 
 watch(targetChars, syncLine)
 
+// 每次上报都是一次 IPC：数值没变不报
+let reportedHit = ''
+watch(hitRect, (rect) => {
+  const key = JSON.stringify(rect)
+  if (key !== reportedHit) {
+    reportedHit = key
+    window.floatingAPI?.setHitRect?.(rect)
+  }
+}, { immediate: true })
+
+// 结果态悬停：暂停收起；移开后再停留一会儿（已开始淡出的不拦）
+watch(hovered, (now) => {
+  if (!view.value.hideAfterMs || leaving.value) {
+    return
+  }
+  if (now) {
+    clearTimers()
+  } else {
+    scheduleHide(HOVER_REHIDE_MS)
+  }
+})
+
 watch(() => view.value.glyph, async (glyph) => {
   await nextTick()
   measureGlyphNudge(glyph)
@@ -319,6 +381,8 @@ watch(() => [sessionKey.value, view.value.seal], ([key, seal], previous) => {
 onMounted(() => {
   window.floatingAPI?.onStateChange(applyState)
   window.floatingAPI?.onLevel?.(pushLevel)
+  window.floatingAPI?.onNudge?.(nudgeSeal)
+  window.floatingAPI?.onPointerOut?.(() => { hovered.value = false })
 })
 
 onUnmounted(() => {
