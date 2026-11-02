@@ -150,23 +150,50 @@ export function reasoningEffortLabel(value) {
   return found ? found.label : '默认'
 }
 
-/** 模型参数摘要行。 */
-export function describeParams(params) {
+/** 模型参数拆成「名 + 值」小标签，供模型行逐项展示。 */
+export function paramItems(params) {
   if (!params) {
-    return ''
+    return []
   }
   const maxTokens = Number(params.max_tokens ?? 0)
-  const maxText = maxTokens > 0 ? maxTokens.toLocaleString('en-US') : '-'
-  const parts = [
-    'temp ' + (params.temperature ?? '-'),
-    'max ' + maxText,
-    '超时 ' + (params.timeout_s ?? '-') + 's'
+  const items = [
+    { label: 'temp', value: String(params.temperature ?? '-') },
+    { label: 'max', value: maxTokens > 0 ? maxTokens.toLocaleString('en-US') : '-' },
+    { label: '超时', value: (params.timeout_s ?? '-') + 's' }
   ]
-  // 只在显式设过思考强度时才显示，避免老配置的摘要行突然变长
+  // 只在显式设过思考强度时才显示，避免老配置的摘要行突然变长；
+  // 标签里只放档位名，括号里的推荐说明留给编辑弹窗
   if (params.reasoning_effort) {
-    parts.push('思考 ' + reasoningEffortLabel(params.reasoning_effort))
+    items.push({ label: '思考', value: reasoningEffortLabel(params.reasoning_effort).replace(/（.*）$/, '') })
   }
-  return parts.join(' · ')
+  return items
+}
+
+/** 模型参数摘要行。 */
+export function describeParams(params) {
+  return paramItems(params).map((item) => item.label + ' ' + item.value).join(' · ')
+}
+
+/**
+ * 模型按所属供应商档案分组，档案顺序不变；
+ * 找不到档案的模型（数据损坏 / 档案被删）归入末尾的 profile=null 组，不丢失。
+ */
+export function groupModelsByProfile(profiles, models) {
+  const groups = (profiles || []).map((profile) => ({ profile, models: [] }))
+  const byId = new Map(groups.map((group) => [group.profile.id, group]))
+  const orphans = []
+  for (const model of models || []) {
+    const group = byId.get(model.profile_id)
+    if (group) {
+      group.models.push(model)
+    } else {
+      orphans.push(model)
+    }
+  }
+  if (orphans.length) {
+    groups.push({ profile: null, models: orphans })
+  }
+  return groups
 }
 
 /** 密钥展示文案：有尾号提示时展示掩码，否则按是否必需给提示。 */

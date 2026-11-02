@@ -16,7 +16,9 @@ import {
   describeParams,
   errorCopy,
   formatLatency,
+  groupModelsByProfile,
   isValidModelName,
+  paramItems,
   keyDisplay,
   parseManualModelInput,
   reasoningEffortLabel,
@@ -116,6 +118,35 @@ test('describeParams：参数摘要行', () => {
     'temp 0.3 · max 4,096 · 超时 60s'
   )
   assert.equal(describeParams(null), '')
+})
+
+test('paramItems：拆成名值标签，思考强度只留档位名', () => {
+  assert.deepEqual(
+    paramItems({ temperature: 0.7, max_tokens: 4096, timeout_s: 60, reasoning_effort: 'none' }),
+    [
+      { label: 'temp', value: '0.7' },
+      { label: 'max', value: '4,096' },
+      { label: '超时', value: '60s' },
+      { label: '思考', value: '关闭' }
+    ]
+  )
+  assert.deepEqual(paramItems(null), [])
+})
+
+test('groupModelsByProfile：按档案分组，孤儿模型归末尾组', () => {
+  const groups = groupModelsByProfile(
+    [{ id: 'p1' }, { id: 'p2' }],
+    [
+      { id: 'm1', profile_id: 'p2' },
+      { id: 'm2', profile_id: 'p1' },
+      { id: 'm3', profile_id: 'gone' }
+    ]
+  )
+  assert.deepEqual(
+    groups.map((group) => [group.profile?.id ?? null, group.models.map((model) => model.id)]),
+    [['p1', ['m2']], ['p2', ['m1']], [null, ['m3']]]
+  )
+  assert.equal(groupModelsByProfile([{ id: 'p1' }], []).length, 1)
 })
 
 test('keyDisplay：掩码展示与无密钥提示', () => {
