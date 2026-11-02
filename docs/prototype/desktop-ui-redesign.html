@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ATT 桌面端 UI 重构 · 原型 v2</title>
+<!--
+  【原型 · 用完即弃】桌面端主窗口 UI 重构 v2
+  v1 三个变体中选定 A「设置同构」（v1 留档：desktop-ui-redesign.v1-三变体.html）。
+  v2 的改动：所有图标换成「文字图标」，与悬浮窗印章同一套语言——
+    - 宋体粗体繁体字（Songti TC 等），录音按钮就是一枚印章：錄 待命 → 聽 录音中 → 轉 处理中 → 成 完成（敗 失败）
+    - 印章底色沿用悬浮窗：錄 金 / 聽 朱红 / 轉 靛蓝 / 成 青绿 / 敗 暗红；换字时有「盖章」动效
+    - 侧边栏：錄 首页 · 文 转文字 · 集 记录集 · 貼 剪贴板 · 設 设置；选中项是一枚金色小印章
+    - 操作按钮：播 播放 · 複 复制 · 藏 收藏 · 頂 置顶 · 刪 删除 · 潤 重新优化 · 改 编辑 · 出 导出（悬停才出现，有 title 提示）
+    - 剪贴板类型：文 文本 · 長 长文本 · 圖 图片 · 鏈 链接 · 檔 文件；搜索框前缀 尋
+  页面用 ?page=home|transcribe|records|clipboard 切换（底部条或键盘 ← →）。全部是假数据，不连后端。
+-->
+<style>
+:root {
+  color-scheme: dark;
+  /* —— 以下令牌与 src/styles/tokens.css 同值 —— */
+  --gray-950: #0a0a0b; --gray-900: #111113; --gray-850: #18181b; --gray-800: #1f1f23;
+  --gray-700: #2d2d32; --gray-600: #3f3f46; --gray-300: #a1a1aa;
+  --bg-base: var(--gray-950); --bg-surface: var(--gray-900); --bg-card: var(--gray-850);
+  --bg-raise: var(--gray-800); --bg-hover: var(--gray-700);
+  --line: var(--gray-800); --line-strong: var(--gray-700); --line-soft: rgba(255,255,255,.06);
+  --text-1: #f4f4f5; --text-2: #9d9da6; --text-3: #8b8b96; --text-4: #5f5f69;
+  --accent: #c9a227; --accent-hi: #dcb63a;
+  --accent-veil: rgba(201,162,39,.06); --accent-faint: rgba(201,162,39,.10); --accent-dim: rgba(201,162,39,.15);
+  --accent-line: rgba(201,162,39,.30); --accent-line-strong: rgba(201,162,39,.42);
+  --ok: #4ade80; --warn: #f5a524; --err: #f87171;
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-6: 24px; --s-8: 32px;
+  --r-sm: 6px; --r-md: 10px; --r-lg: 16px; --r-xl: 24px; --r-full: 9999px;
+  --fs-cap: 12px; --fs-sm: 13px; --fs-base: 14px; --fs-md: 15px; --fs-lg: 18px; --fs-xl: 24px;
+  --t-fast: 150ms; --t-base: 250ms; --ease: cubic-bezier(.4,0,.2,1); --grow: cubic-bezier(.2,.9,.3,1.2);
+  --edge-hi: inset 0 1px 0 rgba(255,255,255,.04);
+  --font-sans: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'SF Mono', Menlo, Consolas, 'Cascadia Mono', monospace;
+  /* —— 与悬浮窗印章同一套字体（src/styles/floating.css .seal） —— */
+  --font-seal: 'Songti TC', 'STSongti-TC-Black', 'Noto Serif TC', 'PMingLiU', 'MingLiU', serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg-base); color: var(--text-1); font: 14px/1.6 var(--font-sans); -webkit-font-smoothing: antialiased; overflow: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+input { font: inherit; color: inherit; }
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(161,161,170,.22); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(201,162,39,.6); }
+
+/* ================= 文字图标（印章语言） ================= */
+.g { font-family: var(--font-seal); font-weight: 900; line-height: 1; }
+/* 印章：悬浮窗同款——方形、小圆角、内描边 + 底部压痕 */
+.seal {
+  --seal-bg: #c9a227; --seal-fg: #3a2a05;
+  position: relative; display: inline-grid; place-items: center; flex: none;
+  border-radius: 5px; background: var(--seal-bg); color: var(--seal-fg);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.18), inset 0 -2px 0 rgba(0,0,0,.18);
+  font-family: var(--font-seal); font-weight: 900; line-height: 1;
+  transition: background-color 280ms ease, color 280ms ease;
+}
+.seal[data-s='listening'] { --seal-bg: #c8463b; --seal-fg: #fbe7c6; }
+.seal[data-s='converting'] { --seal-bg: #4257d3; --seal-fg: #f3d27a; }
+.seal[data-s='success'] { --seal-bg: #2e9e6b; --seal-fg: #eafbf1; }
+.seal[data-s='failure'] { --seal-bg: #6b2a26; --seal-fg: #f6c9bf; }
+/* 换字时「盖章」：新字从稍大、略糊落下 */
+.seal .ink { display: block; padding-bottom: .06em; animation: stamp 280ms var(--grow); }
+@keyframes stamp { from { opacity: 0; transform: scale(1.4); filter: blur(2px); } }
+/* 素印：次要位置用的无彩底文字图标 */
+.tile { display: inline-grid; place-items: center; flex: none; border-radius: var(--r-sm); background: var(--bg-raise); color: var(--text-2); font-family: var(--font-seal); font-weight: 900; line-height: 1; }
+
+/* ================= 共用原子 ================= */
+.win { position: fixed; inset: 0; display: flex; flex-direction: column; }
+.titlebar { height: 34px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 14px; }
+.titlebar i { width: 11px; height: 11px; border-radius: 50%; background: var(--gray-700); }
+.body { flex: 1; min-height: 0; display: flex; }
+.scroll { overflow-y: auto; min-height: 0; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--text-3); }
+.cap { font-size: var(--fs-cap); }
+
+.meta { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-cap); color: var(--text-3); white-space: nowrap; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dot, var(--text-3)); flex: none; }
+.dot.ok { --dot: var(--ok); } .dot.gold { --dot: var(--accent); } .dot.red { --dot: #c8463b; } .dot.blue { --dot: #6b7ff0; }
+.dot.pulse { animation: pulse 1.4s var(--ease) infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+
+.label { display: flex; align-items: center; gap: 8px; margin: 0 0 var(--s-3); font-size: var(--fs-cap); font-weight: 600; letter-spacing: .15em; color: var(--text-2); }
+.label::before { content: ''; width: 14px; height: 1px; background: linear-gradient(90deg, var(--accent), transparent); }
+.label .aside { margin-left: auto; letter-spacing: 0; font-weight: 400; color: var(--text-3); }
+
+/* 文字按钮：字印 + 文案（如「複 复制」） */
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: var(--r-sm); color: var(--text-2); font-size: var(--fs-sm); white-space: nowrap; transition: background var(--t-fast), color var(--t-fast); }
+.btn .g { font-size: 13px; color: var(--text-3); transition: color var(--t-fast); }
+.btn:hover { background: var(--bg-raise); color: var(--text-1); }
+.btn:hover .g { color: var(--accent); }
+.btn.gold, .btn.gold .g { color: var(--accent); }
+.btn.gold:hover { background: var(--accent-faint); }
+.btn.line { border: 1px solid var(--line-strong); }
+/* 单字按钮（悬停操作）：只有一个字，title 给出全称 */
+.gbtn { width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: var(--r-sm); color: var(--text-3); font-family: var(--font-seal); font-weight: 900; font-size: 14px; line-height: 1; transition: background var(--t-fast), color var(--t-fast); }
+.gbtn:hover { background: var(--bg-raise); color: var(--text-1); }
+.gbtn.on { color: var(--accent); }
+.gbtn.danger:hover { color: var(--err); background: rgba(248,113,113,.08); }
+
+.flow { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--accent-faint); overflow: hidden; pointer-events: none; }
+.flow::after { content: ''; position: absolute; top: 0; bottom: 0; width: 38%; background: linear-gradient(90deg, transparent, var(--flow, var(--accent)), transparent); animation: sweep 1.5s var(--ease) infinite; }
+@keyframes sweep { from { left: -38%; } to { left: 100%; } }
+
+.tabs { display: flex; gap: 18px; border-bottom: 1px solid var(--line); }
+.tabs button { position: relative; padding: 8px 0 10px; font-size: var(--fs-sm); color: var(--text-3); }
+.tabs button:hover, .tabs button.on { color: var(--text-1); }
+.tabs button.on::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); border-radius: 2px; }
+
+.search { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px; background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--r-md); }
+.search:focus-within { border-color: var(--accent-line); }
+.search .g { font-size: 14px; color: var(--text-4); }
+.search:focus-within .g { color: var(--accent); }
+.search input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; font-size: var(--fs-sm); color: var(--text-1); }
+.search input::placeholder { color: var(--text-4); }
+.kbd { font: 11px var(--font-mono); color: var(--text-4); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 5px; }
+
+.toggle { position: relative; width: 40px; height: 24px; flex: none; border-radius: var(--r-full); background: var(--gray-700); border: 1px solid var(--line-soft); transition: background var(--t-base); }
+.toggle::before { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--gray-300); transition: transform var(--t-base), background var(--t-base); }
+.toggle.on { background: var(--accent); }
+.toggle.on::before { transform: translateX(16px); background: #fff; }
+.select { display: inline-flex; align-items: center; justify-content: space-between; gap: 10px; height: 34px; min-width: 160px; padding: 0 12px; background: var(--bg-raise); border: 1px solid var(--line-strong); border-radius: var(--r-md); color: var(--text-1); font-size: var(--fs-sm); }
+.select::after { content: ''; width: 6px; height: 6px; border-right: 1.5px solid var(--text-3); border-bottom: 1.5px solid var(--text-3); transform: translateY(-2px) rotate(45deg); }
+
+.row { position: relative; display: flex; align-items: center; gap: var(--s-4); padding: var(--s-3) var(--s-4); background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--r-md); transition: border-color var(--t-fast); }
+.row + .row { margin-top: var(--s-2); }
+.row .grow { flex: 1; min-width: 0; }
+.row .title { font-size: var(--fs-base); font-weight: 500; }
+.row .desc { font-size: var(--fs-cap); color: var(--text-3); }
+.hover-actions { display: flex; gap: 2px; opacity: 0; transition: opacity var(--t-fast); }
+.row:hover .hover-actions { opacity: 1; }
+.clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+.wave { display: flex; align-items: center; gap: 3px; height: 28px; align-self: center; }
+.wave i { width: 2px; height: 3px; border-radius: 2px; background: var(--gray-600); }
+.wave.live i { background: #c8463b; animation: wv 1s ease-in-out infinite; }
+.wave.live i:nth-child(3n) { animation-delay: -.3s; } .wave.live i:nth-child(3n+1) { animation-delay: -.6s; } .wave.live i:nth-child(4n) { animation-duration: .8s; }
+@keyframes wv { 0%,100% { height: 4px; } 50% { height: 24px; } }
+.live-cursor::after { content: ''; display: inline-block; width: 2px; height: 1em; margin-left: 2px; vertical-align: -2px; background: var(--accent); animation: pulse 1s steps(1) infinite; }
+
+.thumb { border-radius: var(--r-sm); background: var(--g); border: 1px solid var(--line); flex: none; }
+.empty { display: grid; place-items: center; gap: 10px; padding: 48px 0; color: var(--text-3); font-size: var(--fs-sm); }
+.toast { position: fixed; left: 50%; bottom: 72px; transform: translate(-50%, 8px); opacity: 0; display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: var(--bg-raise); border: 1px solid var(--line-strong); border-radius: var(--r-full); font-size: var(--fs-sm); transition: opacity var(--t-base), transform var(--t-base); pointer-events: none; z-index: 50; }
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.proto-bar { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 4px; padding: 4px; background: #f4f4f5; color: #111; border-radius: 999px; box-shadow: 0 8px 30px rgba(0,0,0,.6); font: 12px/1 system-ui, sans-serif; }
+.proto-bar button { height: 28px; min-width: 28px; padding: 0 10px; border-radius: 999px; color: #111; font-weight: 600; }
+.proto-bar button:hover { background: #e4e4e7; }
+.proto-bar .lbl { padding: 0 8px; font-weight: 600; white-space: nowrap; }
+.proto-bar .lbl small { font-weight: 400; color: #52525b; margin-left: 6px; }
+
+/* ================= 外壳：设置同构 ================= */
+.side { width: 208px; flex: none; display: flex; flex-direction: column; padding: 6px 12px 14px; border-right: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 10px; padding: 6px 8px 18px; font-weight: 600; letter-spacing: .02em; }
+.brand .seal { width: 24px; height: 24px; font-size: 15px; }
+.nav button { width: 100%; display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 8px; border-radius: var(--r-md); color: var(--text-2); font-size: var(--fs-base); }
+.nav button + button { margin-top: 2px; }
+.nav button:hover { background: var(--bg-card); color: var(--text-1); }
+.nav .ng { width: 22px; height: 22px; display: inline-grid; place-items: center; flex: none; border-radius: 5px; font-family: var(--font-seal); font-weight: 900; font-size: 14px; line-height: 1; color: var(--text-3); transition: background var(--t-fast), color var(--t-fast); }
+.nav button:hover .ng { color: var(--text-1); }
+.nav button.on { background: var(--accent-dim); color: var(--accent); }
+.nav button.on .ng { background: #c9a227; color: #3a2a05; box-shadow: inset 0 0 0 1px rgba(255,255,255,.18), inset 0 -2px 0 rgba(0,0,0,.18); }
+.nav hr { border: 0; border-top: 1px solid var(--line); margin: 10px 4px; }
+.side-foot { margin-top: auto; padding: 0 8px; display: grid; gap: 6px; }
+.main { flex: 1; min-width: 0; }
+.page { max-width: 960px; margin: 0 auto; padding: 18px 40px 96px; }
+.crumb { font-size: var(--fs-cap); color: var(--text-3); }
+h1 { margin: 2px 0 4px; font-size: var(--fs-xl); font-weight: 600; letter-spacing: .01em; }
+.lead { margin: 0 0 var(--s-6); font-size: var(--fs-sm); color: var(--text-2); }
+.section { position: relative; background: var(--bg-surface); border: 1px solid var(--line); border-radius: var(--r-xl); box-shadow: var(--edge-hi); overflow: hidden; }
+.section + .section { margin-top: var(--s-4); }
+.group { padding: var(--s-6); }
+
+/* 录音：一枚大印章 */
+.recorder { display: flex; align-items: center; gap: var(--s-6); }
+.rec-seal { width: 64px; height: 64px; border-radius: 8px; font-size: 36px; transition: transform var(--t-fast), background-color 280ms ease, color 280ms ease, box-shadow var(--t-base); }
+.rec-seal:hover { transform: translateY(-1px); }
+.rec-seal:active { transform: scale(.96); }
+.rec-seal[data-s='idle'] { box-shadow: inset 0 0 0 1px rgba(255,255,255,.18), inset 0 -3px 0 rgba(0,0,0,.18), 0 0 0 6px var(--accent-faint); }
+.rec-seal[data-s='listening']::after { content: ''; position: absolute; inset: -6px; border-radius: 12px; border: 1px solid rgba(200,70,59,.55); animation: ring 1.6s var(--ease) infinite; }
+@keyframes ring { from { transform: scale(.94); opacity: 1; } to { transform: scale(1.22); opacity: 0; } }
+.recorder .timer { font-size: 28px; line-height: 1; letter-spacing: .04em; }
+.recorder .readout { display: grid; gap: 8px; min-width: 150px; }
+.recorder .side-meta { margin-left: auto; display: grid; justify-items: end; gap: 6px; }
+.live { margin-top: var(--s-4); padding: var(--s-4); min-height: 64px; background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--r-md); font-size: var(--fs-md); line-height: 1.75; }
+.live.converting { color: var(--text-3); }
+
+.rec-row { cursor: pointer; align-items: flex-start; }
+.rec-row:hover { border-color: var(--line-strong); }
+.rec-row.open { border-color: var(--accent-line); }
+.rec-row .time { width: 46px; flex: none; padding-top: 2px; font-size: var(--fs-cap); color: var(--text-3); }
+.rec-row .text { font-size: var(--fs-base); line-height: 1.65; }
+.rec-row .meta-col { display: flex; align-items: center; gap: 10px; flex: none; }
+.rec-row .meta-col > .mono { width: 34px; text-align: right; }
+.rec-row .hover-actions { margin-top: -4px; }
+.rec-detail { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); margin-top: var(--s-3); }
+.rec-detail h4 { margin: 0 0 4px; font-size: var(--fs-cap); font-weight: 500; color: var(--text-3); }
+.rec-detail p { margin: 0; font-size: var(--fs-sm); line-height: 1.7; color: var(--text-2); }
+.day { margin: var(--s-6) 0 var(--s-2); font-size: var(--fs-cap); color: var(--text-3); }
+.day:first-child { margin-top: 0; }
+.toolbar { display: flex; align-items: center; gap: var(--s-3); margin-bottom: var(--s-4); }
+.toolbar .search { flex: 1; }
+.drop { position: relative; display: flex; align-items: center; gap: var(--s-4); padding: var(--s-6); border: 1px dashed var(--line-strong); border-radius: var(--r-md); background: var(--bg-card); cursor: pointer; transition: border-color var(--t-fast); }
+.drop:hover { border-color: var(--accent-line-strong); }
+.clip-row .text { font-size: var(--fs-sm); }
+/* 图片行：列表里与其他类型一样只放「圖」字印，悬停字印或整行时浮出缩略图 */
+.peek { position: relative; display: inline-flex; flex: none; }
+.peek-card { position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 20; display: grid; gap: 6px; width: 220px; padding: 8px; background: var(--bg-raise); border: 1px solid var(--line-strong); border-radius: var(--r-md); box-shadow: 0 18px 44px rgba(0,0,0,.5); opacity: 0; transform: translateY(4px); pointer-events: none; transition: opacity var(--t-fast), transform var(--t-fast); }
+.peek-card .thumb { width: 100%; max-height: 260px; }
+.clip-row:hover .peek-card { opacity: 1; transform: none; }
+.clip-row:hover .peek .tile { color: var(--accent); }
+.result { font-size: var(--fs-md); line-height: 1.85; }
+.seg-list { display: grid; gap: 10px; }
+.seg-list div { display: grid; grid-template-columns: 92px 1fr; gap: 12px; font-size: var(--fs-sm); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="toast" id="toast"><span class="dot ok"></span><span id="toast-text"></span></div>
+<div class="proto-bar" id="proto-bar"></div>
+
+<script>
+// ================= 文字图标表（全应用唯一来源） =================
+const G = {
+  brand: '聲',
+  // 印章四态：与悬浮窗 floatingView.mjs 的 GLYPHS 一致
+  idle: '錄', listening: '聽', converting: '轉', success: '成', failure: '敗',
+  // 导航
+  home: '錄', transcribe: '文', records: '集', clipboard: '貼', settings: '設',
+  // 操作
+  play: '播', copy: '複', fav: '藏', more: '⋯', pin: '頂', del: '刪', reopt: '潤', edit: '改', export: '出', search: '尋', import: '入', file: '檔',
+  // 剪贴板类型
+  text: '文', long: '長', image: '圖', link: '鏈'
+}
+const SEAL_LABEL = { idle: '待命', listening: '录音中', converting: '处理中', success: '已完成', failure: '失败' }
+
+// ================= 假数据 =================
+const now = new Date(2026, 9, 31, 9, 40)
+const ago = (min) => new Date(now.getTime() - min * 60000)
+let records = [
+  { id: 1, at: ago(6), dur: 39, proc: 1.8, fav: false, raw: '嗯那个下午三点的评审会我想往后挪半个小时，因为上一个会可能会拖堂，然后会议室也要重新订一下', opt: '下午三点的评审会我想往后挪半小时：上一个会可能拖堂，会议室也需要重新预订。' },
+  { id: 2, at: ago(24), dur: 12, proc: 0.9, fav: true, raw: '帮我把这段代码的命名改成驼峰然后补一下注释', opt: '把这段代码的命名改为驼峰式，并补充注释。' },
+  { id: 3, at: ago(58), dur: 71, proc: 2.6, fav: false, raw: '今天主要做了三件事第一是把本地引擎接进来第二是修了模型目录找不到的问题第三是把设置页的加载状态重新设计了一下明天继续做首页的改版', opt: '今日进展：\n1. 接入本地识别引擎；\n2. 修复模型目录无法识别的问题；\n3. 重新设计设置页的加载状态。\n明日计划：继续首页改版。' },
+  { id: 4, at: ago(140), dur: 8, proc: 0.7, fav: false, raw: '收到我晚点看一下', opt: '收到，我晚点看一下。' },
+  { id: 5, at: ago(60 * 26), dur: 45, proc: 2.1, fav: true, raw: '周报里面要写清楚这周的风险点就是第三方接口的限流还没有确定解决方案', opt: '周报需写清本周风险点：第三方接口限流的解决方案尚未确定。' },
+  { id: 6, at: ago(60 * 27), dur: 19, proc: 1.2, fav: false, raw: '给产品那边回复一下这个需求下周二之前可以给到第一版', opt: '回复产品：该需求下周二前可交付第一版。' },
+  { id: 7, at: ago(60 * 50), dur: 33, proc: 1.5, fav: false, raw: '我觉得这个按钮的颜色太跳了能不能换成跟主题一致的金色但是饱和度低一点', opt: '这个按钮颜色太跳，建议换成与主题一致、饱和度略低的金色。' },
+  { id: 8, at: ago(60 * 52), dur: 15, proc: 1.0, fav: false, raw: '把会议纪要发到群里', opt: '把会议纪要发到群里。' }
+]
+const clips = [
+  { id: 1, type: 'text', at: ago(2), fav: false, pin: true, text: 'cargo test --workspace --manifest-path src-tauri/Cargo.toml' },
+  { id: 2, type: 'image', at: ago(9), fav: false, pin: false, text: '截图 2026-10-31 09.31.png', size: '1218 × 646', g: 'linear-gradient(135deg,#3b3220,#1d1d22 60%)' },
+  { id: 3, type: 'link', at: ago(35), fav: true, pin: false, text: 'https://github.com/k2-fsa/sherpa-onnx/releases' },
+  { id: 4, type: 'text', at: ago(70), fav: false, pin: false, text: '下午三点的评审会我想往后挪半小时：上一个会可能拖堂，会议室也需要重新预订。' },
+  { id: 5, type: 'long', at: ago(130), fav: false, pin: false, text: '设计原则：一、状态只用小圆点加灰字表达，不做胶囊徽章；二、图标统一用文字印章；三、进行中统一用底边流动的细线；四、操作按钮默认隐藏，悬停才出现，避免满屏按钮。' },
+  { id: 6, type: 'image', at: ago(200), fav: true, pin: false, text: '设计稿-首页.png', size: '980 × 1210', g: 'linear-gradient(160deg,#20232b,#2a2416 70%)' },
+  { id: 7, type: 'file', at: ago(60 * 20), fav: false, pin: false, text: '/Users/me/Downloads/meeting-1030.m4a' },
+  { id: 8, type: 'text', at: ago(60 * 26), fav: false, pin: false, text: 'npm run tauri:dev' }
+]
+const LIVE_SCRIPT = '我们把首页的录音区收成一行，历史记录直接放在下面，操作按钮只在悬停的时候出现。'
+
+// ================= 状态 =================
+const PAGES = [
+  { key: 'home', label: '首页' }, { key: 'transcribe', label: '转文字' },
+  { key: 'records', label: '记录集' }, { key: 'clipboard', label: '剪贴板' }
+]
+const params = new URLSearchParams(location.search)
+const state = {
+  page: PAGES.some((p) => p.key === params.get('page')) ? params.get('page') : 'home',
+  // 录音印章：idle 錄 → listening 聽 → converting 轉 → success 成 → idle
+  rec: { seal: 'idle', startedAt: 0, stoppedAt: 0, live: '' },
+  openRecord: null, favOnly: false, query: '', clipFilter: 'all',
+  tf: { phase: 'empty', engine: 'faster-whisper', lang: '中文', seg: true, proof: false, tab: 'text' }
+}
+let liveTimer = null
+
+// ================= 工具 =================
+const pad = (n) => String(n).padStart(2, '0')
+const hm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
+const dur = (s) => `${Math.floor(s / 60)}:${pad(Math.round(s % 60))}`
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const br = (s) => esc(s).replace(/\n/g, '<br>')
+function dayLabel(d) {
+  const diff = Math.round((new Date(now.toDateString()) - new Date(d.toDateString())) / 86400000)
+  return diff === 0 ? '今天' : diff === 1 ? '昨天' : `${d.getMonth() + 1} 月 ${d.getDate()} 日`
+}
+function rel(d) {
+  const m = Math.round((now - d) / 60000)
+  return m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.round(m / 60)} 小时前` : dayLabel(d)
+}
+function groupByDay(list) {
+  const groups = []
+  for (const item of list) {
+    const label = dayLabel(item.at)
+    const last = groups[groups.length - 1]
+    if (last && last.label === label) last.items.push(item)
+    else groups.push({ label, items: [item] })
+  }
+  return groups
+}
+const filteredRecords = () => records.filter((r) => (!state.favOnly || r.fav) && (!state.query.trim() || (r.raw + r.opt).includes(state.query.trim())))
+const CLIP_FILTERS = [['all', '全部'], ['text', '文本'], ['image', '图片'], ['link', '链接'], ['file', '文件'], ['fav', '收藏']]
+const filteredClips = () => clips
+  .filter((c) => state.clipFilter === 'all' || (state.clipFilter === 'fav' ? c.fav : state.clipFilter === 'text' ? c.type === 'text' || c.type === 'long' : c.type === state.clipFilter))
+  .filter((c) => !state.query.trim() || c.text.includes(state.query.trim()))
+  .sort((a, b) => (b.pin - a.pin) || (b.at - a.at))
+const clipType = (t) => ({ text: '文本', long: '长文本', image: '图片', link: '链接', file: '文件' }[t])
+
+// 字印小部件
+const seal = (glyph, s = 'idle', attrs = '') => `<span class="seal" data-s="${s}" ${attrs}><span class="ink">${glyph}</span></span>`
+const tile = (glyph, size = 32, extra = '') => `<span class="tile" style="width:${size}px;height:${size}px;font-size:${Math.round(size * .47)}px;${extra}">${glyph}</span>`
+const gbtn = (glyph, title, onclick, cls = '') => `<button class="gbtn ${cls}" title="${title}" aria-label="${title}" onclick="event.stopPropagation();${onclick}">${glyph}</button>`
+const tbtn = (glyph, text, onclick, cls = '') => `<button class="btn ${cls}" onclick="event.stopPropagation();${onclick}"><span class="g">${glyph}</span>${text}</button>`
+const searchBox = (ph) => `<label class="search"><span class="g">${G.search}</span><input placeholder="${ph}" value="${esc(state.query)}" oninput="state.query=this.value;renderKeepFocus(this)"></label>`
+
+const busy = () => state.rec.seal === 'listening' || state.rec.seal === 'converting'
+const wave = (n) => `<div class="wave ${state.rec.seal === 'listening' ? 'live' : ''}">${'<i></i>'.repeat(n)}</div>`
+function timerText() {
+  if (state.rec.seal === 'idle') return '00:00'
+  const s = Math.floor(((state.rec.stoppedAt || Date.now()) - state.rec.startedAt) / 1000)
+  return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`
+}
+function recStatus() {
+  const s = state.rec.seal
+  if (s === 'listening') return '<span class="meta"><span class="dot red pulse"></span>录音中 · 再按一次结束</span>'
+  if (s === 'converting') return '<span class="meta"><span class="dot blue pulse"></span>转写与优化中…</span>'
+  if (s === 'success') return '<span class="meta"><span class="dot ok"></span>已复制到剪贴板</span>'
+  return '<span class="meta"><span class="dot gold"></span>待命 · 按住 ⌥⌘ 说话</span>'
+}
+const liveHtml = () => `${esc(state.rec.live)}<span class="${state.rec.seal === 'listening' ? 'live-cursor' : ''}"></span>`
+
+// ================= 交互 =================
+function go(page) { state.page = page; state.query = ''; state.openRecord = null; render() }
+function toggleRec() {
+  const r = state.rec
+  if (r.seal === 'idle' || r.seal === 'success') {
+    Object.assign(r, { seal: 'listening', startedAt: Date.now(), stoppedAt: 0, live: '' })
+    let i = 0
+    clearInterval(liveTimer)
+    liveTimer = setInterval(() => {
+      if (i < LIVE_SCRIPT.length) r.live = LIVE_SCRIPT.slice(0, ++i)
+      document.querySelectorAll('[data-live]').forEach((el) => { el.innerHTML = liveHtml() })
+      document.querySelectorAll('[data-timer]').forEach((el) => { el.textContent = timerText() })
+    }, 110)
+  } else if (r.seal === 'listening') {
+    clearInterval(liveTimer)
+    r.seal = 'converting'; r.stoppedAt = Date.now()
+    setTimeout(() => {
+      const id = Date.now()
+      records.unshift({ id, at: new Date(now.getTime() + 60000), dur: Math.max(3, Math.floor((r.stoppedAt - r.startedAt) / 1000)), proc: 1.4, fav: false, raw: r.live || LIVE_SCRIPT, opt: r.live || LIVE_SCRIPT })
+      r.seal = 'success'; render(); toast('已转写，并复制到剪贴板')
+      setTimeout(() => { if (r.seal === 'success') { r.seal = 'idle'; r.live = ''; render() } }, 1400)
+    }, 1600)
+  }
+  render()
+}
+function toast(text) {
+  const el = document.getElementById('toast')
+  document.getElementById('toast-text').textContent = text
+  el.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 1600)
+}
+const favRecord = (id) => { const r = records.find((x) => x.id === id); r.fav = !r.fav; render() }
+const favClip = (id) => { const c = clips.find((x) => x.id === id); c.fav = !c.fav; render() }
+const pinClip = (id) => { const c = clips.find((x) => x.id === id); c.pin = !c.pin; render() }
+const delClip = (id) => { clips.splice(clips.findIndex((x) => x.id === id), 1); toast('已删除'); render() }
+function startTf() {
+  if (state.tf.phase === 'empty') { state.tf.phase = 'ready'; render(); return }
+  state.tf.phase = 'running'; render()
+  setTimeout(() => { state.tf.phase = 'done'; render() }, 1800)
+}
+const TF_SEGMENTS = [
+  ['00:00.0', '大家好，今天我们来过一下桌面端改版的方案。'],
+  ['00:04.6', '核心思路是参照设置页：分组标签、行式卡片、状态用小圆点表达。'],
+  ['00:11.2', '首页的录音区收成一行，历史记录直接跟在下面，操作按钮只在悬停时出现。'],
+  ['00:19.8', '图标统一换成文字印章，和悬浮窗保持一致。']
+]
+const TF_RAW = '大家好今天我们来过一下桌面端改版的方案核心思路是参照设置页分组标签行式卡片状态用小圆点表达首页的录音区收成一行历史记录直接跟在下面操作按钮只在悬停的时候出现图标统一换成文字印章和悬浮窗保持一致'
+
+const recActions = (r) => `<div class="hover-actions">
+  ${gbtn(G.play, '播放', "toast('播放录音')")}
+  ${gbtn(G.copy, '复制', "toast('已复制')")}
+  ${gbtn(G.fav, r.fav ? '取消收藏' : '收藏', `favRecord(${r.id})`, r.fav ? 'on' : '')}
+  ${gbtn(G.more, '更多', "toast('更多：编辑 / 导出 / 删除')")}
+</div>`
+const clipActions = (c) => `<div class="hover-actions">
+  ${gbtn(G.copy, '复制', "toast('已复制')")}
+  ${gbtn(G.pin, c.pin ? '取消置顶' : '置顶', `pinClip(${c.id})`, c.pin ? 'on' : '')}
+  ${gbtn(G.fav, c.fav ? '取消收藏' : '收藏', `favClip(${c.id})`, c.fav ? 'on' : '')}
+  ${gbtn(G.del, '删除', `delClip(${c.id})`, 'danger')}
+</div>`
+
+// ================= 页面 =================
+function shell(content) {
+  const nav = [...PAGES, null, { key: 'settings', label: '设置' }]
+  return `<div class="win">
+    <div class="titlebar"><i></i><i></i><i></i></div>
+    <div class="body">
+      <aside class="side">
+        <div class="brand">${seal(G.brand)}Audio to Text</div>
+        <nav class="nav">${nav.map((p) => p ? `<button class="${state.page === p.key ? 'on' : ''}" onclick="${p.key === 'settings' ? "toast('设置页不在本次范围内')" : `go('${p.key}')`}"><span class="ng">${G[p.key]}</span>${p.label}</button>` : '<hr>').join('')}</nav>
+        <div class="side-foot">
+          <span class="meta"><span class="dot ok"></span>已连接</span>
+          <span class="meta"><span class="dot ok"></span>豆包语音 · 流式</span>
+        </div>
+      </aside>
+      <main class="main scroll"><div class="page">${content}</div></main>
+    </div>
+  </div>`
+}
+const head = (crumb, title, lead) => `<div class="crumb">${crumb}</div><h1>${title}</h1><p class="lead">${lead}</p>`
+
+function recordRow(r) {
+  const open = state.openRecord === r.id
+  return `<div class="row rec-row ${open ? 'open' : ''}" onclick="state.openRecord=${open ? 'null' : r.id};render()">
+    <span class="time mono">${hm(r.at)}</span>
+    <div class="grow">
+      <div class="text ${open ? '' : 'clamp2'}">${open ? br(r.opt) : esc(r.opt)}</div>
+      ${open ? `<div class="rec-detail">
+        <div><h4>原始转写</h4><p>${esc(r.raw)}</p></div>
+        <div><h4>识别信息</h4><p class="mono">时长 ${dur(r.dur)} · 处理 ${r.proc}s · 豆包语音</p>
+          <div style="margin-top:10px;display:flex;gap:4px">
+            ${tbtn(G.copy, '复制', "toast('已复制优化文本')", 'line')}
+            ${tbtn(G.reopt, '重新优化', "toast('重新优化')")}
+            ${tbtn(G.edit, '编辑', "toast('编辑')")}
+          </div></div>
+      </div>` : ''}
+    </div>
+    <div class="meta-col">${recActions(r)}<span class="mono cap muted">${dur(r.dur)}</span></div>
+  </div>`
+}
+
+const pages = {
+  home() {
+    const s = state.rec.seal
+    return head('首页', '录音', '按下印章或快捷键开始说话，转写与优化结果会自动复制。') + `
+      <section class="section">
+        <div class="group">
+          <h3 class="label">录音</h3>
+          <div class="recorder">
+            <button class="seal rec-seal" data-s="${s}" onclick="toggleRec()" title="${SEAL_LABEL[s]}：点按开始 / 结束录音" aria-label="${SEAL_LABEL[s]}"><span class="ink">${G[s]}</span></button>
+            <div class="readout"><span class="timer mono" data-timer>${timerText()}</span>${recStatus()}</div>
+            ${wave(36)}
+            <div class="side-meta">
+              <span class="meta"><span class="dot ok"></span>豆包语音 · 流式</span>
+              <span class="meta"><span class="dot ok"></span>自动优化 · 程序员模式</span>
+            </div>
+          </div>
+          ${busy() ? `<div class="live ${s}" data-live>${liveHtml()}</div>` : ''}
+        </div>
+        ${busy() ? `<div class="flow" style="--flow:${s === 'listening' ? '#c8463b' : '#6b7ff0'}"></div>` : ''}
+      </section>
+      <section class="section">
+        <div class="group">
+          <h3 class="label">最近<span class="aside"><button class="btn gold" onclick="go('records')">全部 ${records.length} 条</button></span></h3>
+          ${records.slice(0, 5).map(recordRow).join('')}
+        </div>
+      </section>`
+  },
+  transcribe() {
+    const tf = state.tf
+    const file = tf.phase === 'empty'
+      ? `<div class="drop" onclick="startTf()">${seal(G.import, 'idle', 'style="width:40px;height:40px;font-size:22px"')}
+          <div class="grow"><div class="title">拖入音视频文件，或点击选择</div><div class="desc">mp4 / mov / mkv / wav / mp3 / m4a / flac · 结果不进记录集 · 同一文件秒回缓存</div></div><span class="kbd">⌘V 粘贴路径</span></div>`
+      : `<div class="row">${tile(G.file, 38, 'color:var(--accent)')}
+          <div class="grow"><div class="title">weekly-review-1030.mp4</div><div class="desc mono">/Users/me/Movies · 24:16 · 186 MB</div></div>
+          ${tf.phase === 'running' ? '<span class="meta"><span class="dot blue pulse"></span>转写中 38%</span><div class="flow" style="--flow:#6b7ff0"></div>'
+            : `<button class="btn" onclick="state.tf.phase='empty';render()">移除</button><button class="btn gold" onclick="startTf()">${tf.phase === 'done' ? '重新转写' : '开始转写'}</button>`}</div>`
+    return head('首页 / 转文字', '转文字', '把本地音视频转成文本，长文件自动进入后台任务。') + `
+      <section class="section"><div class="group"><h3 class="label">文件</h3>${file}</div></section>
+      <section class="section"><div class="group">
+        <h3 class="label">转写选项</h3>
+        <div class="row"><div class="grow"><div class="title">识别引擎</div><div class="desc">本地引擎离线可用；豆包按音频时长计费</div></div><span class="meta" style="margin-right:8px"><span class="dot ok"></span>已就绪</span><span class="select">${tf.engine}</span></div>
+        <div class="row"><div class="grow"><div class="title">识别语言</div><div class="desc">与设置页共用</div></div><span class="select">${tf.lang}</span></div>
+        <div class="row"><div class="grow"><div class="title">分段时间戳</div><div class="desc">结果按句带上起止时间</div></div><button class="toggle ${tf.seg ? 'on' : ''}" onclick="state.tf.seg=!state.tf.seg;render()"></button></div>
+        <div class="row"><div class="grow"><div class="title">LLM 校对</div><div class="desc">转写完成后按窗口纠错，不润色；失败的批次保留原文</div></div><button class="toggle ${tf.proof ? 'on' : ''}" onclick="state.tf.proof=!state.tf.proof;render()"></button></div>
+      </div></section>
+      ${tf.phase === 'done' ? `<section class="section"><div class="group">
+        <h3 class="label">结果<span class="aside"><span class="meta"><span class="dot ok"></span>24:16 音频 · 用时 41s</span></span></h3>
+        <div class="tabs" style="margin-bottom:16px">${[['text', '文本'], ['seg', '分段'], ['raw', '原始']].map(([k, l]) => `<button class="${tf.tab === k ? 'on' : ''}" onclick="state.tf.tab='${k}';render()">${l}</button>`).join('')}
+          <span style="margin-left:auto;display:flex;gap:2px">${tbtn(G.copy, '复制', "toast('已复制全文')")}${tbtn(G.export, '导出', "toast('导出 .txt / .srt')")}</span></div>
+        ${tf.tab === 'seg' ? `<div class="seg-list">${TF_SEGMENTS.map(([t, s]) => `<div><span class="mono muted">${t}</span><span>${s}</span></div>`).join('')}</div>`
+          : `<div class="result" style="${tf.tab === 'raw' ? 'color:var(--text-3)' : ''}">${tf.tab === 'raw' ? TF_RAW : TF_SEGMENTS.map((s) => s[1]).join('')}</div>`}
+      </div></section>` : ''}`
+  },
+  records() {
+    const list = filteredRecords()
+    return head('首页 / 记录集', '记录集', '搜索、筛选和整理你的录音记录。') + `
+      <div class="toolbar">${searchBox('搜索转写或优化文本')}
+        ${tbtn(G.fav, state.favOnly ? '仅收藏' : '收藏', 'state.favOnly=!state.favOnly;render()', state.favOnly ? 'gold' : '')}
+        ${tbtn(G.export, '导出', "toast('导出全部记录')")}
+      </div>
+      <section class="section"><div class="group">
+        <h3 class="label">${list.length} 条记录<span class="aside">点开查看原始转写</span></h3>
+        ${list.length ? groupByDay(list).map((g) => `<div class="day">${g.label}</div>${g.items.map(recordRow).join('')}`).join('') : `<div class="empty">${tile(G.records, 40)}没有匹配的记录</div>`}
+      </div></section>`
+  },
+  clipboard() {
+    const list = filteredClips()
+    return head('首页 / 剪贴板', '剪贴板', '自动记录复制过的文本、图片和文件。') + `
+      <div class="toolbar">${searchBox('搜索剪贴板')}<span class="meta"><span class="dot ok"></span>监听中</span></div>
+      <section class="section" style="overflow:visible"><div class="group">
+        <div class="tabs" style="margin-bottom:16px">${CLIP_FILTERS.map(([k, l]) => `<button class="${state.clipFilter === k ? 'on' : ''}" onclick="state.clipFilter='${k}';render()">${l}</button>`).join('')}</div>
+        ${list.length ? list.map((c) => `<div class="row clip-row">
+          ${c.type === 'image'
+            ? `<span class="peek">${tile(G.image, 32, c.pin ? 'color:var(--accent)' : '')}<span class="peek-card"><span class="thumb" style="--g:${c.g};aspect-ratio:${c.size.replace(' × ', '/')}"></span><span class="meta mono">${c.size}</span></span></span>`
+            : tile(G[c.type === 'file' ? 'file' : c.type], 32, c.pin ? 'color:var(--accent)' : '')}
+          <div class="grow"><div class="text clamp2 ${c.type !== 'long' ? 'mono' : ''}" style="${c.type === 'link' ? 'color:var(--accent)' : ''}">${esc(c.text)}</div>
+            <div class="desc">${clipType(c.type)}${c.size ? ' · ' + c.size : ''} · ${rel(c.at)}${c.pin ? ' · 已置顶' : ''}</div></div>
+          ${clipActions(c)}
+        </div>`).join('') : `<div class="empty">${tile(G.clipboard, 40)}这个分类下还没有内容</div>`}
+      </div></section>`
+  }
+}
+
+// ================= 渲染与翻页条 =================
+function render() {
+  document.getElementById('app').innerHTML = shell(pages[state.page]())
+  const url = new URL(location.href)
+  url.searchParams.set('page', state.page); url.searchParams.delete('variant')
+  history.replaceState(null, '', url)
+  const i = PAGES.findIndex((p) => p.key === state.page)
+  document.getElementById('proto-bar').innerHTML = `
+    <button onclick="stepPage(-1)" title="上一页（←）">‹</button>
+    <span class="lbl">v2 · ${PAGES[i].label}<small>A 设置同构 + 文字图标 · ← → 翻页</small></span>
+    <button onclick="stepPage(1)" title="下一页（→）">›</button>`
+}
+function stepPage(d) { const i = PAGES.findIndex((p) => p.key === state.page); go(PAGES[(i + d + PAGES.length) % PAGES.length].key) }
+function renderKeepFocus(input) {
+  const ph = input.placeholder, pos = input.selectionStart
+  render()
+  const next = [...document.querySelectorAll('input')].find((el) => el.placeholder === ph)
+  if (next) { next.focus(); next.setSelectionRange(pos, pos) }
+}
+document.addEventListener('keydown', (e) => {
+  if (e.target.closest('input, textarea, [contenteditable]')) return
+  if (e.key === 'ArrowLeft') stepPage(-1)
+  if (e.key === 'ArrowRight') stepPage(1)
+})
+render()
+</script>
+</body>
+</html>
