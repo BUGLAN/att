@@ -291,7 +291,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "att-app"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "arboard",
  "att-audio",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "att-audio"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "att-core",
  "cpal",
@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "att-core"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aes",
  "att-qwen",
@@ -358,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "att-hotkey"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "att-core",
  "core-foundation 0.10.1",
@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "att-qwen"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "cc",
  "hound",
@@ -381,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "att-server"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "att-core",
  "axum",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "att-whisper"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "ct2rs",
  "hound",
