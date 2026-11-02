@@ -67,6 +67,18 @@ button {
     transform 200ms ease;
 }
 
+/*
+ * 结果态（成 / 敗）收拢：缓入缓出、稍长一点。胶囊贴底居中、印章贴着胶囊左缘，
+ * 收拢时印章要从左边回到中间；快起的 --grow 会把它一下甩过去，这里让它起步、落定都平缓
+ */
+.capsule.sized.settling {
+  transition:
+    width 360ms cubic-bezier(0.4, 0, 0.2, 1),
+    height 360ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 180ms ease,
+    transform 200ms ease;
+}
+
 .capsule.leaving {
   opacity: 0;
   transform: translateY(4px) scale(0.94);
@@ -125,12 +137,13 @@ button {
   display: block;
 }
 
+/* 新字晚一拍落下：旧字基本淡完才盖新字，两个字不会同时叠在印章里（看起来像有字一闪） */
 .glyph-enter-active {
-  transition: opacity 240ms ease-out, transform 280ms var(--grow), filter 240ms ease-out;
+  transition: opacity 220ms ease-out 90ms, transform 280ms var(--grow) 90ms, filter 220ms ease-out 90ms;
 }
 
 .glyph-leave-active {
-  transition: opacity 160ms ease-in, transform 160ms ease-in, filter 160ms ease-in;
+  transition: opacity 120ms ease-in, transform 120ms ease-in, filter 120ms ease-in;
 }
 
 .glyph-enter-from {
@@ -166,9 +179,9 @@ button {
   transition: opacity 200ms ease-out;
 }
 
-/* 收起时文字先淡出，胶囊再收拢 */
+/* 收起时文字在原地淡出（已脱离排版，见 FloatingWindow.vue detachOnLeave），胶囊同时收拢 */
 .line-leave-active {
-  transition: opacity 140ms ease-in, color 200ms ease;
+  transition: opacity 140ms ease-in;
 }
 
 .line-enter-from,
@@ -277,7 +290,6 @@ button {
   background: rgba(255, 255, 255, 0.07);
   color: var(--text-2);
   cursor: pointer;
-  animation: text-in 160ms ease-out;
   transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 
@@ -319,11 +331,6 @@ button {
   to { transform: none; opacity: 1; }
 }
 
-@keyframes text-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
 @keyframes ink-in {
   from { opacity: 0; filter: blur(5px); transform: scale(1.08); }
   55% { opacity: 0.85; filter: blur(1px); }
@@ -338,6 +345,7 @@ button {
 @media (prefers-reduced-motion: reduce) {
   .capsule,
   .capsule.sized,
+  .capsule.sized.settling,
   .seal,
   .line,
   .ch,

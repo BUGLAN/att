@@ -4,8 +4,8 @@
       极简胶囊：一次会话里只变两次大小——
       起步只有一枚印章（与托盘同源）；出现第一个字后一口气展开到固定宽度并保持，
       之后字数增减、识别回改、聽→轉 都只换里面的内容；结束时收回成 成 / 敗 一枚印章。
-      换印章时底色渐变、新旧字交叠（旧字缩小淡出，新字像盖章一样落下），印章本身轻按一下；
-      文字与声纹 / 处理点先淡出，胶囊再收拢，不会一下子跳变。
+      换印章时底色渐变、旧字先缩小淡出，新字稍后像盖章一样落下（两字不同时叠着），印章本身轻按一下；
+      文字、声纹 / 处理点、✕ 在原地淡出的同时胶囊就开始收拢（收起走缓入缓出，印章平稳回到中间），不会一下子跳变。
       优化稿不回填：「轉」期间一直是识别稿（正文色，不变淡），优化结果直接打进输入框。
       敗：原因直接写在印章旁（出过字的会话保持原宽度，没出过字的按原因长短展开），悬停时暂停收起，点一下唤起主窗口。
       流式录音中，服务端还没确认的那截（正在说的这句）用淡白色，确认后变回正常文字色。
@@ -16,7 +16,7 @@
     <section
       :key="sessionKey"
       class="capsule"
-      :class="{ sized, leaving: leaving || view.seal === 'idle', clickable: Boolean(reason) }"
+      :class="{ sized, settling: !view.active, leaving: leaving || view.seal === 'idle', clickable: Boolean(reason) }"
       :data-seal="view.seal"
       :style="capsuleStyle"
       :title="view.detail || undefined"
@@ -36,13 +36,17 @@
         </span>
         <span class="sr-only">{{ SEAL_LABELS[view.seal] }}{{ view.detail ? `：${view.detail}` : '' }}</span>
 
-        <Transition name="line" mode="out-in">
+        <!--
+          离场的元素一律先钉在原位、脱离排版（detachOnLeave），在原地淡出：
+          内容当场排成新的尺寸，胶囊立刻开始收拢，淡出与收拢同时进行，不会淡完再空等一拍才收；
+          新旧元素（识别稿→失败原因、声纹→处理点）也就在同一个位置交叠，宽度只变一次。
+        -->
+        <Transition name="line" @before-leave="detachOnLeave">
           <span v-if="expanded" key="line" ref="lineEl" class="line" :class="{ clipped }"><span ref="trackEl" class="track" :style="{ transform: `translateX(${-shift}px)` }"><span v-for="(c, index) in shownChars" :key="c.id" class="ch" :class="{ pending: index >= pendingFrom }">{{ c.ch }}</span></span></span>
           <span v-else-if="reason" key="reason" class="line reason">{{ reason }}</span>
         </Transition>
 
-        <!-- 声纹与处理点占同一个位置：先淡出旧的再淡入新的，宽度不会两个叠在一起 -->
-        <Transition name="slot" mode="out-in">
+        <Transition name="slot" @before-leave="detachOnLeave">
           <span v-if="showWave" key="wave" class="slot wave" :class="{ quiet: !voice.loud }" aria-hidden="true">
             <span v-for="(height, index) in waveHeights" :key="index" class="wave-bar" :style="{ height: `${height}px` }"></span>
           </span>
@@ -51,9 +55,11 @@
           </span>
         </Transition>
 
-        <button v-if="showCancel" type="button" class="cancel" aria-label="取消" title="取消" @click="cancel">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-        </button>
+        <Transition name="slot" @before-leave="detachOnLeave">
+          <button v-if="showCancel" type="button" class="cancel" aria-label="取消" title="取消" @click="cancel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </Transition>
       </div>
     </section>
   </div>
@@ -281,6 +287,20 @@ function pushLevel(level) {
 
 function cancel() {
   window.floatingAPI?.cancel?.()
+}
+
+/** 离场元素钉在当前位置（相对 .content）并脱离排版：内容立即按剩下的元素排版，它在原地淡出 */
+function detachOnLeave(el) {
+  const { offsetLeft, offsetTop, offsetWidth, offsetHeight } = el
+  Object.assign(el.style, {
+    position: 'absolute',
+    left: `${offsetLeft}px`,
+    top: `${offsetTop}px`,
+    width: `${offsetWidth}px`,
+    height: `${offsetHeight}px`,
+    margin: '0',
+    pointerEvents: 'none'
+  })
 }
 
 function emitChars(count, target) {
