@@ -19,6 +19,13 @@ pub use att_core::settings::hotkey::HotkeyAction;
 use att_core::settings::hotkey::{HotkeyBinding, ModSet};
 use std::sync::mpsc;
 
+/// 本应用自己模拟的键盘事件（自动输入、粘贴、Windows 的掩护键）带的标记：
+/// macOS 写进事件的 `EVENT_SOURCE_USER_DATA`，Windows 写进 `KEYBDINPUT.dwExtraInfo`。
+///
+/// 热键监听见到它一律跳过：自动输入为了不和仍按着的快捷键组合成命令，会把修饰键清零（粘贴只带 ⌘ / Ctrl），
+/// 这些修饰键状态若被当成用户的真实键态，按住录音时就会被判成「松开」，紧接着又被判成「按下」开出新的一段。
+pub const SYNTHETIC_EVENT_TAG: i64 = 0x4154_5453;
+
 /// 绑定句柄（unregister 用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BindingId(pub u32);

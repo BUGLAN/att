@@ -291,18 +291,23 @@ impl Actor {
             // 流式：上一段优化转入后台继续跑，直接开始新录音；单段：优化期间保持「处理中」，吞掉
             match self.optimizing.as_ref() {
                 Some(pending) if pending.mode == Mode::Streaming => {
+                    tracing::info!("流式优化中开始新录音：上一段优化转入后台，停止往输入框输出");
                     pending.detached.store(true, Ordering::SeqCst);
                     // 新录音的文字要进新的输入框：上一段别再往里打
                     pending.typing_halt.store(true, Ordering::SeqCst);
                     self.phase = Phase::Idle;
                 }
-                _ => return crate::floating::nudge(&self.app),
+                _ => {
+                    tracing::info!("单段优化中按下录音键，忽略");
+                    return crate::floating::nudge(&self.app);
+                }
             }
         }
         if self.phase != Phase::Idle {
             // 收尾中的按下与重复按下一律吞掉（与旧版语义一致）。
             // 收尾中的按下多半是想开始下一段：摇一下印章表示这下没生效；录音中的是按住热键的自动重复，不提示
             if self.phase == Phase::Finalizing {
+                tracing::info!("收尾中按下录音键，忽略");
                 crate::floating::nudge(&self.app);
             }
             return;

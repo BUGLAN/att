@@ -3,7 +3,8 @@
 //! - 按键在专用线程里按入队顺序发出，调用方（优化增量回调）只管入队、不阻塞；
 //! - 换行不模拟回车（聊天类应用里回车 = 发送），改为写内部剪贴板后粘贴一个换行；
 //! - 打出去的字收不回来：只打 `cleaning::stable_prefix` 认定稳定的部分，收尾时再与最终文本对齐；
-//! - 被取消 / 被新一段录音取代时置 `halt`，线程丢弃剩余队列立即停手。
+//! - 被取消 / 被新一段录音取代时置 `halt`，线程丢弃剩余队列立即停手：每发几个字就看一眼，
+//!   不会把手上这一整段打完（按住开始下一段时，上一段多打出去的字既进错输入框、也是给热键监听添乱的模拟按键）。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -12,6 +13,8 @@ use std::time::Duration;
 
 /// 换行粘贴后的等待：目标应用读剪贴板是异步的，太快覆写剪贴板会粘进别的内容。
 const NEWLINE_SETTLE: Duration = Duration::from_millis(150);
+/// 每发出这么多字（或回删这么多次）就检查一次 halt。
+const HALT_CHECK_CHARS: usize = 10;
 
 enum Op {
     Text(String),
@@ -39,8 +42,8 @@ impl StreamTyping {
                         break;
                     }
                     match op {
-                        Op::Text(text) => type_text(&text)?,
-                        Op::Backspace(count) => crate::desktop::press_backspace(count)?,
+                        Op::Text(text) => type_text(&text, &worker_halt)?,
+                        Op::Backspace(count) => press_backspace(count, &worker_halt)?,
                     }
                 }
                 Ok(())
@@ -103,20 +106,49 @@ impl StreamTyping {
     }
 }
 
-fn type_text(text: &str) -> Result<(), String> {
+fn type_text(text: &str, halt: &AtomicBool) -> Result<(), String> {
     let mut segments = text.split('\n').peekable();
     while let Some(segment) = segments.next() {
-        let segment = segment.trim_end_matches('\r');
-        if !segment.is_empty() {
-            crate::desktop::type_unicode(segment)?;
+        for piece in pieces(segment.trim_end_matches('\r'), HALT_CHECK_CHARS) {
+            if halt.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            crate::desktop::type_unicode(piece)?;
         }
         if segments.peek().is_some() {
+            if halt.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             crate::desktop::write_clipboard("\n")?;
             crate::desktop::paste_active()?;
             std::thread::sleep(NEWLINE_SETTLE);
         }
     }
     Ok(())
+}
+
+fn press_backspace(count: usize, halt: &AtomicBool) -> Result<(), String> {
+    let mut left = count;
+    while left > 0 && !halt.load(Ordering::SeqCst) {
+        let batch = left.min(HALT_CHECK_CHARS);
+        crate::desktop::press_backspace(batch)?;
+        left -= batch;
+    }
+    Ok(())
+}
+
+/// 按字符（不按字节）把文本切成至多 `size` 个字的小段。
+fn pieces(text: &str, size: usize) -> impl Iterator<Item = &str> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let end = rest.char_indices().nth(size).map(|(i, _)| i).unwrap_or(rest.len());
+        let (piece, tail) = rest.split_at(end);
+        rest = tail;
+        Some(piece)
+    })
 }
 
 /// 已打出 `typed`、目标是 `target`：返回需要回删的字符数与随后要补打的文本。
@@ -128,7 +160,15 @@ fn reconcile<'a>(typed: &str, target: &'a str) -> (usize, &'a str) {
 
 #[cfg(test)]
 mod tests {
-    use super::reconcile;
+    use super::{pieces, reconcile};
+
+    #[test]
+    fn 按字切小段_不拆多字节字符() {
+        assert_eq!(pieces("我明天去开会。", 3).collect::<Vec<_>>(), ["我明天", "去开会", "。"]);
+        assert_eq!(pieces("ab", 10).collect::<Vec<_>>(), ["ab"]);
+        assert_eq!(pieces("", 10).count(), 0);
+        assert_eq!(pieces("😀a😀", 1).collect::<Vec<_>>(), ["😀", "a", "😀"]);
+    }
 
     #[test]
     fn 收尾对齐_补打_回删_分叉() {

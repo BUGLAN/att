@@ -71,7 +71,7 @@ mod platform {
     use core_foundation::boolean::CFBoolean;
     use core_foundation::dictionary::CFDictionary;
     use core_foundation::string::CFString;
-    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
+    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, EventField};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     use std::process::Command;
 
@@ -87,6 +87,12 @@ mod platform {
         unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) }
     }
 
+    /// 发出一个模拟键盘事件：打上本应用的标记，自己的热键监听据此跳过它（见 att_hotkey::SYNTHETIC_EVENT_TAG）。
+    fn post(event: &CGEvent) {
+        event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, att_hotkey::SYNTHETIC_EVENT_TAG);
+        event.post(CGEventTapLocation::HID);
+    }
+
     pub fn paste() -> Result<(), String> {
         if !accessibility_trusted() {
             return Err("自动粘贴需要「辅助功能」权限：请在 系统设置 → 隐私与安全性 → 辅助功能 中允许本应用（开发态为启动它的终端）".into());
@@ -96,7 +102,7 @@ mod platform {
         for down in [true, false] {
             let event = CGEvent::new_keyboard_event(source.clone(), KEY_V, down).map_err(|_| "创建键盘事件失败".to_string())?;
             event.set_flags(CGEventFlags::CGEventFlagCommand);
-            event.post(CGEventTapLocation::HID);
+            post(&event);
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         Ok(())
@@ -124,10 +130,10 @@ mod platform {
         let down = CGEvent::new_keyboard_event(source.clone(), 0, true).map_err(|_| "创建键盘事件失败".to_string())?;
         down.set_flags(CGEventFlags::CGEventFlagNull);
         down.set_string_from_utf16_unchecked(units);
-        down.post(CGEventTapLocation::HID);
+        post(&down);
         let up = CGEvent::new_keyboard_event(source.clone(), 0, false).map_err(|_| "创建键盘事件失败".to_string())?;
         up.set_flags(CGEventFlags::CGEventFlagNull);
-        up.post(CGEventTapLocation::HID);
+        post(&up);
         std::thread::sleep(TYPE_INTERVAL);
         Ok(())
     }
@@ -158,7 +164,7 @@ mod platform {
             for down in [true, false] {
                 let event = CGEvent::new_keyboard_event(source.clone(), KEY_DELETE, down).map_err(|_| "创建键盘事件失败".to_string())?;
                 event.set_flags(CGEventFlags::CGEventFlagNull);
-                event.post(CGEventTapLocation::HID);
+                post(&event);
             }
             std::thread::sleep(TYPE_INTERVAL);
         }
@@ -189,7 +195,14 @@ mod platform {
         INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
-                ki: KEYBDINPUT { wVk: vk, wScan: 0, dwFlags: if up { KEYEVENTF_KEYUP } else { 0 }, time: 0, dwExtraInfo: 0 },
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
+                    time: 0,
+                    // 自己的热键监听据此跳过（粘贴的 Ctrl 不能让按住的快捷键被判成松开）
+                    dwExtraInfo: att_hotkey::SYNTHETIC_EVENT_TAG as usize,
+                },
             },
         }
     }
@@ -213,7 +226,7 @@ mod platform {
                     wScan: unit,
                     dwFlags: KEYEVENTF_UNICODE | if up { KEYEVENTF_KEYUP } else { 0 },
                     time: 0,
-                    dwExtraInfo: 0,
+                    dwExtraInfo: att_hotkey::SYNTHETIC_EVENT_TAG as usize,
                 },
             },
         }

@@ -83,4 +83,5 @@ models/                本地模型（不入库）：faster_whisper/（CT2 large
 | Qwen 引擎与系统 ORT 冲突 | Windows 上 `C:\Windows\System32\onnxruntime.dll`（旧版）会抢占依赖解析导致崩溃；`shim.c` 已按绝对路径预加载 `models/sherpa-onnx/` 里的 ORT，改动加载逻辑时别丢掉这一步 |
 | 本地引擎没有模型时 | 只给 409 + 可照做的下载命令，不 panic；模型不入库，见 `docs/遗留与下线.md` §5 |
 | 图片写剪贴板 | Windows 上必须自己写 `CF_DIB`(BI_RGB) + `CF_DIBV5`(BI_RGB) + `PNG`（`src-tauri/src/clipboard_image.rs`）；换回 arboard 的 BI_BITFIELDS 写法会让 Chromium 系应用粘不出图 |
+| 新增模拟按键 | 自动输入 / 粘贴等自己发出的键盘事件必须打 `att_hotkey::SYNTHETIC_EVENT_TAG`（macOS `EVENT_SOURCE_USER_DATA`、Windows `dwExtraInfo`），否则热键监听会把它清零的修饰键当成用户松开，按住录音时被打断又自动开新一段 |
 | 剪贴板偶发写失败 | 剪贴板同一时刻只允许一个线程打开，写入要重试；失败发生在 `EmptyClipboard` 之后会把用户剪贴板清空 |

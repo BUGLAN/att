@@ -2,6 +2,7 @@
 //!
 //! 绑定由 `bindings()` 在每次键事件时读取（设置页改键即时生效，无需重启监听）；
 //! 锁存期间每 250ms 用系统真实键态重同步一次（防粘滞：焦点切换/锁屏吞掉松开事件）。
+//! 每次触发（按下 / 松开）都记一行日志，带触发来源与当时的修饰键：按住录音被意外打断时据此判断是谁报的松开。
 
 use crate::matcher::Matcher;
 use crate::{HotkeyAction, HotkeySpec, KeyPhase};
@@ -11,6 +12,36 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// 当前启用的全部绑定（录音、剪贴板悬浮框…），每个动作至多一条。
+/// 推动匹配器的事件来源（写进触发日志）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// 修饰键变化（macOS FlagsChanged / Windows 修饰键按下松开）
+    Modifiers,
+    /// 普通按键事件（及其携带的修饰键）
+    Key,
+    /// 锁存期间按系统真实键态的定时校正
+    Resync,
+}
+
+impl Source {
+    fn label(self) -> &'static str {
+        match self {
+            Source::Modifiers => "修饰键变化",
+            Source::Key => "按键",
+            Source::Resync => "键态校正",
+        }
+    }
+}
+
+/// 修饰键集合的日志写法（⌘⌃⌥⇧，空集写「无」）。
+fn mods_label(mods: ModSet) -> String {
+    let label: String = [(mods.meta, '⌘'), (mods.ctrl, '⌃'), (mods.alt, '⌥'), (mods.shift, '⇧')]
+        .iter()
+        .filter_map(|(on, symbol)| on.then_some(*symbol))
+        .collect();
+    if label.is_empty() { "无".into() } else { label }
+}
+
 pub type BindingSource = Arc<dyn Fn() -> Vec<HotkeySpec> + Send + Sync>;
 pub type EventSink = Arc<dyn Fn(HotkeyAction, KeyPhase) + Send + Sync>;
 
@@ -23,7 +54,7 @@ pub struct Shared {
 
 impl Shared {
     /// 推进全部匹配器并派发触发；返回 `owns_hid` 这个主键是否归某个绑定（处理前或处理后锁存着它）。
-    fn with_matchers(&self, owns_hid: Option<u16>, step: impl Fn(&mut Matcher) -> Option<KeyPhase>) -> bool {
+    fn with_matchers(&self, source: Source, owns_hid: Option<u16>, step: impl Fn(&mut Matcher) -> Option<KeyPhase>) -> bool {
         let specs = (self.bindings)();
         let mut fired = Vec::new();
         let mut owned = false;
@@ -35,10 +66,23 @@ impl Shared {
             for (action, matcher) in matchers.iter_mut() {
                 // 绑定变化（含停用）时锁存中的会合成一次 release，归属原动作
                 let spec = specs.iter().find(|s| s.action == *action).cloned();
-                fired.extend(matcher.set_spec(spec).map(|phase| (*action, phase)));
+                if let Some(phase) = matcher.set_spec(spec) {
+                    tracing::info!(action = ?action, ?phase, "热键触发：绑定变化");
+                    fired.push((*action, phase));
+                }
                 // 松开事件要在处理前判断（处理后已解锁），按下 / 重复在处理后判断
                 owned |= matcher.owns_key(owns_hid);
-                fired.extend(step(matcher).map(|phase| (*action, phase)));
+                if let Some(phase) = step(matcher) {
+                    tracing::info!(
+                        action = ?action,
+                        ?phase,
+                        mods = %mods_label(matcher.mods()),
+                        other_keys = matcher.other_keys(),
+                        "热键触发：{}",
+                        source.label()
+                    );
+                    fired.push((*action, phase));
+                }
                 owned |= matcher.owns_key(owns_hid);
             }
         }
@@ -48,17 +92,17 @@ impl Shared {
         owned
     }
 
-    pub fn on_modifiers(&self, mods: ModSet) {
-        self.with_matchers(None, |m| m.on_modifiers(mods));
+    pub fn on_modifiers(&self, mods: ModSet, source: Source) {
+        self.with_matchers(source, None, |m| m.on_modifiers(mods));
     }
 
     /// 返回 true 表示这次按键属于某个快捷键，平台钩子应当吞掉它（不再送给前台应用）。
     pub fn on_key(&self, raw: u32, hid: Option<u16>, down: bool) -> bool {
-        self.with_matchers(hid, |m| m.on_key(raw, hid, down))
+        self.with_matchers(Source::Key, hid, |m| m.on_key(raw, hid, down))
     }
 
     fn resync(&self, physical: ModSet) {
-        self.with_matchers(None, |m| m.resync(physical));
+        self.with_matchers(Source::Resync, None, |m| m.resync(physical));
     }
 
     fn is_latched(&self) -> bool {
@@ -126,10 +170,10 @@ mod tests {
         };
         const KEY_V: u32 = 9;
         let ctrl_alt = ModSet::new(true, true, false, false);
-        shared.on_modifiers(ctrl_alt);
+        shared.on_modifiers(ctrl_alt, Source::Modifiers);
         assert!(shared.on_key(KEY_V, hid_from_char('v'), true), "命中的主键按下要吞");
         assert!(shared.on_key(KEY_V, hid_from_char('v'), false), "对应的松开也吞");
-        shared.on_modifiers(ModSet::default());
+        shared.on_modifiers(ModSet::default(), Source::Modifiers);
         assert!(!shared.on_key(KEY_V, hid_from_char('v'), true), "只按 V 不吞");
         assert!(!shared.on_key(KEY_V, hid_from_char('v'), false));
         assert_eq!(
@@ -138,8 +182,8 @@ mod tests {
         );
 
         fired.lock().unwrap().clear();
-        shared.on_modifiers(ModSet::new(false, true, false, true));
-        shared.on_modifiers(ModSet::default());
+        shared.on_modifiers(ModSet::new(false, true, false, true), Source::Modifiers);
+        shared.on_modifiers(ModSet::default(), Source::Modifiers);
         assert_eq!(
             *fired.lock().unwrap(),
             vec![(HotkeyAction::Record, KeyPhase::Pressed), (HotkeyAction::Record, KeyPhase::Released)]

@@ -4,12 +4,13 @@
 //! 不再送给前台应用（否则 ⌥V 唤起剪贴板时还会打出一个「√」）。
 //! 没有辅助功能权限时退回只读监听（只需「输入监控」）：快捷键照常触发，只是不吞键。
 
-use crate::listener::Shared;
+use crate::listener::{Shared, Source};
+use crate::SYNTHETIC_EVENT_TAG;
 use att_core::settings::hotkey::{hid_from_char, ModSet};
 use core_foundation::base::TCFType;
 use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_graphics::event::{
-    CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
+    CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
     CallbackResult, EventField,
 };
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -56,6 +57,12 @@ fn char_from_keycode(code: i64) -> Option<char> {
     TABLE.iter().find(|(k, _)| *k == code).map(|(_, c)| *c)
 }
 
+/// 本进程发出的事件：发键处打了 [`SYNTHETIC_EVENT_TAG`]；来源进程号兜底（漏打标记的发键点同样跳过）。
+fn is_own_event(event: &CGEvent) -> bool {
+    event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == SYNTHETIC_EVENT_TAG
+        || event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID) == std::process::id() as i64
+}
+
 fn make_tap(shared: Arc<Shared>, options: CGEventTapOptions) -> Result<CGEventTap<'static>, ()> {
     CGEventTap::new(
         CGEventTapLocation::Session,
@@ -65,19 +72,25 @@ fn make_tap(shared: Arc<Shared>, options: CGEventTapOptions) -> Result<CGEventTa
         move |_proxy, event_type, event| {
             match event_type {
                 CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput => {
-                    // 系统因超时停用了监听：立即重新启用（否则热键静默失效）
+                    // 系统因超时停用了监听：立即重新启用（否则热键静默失效）；停用期间的按键事件已经丢了
+                    tracing::warn!(?event_type, "键盘监听被系统停用，已重新启用（期间的按键事件丢失）");
                     let port = TAP_PORT.load(Ordering::SeqCst);
                     if !port.is_null() {
                         unsafe { CGEventTapEnable(port, true) };
                     }
                 }
+                // 自己模拟的按键（自动输入 / 粘贴）：带的是清零或改写过的修饰键，不能参与匹配
+                CGEventType::FlagsChanged | CGEventType::KeyDown | CGEventType::KeyUp if is_own_event(event) => {
+                    // 自动输入每个字都会经过这里：只在 trace 级别记，别在键盘回调里刷文件日志
+                    tracing::trace!(?event_type, "跳过本应用模拟的按键事件");
+                }
                 CGEventType::FlagsChanged => {
-                    shared.on_modifiers(mods_from_flags(event.get_flags()));
+                    shared.on_modifiers(mods_from_flags(event.get_flags()), Source::Modifiers);
                 }
                 CGEventType::KeyDown | CGEventType::KeyUp => {
                     let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
                     let hid = char_from_keycode(code).and_then(hid_from_char);
-                    shared.on_modifiers(mods_from_flags(event.get_flags()));
+                    shared.on_modifiers(mods_from_flags(event.get_flags()), Source::Key);
                     if shared.on_key(code as u32, hid, matches!(event_type, CGEventType::KeyDown)) {
                         // 只读监听下 Drop 无效，事件照常送达
                         return CallbackResult::Drop;

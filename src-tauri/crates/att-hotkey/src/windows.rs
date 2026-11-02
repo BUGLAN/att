@@ -2,7 +2,8 @@
 //!
 //! 命中快捷键的主键事件在钩子里吞掉（返回非零），不再送给前台应用。
 
-use crate::listener::Shared;
+use crate::listener::{Shared, Source};
+use crate::SYNTHETIC_EVENT_TAG;
 use att_core::settings::hotkey::{hid_from_char, ModSet};
 use std::sync::{Arc, OnceLock};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
@@ -82,8 +83,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         if let Some(shared) = SHARED.get() {
             let info = &*(lparam as *const KBDLLHOOKSTRUCT);
             let message = wparam as u32;
-            // 自己补发的掩护键不参与匹配（否则会被当成「又按了一个键」把组合判成松开）
-            if info.vkCode == VK_MASK_KEY as u32 {
+            // 自己模拟的按键（掩护键、自动输入、粘贴的 Ctrl+V）不参与匹配：
+            // 否则掩护键会被当成「又按了一个键」，粘贴的 Ctrl 会让按住的组合被判成松开
+            if info.vkCode == VK_MASK_KEY as u32 || info.dwExtraInfo == SYNTHETIC_EVENT_TAG as usize {
                 return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
             }
             let down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
@@ -91,10 +93,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             if down || up {
                 let vk = info.vkCode;
                 if is_modifier(vk) {
-                    shared.on_modifiers(modifiers_with(Some((vk, down))));
+                    shared.on_modifiers(modifiers_with(Some((vk, down))), Source::Modifiers);
                 } else {
                     // 非修饰键事件也顺带校正一次修饰键（与 macOS 每个事件带完整 flags 对齐）
-                    shared.on_modifiers(modifiers_with(None));
+                    shared.on_modifiers(modifiers_with(None), Source::Key);
                     let hid = char::from_u32(vk)
                         .filter(|c| c.is_ascii_alphanumeric())
                         .and_then(hid_from_char);
@@ -118,7 +120,7 @@ fn send_mask_key() {
     let key = |flags| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
-            ki: KEYBDINPUT { wVk: VK_MASK_KEY, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+            ki: KEYBDINPUT { wVk: VK_MASK_KEY, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: SYNTHETIC_EVENT_TAG as usize },
         },
     };
     let inputs = [key(0), key(KEYEVENTF_KEYUP)];

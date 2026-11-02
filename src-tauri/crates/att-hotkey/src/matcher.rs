@@ -26,6 +26,16 @@ impl Matcher {
         self.latched
     }
 
+    /// 当前认定的修饰键集合（触发日志用）。
+    pub fn mods(&self) -> ModSet {
+        self.mods
+    }
+
+    /// 当前认定按着的非修饰键个数（触发日志用：纯修饰键组合因「还按着别的键」不触发时可据此看出）。
+    pub fn other_keys(&self) -> usize {
+        self.keys.len()
+    }
+
     /// 这个主键事件该不该吞掉：绑定有主键、正是这个键、且组合处于锁存（按下 / 自动重复 / 松开前）。
     /// 纯修饰键组合不吞（修饰键本身不会打出字）。
     pub fn owns_key(&self, hid: Option<u16>) -> bool {
