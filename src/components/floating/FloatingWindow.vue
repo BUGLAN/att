@@ -291,7 +291,15 @@ function emitChars(count, target) {
   shownChars.value = next
 }
 
-/** 识别文本变了：对齐已上屏的字，裁掉的开头直接去掉、被回改的末尾换掉，新字交给节拍器 */
+/** 字在整行里的横向位置（offsetLeft 不受墨晕动画的 transform 影响） */
+function charLeft(index) {
+  return trackEl.value?.children[index]?.offsetLeft
+}
+
+/**
+ * 识别文本变了：对齐已上屏的字。裁掉的开头直接去掉，前后两段对得上的字原样保留，
+ * 只把中间被回改的那截当场换掉（新字照样墨晕），还没上屏的新字交给节拍器。
+ */
 function syncLine(target) {
   if (!target.length) {
     shownChars.value = []
@@ -299,17 +307,26 @@ function syncLine(target) {
     paceBudget = 0
     return
   }
-  const { drop, keep } = reconcileLine(shownChars.value.map((c) => c.ch), target)
-  if (drop) {
-    // 开头裁掉的字本就在左侧可视区外：左移量同步扣掉它们的宽度，画面不跳
-    const nodes = trackEl.value?.children || []
-    let width = 0
-    for (let i = 0; i < drop && i < nodes.length; i++) {
-      width += nodes[i].getBoundingClientRect().width
-    }
-    shift.value = Math.max(0, shift.value - width)
+  const shown = shownChars.value
+  const { drop, keep, tail, end } = reconcileLine(shown.map((c) => c.ch), target)
+  // 锚点：保留下来的最靠右那段的第一个字。回改前后让它停在屏上原位——
+  // 开头裁掉、中间换字的宽度差都记到左移量上，最新的字留在原处，画面不跳
+  const anchor = tail ? shown.length - tail : keep ? drop : -1
+  const anchorId = anchor >= 0 ? shown[anchor].id : null
+  const anchorLeft = anchor >= 0 ? charLeft(anchor) : undefined
+  shownChars.value = [
+    ...shown.slice(drop, drop + keep),
+    ...target.slice(keep, end - tail).map((ch) => ({ id: ++charSeq, ch })),
+    ...shown.slice(shown.length - tail)
+  ]
+  if (anchorLeft !== undefined) {
+    nextTick(() => {
+      const left = charLeft(shownChars.value.findIndex((c) => c.id === anchorId))
+      if (left !== undefined) {
+        shift.value = Math.max(0, shift.value + left - anchorLeft)
+      }
+    })
   }
-  shownChars.value = shownChars.value.slice(drop, drop + keep)
   if (prefersReducedMotion()) {
     emitChars(target.length, target)
   }

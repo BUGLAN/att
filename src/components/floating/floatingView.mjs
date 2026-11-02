@@ -154,27 +154,60 @@ export const PACE_MAX_LAG_S = 0.5
 /** 整行左移的平滑时间常数（ms）：指数逼近，不回弹 */
 export const GLIDE_TAU_MS = 110
 
+/** 末尾重合段至少这么长才算数：单个字（的、了）巧合对上太常见，不能据此认定回改的边界 */
+export const MIN_TAIL_MATCH = 2
+
 /**
- * 把已上屏的字对齐到新的识别文本。
- * 新文本可能是：末尾追加、末尾回改、或因 tailText 只留末尾而从开头裁掉了几个字。
- * 在已上屏的字里找一个开头裁掉量 drop，使剩下的字与新文本的公共前缀最长（同长取最小 drop）。
- * @param {string[]} shown 已上屏的字（按 Array.from 切分）
- * @param {string[]} target 新的识别文本（按 Array.from 切分）
- * @returns {{ drop: number, keep: number }} 开头去掉 drop 个、再保留 keep 个，其余视为被回改
+ * 在 target[keep, …) 里找与已上屏末尾重合最长的位置（中段回改后，回改点之后的字往往原样还在）。
+ * @returns {{ tail: number, end: number }} 已上屏的末 tail 个字对上 target[end - tail, end)；
+ *   对不上时 tail = 0，end 取「原位替换」的长度
  */
-export function reconcileLine(shown, target) {
-  let best = { drop: 0, keep: 0 }
-  for (let drop = 0; drop < shown.length; drop++) {
-    let keep = 0
-    while (drop + keep < shown.length && keep < target.length && shown[drop + keep] === target[keep]) {
-      keep++
+function matchTail(shown, drop, keep, target) {
+  const rest = shown.length - drop
+  let best = { tail: 0, end: Math.min(rest, target.length) }
+  for (let end = target.length; end > keep; end--) {
+    let tail = 0
+    while (tail < rest - keep && tail < end - keep && shown[shown.length - 1 - tail] === target[end - 1 - tail]) {
+      tail++
     }
-    if (keep > best.keep) {
-      best = { drop, keep }
+    // 同样长时取离原长度最近的位置：回改多半不改变字数
+    if (tail >= MIN_TAIL_MATCH && (tail > best.tail || (tail === best.tail && Math.abs(end - rest) < Math.abs(best.end - rest)))) {
+      best = { tail, end }
     }
   }
-  // 一个字都对不上：整行都算回改，不当作裁头
-  return best.keep ? best : { drop: 0, keep: 0 }
+  return best
+}
+
+/**
+ * 把已上屏的字对齐到新的识别文本。
+ * 新文本可能是：末尾追加、回改（流式识别会改正在说的这句、定稿时补标点 / 数字改写，回改点可能在中间）、
+ * 或因 tailText 只留末尾而从开头裁掉了几个字。
+ * 在已上屏的字里找一个开头裁掉量 drop，使剩下的字与新文本开头、末尾两段重合的字数最多
+ * （同样多时取开头重合更长的，再取最小 drop）。只有中间对不上的那截算回改，前后两段原样保留，
+ * 回改点离末尾再远，屏上看得见的字也不会整行重打。
+ * @param {string[]} shown 已上屏的字（按 Array.from 切分）
+ * @param {string[]} target 新的识别文本（按 Array.from 切分）
+ * @returns {{ drop: number, keep: number, tail: number, end: number }}
+ *   开头去掉 drop 个；剩下的前 keep 个、末 tail 个原样保留，中间换成 target[keep, end - tail)；
+ *   对齐后上屏 end 个字（= target 的前 end 个），其后的交给节拍器
+ */
+export function reconcileLine(shown, target) {
+  let best = { drop: 0, keep: 0, tail: 0, end: Math.min(shown.length, target.length) }
+  let bestScore = 0
+  for (let drop = 0; drop < shown.length; drop++) {
+    const rest = shown.length - drop
+    let keep = 0
+    while (keep < rest && keep < target.length && shown[drop + keep] === target[keep]) {
+      keep++
+    }
+    const { tail, end } = keep < rest ? matchTail(shown, drop, keep, target) : { tail: 0, end: rest }
+    const score = keep + tail
+    if (score > bestScore || (score === bestScore && score > 0 && keep > best.keep)) {
+      best = { drop, keep, tail, end }
+      bestScore = score
+    }
+  }
+  return best
 }
 
 /**

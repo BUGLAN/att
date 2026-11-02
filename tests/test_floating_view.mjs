@@ -142,12 +142,55 @@ test('流式未确认文字：末尾那截单独标出，截取后仍是全文�
 
 test('出字对齐：追加保留全部、回改换掉末尾、裁头只去开头', () => {
   const chars = (t) => Array.from(t)
-  assert.deepEqual(reconcileLine(chars('今天下午'), chars('今天下午三点')), { drop: 0, keep: 4 }, '末尾追加')
-  assert.deepEqual(reconcileLine(chars('我们在山楼'), chars('我们在三楼会议室')), { drop: 0, keep: 3 }, '回改「山楼」')
-  assert.deepEqual(reconcileLine(chars('一二三四五'), chars('三四五六七')), { drop: 2, keep: 3 }, 'tailText 裁掉开头')
-  assert.deepEqual(reconcileLine(chars('天天天'), chars('天天天天')), { drop: 0, keep: 3 }, '重复字取最小裁头')
-  assert.deepEqual(reconcileLine(chars('甲乙'), chars('丙丁')), { drop: 0, keep: 0 }, '完全对不上整行回改')
-  assert.deepEqual(reconcileLine([], chars('新')), { drop: 0, keep: 0 })
+  assert.deepEqual(reconcileLine(chars('今天下午'), chars('今天下午三点')), { drop: 0, keep: 4, tail: 0, end: 4 }, '末尾追加')
+  assert.deepEqual(reconcileLine(chars('我们在山楼'), chars('我们在三楼会议室')), { drop: 0, keep: 3, tail: 0, end: 5 }, '回改「山楼」：单字巧合不算末尾重合，原位换掉')
+  assert.deepEqual(reconcileLine(chars('一二三四五'), chars('三四五六七')), { drop: 2, keep: 3, tail: 0, end: 3 }, 'tailText 裁掉开头')
+  assert.deepEqual(reconcileLine(chars('天天天'), chars('天天天天')), { drop: 0, keep: 3, tail: 0, end: 3 }, '重复字取最小裁头')
+  assert.deepEqual(reconcileLine(chars('你好世界'), chars('你好')), { drop: 0, keep: 2, tail: 0, end: 2 }, '末尾被删')
+  assert.deepEqual(reconcileLine(chars('甲乙'), chars('丙丁')), { drop: 0, keep: 0, tail: 0, end: 2 }, '完全对不上：原位整段换掉，不清空')
+  assert.deepEqual(reconcileLine([], chars('新')), { drop: 0, keep: 0, tail: 0, end: 0 })
+})
+
+// 回改后屏上的字：保留的前后两段 + 换上的中段，应恰好是 target 的前 end 个字
+function applyReconcile(shown, target) {
+  const { drop, keep, tail, end } = reconcileLine(shown, target)
+  const next = [...shown.slice(drop, drop + keep), ...target.slice(keep, end - tail), ...shown.slice(shown.length - tail)]
+  assert.deepEqual(next, target.slice(0, end), '对齐结果必须是 target 的前缀')
+  return { drop, keep, tail, end }
+}
+
+test('出字对齐：中段回改只换中间，回改点之后的字原样保留（不整行重打）', () => {
+  const chars = (t) => Array.from(t)
+
+  // 正在说的长句，服务端改了句首的词
+  const longShown = chars('今天下午我们在山楼会议室讨论一下这个季度的产品规划和接下来的排期安排')
+  const longTarget = chars('今天下午我们在三楼会议室讨论一下这个季度的产品规划和接下来的排期安排吧')
+  assert.deepEqual(applyReconcile(longShown, longTarget), { drop: 0, keep: 7, tail: 26, end: 34 }, '只换「山」一个字，末尾「吧」交给节拍器')
+
+  // 定稿时 ITN / 标点改写：字数变了，回改点之后的字照样对得上
+  const itn = applyReconcile(
+    chars('我们一共有一百二十个用户反馈了这个问题然后我们需要尽快的去处理它'),
+    chars('我们一共有120个用户反馈了这个问题，然后我们需要尽快地去处理它。')
+  )
+  assert.equal(itn.tail, 4, '「去处理它」保留')
+  assert.ok(itn.keep + itn.tail >= 9, '前后两段都保留')
+
+  // 句首单字回改：前缀一个都对不上，也不整行清空
+  const head = applyReconcile(chars('他说我们明天去公园然后我们一起吃饭我们再回家休息'), chars('她说我们明天去公园然后我们一起吃饭我们再回家休息吧'))
+  assert.deepEqual(head, { drop: 0, keep: 0, tail: 23, end: 24 }, '只换「他」，末尾「吧」交给节拍器')
+
+  // 超过 TAIL_CHARS 后既裁头、又在中间回改
+  const prefix = '前面已经说了很多内容'.repeat(6)
+  const before = Array.from(tailText(prefix + '这一句话里面有一个词识别错了后面还在继续说很多很多的内容'))
+  const after = Array.from(tailText(prefix + '这一句话里面有一个字识别错了，后面还在继续说很多很多的内容呀'))
+  const trimmed = applyReconcile(before, after)
+  assert.equal(trimmed.drop, 2, '裁掉开头两个字')
+  assert.equal(trimmed.tail, 14, '「后面还在继续说很多很多的内容」保留')
+  assert.equal(trimmed.end, after.length - 1, '只剩「呀」交给节拍器')
+
+  // 已上屏的字落后于识别结果（节拍器还没放完）时回改：只对齐已上屏的那截
+  const lagging = applyReconcile(chars('我们在山楼会议'), chars('我们在三楼会议室讨论一下'))
+  assert.deepEqual(lagging, { drop: 0, keep: 3, tail: 3, end: 7 })
 })
 
 test('吐字节拍：平时匀速，积压多时加速，落后不超过上限', () => {
