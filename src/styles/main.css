@@ -230,6 +230,10 @@ body::before {
     border-radius: var(--r-md);
     width: 100%;
     max-width: 480px;
+    /* 限高 + 纵向弹性：内容超出窗口时只滚动 .modal-body，标题栏与底部按钮始终可见 */
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
     box-shadow: var(--shadow-lg);
     animation: modal-enter 0.3s ease-out;
 }
@@ -246,6 +250,7 @@ body::before {
 }
 
 .modal-header {
+    flex: none;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -280,6 +285,9 @@ body::before {
 }
 
 .modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
     padding: var(--space-lg);
 }
 
@@ -1159,6 +1167,11 @@ textarea:focus-visible {
     max-width: 600px;
 }
 
+/* LLM 向导：供应商两列网格需要的宽度 */
+#llmWizardModal .modal-content {
+    max-width: 560px;
+}
+
 /* Preset List */
 .preset-list {
     max-height: 300px;
@@ -1230,6 +1243,7 @@ textarea:focus-visible {
 
 /* Modal Footer */
 .modal-footer {
+    flex: none;
     display: flex;
     justify-content: flex-end;
     gap: var(--space-sm);

@@ -1,37 +1,69 @@
 <template>
   <Modal :title="wizardTitle" modal-name="llmWizard">
-    <!-- 步骤指示 -->
-    <div class="wiz-steps">
-      <span class="wiz-step" :class="{ on: step >= 1 }">1 选择</span>
-      <span class="wiz-sep">—</span>
-      <span class="wiz-step" :class="{ on: step >= 2 }">2 凭据</span>
-      <span class="wiz-sep">—</span>
-      <span class="wiz-step" :class="{ on: step >= 3 }">3 模型</span>
-    </div>
+    <!-- 步骤指示：编号方块 + 连接线，已完成的步骤换成对勾 -->
+    <ol class="wiz-steps" aria-label="添加步骤">
+      <li
+        v-for="(label, index) in STEP_LABELS"
+        :key="label"
+        class="wiz-step"
+        :class="{ 'is-current': step === index + 1, 'is-done': step > index + 1 }"
+        :aria-current="step === index + 1 ? 'step' : undefined"
+      >
+        <span class="wiz-step-num">
+          <svg v-if="step > index + 1" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" /></svg>
+          <template v-else>{{ index + 1 }}</template>
+        </span>
+        <span class="wiz-step-label">{{ label }}</span>
+      </li>
+    </ol>
 
     <!-- 步骤 1：选择供应商 -->
     <div v-if="step === 1">
-      <p class="wiz-hint">
-        内置 14 家服务商。未列出的 OpenAI 兼容端点（硅基流动、第三方中转等）选择「自定义 OpenAI 兼容」即可，无需等待应用更新。
-      </p>
       <div class="wiz-search">
-        <input v-model.trim="providerQuery" class="wiz-input" placeholder="搜索供应商，例如 deepseek、ollama、openrouter…">
+        <svg class="wiz-search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m20 20-4.2-4.2" /></svg>
+        <input v-model.trim="providerQuery" class="wiz-input" placeholder="搜索供应商，例如 deepseek、ollama、openrouter…" aria-label="搜索供应商">
       </div>
-      <div class="wiz-grid">
+      <div v-if="builtinProviders.length" class="wiz-grid" role="radiogroup" aria-label="内置服务商">
         <button
-          v-for="provider in filteredProviders"
+          v-for="provider in builtinProviders"
           :key="provider.id"
           type="button"
+          role="radio"
           class="wiz-cell"
           :class="{ selected: selectedProvider?.id === provider.id }"
+          :aria-checked="selectedProvider?.id === provider.id ? 'true' : 'false'"
+          :title="provider.name"
           @click="selectedProvider = provider"
         >
-          <span class="wiz-cell-name">{{ provider.name }}</span>
-          <span class="wiz-cell-prefix mono">{{ provider.litellm_prefix }}/…</span>
-          <span class="wiz-cell-tag">{{ provider.requires_key ? '需密钥' : '无需密钥' }}</span>
+          <span class="wiz-cell-logo" aria-hidden="true">{{ provider.name.charAt(0).toUpperCase() }}</span>
+          <span class="wiz-cell-text">
+            <span class="wiz-cell-name">{{ provider.name }}</span>
+            <span class="wiz-cell-meta">
+              <span class="mono">{{ provider.litellm_prefix }}/</span>
+              <!-- 绝大多数都要密钥，只把例外标出来 -->
+              <span v-if="!provider.requires_key" class="wiz-cell-tag">免密钥</span>
+            </span>
+          </span>
+          <svg class="wiz-cell-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" /></svg>
         </button>
       </div>
-      <p class="wiz-hint dim">目录随应用版本内置。</p>
+      <!-- 自定义端点是兜底入口，单独一行放在最后 -->
+      <button
+        v-if="customProvider"
+        type="button"
+        class="wiz-cell wiz-cell-custom"
+        :class="{ selected: selectedProvider?.id === customProvider.id }"
+        :aria-pressed="selectedProvider?.id === customProvider.id ? 'true' : 'false'"
+        @click="selectedProvider = customProvider"
+      >
+        <span class="wiz-cell-logo" aria-hidden="true">+</span>
+        <span class="wiz-cell-text">
+          <span class="wiz-cell-name">{{ customProvider.name }}</span>
+          <span class="wiz-cell-meta">未列出的端点（硅基流动、第三方中转等）选这里，无需等待应用更新</span>
+        </span>
+        <svg class="wiz-cell-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" /></svg>
+      </button>
+      <p v-if="!builtinProviders.length && !customProvider" class="wiz-empty">没有匹配「{{ providerQuery }}」的服务商，可以试试「自定义 OpenAI 兼容」。</p>
     </div>
 
     <!-- 步骤 2：填写凭据（保存前验证） -->
@@ -173,6 +205,8 @@ const wizardTitle = computed(() => {
   return '添加模型'
 })
 
+const STEP_LABELS = ['选择服务商', '填写凭据', '选择模型']
+
 const filteredProviders = computed(() => {
   const query = providerQuery.value.toLowerCase()
   if (!query) {
@@ -184,6 +218,9 @@ const filteredProviders = computed(() => {
     (provider.litellm_prefix || '').toLowerCase().includes(query)
   )
 })
+const builtinProviders = computed(() => filteredProviders.value.filter((provider) => provider.id !== 'custom'))
+// 自定义端点不参与搜索过滤：搜不到时它正是要找的出路
+const customProvider = computed(() => settingsStore.llmProviders.find((provider) => provider.id === 'custom') || null)
 
 const basePlaceholder = computed(() => {
   if (selectedProvider.value?.id === 'custom') {
@@ -332,15 +369,32 @@ function close() {
 </script>
 
 <style scoped>
-.wiz-steps { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 11px; color: var(--text-3); }
-.wiz-step.on { color: var(--accent-hi); font-weight: 600; }
-.wiz-sep { opacity: 0.5; }
+/* ---------- 步骤指示 ---------- */
+.wiz-steps {
+  display: flex; align-items: center; gap: var(--s-2);
+  list-style: none; margin: 0 0 var(--s-4); padding: 0;
+}
+.wiz-step { display: flex; align-items: center; gap: var(--s-2); font-size: var(--fs-cap); color: var(--text-3); white-space: nowrap; }
+/* 步骤之间的连接线 */
+.wiz-step + .wiz-step::before {
+  content: ''; width: 24px; height: 1px; background: var(--line-strong); margin-right: var(--s-1);
+}
+.wiz-step.is-done + .wiz-step::before { background: var(--accent-line-strong); }
+.wiz-step-num {
+  width: 20px; height: 20px; border-radius: var(--r-sm); flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line-strong); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.wiz-step-num svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.wiz-step.is-current { color: var(--text-1); font-weight: 600; }
+.wiz-step.is-current .wiz-step-num { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.wiz-step.is-done { color: var(--text-2); }
+.wiz-step.is-done .wiz-step-num { background: var(--accent-dim); border-color: var(--accent-line); color: var(--accent-hi); }
 
 .wiz-hint { margin: 0 0 12px; font-size: 12px; color: var(--text-3); line-height: 1.7; }
-.wiz-hint.dim { margin: 10px 0 0; }
+.wiz-field .wiz-hint { margin: 6px 0 0; }
 .wiz-hint.error-text { color: var(--err); margin-top: 6px; }
 
-.wiz-search { margin-bottom: 10px; }
 .wiz-input {
   width: 100%; background: var(--bg-raise); border: 1px solid var(--line-strong);
   border-radius: var(--r-sm); color: var(--text-1); font: inherit; font-size: 13px;
@@ -349,17 +403,58 @@ function close() {
 .wiz-input:focus { border-color: var(--accent-line-strong); box-shadow: 0 0 0 2px var(--accent); }
 .mono { font-family: var(--font-mono, Consolas, monospace); font-size: 12px; }
 
-.wiz-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.wiz-cell {
-  display: flex; flex-direction: column; gap: 4px; align-items: flex-start;
-  border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--bg-surface);
-  padding: 10px 12px; cursor: pointer; color: var(--text-1); font: inherit; text-align: left;
+/* ---------- 步骤 1：搜索 + 服务商网格 ---------- */
+.wiz-search { position: relative; margin-bottom: var(--s-3); }
+.wiz-search .wiz-input { height: 36px; padding-left: 34px; }
+.wiz-search-icon {
+  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+  width: 15px; height: 15px; fill: none; stroke: var(--text-3); stroke-width: 1.75; stroke-linecap: round;
+  pointer-events: none;
 }
-.wiz-cell:hover { border-color: var(--accent-line-strong); background: var(--bg-raise); }
-.wiz-cell.selected { border-color: var(--accent); background: var(--accent-dim); }
-.wiz-cell-name { font-size: 13px; font-weight: 600; }
-.wiz-cell-prefix { font-size: 11px; color: var(--text-3); }
-.wiz-cell-tag { font-size: 10px; color: var(--text-3); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 0 6px; }
+
+.wiz-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-2); }
+.wiz-cell {
+  position: relative;
+  display: flex; align-items: center; gap: 10px; min-width: 0; height: 52px;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-card);
+  padding: 0 32px 0 10px; cursor: pointer; color: var(--text-1); font: inherit; text-align: left;
+  transition: border-color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease);
+}
+.wiz-cell:hover { border-color: var(--line-strong); background: var(--bg-raise); }
+.wiz-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wiz-cell.selected { border-color: var(--accent-line-strong); background: var(--accent-dim); }
+.wiz-cell-logo {
+  width: 30px; height: 30px; border-radius: var(--r-sm); flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--grad-raise); border: 1px solid var(--line-strong);
+  font-size: 13px; font-weight: 700; color: var(--text-2);
+}
+.wiz-cell.selected .wiz-cell-logo { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.wiz-cell-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.wiz-cell-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wiz-cell-meta {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wiz-cell-meta .mono { font-size: 11px; }
+.wiz-cell-tag {
+  flex: none; height: 16px; line-height: 16px; padding: 0 5px; border-radius: var(--r-xs);
+  background: var(--ok-soft); color: var(--ok); font-size: 10px;
+}
+.wiz-cell-check {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  width: 15px; height: 15px; fill: none; stroke: var(--accent-hi); stroke-width: 2.25;
+  stroke-linecap: round; stroke-linejoin: round;
+  opacity: 0; transition: opacity var(--t-fast) var(--ease);
+}
+.wiz-cell.selected .wiz-cell-check { opacity: 1; }
+
+.wiz-cell-custom { width: 100%; margin-top: var(--s-2); border-style: dashed; background: transparent; }
+.wiz-cell-custom.selected { border-style: solid; }
+.wiz-cell-custom .wiz-cell-logo { background: transparent; border-style: dashed; font-weight: 400; font-size: 16px; }
+.wiz-cell-custom .wiz-cell-meta { display: block; }
+
+.wiz-empty { margin: var(--s-2) 0 0; font-size: var(--fs-cap); color: var(--text-3); text-align: center; }
 
 .wiz-field { margin-bottom: 14px; }
 .wiz-label { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 6px; }
