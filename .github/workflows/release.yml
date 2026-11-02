@@ -9,6 +9,9 @@
 # （Windows 上还有 oneDNN），首次约 20–40 分钟；rust-cache 缓存 target 后会快很多。
 # 两个平台都自带 CMake；Windows 的静态 CRT（+crt-static）由 src-tauri/.cargo/config.toml 提供。
 # 模型文件不随包（见 docs/遗留与下线.md §5），安装后在设置页按提示下载。
+#
+# Release 标题只写版本号（如 v2.3.0）；版本说明取自注释标签的正文（标题行写版本号，正文按「新增 / 修改 / 修复」分节），
+# 后面接固定的安装说明。轻量标签或只有标题行时只有安装说明。
 
 name: Release
 
@@ -79,6 +82,19 @@ jobs:
       - name: 安装前端依赖
         run: npm ci
 
+      # checkout 按提交检出，不一定带上注释标签对象：单独取回标签再读注释
+      - name: 读取版本说明
+        id: notes
+        shell: bash
+        run: |
+          git fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          notes="$(git tag -l --format='%(contents:body)' "${RELEASE_TAG}")"
+          {
+            echo 'body<<ATT_RELEASE_NOTES_EOF'
+            printf '%s\n' "${notes}"
+            echo 'ATT_RELEASE_NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: 打包并发布
         uses: tauri-apps/tauri-action@v0
         env:
@@ -87,10 +103,12 @@ jobs:
           # 显式用 npm 调 tauri：runner 的包管理器探测可能选错，仓库统一用 npm（package-lock.json）
           tauriScript: npm run tauri
           tagName: ${{ env.RELEASE_TAG }}
-          releaseName: 落墨 ${{ env.RELEASE_TAG }}
+          releaseName: ${{ env.RELEASE_TAG }}
           # productName 是中文，GitHub 会把附件名里的非 ASCII 字符替换掉：附件统一用拼音名
           releaseAssetNamePattern: Luomo_[version]_[arch][setup][ext]
           releaseBody: |
+            ${{ steps.notes.outputs.body }}
+
             ## 安装
             - **macOS（Apple Silicon）**：下载 `.dmg`。安装包未签名，首次打开若提示「无法验证开发者」，到「系统设置 → 隐私与安全性」点「仍要打开」。
               全局快捷键与自动粘贴需要在「隐私与安全性」里给本应用「输入监控」和「辅助功能」权限。
