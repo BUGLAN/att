@@ -4,8 +4,7 @@
     :class="{
       collapsed,
       resizing: isResizing,
-      'collapse-intent': resizeIntent === 'collapse',
-      'expand-intent': resizeIntent === 'expand'
+      'collapse-intent': collapseIntent
     }"
     :style="{ width: `${width}px` }"
   >
@@ -43,32 +42,16 @@
       </button>
     </div>
 
+    <!-- 拖拽把手就是右边线本身：不放悬浮按钮，指针落到边线热区上停一下，整条边线才亮起 -->
     <button
       ref="resizeHandle"
       class="sidebar-resizer"
       type="button"
       aria-label="调整侧边栏宽度"
+      title="拖动调整宽度"
       @pointerdown="startResize"
     >
-      <span class="sidebar-resizer-rail"></span>
-      <span class="sidebar-resizer-grip" aria-hidden="true">
-        <template v-if="resizeIntent === 'collapse'">
-          <svg viewBox="0 0 16 16" fill="none">
-            <path d="M10.5 3.5 6 8l4.5 4.5" />
-          </svg>
-        </template>
-        <template v-else-if="resizeIntent === 'expand'">
-          <svg viewBox="0 0 16 16" fill="none">
-            <path d="M5.5 3.5 10 8l-4.5 4.5" />
-          </svg>
-        </template>
-        <template v-else>
-          <svg viewBox="0 0 16 16" fill="none">
-            <path d="M6 3v10" />
-            <path d="M10 3v10" />
-          </svg>
-        </template>
-      </span>
+      <span class="sidebar-resizer-rail" aria-hidden="true"></span>
     </button>
   </aside>
 </template>
@@ -144,17 +127,8 @@ const collapseThreshold = computed(() => appStore.sidebarCollapseThreshold)
 const minWidth = computed(() => appStore.sidebarMinWidth)
 const maxWidth = computed(() => appStore.sidebarMaxWidth)
 
-const resizeIntent = computed(() => {
-  if (props.collapsed) {
-    return 'expand'
-  }
-
-  if (isResizing.value && liveWidth.value <= collapseThreshold.value) {
-    return 'collapse'
-  }
-
-  return 'resize'
-})
+// 拖到收起阈值以内：松手就会收起，边线换成实金提示
+const collapseIntent = computed(() => isResizing.value && liveWidth.value <= collapseThreshold.value)
 
 function navigateTo(page) {
   appStore.setCurrentPage(page)

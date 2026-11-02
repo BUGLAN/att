@@ -776,6 +776,7 @@ textarea:focus-visible {
     justify-content: center;
 }
 
+/* 拖拽热区：骑在右边线上，左右各 8px */
 .sidebar-resizer {
     position: absolute;
     top: 0;
@@ -786,74 +787,36 @@ textarea:focus-visible {
     background: transparent;
     padding: 0;
     cursor: col-resize;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     -webkit-appearance: none;
     appearance: none;
 }
 
+/* 亮起的边线：通顶到底、2px 盖住侧边栏自己的 1px 右边框，不另起一根缩进的线。
+   热区按内边距盒定位（右缘在边框内侧），所以 7~9px 正好是侧边栏最右 2px（含边框）。
+   只在指针落到热区上停一下才亮（扫过不闪），移开立即熄灭 */
 .sidebar-resizer-rail {
     position: absolute;
-    top: 14px;
-    bottom: 14px;
+    top: 0;
+    bottom: 0;
+    left: 7px;
     width: 2px;
-    border-radius: var(--r-full);
     background: transparent;
-    transition: background var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+    transition: background var(--t-fast) var(--ease);
 }
 
-.sidebar-resizer-grip {
-    position: relative;
-    z-index: 1;
-    width: 22px;
-    height: 44px;
-    border-radius: var(--r-sm);
-    border: 1px solid transparent;
-    background: transparent;
-    color: transparent;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    transition: all var(--t-fast) var(--ease);
-    pointer-events: none;
+.sidebar-resizer:hover .sidebar-resizer-rail {
+    background: var(--accent-line-strong);
+    transition-delay: 120ms;
 }
 
-.sidebar-resizer-grip svg {
-    width: 12px;
-    height: 12px;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-}
-
-.sidebar:hover .sidebar-resizer-rail,
 .sidebar.resizing .sidebar-resizer-rail {
-    background: var(--accent-tint);
-    box-shadow: 0 0 18px var(--accent-faint);
+    background: var(--accent-line-strong);
+    transition-delay: 0s;
 }
 
-.sidebar:hover .sidebar-resizer-grip,
-.sidebar.resizing .sidebar-resizer-grip {
-    border-color: var(--line-strong);
-    background: var(--bg-card);
-    color: var(--accent-hi);
-}
-
-.sidebar.collapse-intent {
-    border-right-color: var(--accent-line-strong);
-    box-shadow: inset -1px 0 0 var(--accent-tint);
-}
-
-.sidebar.collapse-intent .sidebar-resizer-grip {
-    color: var(--accent);
-    background: var(--accent-faint);
-    border-color: var(--accent-line-strong);
-}
-
-.sidebar.expand-intent .sidebar-resizer-grip {
-    color: var(--gray-200);
+/* 拖到收起阈值以内：边线换成实金，松手就收起 */
+.sidebar.collapse-intent .sidebar-resizer-rail {
+    background: var(--accent);
 }
 
 /* 主内容区 */
