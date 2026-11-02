@@ -13,7 +13,6 @@
       </button>
     </div>
 
-    <!-- 剪贴板列表含悬停缩略图，卡片不裁切溢出 -->
     <section class="settings-section clipboard-section">
       <div class="settings-group">
         <div class="ui-tabs clipboard-tabs" role="tablist" aria-label="筛选剪贴板">
@@ -47,10 +46,20 @@
             @delete="requestDelete"
             @toggle-favorite="handleToggleFavorite"
             @toggle-pin="handleTogglePin"
+            @view-image="viewer = $event"
           />
         </template>
       </div>
     </section>
+
+    <ImageViewer
+      :src="viewer?.src || ''"
+      :title="viewer?.title || ''"
+      :meta="viewer?.meta || ''"
+      copyable
+      @copy="handleCopy(viewer.item)"
+      @close="viewer = null"
+    />
 
     <ConfirmDialog
       v-model="isDeleteConfirmVisible"
@@ -69,6 +78,7 @@ import { useClipboard } from '@/composables/useClipboard'
 import { useElectron } from '@/composables/useElectron'
 import ClipboardRow from '@/components/clipboard/ClipboardRow.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import ImageViewer from '@/components/common/ImageViewer.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { ACTION_GLYPHS as G, NAV_GLYPHS } from '@/components/common/glyphs.mjs'
 import { buildClipboardTogglePatch, patchClipboardItems } from '@/utils/clipboardCardActions.mjs'
@@ -103,6 +113,8 @@ const tabs = computed(() => [
 ])
 const pendingDeleteItem = ref(null)
 const isDeleteConfirmVisible = ref(false)
+// 看图器当前展示的图片：{ item, src, title, meta }，null 表示关闭
+const viewer = ref(null)
 
 function debounce(fn, delay) {
   let timer = null
@@ -245,11 +257,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 悬停缩略图会浮出行外：这一张卡片不裁切 */
-.clipboard-section {
-  overflow: visible;
-}
-
 .clipboard-tabs {
   margin-bottom: var(--s-4);
 }

@@ -36,7 +36,13 @@ export const ACTION_GLYPHS = Object.freeze({
   refresh: '新',
   import: '入',
   file: '檔',
-  settings: '設'
+  settings: '設',
+  // 看图器：放大 / 缩小 / 原始尺寸 / 适应窗口 / 关闭
+  zoomIn: '放',
+  zoomOut: '縮',
+  actualSize: '原',
+  fit: '適',
+  close: '關'
 })
 
 /** 剪贴板条目类型（code 在界面上叫「长文本」） */

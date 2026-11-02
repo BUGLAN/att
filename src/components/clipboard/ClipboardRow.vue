@@ -1,18 +1,36 @@
 <template>
   <!--
     剪贴板条目行：类型单字（文 / 長 / 圖 / 鏈 / 檔）· 内容 · 类型 / 尺寸 / 时间；
-    图片在列表里同样只占一枚「圖」，悬停时才浮出缩略图；操作按钮（複 / 頂 / 藏 / 刪）悬停才出现。
+    图片在列表里同样只占一枚「圖」，悬停时才浮出缩略图，点击整行打开看图器；操作按钮（複 / 頂 / 藏 / 刪）悬停才出现。
   -->
-  <div class="ui-row clipboard-row" :class="{ 'is-pinned': item.is_pinned }" @mouseenter="handlePreviewHover">
-    <span class="clipboard-row-type">
+  <div
+    class="ui-row clipboard-row"
+    :class="{ 'is-pinned': item.is_pinned, 'is-zoomable': isImageItem }"
+    :tabindex="isImageItem ? 0 : undefined"
+    :aria-label="isImageItem ? `查看图片：${displayTitle}` : undefined"
+    @mouseenter="handleRowEnter"
+    @mouseleave="handleRowLeave"
+    @click="handleRowClick"
+    @keydown.enter.self="handleRowClick"
+  >
+    <span ref="typeRef" class="clipboard-row-type">
       <span class="ui-glyph-tile" :class="{ 'is-accent': item.is_pinned }" :title="typeLabel">{{ typeGlyph }}</span>
-      <span v-if="isImageItem" class="clipboard-peek" aria-hidden="true">
-        <span v-if="previewLoading" class="ui-meta"><span class="ui-dot blue pulse"></span>加载中…</span>
-        <span v-else-if="!hasPreviewUrl || previewFailed" class="ui-meta">图片不可用</span>
-        <img v-else :src="resolvedPreviewUrl" :alt="displayTitle" @error="handlePreviewError">
-        <span v-if="imageSize" class="ui-meta ui-mono">{{ imageSize }}</span>
-      </span>
     </span>
+
+    <!-- 缩略图挂到 body 上按视口定位：列表滚动容器会裁切行外内容，放在行内会被上方区域挡住 -->
+    <Teleport to="body">
+      <Transition name="clipboard-peek">
+        <span v-if="isImageItem && peekStyle" class="clipboard-peek" :style="peekStyle" aria-hidden="true">
+          <span v-if="previewLoading" class="ui-meta"><span class="ui-dot blue pulse"></span>加载中…</span>
+          <span v-else-if="!hasPreviewUrl || previewFailed" class="ui-meta">图片不可用</span>
+          <img v-else :src="resolvedPreviewUrl" :alt="displayTitle" @error="handlePreviewError">
+          <span class="clipboard-peek-foot">
+            <span v-if="imageSize" class="ui-meta ui-mono">{{ imageSize }}</span>
+            <span v-if="hasPreviewUrl && !previewFailed" class="ui-meta">点击查看大图</span>
+          </span>
+        </span>
+      </Transition>
+    </Teleport>
 
     <div class="ui-row-main">
       <p class="clipboard-row-text ui-clamp-2" :class="{ 'ui-mono': isMonoText, 'is-link': item.item_type === 'link' }">{{ primaryText }}</p>
@@ -50,7 +68,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { ACTION_GLYPHS as G, clipTypeGlyph } from '@/components/common/glyphs.mjs'
 import {
@@ -74,13 +92,25 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['copy', 'delete', 'toggle-favorite', 'toggle-pin'])
+const emit = defineEmits(['copy', 'delete', 'toggle-favorite', 'toggle-pin', 'view-image'])
+
+// 缩略图尺寸：宽度固定，图片最高 280px；上下哪边空间大就浮在哪边
+const PEEK_WIDTH = 240
+const PEEK_IMG_MAX = 280
+const PEEK_GAP = 8
+const PEEK_CHROME = 48 // 内边距 + 底部尺寸行
+const VIEWPORT_MARGIN = 8
+
+const typeRef = ref(null)
+const peekStyle = ref(null)
+let previewPromise = null
 const previewFailed = ref(false)
 const previewLoading = ref(false)
 const previewUrl = ref('')
 const previewRequested = ref(false)
 
 watch(() => props.item.id, () => {
+  previewPromise = null
   previewFailed.value = false
   previewLoading.value = false
   previewRequested.value = false
@@ -155,11 +185,71 @@ const metaText = computed(() => [
   props.item.is_pinned ? '已置顶' : ''
 ].filter(Boolean).join(' · '))
 
-async function handlePreviewHover() {
-  if (!isImageItem.value || previewRequested.value || resolvedPreviewUrl.value) {
+function updatePeekPosition() {
+  const rect = typeRef.value?.getBoundingClientRect()
+  if (!rect) {
     return
   }
+  const spaceAbove = rect.top - PEEK_GAP - VIEWPORT_MARGIN
+  const spaceBelow = window.innerHeight - rect.bottom - PEEK_GAP - VIEWPORT_MARGIN
+  const placeAbove = spaceAbove >= PEEK_IMG_MAX + PEEK_CHROME || spaceAbove >= spaceBelow
+  const imgMax = Math.max(Math.min(PEEK_IMG_MAX, (placeAbove ? spaceAbove : spaceBelow) - PEEK_CHROME), 60)
+  const left = Math.min(Math.max(rect.left, VIEWPORT_MARGIN), window.innerWidth - PEEK_WIDTH - VIEWPORT_MARGIN)
+  peekStyle.value = {
+    left: `${left}px`,
+    '--peek-img-max': `${imgMax}px`,
+    ...(placeAbove
+      ? { bottom: `${window.innerHeight - rect.top + PEEK_GAP}px` }
+      : { top: `${rect.bottom + PEEK_GAP}px` })
+  }
+}
 
+function hidePeek() {
+  peekStyle.value = null
+  window.removeEventListener('scroll', hidePeek, true)
+}
+
+function handleRowEnter() {
+  if (!isImageItem.value) {
+    return
+  }
+  updatePeekPosition()
+  // 列表滚动时缩略图会和行错位，直接收起，等下次悬停再出
+  window.addEventListener('scroll', hidePeek, true)
+  loadPreview()
+}
+
+function handleRowLeave() {
+  hidePeek()
+}
+
+async function handleRowClick(event) {
+  if (!isImageItem.value || event.target.closest?.('.ui-hover-actions')) {
+    return
+  }
+  hidePeek()
+  await loadPreview()
+  if (hasPreviewUrl.value && !previewFailed.value) {
+    emit('view-image', { item: props.item, src: resolvedPreviewUrl.value, title: displayTitle.value, meta: imageSize.value })
+  }
+}
+
+onBeforeUnmount(hidePeek)
+
+// 悬停与点击共用一次加载：点击时若仍在加载，等它完成而不是重复请求
+function loadPreview() {
+  if (!isImageItem.value || resolvedPreviewUrl.value) {
+    return Promise.resolve()
+  }
+  if (!previewPromise) {
+    previewPromise = fetchPreview().finally(() => {
+      previewPromise = null
+    })
+  }
+  return previewPromise
+}
+
+async function fetchPreview() {
   previewRequested.value = true
   previewLoading.value = true
   previewFailed.value = false
@@ -236,37 +326,55 @@ function blobToDataUrl(blob) {
   display: none;
 }
 
-/* 图片缩略图：悬停整行时浮在「圖」上方 */
+.clipboard-row.is-zoomable {
+  cursor: zoom-in;
+}
+
+.clipboard-row.is-zoomable:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* 图片缩略图：挂在 body 上，按「圖」的视口位置浮在其上方或下方（坐标由脚本给出） */
 .clipboard-peek {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 8px);
-  z-index: 20;
+  position: fixed;
+  z-index: var(--z-popup);
   display: grid;
   gap: 6px;
+  box-sizing: border-box;
   width: 240px;
   padding: 8px;
   background: var(--bg-raise);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
   box-shadow: var(--e-4);
-  opacity: 0;
-  transform: translateY(4px);
   pointer-events: none;
-  transition: opacity var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
 }
 
 .clipboard-peek img {
   display: block;
   width: 100%;
-  max-height: 280px;
+  max-height: var(--peek-img-max, 280px);
   object-fit: contain;
   border-radius: var(--r-sm);
   background: var(--bg-base);
 }
 
-.clipboard-row:hover .clipboard-peek {
-  opacity: 1;
-  transform: none;
+.clipboard-peek-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+
+.clipboard-peek-enter-active,
+.clipboard-peek-leave-active {
+  transition: opacity var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+
+.clipboard-peek-enter-from,
+.clipboard-peek-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
 }
 </style>
