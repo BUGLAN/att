@@ -7,6 +7,7 @@
 
 use crate::llm::errors::{LlmError, CODE_UNSUPPORTED_PROVIDER};
 use crate::llm::gateway::{self, ChatMessage, ChatOptions, Endpoint};
+use crate::llm::prompt::glossary_block;
 use crate::llm::registry;
 use crate::state::CoreState;
 use serde_json::{json, Map, Value};
@@ -274,6 +275,9 @@ pub async fn run(
         reasoning_effort: target.model.params.reasoning_effort.clone(),
     };
     let model = target.model.model.clone();
+    // 用户词表（设置 asr_hotwords）追加在 system 末尾：专有名词纠错时按词表写法
+    let glossary = glossary_block(&core.settings().asr_hotwords);
+    let system_prompt = if glossary.is_empty() { SYSTEM_PROMPT.to_string() } else { format!("{SYSTEM_PROMPT}\n\n{glossary}") };
     let semaphore = Arc::new(tokio::sync::Semaphore::new(CONCURRENCY));
     let done = AtomicUsize::new(0);
     let window_total = windows.len();
@@ -288,11 +292,12 @@ pub async fn run(
         } else {
             String::new()
         };
-        let (endpoint, model, chat_options, done, on_progress) = (&endpoint, &model, &chat_options, &done, &on_progress);
+        let (endpoint, model, chat_options, done, on_progress, system_prompt) =
+            (&endpoint, &model, &chat_options, &done, &on_progress, &system_prompt);
         async move {
             let _permit = semaphore.acquire().await.expect("信号量未关闭");
             let mut messages =
-                vec![ChatMessage::new("system", SYSTEM_PROMPT), ChatMessage::new("user", build_user_prompt(&original, &context_tail))];
+                vec![ChatMessage::new("system", system_prompt.as_str()), ChatMessage::new("user", build_user_prompt(&original, &context_tail))];
             let mut requests = 0;
             let mut outcome: Result<Option<BTreeMap<usize, String>>, String> = Ok(None);
             for _ in 0..MAX_STEPS {

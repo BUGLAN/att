@@ -69,6 +69,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useSettings, usePresets } from '@/composables/useSettings'
 import { useElectron } from '@/composables/useElectron'
 import { hasPendingSettingsEdits } from './settingsFormSync.mjs'
+import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
 import { SETTINGS_CTX } from './settingsContext.js'
 import { DEFAULT_SECTION_ID, buildNavGroups, findSection, resolveSectionId } from './settingsNav.mjs'
 import SettingsRecordingPage from './pages/SettingsRecordingPage.vue'
@@ -286,6 +287,8 @@ function normalizeSettings(value = {}) {
   form.value = {
     asr_provider: value.asr_provider || 'whisper',
     asr_language: value.asr_language || 'zh',
+    // 文本框原文：解析结果与服务端一致时保留用户正在敲的内容（见 hotwordsText）
+    asr_hotwords_text: hotwordsText(value.asr_hotwords, form.value?.asr_hotwords_text),
     whisper_model: value.whisper_model || 'large-v3',
     whisper_device: value.whisper_device || 'auto',
     qwen_asr_model: value.qwen_asr_model || 'Qwen/Qwen3-ASR-1.7B',
@@ -328,6 +331,7 @@ function buildSettingsPayload() {
   const payload = {
     asr_provider: form.value.asr_provider,
     asr_language: form.value.asr_language,
+    asr_hotwords: parseHotwords(form.value.asr_hotwords_text),
     whisper_model: form.value.whisper_model,
     whisper_device: form.value.whisper_device,
     qwen_asr_model: form.value.qwen_asr_model,

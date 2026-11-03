@@ -119,6 +119,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const settings = ref({
     asr_provider: 'whisper',
     asr_language: 'zh',
+    asr_hotwords: [],
     whisper_model: 'large-v3',
     whisper_device: 'auto',
     qwen_asr_model: 'Qwen/Qwen3-ASR-1.7B',

@@ -1,7 +1,7 @@
 //! 火山引擎豆包双向流式 ASR（SAUC 二进制协议）编解码层。
 //!
 //! 逐项移植自 Python `app/stt/providers/volcengine_sauc.py`（纯函数，便于单测）：
-//! 1. 请求体构造（`build_bigmodel_request` / `build_dialogue_context_json`）；
+//! 1. 请求体构造（`build_bigmodel_request` / `build_hotwords_context_json` / `build_dialogue_context_json`）；
 //! 2. 帧编解码（`build_full_client_request` / `build_audio_request` / `parse_server_frame`）；
 //! 3. 结果推进与错误归一化（`advance_definite_prefix` / `classify_*`）。
 //!
@@ -29,6 +29,8 @@ pub const CHUNK_SAMPLES: usize = 3200;
 pub const STREAM_CHUNK_SAMPLES: usize = 1600;
 /// corpus.context 上限（按码点）
 pub const ASR_CONTEXT_MAX_CHARS: usize = 800;
+/// 热词直传上限：双向流式接口只认 100 tokens（流式输入模式才有 5000 词），超出部分按顺序截断
+pub const HOTWORDS_MAX_TOKENS: usize = 100;
 
 const PROTOCOL_VERSION: u8 = 0b0001;
 const HEADER_SIZE_UNITS: u8 = 0b0001;
@@ -132,6 +134,17 @@ pub fn build_dialogue_context_json(context: &str) -> String {
     json!({ "context_type": "dialog_ctx", "context_data": [{ "text": trimmed }] }).to_string()
 }
 
+/// 热词直传：`{"hotwords":[{"word":"…"}]}` 同样序列化成 JSON 字符串放进 `corpus.context`；
+/// 只发预算内的前缀（[`super::hotwords::within_budget`]），没有词时返回空串。
+pub fn build_hotwords_context_json(words: &[String]) -> String {
+    let words = super::hotwords::within_budget(words, HOTWORDS_MAX_TOKENS);
+    if words.is_empty() {
+        return String::new();
+    }
+    let hotwords: Vec<Value> = words.iter().map(|word| json!({ "word": word })).collect();
+    json!({ "hotwords": hotwords }).to_string()
+}
+
 /// 应用内短语言码 → 协议取值（BCP-47）；空串表示不传（自动识别）。
 pub fn normalize_language(language: &str) -> String {
     let normalized = language.trim();
@@ -151,7 +164,15 @@ pub fn normalize_language(language: &str) -> String {
 
 /// 全量客户端请求体。`result_type=full` + `show_utterances=true` 必须同时满足
 /// （definite 判据依赖句级信息，single 模式会静默丢句）。
-pub fn build_bigmodel_request(uid: &str, language: &str, context: &str, end_window_size: i64) -> Value {
+///
+/// `corpus.context` 只放一种：有热词时发热词，否则发对话上下文（官方文档没说明两者能否合在一个 context 里）。
+pub fn build_bigmodel_request(
+    uid: &str,
+    language: &str,
+    context: &str,
+    hotwords: &[String],
+    end_window_size: i64,
+) -> Value {
     let mut request = json!({
         "model_name": MODEL_NAME,
         "enable_itn": true,
@@ -164,7 +185,10 @@ pub fn build_bigmodel_request(uid: &str, language: &str, context: &str, end_wind
         request["end_window_size"] = json!(end_window_size);
         request["force_to_speech_time"] = json!(0);
     }
-    let context_json = build_dialogue_context_json(context);
+    let mut context_json = build_hotwords_context_json(hotwords);
+    if context_json.is_empty() {
+        context_json = build_dialogue_context_json(context);
+    }
     if !context_json.is_empty() {
         request["corpus"] = json!({ "context": context_json });
     }
@@ -465,15 +489,30 @@ mod tests {
 
     #[test]
     fn 全量请求_上下文是json字符串() {
-        let payload = build_bigmodel_request("u1", "zh", "之前的话", 0);
+        let payload = build_bigmodel_request("u1", "zh", "之前的话", &[], 0);
         assert_eq!(payload["audio"]["language"], json!("zh-CN"));
         assert_eq!(payload["request"]["result_type"], json!("full"));
         let context = payload["request"]["corpus"]["context"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(context).unwrap();
         assert_eq!(parsed["context_data"][0]["text"], json!("之前的话"));
-        assert!(build_bigmodel_request("", "auto", "", 0)["audio"].get("language").is_none());
+        assert!(build_bigmodel_request("", "auto", "", &[], 0)["audio"].get("language").is_none());
         let frame = build_full_client_request(&payload);
         assert_eq!(&frame[..4], &[0x11, 0x10, 0x10, 0x00]);
+    }
+
+    #[test]
+    fn 全量请求_热词优先且按预算截断() {
+        let words: Vec<String> = ["落地页", "Option + V"].iter().map(|s| s.to_string()).collect();
+        let payload = build_bigmodel_request("u1", "zh", "之前的话", &words, 0);
+        let context = payload["request"]["corpus"]["context"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(context).unwrap();
+        assert_eq!(parsed, json!({ "hotwords": [{ "word": "落地页" }, { "word": "Option + V" }] }));
+
+        // 超出 100 tokens 的部分不发送
+        let many: Vec<String> = (0..60).map(|i| format!("词{i}")).collect();
+        let parsed: Value = serde_json::from_str(&build_hotwords_context_json(&many)).unwrap();
+        assert_eq!(parsed["hotwords"].as_array().unwrap().len(), 50);
+        assert_eq!(build_hotwords_context_json(&[]), "");
     }
 
     #[test]

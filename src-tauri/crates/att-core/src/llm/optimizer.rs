@@ -163,7 +163,7 @@ async fn run(core: &CoreState, text: &str, on_event: &mut impl FnMut(OptimizeEve
     let settings = core.settings();
     let template = crate::prompts::resolve_template(&core.prompts_dir, settings.default_preset_id.as_deref())
         .unwrap_or_else(|| prompt::DEFAULT_PROMPT.to_string());
-    let messages = prompt::build_messages(text, &template);
+    let messages = prompt::build_messages(text, &template, &settings.asr_hotwords);
 
     let target = core.llm.resolve_runtime(None)?;
     let spec = registry::get(&target.profile.provider)
@@ -183,6 +183,7 @@ async fn run(core: &CoreState, text: &str, on_event: &mut impl FnMut(OptimizeEve
         model,
         preset = ?settings.default_preset_id,
         text_length = text.chars().count(),
+        glossary = settings.asr_hotwords.len(),
         "开始流式文本优化"
     );
 
