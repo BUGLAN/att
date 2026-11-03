@@ -59,6 +59,8 @@ pub struct DoubaoConfig {
     pub resource_id: String,
     pub endpoint: String,
     pub end_window_size: i64,
+    /// 个人词表（已归一化）；发送时按 [`sauc::HOTWORDS_MAX_TOKENS`] 截取前缀
+    pub hotwords: Vec<String>,
 }
 
 impl std::fmt::Debug for DoubaoConfig {
@@ -69,6 +71,7 @@ impl std::fmt::Debug for DoubaoConfig {
             .field("resource_id", &self.resource_id)
             .field("endpoint", &self.endpoint)
             .field("end_window_size", &self.end_window_size)
+            .field("hotwords", &self.hotwords.len())
             .finish()
     }
 }
@@ -235,6 +238,7 @@ impl DoubaoSession {
             endpoint = %config.endpoint,
             resource_id = %config.resource_id,
             connect_id = %connect_id,
+            hotwords = config.hotwords.len(),
             "连接豆包双向流式 ASR"
         );
         let handshake_started = Instant::now();
@@ -265,7 +269,7 @@ impl DoubaoSession {
         tracing::info!(connect_id = %connect_id, "豆包流式握手完成（{:?}）", handshake_started.elapsed());
         let (mut writer, mut read) = stream.split();
         let uid = format!("att-desktop-{}", &connect_id[..8]);
-        let payload = sauc::build_bigmodel_request(&uid, language, context, config.end_window_size);
+        let payload = sauc::build_bigmodel_request(&uid, language, context, &config.hotwords, config.end_window_size);
         if let Err(error) = writer.send(Message::binary(sauc::build_full_client_request(&payload))).await {
             return Err(SttError::new(ErrorKind::Network, format!("发送请求失败（{error}）"), true, "重新开始录音"));
         }
@@ -469,6 +473,7 @@ mod tests {
             resource_id: sauc::DEFAULT_RESOURCE_ID.into(),
             endpoint: sauc::DEFAULT_ENDPOINT.into(),
             end_window_size: 0,
+            hotwords: Vec::new(),
         };
         assert!(config.ensure().unwrap_err().to_string().contains("Access Token"));
         assert!(!format!("{config:?}").contains("api_key:"));

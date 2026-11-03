@@ -10,6 +10,9 @@
 //! 任意非 Idle ─cancel→ Idle（cancelled；Optimizing 下取消的是优化，保留原文）
 //! ```
 //!
+//! 按住模式的松开先进 [`HOLD_RELEASE_GRACE`] 缓冲（继续收音），缓冲内重新按下就当没松开、继续本段；
+//! 到点才 stop。修饰键组合偶尔会被系统报告「抬起一下又按回」，零容忍的话说到一半就被打断。
+//!
 //! 自动优化（设置 `auto_optimize` 且已配置默认 LLM 模型）：转写落库后进入 Optimizing，流式增量经
 //! `recording:optimization` 推给前端与悬浮窗；开启自动输出时同时边生成边打进焦点输入框（typing.rs），
 //! 收尾与最终清洗结果对齐。还没打出任何字就失败时退回粘贴原文，保证总有输出。
@@ -47,6 +50,10 @@ const HEARD_MIN_VOICED: Duration = Duration::from_millis(100);
 const SAMPLE_RATE: f64 = 16_000.0;
 /// 音量事件节流（≈25Hz，足够驱动波形条）。
 const LEVEL_EMIT_INTERVAL: Duration = Duration::from_millis(40);
+/// 按住模式的松开缓冲：松开后继续收音这么久，期间重新按下就当没松开、继续本段录音。
+/// 实测按住 ⌘⌥ 时系统偶尔报告 ⌘ 抬起约 200ms 又按回（⌥ 一直按着），立即停止的话一句话被截成两段。
+/// 代价是正常松开后晚这么久才开始收尾（多收一小段尾音，不影响识别）。
+const HOLD_RELEASE_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -109,6 +116,8 @@ enum Cmd {
     Optimized(u64, String, OptimizeOutcome, Option<StreamTyping>),
     /// 收尾看门狗到点（会话 id, 是否为宽限后的强制收尾）
     FinalizeTimeout(u64, bool),
+    /// 按住模式的松开缓冲到点（会话 id, 缓冲序号）：期间没重新按下才真正收尾
+    ReleaseGrace(u64, u64),
 }
 
 /// 进行中的自动优化（转写记录已落库）。
@@ -143,6 +152,8 @@ struct Active {
     timed_out: bool,
     /// 用户点了取消：看门狗强制收尾时仍按取消处理（丢弃），不算识别超时
     user_cancelled: bool,
+    /// 按住模式已松开、正处在松开缓冲里：(缓冲序号, 松开时刻)。重新按下时清掉，到点仍在才收尾
+    pending_release: Option<(u64, Instant)>,
     started: Instant,
 }
 
@@ -164,6 +175,7 @@ impl RecordingController {
             active: None,
             optimizing: None,
             next_id: 0,
+            next_release: 0,
             snapshot: snapshot.clone(),
         };
         tauri::async_runtime::spawn(actor.run(rx));
@@ -200,6 +212,8 @@ struct Actor {
     active: Option<Active>,
     optimizing: Option<PendingOptimization>,
     next_id: u64,
+    /// 松开缓冲序号：晚到的旧缓冲（已被重新按下作废）据此识别
+    next_release: u64,
     snapshot: Arc<Mutex<Value>>,
 }
 
@@ -220,7 +234,7 @@ impl Actor {
                 Cmd::Failed(id) => {
                     if self.is_current(id) && matches!(self.phase, Phase::Connecting | Phase::Recording) {
                         // 识别失败要让用户看到原因：不走「没说话安静结束」
-                        self.stop_with("识别连接中断，正在保存已识别内容", false);
+                        self.stop_with("识别连接中断，正在保存已识别内容", false, None);
                     }
                 }
                 Cmd::Done(id, outcome) => {
@@ -230,6 +244,7 @@ impl Actor {
                 }
                 Cmd::Optimized(id, record_id, outcome, typing) => self.on_optimized(id, record_id, outcome, typing).await,
                 Cmd::FinalizeTimeout(id, hard) => self.on_finalize_timeout(id, hard).await,
+                Cmd::ReleaseGrace(id, token) => self.on_release_grace(id, token),
             }
         }
     }
@@ -268,14 +283,62 @@ impl Actor {
             .unwrap_or(TriggerMode::Hold);
         tracing::debug!("录音热键 {key_phase:?}（{trigger:?}），当前 {:?}", self.phase);
         match (trigger, key_phase) {
-            (TriggerMode::Hold, KeyPhase::Pressed) => self.start().await,
-            (TriggerMode::Hold, KeyPhase::Released) => self.stop("正在完成转写"),
+            (TriggerMode::Hold, KeyPhase::Pressed) => {
+                if !self.resume_released() {
+                    self.start().await;
+                }
+            }
+            (TriggerMode::Hold, KeyPhase::Released) => self.release_after_grace(),
             (TriggerMode::Toggle, KeyPhase::Pressed) => match self.phase {
                 Phase::Idle | Phase::Optimizing => self.start().await,
                 Phase::Connecting | Phase::Recording => self.stop("正在完成转写"),
                 Phase::Finalizing => crate::floating::nudge(&self.app),
             },
             (TriggerMode::Toggle, KeyPhase::Released) => {}
+        }
+    }
+
+    /// 按住模式松开：不立即收尾，先进松开缓冲（继续收音），到点仍没重新按下才 stop。
+    fn release_after_grace(&mut self) {
+        if !matches!(self.phase, Phase::Connecting | Phase::Recording) {
+            return;
+        }
+        let Some(active) = self.active.as_mut() else { return };
+        if active.pending_release.is_some() {
+            return;
+        }
+        self.next_release += 1;
+        let token = self.next_release;
+        active.pending_release = Some((token, Instant::now()));
+        let (tx, id) = (self.tx.clone(), active.id);
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(HOLD_RELEASE_GRACE).await;
+            let _ = tx.send(Cmd::ReleaseGrace(id, token));
+        });
+    }
+
+    /// 松开缓冲里重新按下：当没松开过，继续本段录音。返回 false 表示不在缓冲里，按普通按下处理。
+    fn resume_released(&mut self) -> bool {
+        if !matches!(self.phase, Phase::Connecting | Phase::Recording) {
+            return false;
+        }
+        let Some((_, released_at)) = self.active.as_mut().and_then(|a| a.pending_release.take()) else {
+            return false;
+        };
+        tracing::info!("松开后 {}ms 内重新按下，继续本段录音", released_at.elapsed().as_millis());
+        true
+    }
+
+    fn on_release_grace(&mut self, id: u64, token: u64) {
+        let released_at = self
+            .active
+            .as_ref()
+            .filter(|a| a.id == id)
+            .and_then(|a| a.pending_release)
+            .filter(|(pending, _)| *pending == token)
+            .map(|(_, at)| at);
+        if let Some(released_at) = released_at {
+            self.stop_with("正在完成转写", true, Some(released_at));
         }
     }
 
@@ -381,6 +444,7 @@ impl Actor {
             quiet_end: None,
             timed_out: false,
             user_cancelled: false,
+            pending_release: None,
             started: Instant::now(),
         });
 
@@ -421,11 +485,12 @@ impl Actor {
 
     /// 停止采集进入收尾：采集线程冲刷完尾部样本后关闭音频通道，会话任务据此发末包。
     fn stop(&mut self, message: &str) {
-        self.stop_with(message, true);
+        self.stop_with(message, true, None);
     }
 
     /// `allow_silent`：误触或整场没听到说话时，不进入转写、不调识别（不计费），直接安静结束。
-    fn stop_with(&mut self, message: &str, allow_silent: bool) {
+    /// `released_at`：按住模式经松开缓冲收尾时的真实松开时刻——误触判定按它算时长，不把缓冲里多收的音算进去。
+    fn stop_with(&mut self, message: &str, allow_silent: bool, released_at: Option<Instant>) {
         if !matches!(self.phase, Phase::Connecting | Phase::Recording) {
             return;
         }
@@ -435,7 +500,9 @@ impl Actor {
         if let Some(capture) = active.capture.take() {
             std::thread::spawn(move || capture.stop());
         }
-        let quiet_end = quiet_end_reason(active.started.elapsed(), active.heard.load(Ordering::Relaxed));
+        active.pending_release = None;
+        let recorded = recorded_until(active.started, released_at, Instant::now());
+        let quiet_end = quiet_end_reason(recorded, active.heard.load(Ordering::Relaxed));
         if let (true, Some(reason)) = (allow_silent, quiet_end) {
             active.quiet_end = Some(reason);
             if let Some(cancel) = active.cancel.take() {
@@ -447,7 +514,7 @@ impl Actor {
             self.arm_watchdog(id, None);
             return;
         }
-        let (id, mode, recorded) = (active.id, active.mode, active.started.elapsed());
+        let (id, mode) = (active.id, active.mode);
         let budget = self.finalize_budget(mode, recorded);
         self.emit_state("finalizing", json!({ "message": message }));
         self.arm_watchdog(id, Some(budget));
@@ -821,6 +888,11 @@ fn counts_as_timeout(quiet_end: Option<&'static str>, user_cancelled: bool) -> b
 }
 
 /// 松开时要不要跳过转写直接安静结束：按下不到 0.3 秒算误触（哪怕按键声过了阈值），整场没说话同样跳过。
+/// 本段录了多久：经松开缓冲收尾时算到真实松开那一刻，缓冲里多收的尾音不算（否则短按会被当成说过话）。
+fn recorded_until(started: Instant, released_at: Option<Instant>, now: Instant) -> Duration {
+    released_at.unwrap_or(now).saturating_duration_since(started)
+}
+
 fn quiet_end_reason(recorded: Duration, heard: bool) -> Option<&'static str> {
     if recorded.as_secs_f64() < MIN_DURATION_SECONDS {
         Some("录音时间过短")
@@ -1157,8 +1229,26 @@ async fn multi_task(
 
 #[cfg(test)]
 mod tests {
-    use super::{counts_as_timeout, finalize_budget, quiet_end_reason, Mode};
-    use std::time::Duration;
+    use super::{counts_as_timeout, finalize_budget, quiet_end_reason, recorded_until, Mode, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn 松开缓冲_吸收修饰键闪断_且不把缓冲算进录音时长() {
+        // 实测按住 ⌘⌥ 时 ⌘ 闪断 213ms：缓冲要盖得住，又不能长到让正常松开明显变慢
+        assert!(HOLD_RELEASE_GRACE > Duration::from_millis(213) && HOLD_RELEASE_GRACE <= Duration::from_millis(400));
+
+        // 短按 144ms：缓冲到点（多收了 250ms）时仍按松开那一刻算，照样是误触
+        let started = Instant::now();
+        let released = started + Duration::from_millis(144);
+        let recorded = recorded_until(started, Some(released), released + HOLD_RELEASE_GRACE);
+        assert_eq!(recorded, Duration::from_millis(144));
+        assert!(recorded.as_secs_f64() < MIN_DURATION_SECONDS);
+        assert_eq!(quiet_end_reason(recorded, true), Some("录音时间过短"));
+
+        // 不经缓冲（UI 停止、识别失败）按当前时刻算
+        let now = started + Duration::from_secs(2);
+        assert_eq!(recorded_until(started, None, now), Duration::from_secs(2));
+    }
 
     #[test]
     fn 短按与没说话_松开即安静结束不进转写() {

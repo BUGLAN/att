@@ -90,6 +90,10 @@ pub struct UserSettings {
     // ---- ASR 基础 ----
     pub asr_provider: String,          // whisper | qwen_asr | doubao_asr | chatgpt_asr
     pub asr_language: String,          // zh | en | ja | ko
+    /// 个人词表（热词）：与引擎无关地保存，目前只有豆包会发送（见 `stt::hotwords`）。
+    /// 宽容读：结构异常只丢这一项，不能拖垮整份设置
+    #[serde(default, deserialize_with = "deserialize_hotwords_lenient")]
+    pub asr_hotwords: Vec<String>,
     // ---- Whisper ----
     pub whisper_model: String,
     pub whisper_device: String,        // auto | cuda | cpu
@@ -163,6 +167,7 @@ impl UserSettings {
         Self {
             asr_provider: "whisper".into(),
             asr_language: "zh".into(),
+            asr_hotwords: Vec::new(),
             whisper_model: "large-v3".into(),
             whisper_device: "auto".into(),
             qwen_asr_model: "Qwen/Qwen3-ASR-1.7B".into(),
@@ -424,6 +429,10 @@ pub fn apply_settings_update(
             // ---- 字符串键 ----
             "asr_provider" => set_string(&mut settings.asr_provider, key, value, &type_error)?,
             "asr_language" => set_string(&mut settings.asr_language, key, value, &type_error)?,
+            "asr_hotwords" => {
+                let words = value.as_array().ok_or_else(|| type_error("字符串数组"))?;
+                settings.asr_hotwords = crate::stt::hotwords::normalize(words.iter().filter_map(Value::as_str));
+            }
             "whisper_model" => set_string(&mut settings.whisper_model, key, value, &type_error)?,
             "whisper_device" => set_string(&mut settings.whisper_device, key, value, &type_error)?,
             "qwen_asr_model" => set_string(&mut settings.qwen_asr_model, key, value, &type_error)?,
@@ -554,6 +563,16 @@ where
         .ok_or_else(|| {
             serde::de::Error::custom("期望整数（或可取整的数字）")
         })
+}
+
+/// 热词宽容反序列化：只认字符串数组里的字符串项，其余一律忽略（不报错）。
+fn deserialize_hotwords_lenient<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    let words = value.as_array().map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>());
+    Ok(crate::stt::hotwords::normalize(words.unwrap_or_default()))
 }
 
 /// 剥离退役键（原地）。
@@ -859,6 +878,24 @@ mod tests {
             "clipboard_panel_enabled": false
         });
         assert!(apply_settings_update(&mut settings, &disabled, Platform::Macos, &crypto).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 热词_更新时归一化_旧数据结构异常不拖垮整份设置() {
+        let dir = temp_dir("hotwords");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::with_platform(Platform::Macos);
+        let update = serde_json::json!({"asr_hotwords": [" Tauri ", "tauri", "", 3, "落地页"]});
+        apply_settings_update(&mut settings, &update, Platform::Macos, &crypto).unwrap();
+        assert_eq!(settings.asr_hotwords, vec!["Tauri".to_string(), "落地页".into()]);
+        assert!(apply_settings_update(&mut settings, &serde_json::json!({"asr_hotwords": "Tauri"}), Platform::Macos, &crypto).is_err());
+
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"asr_provider": "doubao_asr", "asr_hotwords": "不是数组"}"#).unwrap();
+        let loaded = UserSettings::load(&path, Platform::Macos);
+        assert_eq!(loaded.asr_provider, "doubao_asr");
+        assert!(loaded.asr_hotwords.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

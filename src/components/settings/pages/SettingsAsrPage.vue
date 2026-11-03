@@ -295,13 +295,39 @@
         </div>
       </div>
     </section>
+
+    <!-- 热词：词表与引擎无关地保存，只有部分引擎能用；状态圆点与引擎卡片同一套语义 -->
+    <section class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">热词</h3>
+        <p class="hotword-desc">容易认错的产品名、英文术语、人名，每行一个，靠前的优先。识别与 LLM 纠错两处都会用到。</p>
+        <BaseTextarea
+          v-model="form.asr_hotwords_text"
+          class="hotword-input"
+          rows="6"
+          spellcheck="false"
+          :placeholder="'每行一个，例如：\nTauri\n落地页\nOption + V'"
+          aria-label="热词"
+        />
+        <!-- 两路各一行：识别随引擎变化，LLM 纠错随模型配置变化 -->
+        <ul class="hotword-status" aria-label="热词生效情况">
+          <li v-for="row in hotwords.rows" :key="row.key" class="hotword-row">
+            <span class="engine-meta hotword-row-label" :class="`is-${row.tone}`">
+              <span class="engine-dot" aria-hidden="true"></span>{{ row.label }}
+            </span>
+            <span class="hotword-row-text" :class="{ 'is-warn': row.tone === 'warn' }">{{ row.text }}</span>
+          </li>
+        </ul>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup>
-import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import BaseInput from '@/components/common/BaseInput.vue'
 import BaseSelect from '@/components/common/BaseSelect.vue'
+import BaseTextarea from '@/components/common/BaseTextarea.vue'
 import { useAppStore } from '@/stores/app'
 import LocalModelStatus from '../LocalModelStatus.vue'
 import { useSettingsStore } from '@/stores/settings'
@@ -311,6 +337,7 @@ import {
   recordingModeConflict,
   recordingModeOptions
 } from '../asrEngineStatus.mjs'
+import { hotwordView, parseHotwords } from '../asrHotwords.mjs'
 
 const { form, streamingRuntimeAvailable, streamingRuntimeSummary } = inject(SETTINGS_CTX)
 const appStore = useAppStore()
@@ -320,6 +347,18 @@ const LOCAL_STATUS_POLL_MS = 1000
 
 const recordingModes = computed(() => recordingModeOptions(form.value.asr_provider))
 const modeConflict = computed(() => recordingModeConflict(form.value.asr_provider, form.value.recording_mode))
+// LLM 模型列表没加载过时按「有模型」处理，免得误报（同输出页）；挂载时补拉一次
+const llmLoaded = ref(false)
+const hotwords = computed(() => hotwordView(form.value.asr_provider, parseHotwords(form.value.asr_hotwords_text), {
+  hasLlmModel: !llmLoaded.value || settingsStore.llmModels.length > 0,
+  autoOptimize: Boolean(form.value.auto_optimize)
+}))
+
+onMounted(() => {
+  settingsStore.loadLLMState().catch(() => {}).finally(() => {
+    llmLoaded.value = true
+  })
+})
 // 「提前加载 / 重试」请求进行中：后端可能还没来得及置位 loading，前端先按加载中展示
 const isLoadingModel = ref(false)
 const localView = computed(() => {
@@ -433,6 +472,59 @@ const engines = computed(() => [
 </script>
 
 <style scoped>
+.hotword-desc {
+  margin: calc(var(--s-2) * -1) 0 var(--s-3);
+  font-size: var(--fs-cap);
+  color: var(--text-3);
+  line-height: 1.55;
+}
+
+/* 选择器带上父级：与 BaseTextarea 自身的 scoped 样式同权重时谁后加载谁赢，这里要稳定压过它 */
+.settings-group .hotword-input {
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+}
+
+/* 生效情况：左列是「通道 + 状态圆点」，右列是说明；窄屏时说明换到下一行 */
+.hotword-status {
+  display: grid;
+  gap: var(--s-2);
+  margin: var(--s-3) 0 0;
+  padding: var(--s-3);
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-raise);
+}
+
+.hotword-row {
+  display: grid;
+  grid-template-columns: minmax(132px, max-content) 1fr;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-3);
+}
+
+.hotword-row-label {
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.hotword-row-text {
+  font-size: var(--fs-cap);
+  color: var(--text-3);
+  line-height: 1.6;
+}
+
+.hotword-row-text.is-warn {
+  color: var(--text-2);
+}
+
+@media (max-width: 560px) {
+  .hotword-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .engine-card {
   position: relative;
   overflow: hidden;

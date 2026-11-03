@@ -2,6 +2,7 @@
 //!
 //! - [`sauc`]：火山 SAUC 二进制协议编解码（纯函数）
 //! - [`doubao`]：豆包会话（流式推流 / 批量转写）
+//! - [`hotwords`]：个人词表的归一化与 token 预算（目前只有豆包使用）
 //! - [`chatgpt`]：ChatGPT 听写（在线批量，不支持流式）
 //! - [`local`]：本地引擎装配与常驻池（faster-whisper / Qwen3-ASR，进程内推理）
 //!
@@ -12,6 +13,7 @@
 
 pub mod chatgpt;
 pub mod doubao;
+pub mod hotwords;
 pub mod local;
 pub mod sauc;
 
@@ -38,6 +40,7 @@ pub fn doubao_config(core: &CoreState) -> doubao::DoubaoConfig {
         resource_id: non_empty(&settings.doubao_asr_resource_id, sauc::DEFAULT_RESOURCE_ID),
         endpoint: non_empty(&settings.doubao_asr_endpoint, sauc::DEFAULT_ENDPOINT),
         end_window_size: settings.doubao_asr_end_window_size,
+        hotwords: settings.asr_hotwords.clone(),
     }
 }
 
