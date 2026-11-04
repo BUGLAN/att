@@ -57,17 +57,10 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 
 - `cargo` 命令要在 `src-tauri/` 目录内执行（Windows 的 `+crt-static` 配置只在该目录下生效）。
 - 首次构建会编译 CTranslate2（约 10~20 分钟），macOS 需先 `brew install cmake`。
-- 本地 Whisper / Qwen 的模型与推理库不进仓库，准备方法见 [`docs/遗留与下线.md` §5](docs/遗留与下线.md#5-新机器准备模型与推理库不进仓库)。
+- 本地 Whisper / Qwen 的模型与推理库不随仓库分发；选择对应引擎后按「设置 → 识别引擎」的提示下载，模型目录默认 `models/`，可用 `ATT_MODELS_DIR` / `ATT_SHERPA_ONNX_DIR` 改位置。
 - 开发态的 macOS 权限归属启动 `tauri dev` 的终端应用。
+- 更多开发约定与常见陷阱见 [`AGENTS.md`](AGENTS.md)。
 
 发布：版本号写在 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`（及对应 lock 文件）；
 推送 `v*` 注释标签后，`.github/workflows/release.yml` 自动打包 macOS / Windows 安装包并发布 Release，
 标签注释正文即版本说明。
-
-## 文档
-
-| 文档 | 内容 |
-| --- | --- |
-| [`docs/架构.md`](docs/架构.md) | 当前实现：三条平面、模块分工、录音 / 识别 / LLM / 存储 / 桌面壳 / 前端、构建与测试、环境变量 |
-| [`docs/遗留与下线.md`](docs/遗留与下线.md) | 已知限制、待办、旧栈删除留档、新机器模型准备、Windows 实机验收表 |
-| [`AGENTS.md`](AGENTS.md) | 给 AI 编码代理的工作约定与常见陷阱 |

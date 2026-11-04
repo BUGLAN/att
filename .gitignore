@@ -37,6 +37,7 @@ node_modules
 .tmp-shots/
 .stitch/
 docs/ui-audit/
+docs/prototype/
 
 # 本地临时目录
 tmp/
@@ -50,3 +51,8 @@ tmp/
 # Tauri (Rust) 构建产物
 src-tauri/target/
 src-tauri/gen/
+
+# claude
+.claude/
+
+volc_page.html
