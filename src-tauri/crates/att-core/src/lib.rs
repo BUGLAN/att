@@ -13,6 +13,7 @@
 //! - [`stt`]：语音识别引擎（豆包 SAUC 流式/批量、ChatGPT 听写、本地 faster-whisper / Qwen3-ASR + Silero VAD）
 //! - [`transcribe`]：本地文件转写与 LLM 校对
 //! - [`llm`]：LLM v2（服务商注册表 / 档案与模型存储 / 调用网关）
+//! - [`update`]：检查更新（发布渠道最新版本比较、安装包下载）
 
 pub mod audio;
 pub mod clipboard;
@@ -26,6 +27,7 @@ pub mod state;
 pub mod storage;
 pub mod stt;
 pub mod transcribe;
+pub mod update;
 
 /// 平台标识：沿用 Electron/Node 的命名（前端 stores/settings.js 按
 /// 'win32' | 'darwin' | 'linux' 分支默认热键），保持前端零改动。

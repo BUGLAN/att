@@ -68,8 +68,9 @@ async fn llm_glossary_ab() {
     assert!(!glossary.is_empty(), "设置里的词表为空");
 
     let repo_prompts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../prompts");
-    let template = att_core::prompts::resolve_template(&core.prompts_dir, settings.default_preset_id.as_deref())
-        .or_else(|| att_core::prompts::resolve_template(&repo_prompts, settings.default_preset_id.as_deref()))
+    let wanted = [settings.default_preset_id.as_deref()];
+    let template = core.prompt_library().resolve_template(&wanted)
+        .or_else(|| att_core::prompts::PromptLibrary::new(&repo_prompts, &sandbox).resolve_template(&wanted))
         .unwrap_or_else(|| prompt::DEFAULT_PROMPT.to_string());
 
     let target = core.llm.resolve_runtime(None).expect("默认 LLM 模型");

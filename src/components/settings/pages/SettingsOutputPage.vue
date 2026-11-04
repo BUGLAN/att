@@ -20,14 +20,14 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">默认优化预设</span>
-            <span class="setting-desc">提示词来自 prompts/ 目录（只读）。</span>
+            <span class="setting-desc">内置预设或你的自定义预设，可在「提示词预设」页新增和编辑。</span>
           </div>
           <div class="setting-actions-inline">
-            <BaseSelect v-model="selectedPresetId" :disabled="!builtinPresets.length" aria-label="默认优化预设">
-              <option v-if="!builtinPresets.length" value="">未发现 prompts/*.txt</option>
-              <option v-for="preset in builtinPresets" :key="preset.id" :value="preset.id">{{ preset.name }}</option>
+            <BaseSelect v-model="selectedPresetId" :disabled="!allPresets.length" aria-label="默认优化预设">
+              <option v-if="!allPresets.length" value="">未发现预设</option>
+              <PresetOptions :builtin="groups.builtin" :custom="groups.custom" />
             </BaseSelect>
-            <BaseButton variant="outline" :disabled="!builtinPresets.length" @click="openPresetModal()">查看</BaseButton>
+            <BaseButton variant="outline" :disabled="!allPresets.length" @click="openPresetModal()">查看</BaseButton>
           </div>
         </div>
         <div class="setting-item">
@@ -52,11 +52,11 @@
             <span class="setting-desc">按「优化选中文本」快捷键（{{ rewriteHotkeyDisplay }}）时用的提示词，可以和录音的默认预设不同。</span>
           </div>
           <div class="setting-actions-inline">
-            <BaseSelect v-model="form.rewrite_preset_id" :disabled="!builtinPresets.length" aria-label="优化选中文本使用的预设">
+            <BaseSelect v-model="form.rewrite_preset_id" :disabled="!allPresets.length" aria-label="优化选中文本使用的预设">
               <option value="">跟随默认优化预设</option>
-              <option v-for="preset in builtinPresets" :key="preset.id" :value="preset.id">{{ preset.name }}</option>
+              <PresetOptions :builtin="groups.builtin" :custom="groups.custom" />
             </BaseSelect>
-            <BaseButton variant="outline" :disabled="!builtinPresets.length" @click="openPresetModal(rewritePreset)">查看</BaseButton>
+            <BaseButton variant="outline" :disabled="!allPresets.length" @click="openPresetModal(rewritePreset)">查看</BaseButton>
           </div>
         </div>
         <div v-if="!form.rewrite_enabled" class="settings-note">
@@ -76,12 +76,15 @@
 import { computed, inject, onMounted, ref } from 'vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import BaseSelect from '@/components/common/BaseSelect.vue'
+import PresetOptions from '../PresetOptions.vue'
+import { splitPresets } from '../presetLogic.mjs'
 import { useSettingsStore } from '@/stores/settings'
 import { SETTINGS_CTX } from '../settingsContext.js'
 
-const { form, builtinPresets, selectedPresetId, openPresetModal, rewriteHotkeyDisplay, goSection } = inject(SETTINGS_CTX)
-// 「跟随默认」或预设文件已被删掉时查看默认预设（openPresetModal 不传参即默认预设）
-const rewritePreset = computed(() => builtinPresets.value.find((preset) => preset.id === form.value.rewrite_preset_id) || null)
+const { form, allPresets, selectedPresetId, openPresetModal, rewriteHotkeyDisplay, goSection } = inject(SETTINGS_CTX)
+const groups = computed(() => splitPresets(allPresets.value))
+// 「跟随默认」或预设已被删掉时查看默认预设（openPresetModal 不传参即默认预设）
+const rewritePreset = computed(() => allPresets.value.find((preset) => preset.id === form.value.rewrite_preset_id) || null)
 const settingsStore = useSettingsStore()
 const llmLoaded = ref(false)
 // 加载完成前不下结论，避免提示一闪而过

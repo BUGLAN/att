@@ -52,8 +52,8 @@ export const SETTINGS_SECTIONS = Object.freeze([
     id: 'presets',
     group: 'AI',
     label: '提示词预设',
-    desc: '优化时使用的提示词，来自 prompts/ 目录。',
-    keywords: ['提示词', '预设', 'prompt', '默认预设']
+    desc: '优化时使用的提示词：内置预设只读，也可以新增、编辑自己的预设。',
+    keywords: ['提示词', '预设', 'prompt', '默认预设', '自定义', '新增预设', '编辑预设']
   },
   {
     id: 'permissions',
@@ -65,9 +65,16 @@ export const SETTINGS_SECTIONS = Object.freeze([
   {
     id: 'diagnostics',
     group: '系统',
-    label: '诊断与关于',
-    desc: '服务状态、数据目录、日志与版本。',
-    keywords: ['诊断', '后端', '连接', '数据目录', '日志', '版本', '关于']
+    label: '诊断',
+    desc: '服务状态、数据目录与运行日志。',
+    keywords: ['诊断', '后端', '连接', '数据目录', '日志', '提示词目录']
+  },
+  {
+    id: 'about',
+    group: '系统',
+    label: '关于',
+    desc: '版本信息、检查更新与自动下载更新。',
+    keywords: ['关于', '版本', '更新', '检查更新', '自动下载', '升级', '新版本']
   }
 ])
 

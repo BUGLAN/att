@@ -45,7 +45,6 @@
     </main>
 
     <RecordEditModal v-if="modals.recordEdit" />
-    <PresetModal v-if="modals.preset" />
     <PresetEditModal v-if="modals.presetEdit" />
     <LLMWizardModal v-if="modals.llmWizard" />
     <LLMModelEditModal v-if="modals.llmModelEdit" />
@@ -71,7 +70,6 @@ import TranscribePage from '@/components/transcribe/TranscribePage.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
 
 import RecordEditModal from '@/components/modals/RecordEditModal.vue'
-import PresetModal from '@/components/modals/PresetModal.vue'
 import PresetEditModal from '@/components/modals/PresetEditModal.vue'
 import LLMWizardModal from '@/components/modals/LLMWizardModal.vue'
 import LLMModelEditModal from '@/components/modals/LLMModelEditModal.vue'

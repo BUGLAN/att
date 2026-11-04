@@ -41,14 +41,15 @@ src-tauri/
   src/                 Tauri 壳：recording.rs（录音 Actor）、tray / floating / clipboard（监控）/ desktop（粘贴/静音）/ commands
   .cargo/config.toml   Windows MSVC 必须 `+crt-static`：CTranslate2 静态库按 /MT 编译，否则 LNK2038
   crates/att-core/     领域内核：settings / records / llm（注册表·存储·网关·优化）/ stt（豆包·ChatGPT·local 常驻池）/
-                       transcribe（文件转写·校对）/ clipboard / prompts / storage（原子写·Fernet）/ migration
+                       transcribe（文件转写·校对）/ clipboard / prompts（内置 + 自定义预设）/ update（检查更新）/
+                       storage（原子写·Fernet）/ migration
   crates/att-whisper/  本地 faster-whisper：ct2rs（CTranslate2）绑定，复用 models/faster_whisper 的 CT2 模型
   crates/att-qwen/     本地 Qwen3-ASR：sherpa-onnx C API（运行期 dlopen）+ ONNX 模型；C 桥见 src/shim.c
   crates/att-server/   axum 数据面（仅回环），HTTP 契约与旧 Python 版一致
   crates/att-audio/    cpal 麦克风采集
   crates/att-hotkey/   全局热键（macOS CGEventTap / Windows RegisterHotKey + WH_KEYBOARD_LL）
 src/                   Vue 前端；桌面能力只经 composables/useElectron.js，HTTP 只经 api/client.js
-prompts/*.txt          提示词预设唯一真相源（打包时作为资源随包）
+prompts/*.txt          内置提示词预设（只读，打包时作为资源随包）；用户自定义预设在 data/custom_prompts.json
 data/                  用户数据（开发态即仓库 data/），不入库
 models/                本地模型（不入库）：faster_whisper/（CT2 large-v3）、qwen3-asr-0.6B-int8/（sherpa ONNX）、
                        sherpa-onnx/（sherpa-onnx 动态库 + onnxruntime）；可用 ATT_MODELS_DIR / ATT_SHERPA_ONNX_DIR 改位置

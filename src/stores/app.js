@@ -87,7 +87,6 @@ export const useAppStore = defineStore('app', () => {
 
   const modals = ref({
     recordEdit: false,
-    preset: false,
     presetEdit: false,
     llmWizard: false,
     llmModelEdit: false,

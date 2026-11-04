@@ -145,6 +145,7 @@ export const useSettingsStore = defineStore('settings', () => {
     pause_audio_on_recording: true,
     auto_optimize: false,
     auto_copy_to_clipboard: true,
+    auto_download_updates: false,
     audio_input_device: 'default',
     hotkey: getDefaultHotkey(),
     // 统一浮层已下线：clipboard_overlay_* 键一并移除，
@@ -185,7 +186,8 @@ export const useSettingsStore = defineStore('settings', () => {
   })
 
   const presets = ref([])
-  const currentPreset = ref(null)
+  // 提示词预设弹窗状态：{ mode: 'view' | 'edit' | 'create', preset, name, prompt_template }
+  const presetEditor = ref(null)
   const defaultPresetId = ref(null)
 
   // ===== LLM v2 状态（供应商档案 + 模型条目）=====
@@ -468,13 +470,31 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  // 预设是只读的（唯一真相源是 prompts/*.txt）：这里只保留加载与设默认；
-  // 历史上的 save/delete/preview 封装对应后端已删除的写接口，一并移除
   async function setDefaultPreset(id) {
     await api.setDefaultPreset(id)
     defaultPresetId.value = id
     settings.value.default_preset_id = id
     settings.value.last_used_preset_id = id
+  }
+
+  // 自定义预设增改删（内置预设只读，后端会拒绝）：成功后重拉列表，保证下拉框与预设页同步
+  async function createPreset(payload) {
+    const created = await api.createPreset(payload)
+    await loadPresets()
+    return created
+  }
+
+  async function updatePreset(id, payload) {
+    const updated = await api.updatePreset(id, payload)
+    await loadPresets()
+    return updated
+  }
+
+  // 删除正被选用的预设时后端已回退设置：重拉设置与列表，让设置页表单拿到回退后的值
+  async function deletePreset(id) {
+    const result = await api.deletePreset(id)
+    await Promise.allSettled([loadSettings(), loadPresets()])
+    return result
   }
 
   // 档案 + 模型 + 默认绑定一次拉全（设置页首屏）
@@ -582,7 +602,7 @@ export const useSettingsStore = defineStore('settings', () => {
     error,
     runtimeStatus,
     presets,
-    currentPreset,
+    presetEditor,
     defaultPresetId,
     llmProfiles,
     llmModels,
@@ -601,6 +621,9 @@ export const useSettingsStore = defineStore('settings', () => {
     saveSettings,
     loadPresets,
     setDefaultPreset,
+    createPreset,
+    updatePreset,
+    deletePreset,
     loadLLMState,
     loadLLMProviders,
     refreshLLMState,

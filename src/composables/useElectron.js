@@ -123,7 +123,10 @@ export function useElectron() {
     activateLLMModel: (id) => httpApi.activateLLMModel(id),
     updateLLMSettings: (payload) => httpApi.updateLLMSettings(payload),
     getPresets: () => httpApi.getPresets(),
-    setDefaultPreset: (id) => httpApi.setDefaultPreset(id)
+    setDefaultPreset: (id) => httpApi.setDefaultPreset(id),
+    createPreset: (payload) => httpApi.createPreset(payload),
+    updatePreset: (id, payload) => httpApi.updatePreset(id, payload),
+    deletePreset: (id) => httpApi.deletePreset(id)
   }
 
   const windowControl = {
@@ -278,13 +281,13 @@ export function useElectron() {
     return invoke('open_permission_settings', { id })
   }
 
-  // 设置页「诊断与关于」：{ version, data_dir, log_file, prompts_dir, backend_port }
+  // 设置页「诊断」「关于」：{ version, data_dir, log_file, prompts_dir, backend_port }
   async function getAppInfo() {
     if (!isDesktop) return null
     return invoke('get_app_info')
   }
 
-  // 在文件管理器中显示：kind = 'data' | 'log'
+  // 在文件管理器中显示：kind = 'data' | 'log' | 'update'（已下载的更新安装包）
   async function revealAppPath(kind) {
     if (!isDesktop) return
     return invoke('reveal_app_path', { kind })

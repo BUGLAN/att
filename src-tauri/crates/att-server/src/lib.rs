@@ -4,9 +4,10 @@
 //! - GET /api/health（前端 runtimeStatus 契约：model_service_* 与 qwen_streaming_* 双命名）
 //! - GET/PUT /api/settings（白名单/脱敏契约保真）
 //! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出）
-//! - GET /api/prompts + PUT /api/prompts/default
+//! - /api/prompts：列出（内置 + 自定义）、新建 / 修改 / 删除自定义预设、PUT /api/prompts/default 设默认
 //! - /api/llm/* LLM v2 全套（服务商目录 / 档案 / 模型 / 验证，见 [`llm`]）
 //! - 模型服务三端点（在线引擎凭据配齐即就绪）
+//! - /api/update：检查更新与安装包下载（见 [`update`]）
 //! - 录音由 Rust 录音 Actor 直接完成（Tauri 命令），上传/会话/转写类 HTTP 端点 → 501
 //!
 //! 两个 WebSocket 端点（/api/ws、/api/asr/stream）按 D4 决策**移除**：
@@ -15,6 +16,7 @@
 mod clipboard;
 mod llm;
 mod transcribe;
+mod update;
 
 use att_core::records::{RecordError, RecordUpdate};
 use att_core::state::CoreState;
@@ -73,14 +75,18 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/api/model-service/start", post(model_service_start))
         .route("/api/model-service/stop", post(model_service_stop))
         // 提示词
-        .route("/api/prompts", get(prompts_list))
+        .route("/api/prompts", get(prompts_list).post(prompts_create))
+        // 静态段 default 优先于 {id} 匹配；自定义 id 恒为 custom- 前缀，不会撞
         .route("/api/prompts/default", put(prompts_set_default))
+        .route("/api/prompts/{id}", put(prompts_update).delete(prompts_delete))
         // LLM v2（服务商目录 / 档案 / 模型 / 验证）
         .merge(llm::routes())
         // 剪贴板历史
         .merge(clipboard::routes())
         // 本地文件转写
         .merge(transcribe::routes())
+        // 检查更新（设置页「关于」）
+        .merge(update::routes())
         .layer(cors)
         .with_state(state)
 }
@@ -595,11 +601,10 @@ async fn model_service_stop(State(state): State<Arc<ServerState>>) -> Json<Value
     Json(json!({ "success": true, "running": false, "loading": false, "ready": false }))
 }
 
-// ---- 提示词（只读，真相源 prompts/*.txt） ----
+// ---- 提示词（内置只读：prompts/*.txt；自定义：data/custom_prompts.json） ----
 
-/// 定位提示词目录：优先数据目录同级的 prompts/（仓库布局），其次可执行文件旁。
 async fn prompts_list(State(state): State<Arc<ServerState>>) -> Json<Value> {
-    let presets = att_core::prompts::load_all(&state.core.prompts_dir);
+    let presets = state.core.prompt_library().load_all();
     let settings = state.core.settings();
     // 设置里的默认预设已不存在（文件被删/改名）时回退内置默认，与 Python normalize 行为一致
     let default_id = settings
@@ -613,6 +618,56 @@ async fn prompts_list(State(state): State<Arc<ServerState>>) -> Json<Value> {
     }))
 }
 
+fn preset_error(error: att_core::prompts::PresetError) -> axum::response::Response {
+    use att_core::prompts::PresetError;
+    let status = match &error {
+        PresetError::Invalid(_) => StatusCode::BAD_REQUEST,
+        PresetError::Builtin => StatusCode::FORBIDDEN,
+        PresetError::NotFound => StatusCode::NOT_FOUND,
+        PresetError::Corrupt(_) => StatusCode::CONFLICT,
+        PresetError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    err(status, error.to_string()).into_response()
+}
+
+async fn prompts_create(
+    State(state): State<Arc<ServerState>>,
+    Json(draft): Json<att_core::prompts::PresetDraft>,
+) -> axum::response::Response {
+    match state.core.prompt_library().create(&draft) {
+        Ok(preset) => (StatusCode::CREATED, Json(preset.to_json())).into_response(),
+        Err(e) => preset_error(e),
+    }
+}
+
+async fn prompts_update(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+    Json(draft): Json<att_core::prompts::PresetDraft>,
+) -> axum::response::Response {
+    match state.core.prompt_library().update(&id, &draft) {
+        Ok(preset) => Json(preset.to_json()).into_response(),
+        Err(e) => preset_error(e),
+    }
+}
+
+/// 删除自定义预设；正被选用时设置会回退（见 `CoreState::delete_custom_preset`），回报回退后的值。
+async fn prompts_delete(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    match state.core.delete_custom_preset(&id) {
+        Ok(fallback) => Json(json!({
+            "status": "deleted",
+            "id": id,
+            "default_preset_id": fallback.default_preset_id,
+            "rewrite_preset_id": fallback.rewrite_preset_id,
+        }))
+        .into_response(),
+        Err(e) => preset_error(e),
+    }
+}
+
 async fn prompts_set_default(
     State(state): State<Arc<ServerState>>,
     Json(body): Json<Value>,
@@ -620,8 +675,8 @@ async fn prompts_set_default(
     let Some(preset_id) = body.get("preset_id").and_then(|v| v.as_str()).map(str::to_string) else {
         return Err(err(StatusCode::BAD_REQUEST, "preset_id 不能为空".into()));
     };
-    // 校验预设存在（真相源是 prompts/*.txt）
-    if !att_core::prompts::load_all(&state.core.prompts_dir).iter().any(|p| p.id == preset_id) {
+    // 校验预设存在（内置或自定义）
+    if state.core.prompt_library().find(&preset_id).is_none() {
         return Err(err(StatusCode::NOT_FOUND, "预设不存在".into()));
     }
     let result = state.core.update_settings(|settings| {
@@ -688,6 +743,107 @@ mod tests {
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn 提示词_自定义预设增改删_删除被选用者回退() {
+        let root = std::env::temp_dir().join(format!("att-server-prompts-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(root.join("prompts")).unwrap();
+        std::fs::write(root.join("prompts/通用优化.txt"), "通用模板").unwrap();
+        std::fs::write(root.join("prompts/程序员模式.txt"), "程序员模板").unwrap();
+        let mut core = CoreState::init(&root.join("data"), att_core::Platform::Macos).unwrap();
+        core.prompts_dir = root.join("prompts");
+        let state = Arc::new(ServerState { core: Arc::new(core) });
+
+        // 旧数据没有 custom_prompts.json：只有内置
+        let (status, list) = get_json(&state, "/api/prompts").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list["presets"].as_array().unwrap().len(), 2);
+        assert_eq!(list["default_preset_id"], json!("preset-通用优化"));
+
+        // 新建
+        let (status, created) = request_with_body(&state, "POST", "/api/prompts", json!({
+            "name": "周报", "prompt_template": "整理成周报"
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert_eq!(created["is_builtin"], json!(false));
+        let id = created["id"].as_str().unwrap().to_string();
+        let (status, body) = request_with_body(&state, "POST", "/api/prompts", json!({"name": "通用优化", "prompt_template": "x"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "与内置重名：{body}");
+
+        // 修改
+        let (status, updated) = request_with_body(&state, "PUT", &format!("/api/prompts/{id}"), json!({"prompt_template": "新正文"})).await;
+        assert_eq!(status, StatusCode::OK, "{updated}");
+        assert_eq!((updated["name"].as_str(), updated["prompt_template"].as_str()), (Some("周报"), Some("新正文")));
+        // 内置只读（id 含中文，按 URL 编码传）
+        let builtin_uri = "/api/prompts/preset-%E9%80%9A%E7%94%A8%E4%BC%98%E5%8C%96";
+        let (status, _) = request_with_body(&state, "PUT", builtin_uri, json!({"prompt_template": "x"})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = request_with_body(&state, "DELETE", builtin_uri, json!({})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // 选用：录音默认 + 优化选中文本
+        let (status, _) = request_with_body(&state, "PUT", "/api/prompts/default", json!({"preset_id": id})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = request_with_body(&state, "PUT", "/api/settings", json!({"rewrite_preset_id": id})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, list) = get_json(&state, "/api/prompts").await;
+        assert_eq!(list["default_preset_id"], json!(id));
+        assert_eq!(
+            state.core.prompt_library().resolve_template(&[state.core.settings().rewrite_preset_id.as_deref()]).as_deref(),
+            Some("新正文")
+        );
+
+        // 删除被选用的预设：默认回退「通用优化」，优化选中文本回退「跟随默认」
+        let (status, deleted) = request_with_body(&state, "DELETE", &format!("/api/prompts/{id}"), json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{deleted}");
+        assert_eq!(deleted["default_preset_id"], json!("preset-通用优化"));
+        assert_eq!(deleted["rewrite_preset_id"], Value::Null);
+        let settings = state.core.settings();
+        assert_eq!(settings.default_preset_id.as_deref(), Some("preset-通用优化"));
+        assert_eq!(settings.last_used_preset_id.as_deref(), Some("preset-通用优化"));
+        assert!(settings.rewrite_preset_id.is_none());
+        let (status, _) = request_with_body(&state, "DELETE", &format!("/api/prompts/{id}"), json!({})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn 检查更新_失败带原因_未检查不能下载_开关随设置() {
+        let (base, _rx) = att_core::llm::testing::stub_routes(vec![att_core::llm::testing::StubRoute::json(
+            "GET /latest ",
+            404,
+            r#"{"message":"Not Found"}"#,
+        )])
+        .await;
+        let dir = std::env::temp_dir().join(format!("att-server-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut core = CoreState::init(&dir, att_core::Platform::Macos).unwrap();
+        core.updater = att_core::update::Updater::with_url(&dir, format!("{base}/latest"));
+        core.app_version = "2.5.1".into();
+        let state = Arc::new(ServerState { core: Arc::new(core) });
+
+        let (status, body) = get_json(&state, "/api/update").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["current_version"], json!("2.5.1"));
+        assert_eq!(body["auto_download"], json!(false));
+        assert_eq!(body["check"], Value::Null);
+        assert_eq!(body["download"]["status"], json!("idle"));
+
+        let (status, body) = request_with_body(&state, "POST", "/api/update/download", json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["detail"].as_str().unwrap().contains("先检查更新"));
+
+        let (status, body) = request_with_body(&state, "POST", "/api/update/check", json!({})).await;
+        assert_eq!(status, StatusCode::OK, "检查失败不是接口错误");
+        assert_eq!(body["check"]["status"], json!("error"));
+        assert!(body["check"]["error"].as_str().unwrap().contains("HTTP 404"));
+
+        let (status, _) = request_with_body(&state, "PUT", "/api/settings", json!({"auto_download_updates": true})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = get_json(&state, "/api/update").await;
+        assert_eq!(body["auto_download"], json!(true));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

@@ -464,9 +464,18 @@ export const api = {
   activateLLMModel: (id) => request('POST', `/llm/models/${id}/activate`),
   updateLLMSettings: (payload) => request('PUT', '/llm/settings', { body: payload }),
 
-  // 预设是只读的（唯一真相源是 prompts/*.txt）：只保留列出与设默认两个接口
+  // 检查更新（设置页「关于」）：检查失败也是 200，原因在 check.error；下载在后台进行，轮询 getUpdateStatus 看进度
+  getUpdateStatus: () => request('GET', '/update'),
+  checkForUpdates: () => request('POST', '/update/check'),
+  downloadUpdate: () => request('POST', '/update/download'),
+
+  // 提示词预设：内置（prompts/*.txt，只读）+ 自定义（data/custom_prompts.json，可增删改）
   getPresets: () => request('GET', '/prompts'),
   setDefaultPreset: (id) => request('PUT', '/prompts/default', { body: { preset_id: id } }),
+  createPreset: (payload) => request('POST', '/prompts', { body: payload }),
+  updatePreset: (id, payload) => request('PUT', `/prompts/${encodeURIComponent(id)}`, { body: payload }),
+  // 删除被选用的预设时后端会回退设置，响应里带回退后的 default_preset_id / rewrite_preset_id
+  deletePreset: (id) => request('DELETE', `/prompts/${encodeURIComponent(id)}`),
 
   async getWebSocketUrl() {
     const port = await getBackendPort()

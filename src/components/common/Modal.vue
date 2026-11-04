@@ -7,7 +7,7 @@
   <div
     :id="modalId"
     class="modal active"
-    @click.self="close"
+    @click.self="closeOnBackdrop && close()"
   >
     <div
       ref="dialogRef"
@@ -42,6 +42,11 @@ const props = defineProps({
   modalName: {
     type: String,
     required: true
+  },
+  // 点遮罩是否关闭：编辑类弹窗传 false，避免误点丢草稿（× 与 Esc 仍可关闭）
+  closeOnBackdrop: {
+    type: Boolean,
+    default: true
   }
 })
 
