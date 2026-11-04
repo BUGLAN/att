@@ -94,8 +94,20 @@ pub fn has_default_model(core: &CoreState) -> bool {
     core.llm.default_model_id().is_some()
 }
 
-/// 优化一条记录的原文，并按结果落盘。`on_event` 在调用方任务内同步回调。
-pub async fn optimize_record(core: &CoreState, record_id: &str, text: &str, mut on_event: impl FnMut(OptimizeEvent)) -> OptimizeOutcome {
+/// 优化一条记录的原文（用默认预设），并按结果落盘。`on_event` 在调用方任务内同步回调。
+pub async fn optimize_record(core: &CoreState, record_id: &str, text: &str, on_event: impl FnMut(OptimizeEvent)) -> OptimizeOutcome {
+    optimize_record_with_preset(core, record_id, text, None, on_event).await
+}
+
+/// 同 [`optimize_record`]，`preset_id` 指定本次用的预设（None = 默认预设；找不到时同样回退默认）。
+/// 「优化选中文本」用它套自己的预设，其余流程（流式、清洗、落盘、取消）与录音优化完全一致。
+pub async fn optimize_record_with_preset(
+    core: &CoreState,
+    record_id: &str,
+    text: &str,
+    preset_id: Option<&str>,
+    mut on_event: impl FnMut(OptimizeEvent),
+) -> OptimizeOutcome {
     let (task_id, mut cancel_rx) = core.optimizer.register(record_id);
     let outcome = async {
         set_status(core, record_id, RecordStatus::Optimizing, None);
@@ -103,7 +115,7 @@ pub async fn optimize_record(core: &CoreState, record_id: &str, text: &str, mut 
         tokio::select! {
             biased;
             _ = cancel_rx.wait_for(|cancelled| *cancelled) => None,
-            result = run(core, text, &mut on_event) => Some(result),
+            result = run(core, text, preset_id, &mut on_event) => Some(result),
         }
     }
     .await;
@@ -148,7 +160,12 @@ fn set_status(core: &CoreState, record_id: &str, status: RecordStatus, error: Op
 }
 
 /// 解析模板与模型 → 流式补全（首字前失败回退非流式）→ 清洗。
-async fn run(core: &CoreState, text: &str, on_event: &mut impl FnMut(OptimizeEvent)) -> Result<OptimizeSuccess, LlmError> {
+async fn run(
+    core: &CoreState,
+    text: &str,
+    preset_id: Option<&str>,
+    on_event: &mut impl FnMut(OptimizeEvent),
+) -> Result<OptimizeSuccess, LlmError> {
     let started = Instant::now();
     if text.trim().is_empty() {
         return Ok(OptimizeSuccess {
@@ -161,7 +178,8 @@ async fn run(core: &CoreState, text: &str, on_event: &mut impl FnMut(OptimizeEve
         });
     }
     let settings = core.settings();
-    let template = crate::prompts::resolve_template(&core.prompts_dir, settings.default_preset_id.as_deref())
+    let preset_id = preset_id.or(settings.default_preset_id.as_deref());
+    let template = crate::prompts::resolve_template(&core.prompts_dir, preset_id)
         .unwrap_or_else(|| prompt::DEFAULT_PROMPT.to_string());
     let messages = prompt::build_messages(text, &template, &settings.asr_hotwords);
 
@@ -181,7 +199,7 @@ async fn run(core: &CoreState, text: &str, on_event: &mut impl FnMut(OptimizeEve
     let model = target.model.model.as_str();
     tracing::info!(
         model,
-        preset = ?settings.default_preset_id,
+        preset = ?preset_id,
         text_length = text.chars().count(),
         glossary = settings.asr_hotwords.len(),
         "开始流式文本优化"
@@ -310,6 +328,26 @@ mod tests {
         assert!(request.contains("<transcript>"), "正文进信封");
         assert!(request.contains(r#""model":"m""#));
         assert!(!core.optimizer.is_active("rec-1"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn 指定预设_覆盖默认预设_找不到时回退默认() {
+        let (base, mut requests) = stub_routes(vec![StubRoute::sse(
+            "POST /v1/chat/completions",
+            &[r#"{"choices":[{"delta":{"content":"明天开会。"},"finish_reason":"stop"}]}"#],
+        )])
+        .await;
+        let (core, root) = setup(&base, "preset");
+        std::fs::write(root.join("prompts").join("Agent 提示词.txt"), "你是提示词改写器").unwrap();
+        let outcome = optimize_record_with_preset(&core, "rec-1", "嗯那个明天开会", Some("preset-Agent 提示词"), |_| {}).await;
+        assert!(matches!(outcome, OptimizeOutcome::Completed(_)), "{outcome:?}");
+        let request = requests.recv().await.unwrap();
+        assert!(request.contains("你是提示词改写器") && !request.contains("你是程序员助手"), "用指定预设");
+
+        let outcome = optimize_record_with_preset(&core, "rec-1", "嗯那个明天开会", None, |_| {}).await;
+        assert!(matches!(outcome, OptimizeOutcome::Completed(_)));
+        assert!(requests.recv().await.unwrap().contains("你是程序员助手"), "None = 默认预设");
         let _ = std::fs::remove_dir_all(&root);
     }
 

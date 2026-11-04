@@ -24,6 +24,10 @@
 //! - 不丢尾：停止 = 停采集并等采集线程把环里尾部样本全部交付，之后才发末包；
 //! - 启动窗口排队停止：命令串行处理，Connecting 期间收到 stop 照常收尾，不会出现幽灵录音。
 //!
+//! 优化选中文本（快捷键 [`HotkeyAction::RewriteSelection`]）不录音：取前台应用的选中文字建一条文本记录，
+//! 直接进入同一个 Optimizing 相位——同一个悬浮窗、同一套流式输入与收尾，区别只在 [`OptimizeSource`]：
+//! 用「选中文本优化」预设、总是输回原处（不看自动粘贴开关）、失败时不动选区。
+//!
 //! 前端事件：`recording:state`（相位 + 文本 + 记录）、`recording:partial`（实时文本）、
 //! `recording:level`（音量 0..1）。
 
@@ -120,10 +124,29 @@ enum Cmd {
     ReleaseGrace(u64, u64),
 }
 
+/// 一次优化从哪来：决定用哪个预设、结果要不要强制输出、收尾文案。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OptimizeSource {
+    /// 录音转写后的自动优化（默认预设，输出跟随「自动复制并粘贴」）
+    Recording,
+    /// 快捷键优化选中文本（「选中文本优化」预设，总是输回原处替换选区）
+    Selection,
+}
+
+impl OptimizeSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            OptimizeSource::Recording => "recording",
+            OptimizeSource::Selection => "selection",
+        }
+    }
+}
+
 /// 进行中的自动优化（转写记录已落库）。
 struct PendingOptimization {
     session_id: u64,
     mode: Mode,
+    source: OptimizeSource,
     record_id: String,
     raw_text: String,
     /// 转写阶段的降级原因（识别中断但有部分文本）
@@ -272,6 +295,12 @@ impl Actor {
     }
 
     async fn on_hotkey(&mut self, action: HotkeyAction, key_phase: KeyPhase) {
+        if action == HotkeyAction::RewriteSelection {
+            if key_phase == KeyPhase::Pressed {
+                self.rewrite_selection().await;
+            }
+            return;
+        }
         if action != HotkeyAction::Record {
             return;
         }
@@ -340,6 +369,42 @@ impl Actor {
         if let Some(released_at) = released_at {
             self.stop_with("正在完成转写", true, Some(released_at));
         }
+    }
+
+    /// 优化选中文本：复制选区 → 建文本记录 → 进入与录音自动优化相同的 Optimizing 相位。
+    async fn rewrite_selection(&mut self) {
+        if self.phase != Phase::Idle {
+            // 录音 / 转写 / 优化中：不抢占当前会话，摇一下印章表示这下没生效
+            tracing::info!("{:?} 中按下优化选中文本，忽略", self.phase);
+            return crate::floating::nudge(&self.app);
+        }
+        if !att_hotkey::listener::suppresses_keys() {
+            // 只读监听（启动时没有「辅助功能」权限）：快捷键的主键已经送进前台应用、替换掉了选区，再复制只会拿到错的内容
+            return self.emit_state(
+                "error",
+                json!({ "message": "优化选中文本需要「辅助功能」权限：授权后请重启应用（否则快捷键会在前台应用里打出字符）" }),
+            );
+        }
+        if !optimizer::has_default_model(&self.core) {
+            return self.emit_state("error", json!({ "message": "优化选中文本需要 LLM 模型：请先在 设置 → LLM 服务 中添加" }));
+        }
+        let selection = tokio::task::spawn_blocking(crate::desktop::copy_selection)
+            .await
+            .unwrap_or_else(|error| Err(error.to_string()));
+        let text = match selection {
+            Ok(Some(text)) => text,
+            Ok(None) => return self.emit_state("error", json!({ "message": "没有读到选中的文字：先选中要优化的文本再按快捷键" })),
+            Err(message) => {
+                tracing::warn!("读取选中文本失败: {message}");
+                return self.emit_state("error", json!({ "message": message }));
+            }
+        };
+        tracing::info!("优化选中文本（{} 字）", text.chars().count());
+        let record = self.save_record(&[], 0.0, Some(text.clone()), None, 0.0).await;
+        let Some(record_id) = record.get("id").and_then(Value::as_str).map(str::to_string) else {
+            return self.emit_state("error", json!({ "message": "保存记录失败，未开始优化" }));
+        };
+        self.begin_optimization(Mode::Batch, record_id, text, None, record, OptimizeSource::Selection);
     }
 
     fn fail_start(&mut self, message: String) {
@@ -641,11 +706,11 @@ impl Actor {
             let auto_optimize = self.core.settings().auto_optimize && optimizer::has_default_model(&self.core);
             if let (true, Some(record_id)) = (auto_optimize, record_id) {
                 // 自动优化：本次不在转写阶段粘贴，优化结果流式打进输入框（否则原文、优化文各出一遍）
-                self.begin_optimization(mode, record_id, outcome.text.clone(), outcome.error.clone(), record);
+                self.begin_optimization(mode, record_id, outcome.text.clone(), outcome.error.clone(), record, OptimizeSource::Recording);
                 self.active = None;
                 return;
             }
-            let (copied, pasted, copy_error) = self.auto_copy(&outcome.text).await;
+            let (copied, pasted, copy_error) = self.auto_copy(&outcome.text, false).await;
             let message = match &outcome.error {
                 Some(error) => format!("识别中断，已保存已识别内容：{error}"),
                 None => "录音已完成".to_string(),
@@ -673,16 +738,35 @@ impl Actor {
     }
 
     /// 进入 Optimizing：优化在独立任务里跑（不阻塞 Actor 处理新命令），增量直接推给前端与悬浮窗，
-    /// 开启自动输出时同时流式打进焦点输入框。
-    fn begin_optimization(&mut self, mode: Mode, record_id: String, raw_text: String, transcribe_error: Option<String>, record: Value) {
+    /// 开启自动输出时（优化选中文本则总是）同时流式打进焦点输入框。
+    fn begin_optimization(
+        &mut self,
+        mode: Mode,
+        record_id: String,
+        raw_text: String,
+        transcribe_error: Option<String>,
+        record: Value,
+        source: OptimizeSource,
+    ) {
         let session_id = self.next_id;
         let detached = Arc::new(AtomicBool::new(false));
         let typing_halt = Arc::new(AtomicBool::new(false));
-        let mut typing = self.core.settings().auto_copy_to_clipboard.then(|| StreamTyping::spawn(typing_halt.clone()));
+        let settings = self.core.settings();
+        let output = source == OptimizeSource::Selection || settings.auto_copy_to_clipboard;
+        let mut typing = output.then(|| StreamTyping::spawn(typing_halt.clone()));
+        let preset_id = match source {
+            OptimizeSource::Recording => None,
+            OptimizeSource::Selection => settings.rewrite_preset_id.clone(),
+        };
+        let message = match source {
+            OptimizeSource::Recording => "转写完成，正在优化",
+            OptimizeSource::Selection => "正在优化选中文本",
+        };
         self.phase = Phase::Optimizing;
         self.optimizing = Some(PendingOptimization {
             session_id,
             mode,
+            source,
             record_id: record_id.clone(),
             raw_text: raw_text.clone(),
             transcribe_error,
@@ -691,7 +775,7 @@ impl Actor {
         });
         self.emit_state(
             "optimizing",
-            json!({ "mode": mode.as_str(), "message": "转写完成，正在优化", "text": raw_text, "record": record }),
+            json!({ "mode": mode.as_str(), "source": source.as_str(), "message": message, "text": raw_text, "record": record }),
         );
 
         let core = self.core.clone();
@@ -700,7 +784,7 @@ impl Actor {
         tauri::async_runtime::spawn(async move {
             let mut accumulated = String::new();
             let delta_record = record_id.clone();
-            let outcome = optimizer::optimize_record(&core, &record_id, &raw_text, |event| {
+            let outcome = optimizer::optimize_record_with_preset(&core, &record_id, &raw_text, preset_id.as_deref(), |event| {
                 let OptimizeEvent::Delta(chunk) = event else { return };
                 accumulated.push_str(&chunk);
                 // 输入框只出「收尾清洗不会剥掉」的部分（套话 / 思考块不上屏）。
@@ -727,10 +811,13 @@ impl Actor {
             return;
         };
         crate::tray::refresh(&self.app);
-        let (final_text, optimized, optimize_error, base_message) = match &outcome {
-            OptimizeOutcome::Completed(success) => (success.optimized_text.clone(), true, None, "录音已完成，已优化".to_string()),
-            OptimizeOutcome::Failed(error) => (pending.raw_text.clone(), false, Some(error.clone()), format!("优化失败，已保留转写原文：{error}")),
-            OptimizeOutcome::Cancelled => (pending.raw_text.clone(), false, None, "已取消优化，保留原始文本".to_string()),
+        let selection = pending.source == OptimizeSource::Selection;
+        let (final_text, optimized, optimize_error, base_message) = match (&outcome, selection) {
+            (OptimizeOutcome::Completed(success), false) => (success.optimized_text.clone(), true, None, "录音已完成，已优化".to_string()),
+            (OptimizeOutcome::Completed(success), true) => (success.optimized_text.clone(), true, None, "选中文本已优化".to_string()),
+            (OptimizeOutcome::Failed(error), false) => (pending.raw_text.clone(), false, Some(error.clone()), format!("优化失败，已保留转写原文：{error}")),
+            (OptimizeOutcome::Failed(error), true) => (pending.raw_text.clone(), false, Some(error.clone()), format!("优化失败，选中的文字没有改动：{error}")),
+            (OptimizeOutcome::Cancelled, _) => (pending.raw_text.clone(), false, None, "已取消优化，保留原始文本".to_string()),
         };
         let truncated = matches!(&outcome, OptimizeOutcome::Completed(s) if s.truncated);
         let cancelled = matches!(outcome, OptimizeOutcome::Cancelled);
@@ -743,12 +830,15 @@ impl Actor {
         }
 
         self.phase = Phase::Idle;
-        // 用户主动取消优化：与旧版一致只保留原文，不粘贴；已打出的字保留，不再补打
+        // 用户主动取消优化：与旧版一致只保留原文，不粘贴；已打出的字保留，不再补打。
+        // 优化选中文本时已打出的字替换掉了选区：把原文放进剪贴板，用户能贴回去
         let (copied, pasted, copy_error) = if cancelled {
+            let typed_any = typing.as_ref().is_some_and(|t| !t.typed().is_empty());
             abort_typing(typing).await;
-            (false, false, None)
+            let copied = selection && typed_any && copy_to_clipboard(&pending.raw_text).await;
+            (copied, false, None)
         } else {
-            self.deliver(&final_text, optimized, typing).await
+            self.deliver(&final_text, optimized, typing, pending.source).await
         };
         let message = match &pending.transcribe_error {
             Some(error) => format!("识别中断，已保存已识别内容：{error}"),
@@ -759,6 +849,7 @@ impl Actor {
             "completed",
             json!({
                 "mode": pending.mode.as_str(),
+                "source": pending.source.as_str(),
                 "message": message,
                 "text": final_text,
                 "raw_text": pending.raw_text,
@@ -799,13 +890,16 @@ impl Actor {
     ) -> Value {
         let id = uuid::Uuid::new_v4().to_string();
         let audio_name = format!("{id}.wav");
-        let audio_path = self.core.records.audio_dir().join(&audio_name);
-        let samples = samples.to_vec();
-        let wrote = tokio::task::spawn_blocking(move || att_core::audio::write_wav_16k(&audio_path, &samples)).await;
-        let audio_ok = matches!(wrote, Ok(Ok(())));
-        if !audio_ok {
-            tracing::error!("录音落盘失败: {wrote:?}");
-        }
+        // 没有音频（优化选中文本建的文本记录）：不落空 WAV，audio_path 留空
+        let audio_ok = !samples.is_empty() && {
+            let audio_path = self.core.records.audio_dir().join(&audio_name);
+            let samples = samples.to_vec();
+            let wrote = tokio::task::spawn_blocking(move || att_core::audio::write_wav_16k(&audio_path, &samples)).await;
+            if !matches!(wrote, Ok(Ok(()))) {
+                tracing::error!("录音落盘失败: {wrote:?}");
+            }
+            matches!(wrote, Ok(Ok(())))
+        };
         let status = if text.is_some() { RecordStatus::Transcribed } else { RecordStatus::Failed };
         let record = Record {
             id: id.clone(),
@@ -832,12 +926,17 @@ impl Actor {
 
     /// 输出优化收尾的文本。流式输入打出过内容：成功则补齐到最终文本，失败则停在已打出的部分；
     /// 两种情况都把最终文本（失败时为原文）放进剪贴板。一个字都没打出（未授权 / 失败在首字前）：退回整段粘贴。
-    async fn deliver(&self, final_text: &str, optimized: bool, typing: Option<StreamTyping>) -> (bool, bool, Option<String>) {
-        let Some(typing) = typing else { return self.auto_copy(final_text).await };
+    /// 优化选中文本不看自动粘贴开关（输回原处就是这个功能本身）；失败且一个字没打出时什么都不做，选区原样留着。
+    async fn deliver(&self, final_text: &str, optimized: bool, typing: Option<StreamTyping>, source: OptimizeSource) -> (bool, bool, Option<String>) {
+        let force = source == OptimizeSource::Selection;
+        let Some(typing) = typing else { return self.auto_copy(final_text, force).await };
         let typed_any = !typing.typed().is_empty();
         if !typed_any && !optimized {
             abort_typing(Some(typing)).await;
-            return self.auto_copy(final_text).await;
+            if force {
+                return (false, false, None);
+            }
+            return self.auto_copy(final_text, force).await;
         }
         let text = final_text.to_string();
         let result = tokio::task::spawn_blocking(move || {
@@ -850,7 +949,7 @@ impl Actor {
             Ok((Ok(()), copied)) => (copied, false, Some("优化中断：输入框里是部分优化结果，原文已复制到剪贴板".into())),
             Ok((Err(error), _)) if !typed_any => {
                 tracing::warn!("流式输入不可用，改为整段粘贴: {error}");
-                self.auto_copy(final_text).await
+                self.auto_copy(final_text, force).await
             }
             Ok((Err(error), copied)) => {
                 tracing::warn!("流式输入中断: {error}");
@@ -860,9 +959,9 @@ impl Actor {
         }
     }
 
-    /// 自动复制并粘贴到焦点窗口（设置 auto_copy_to_clipboard）。
-    async fn auto_copy(&self, text: &str) -> (bool, bool, Option<String>) {
-        if !self.core.settings().auto_copy_to_clipboard {
+    /// 自动复制并粘贴到焦点窗口（设置 auto_copy_to_clipboard；`force` 时不看开关）。
+    async fn auto_copy(&self, text: &str, force: bool) -> (bool, bool, Option<String>) {
+        if !force && !self.core.settings().auto_copy_to_clipboard {
             return (false, false, None);
         }
         let text = text.to_string();
@@ -916,6 +1015,12 @@ fn finalize_budget(mode: Mode, recorded: Duration, chatgpt_timeout_seconds: i64)
 }
 
 /// 流式输入立即停手（丢弃未发出的按键）。
+/// 只写剪贴板（不粘贴）；返回是否写入成功。
+async fn copy_to_clipboard(text: &str) -> bool {
+    let text = text.to_string();
+    matches!(tokio::task::spawn_blocking(move || crate::desktop::write_clipboard(&text)).await, Ok(Ok(())))
+}
+
 async fn abort_typing(typing: Option<StreamTyping>) {
     if let Some(typing) = typing {
         let _ = tokio::task::spawn_blocking(move || typing.abort()).await;

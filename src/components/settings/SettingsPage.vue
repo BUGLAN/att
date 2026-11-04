@@ -70,6 +70,7 @@ import { useSettings, usePresets } from '@/composables/useSettings'
 import { useElectron } from '@/composables/useElectron'
 import { hasPendingSettingsEdits } from './settingsFormSync.mjs'
 import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
+import { findHotkeyConflict } from './settingsHotkeys.mjs'
 import { SETTINGS_CTX } from './settingsContext.js'
 import { DEFAULT_SECTION_ID, buildNavGroups, findSection, resolveSectionId } from './settingsNav.mjs'
 import SettingsRecordingPage from './pages/SettingsRecordingPage.vue'
@@ -133,10 +134,11 @@ const { syncDesktopSettings, syncInputSettings, platform, isDesktop, listAudioDe
 
 const form = ref({})
 const audioInputDevices = ref([])
-// 正在录入哪个快捷键：'hotkey'（录音）/ 'clipboard_panel_hotkey'（剪贴板悬浮框）/ null
+// 正在录入哪个快捷键：HOTKEY_TARGETS 里的字段名（hotkey / clipboard_panel_hotkey / rewrite_hotkey）或 null
 const captureTarget = ref(null)
 const isCapturingHotkey = computed(() => captureTarget.value === 'hotkey')
 const isCapturingPanelHotkey = computed(() => captureTarget.value === 'clipboard_panel_hotkey')
+const isCapturingRewriteHotkey = computed(() => captureTarget.value === 'rewrite_hotkey')
 const hotkeyError = ref('')
 
 const selectedPresetId = ref('')
@@ -195,6 +197,9 @@ const hotkeyDisplay = computed(() => {
 const panelHotkeyDisplay = computed(() => {
   return form.value.clipboard_panel_hotkey?.display || '点击录入快捷键'
 })
+const rewriteHotkeyDisplay = computed(() => {
+  return form.value.rewrite_hotkey?.display || '点击录入快捷键'
+})
 
 function getDefaultHotkey() {
   if (platform === 'darwin') {
@@ -223,6 +228,17 @@ function getDefaultHotkey() {
 // 剪贴板悬浮框默认 ⌃⌥V / Ctrl+Alt+V（与 Rust 侧 HotkeyBinding::default_for 一致）
 function getDefaultPanelHotkey() {
   return normalizeHotkeyConfig({ modifiers: ['ctrl', 'alt'], key: 'v' })
+}
+
+// 优化选中文本默认 ⌥A / Alt+A（与 Rust 侧 HotkeyBinding::default_for 一致）
+function getDefaultRewriteHotkey() {
+  return normalizeHotkeyConfig({ modifiers: ['alt'], key: 'a' })
+}
+
+function getDefaultHotkeyFor(field) {
+  if (field === 'clipboard_panel_hotkey') return getDefaultPanelHotkey()
+  if (field === 'rewrite_hotkey') return getDefaultRewriteHotkey()
+  return getDefaultHotkey()
 }
 
 function buildHotkeyDisplay(modifiers, key) {
@@ -320,6 +336,10 @@ function normalizeSettings(value = {}) {
     clipboard_panel_enabled: value.clipboard_panel_enabled ?? true,
     clipboard_panel_hotkey: normalizeHotkeyConfig(value.clipboard_panel_hotkey, getDefaultPanelHotkey()),
     clipboard_panel_enter_action: value.clipboard_panel_enter_action === 'copy' ? 'copy' : 'paste',
+    rewrite_enabled: value.rewrite_enabled ?? true,
+    rewrite_hotkey: normalizeHotkeyConfig(value.rewrite_hotkey, getDefaultRewriteHotkey()),
+    // 空串 = 跟随默认优化预设
+    rewrite_preset_id: value.rewrite_preset_id || '',
     recording_mode: value.recording_mode || 'single',
     silence_threshold: value.silence_threshold ?? 1.5,
     silence_level: value.silence_level ?? -40
@@ -355,6 +375,9 @@ function buildSettingsPayload() {
     clipboard_panel_enabled: Boolean(form.value.clipboard_panel_enabled),
     clipboard_panel_hotkey: normalizeHotkeyConfig(form.value.clipboard_panel_hotkey, getDefaultPanelHotkey()),
     clipboard_panel_enter_action: form.value.clipboard_panel_enter_action,
+    rewrite_enabled: Boolean(form.value.rewrite_enabled),
+    rewrite_hotkey: normalizeHotkeyConfig(form.value.rewrite_hotkey, getDefaultRewriteHotkey()),
+    rewrite_preset_id: form.value.rewrite_preset_id || '',
     recording_mode: form.value.recording_mode,
     silence_threshold: form.value.silence_threshold,
     silence_level: form.value.silence_level
@@ -460,19 +483,13 @@ function stopHotkeyCapture() {
 
 function resetHotkey(target = 'hotkey') {
   hotkeyError.value = ''
-  form.value[target] = target === 'hotkey' ? getDefaultHotkey() : getDefaultPanelHotkey()
+  form.value[target] = getDefaultHotkeyFor(target)
 }
 
 /** KeyA–KeyZ / Digit0–9 → 'a'–'z' / '0'–'9'；修饰键与其他键返回 null（旧版只支持字母数字主键） */
 function hotkeyKeyFromCode(code) {
   const match = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(String(code || ''))
   return match ? (match[1] || match[2]).toLowerCase() : null
-}
-
-function sameHotkey(left, right) {
-  return Boolean(left && right) &&
-    (left.key || null) === (right.key || null) &&
-    sortHotkeyModifiers(left.modifiers || []).join() === sortHotkeyModifiers(right.modifiers || []).join()
 }
 
 function handleHotkeyKeydown(event) {
@@ -507,9 +524,9 @@ function handleHotkeyKeydown(event) {
     key
   })
   // 两个全局快捷键撞键时只会触发其中一个（后端同样会拒绝保存）
-  const other = target === 'hotkey' ? 'clipboard_panel_hotkey' : 'hotkey'
-  if (form.value.clipboard_panel_enabled && sameHotkey(next, form.value[other])) {
-    hotkeyError.value = `${next.display} 已用作${target === 'hotkey' ? '剪贴板悬浮框' : '录音'}快捷键，请换一个`
+  const conflict = findHotkeyConflict(form.value, target, next)
+  if (conflict) {
+    hotkeyError.value = `${next.display} 已用作${conflict.label}快捷键，请换一个`
     stopHotkeyCapture()
     return
   }
@@ -652,6 +669,8 @@ provide(SETTINGS_CTX, {
   isCapturingHotkey,
   panelHotkeyDisplay,
   isCapturingPanelHotkey,
+  rewriteHotkeyDisplay,
+  isCapturingRewriteHotkey,
   hotkeyError,
   startHotkeyCapture,
   resetHotkey,

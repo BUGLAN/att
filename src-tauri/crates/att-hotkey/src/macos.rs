@@ -116,10 +116,12 @@ pub fn spawn(shared: Arc<Shared>) -> Result<(), String> {
     std::thread::Builder::new()
         .name("att-hotkey-macos".into())
         .spawn(move || {
-            let tap = make_tap(shared.clone(), CGEventTapOptions::Default).or_else(|()| {
-                tracing::warn!("可拦截的键盘监听创建失败（缺少「辅助功能」权限？），退回只读监听：快捷键的按键会同时送到前台应用");
-                make_tap(shared.clone(), CGEventTapOptions::ListenOnly)
-            });
+            let tap = make_tap(shared.clone(), CGEventTapOptions::Default)
+                .inspect(|_| crate::listener::set_suppresses_keys(true))
+                .or_else(|()| {
+                    tracing::warn!("可拦截的键盘监听创建失败（缺少「辅助功能」权限？），退回只读监听：快捷键的按键会同时送到前台应用");
+                    make_tap(shared.clone(), CGEventTapOptions::ListenOnly)
+                });
             let tap = match tap {
                 Ok(tap) => tap,
                 Err(()) => {

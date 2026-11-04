@@ -17,8 +17,8 @@ export const SETTINGS_SECTIONS = Object.freeze([
     id: 'hotkey',
     group: '通用',
     label: '快捷键',
-    desc: '全局录音快捷键，窗口在后台时同样生效。',
-    keywords: ['快捷键', '热键', '按住', '组合键', 'hotkey']
+    desc: '全局录音与优化选中文本的快捷键，窗口在后台时同样生效。',
+    keywords: ['快捷键', '热键', '按住', '组合键', 'hotkey', '选中文本', '改写']
   },
   {
     id: 'clipboard',
@@ -31,8 +31,8 @@ export const SETTINGS_SECTIONS = Object.freeze([
     id: 'output',
     group: '通用',
     label: '输出与优化',
-    desc: '转写完成后自动优化、复制与粘贴。',
-    keywords: ['自动优化', 'ai 优化', '预设', '自动复制', '粘贴', '剪贴板']
+    desc: '转写完成后自动优化、复制与粘贴；优化选中文本用的预设。',
+    keywords: ['自动优化', 'ai 优化', '预设', '自动复制', '粘贴', '剪贴板', '选中文本', '提示词']
   },
   {
     id: 'asr',
