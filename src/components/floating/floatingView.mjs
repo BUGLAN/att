@@ -126,7 +126,7 @@ export function startsNewSession({ wasActive, prevSeal, next }) {
  * 宋体等衬线字体把字画在 em 框偏下的位置（Songti TC 22px 约低 1.2–1.6px），且各平台回退字体不同，
  * 所以不写死偏移：由调用方用 canvas 按实际字体量出字形度量，这里按 CSS 行盒规则换算。
  * - `line-height: 1` 的行盒高 = 字号，基线在「半行距 + 字体上伸」处；
- * - 印章底部有 2px 暗边（内阴影），受光面是上面那 34px，以它的中心为目标。
+ * - 印章底部若有暗边（`bevel` px 内阴影），以上面的受光面中心为目标；现在印章是平的，调用方传 `bevel: 0`。
  *
  * @param {{ fontAscent: number, fontDescent: number, inkAscent: number, inkDescent: number }} metrics
  *   canvas measureText 的 fontBoundingBoxAscent / fontBoundingBoxDescent / actualBoundingBoxAscent / actualBoundingBoxDescent
