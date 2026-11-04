@@ -6,7 +6,10 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">落墨 Luomo</span>
-            <span class="setting-desc">{{ versionText }}</span>
+            <span class="setting-desc">
+              {{ versionText }}
+              <BaseBadge v-if="badge" class="about-badge" :tone="badge.tone">{{ badge.text }}</BaseBadge>
+            </span>
           </div>
         </div>
       </div>
@@ -18,7 +21,10 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">检查更新</span>
-            <span class="setting-desc">{{ lastCheckedText }}</span>
+            <span class="setting-desc">
+              <span v-if="checkLine.error" class="about-error">{{ checkLine.error }}</span>
+              <template v-if="checkLine.error && checkLine.meta"> · </template>{{ checkLine.meta }}
+            </span>
           </div>
           <div class="setting-actions-inline about-actions">
             <BaseButton variant="outline" :loading="isChecking" :disabled="isChecking" @click="checkNow">
@@ -31,7 +37,7 @@
           <span>读取更新状态失败：{{ loadError }}</span>
         </div>
 
-        <div v-if="checkView" class="settings-note about-note" :class="`is-${checkView.tone}`" role="status">
+        <div v-if="checkView && check.status === 'available'" class="settings-note about-note" role="status">
           <div class="about-note__body">
             <strong class="about-note__title">{{ checkView.title }}</strong>
             <span v-if="checkView.detail" class="about-note__detail">{{ checkView.detail }}</span>
@@ -68,6 +74,7 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
@@ -76,10 +83,11 @@ import { SETTINGS_CTX } from '../settingsContext.js'
 import {
   canStartDownload,
   describeCheck,
+  describeCheckLine,
   describeDownload,
   downloadPercent,
-  formatDateTime,
-  summarizeNotes
+  summarizeNotes,
+  versionBadge
 } from '../updateView.mjs'
 
 // 自动下载开关走设置表单：与其他设置一样防抖保存到 settings.json（auto_download_updates）
@@ -106,10 +114,8 @@ const notes = computed(() => (check.value?.status === 'available' ? summarizeNot
 const downloadText = computed(() => (check.value?.status === 'available' ? describeDownload(download.value) : ''))
 const percent = computed(() => downloadPercent(download.value))
 const canDownload = computed(() => canStartDownload(check.value, download.value))
-const lastCheckedText = computed(() => {
-  const time = formatDateTime(check.value?.checked_at)
-  return time ? `上次检查：${time}` : '从发布渠道获取最新正式版本，与当前版本比较。'
-})
+const checkLine = computed(() => describeCheckLine(check.value))
+const badge = computed(() => versionBadge(check.value))
 
 function applyStatus(next) {
   status.value = next
@@ -206,15 +212,22 @@ onUnmounted(() => {
   justify-content: flex-end;
 }
 
-/* 结果提示条：沿用 .settings-note，按结果换色（ok / info / err） */
+/* 版本号旁的小标记：样式全用 BaseBadge（tone ok / info），这里只管与版本文字的间距 */
+.about-badge {
+  margin-left: var(--s-2);
+  vertical-align: 1px;
+}
+
+/* 「检查更新」行内的失败原因 */
+.about-error {
+  color: var(--err);
+  word-break: break-all;
+}
+
+/* 发现新版本的提示条：沿用 .settings-note（读取状态失败也用它，带 is-err） */
 .about-note {
   align-items: flex-start;
   margin-bottom: var(--s-3);
-}
-
-.about-note.is-ok {
-  background: var(--ok-soft);
-  border-color: var(--ok-line);
 }
 
 .about-note.is-err {

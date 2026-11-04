@@ -1,11 +1,13 @@
 // 设置页「关于」检查更新展示逻辑（src/components/settings/updateView.mjs）单元测试。
-// 覆盖：有新版本 / 已是最新 / 检查失败三种反馈，下载进度与可否下载，发布说明摘要。
+// 覆盖：有新版本 / 已是最新 / 检查失败三种反馈、版本号标记与行内说明，下载进度与可否下载，发布说明摘要。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
   canStartDownload,
   describeCheck,
+  describeCheckLine,
+  versionBadge,
   describeDownload,
   downloadPercent,
   formatBytes,
@@ -42,6 +44,23 @@ test('检查结果：三种情况都有明确反馈，失败带原因', () => {
   assert.equal(failed.title, '检查更新失败')
   assert.equal(failed.detail, '找不到发布信息（HTTP 404）')
   assert.equal(describeCheck({ status: 'error' }).detail, '未知原因')
+})
+
+test('版本号标记与检查更新行：已是最新只给标记，失败原因写在行内', () => {
+  assert.equal(versionBadge(null), null, '没检查过不显示')
+  assert.deepEqual(versionBadge({ status: 'latest' }), { tone: 'ok', text: '已是最新' })
+  assert.deepEqual(versionBadge(AVAILABLE), { tone: 'info', text: '可更新至 v2.6.0' })
+  assert.equal(versionBadge({ status: 'error', error: 'x' }), null)
+
+  assert.deepEqual(describeCheckLine(null), {
+    error: '', meta: '从发布渠道获取最新正式版本，与当前版本比较。'
+  })
+  const latest = describeCheckLine({ status: 'latest', checked_at: '2026-11-04T07:22:00Z' })
+  assert.equal(latest.error, '')
+  assert.match(latest.meta, /^上次检查：2026-11-0\d \d{2}:\d{2}$/)
+  assert.deepEqual(describeCheckLine({ status: 'error', error: 'HTTP 404' }), {
+    error: '检查失败：HTTP 404', meta: ''
+  })
 })
 
 test('下载：进度、完成、失败文案与能否开始下载', () => {

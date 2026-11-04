@@ -57,6 +57,34 @@ export function describeCheck(check) {
   return { tone: 'err', title: '检查更新失败', detail: check.error || '未知原因' }
 }
 
+/**
+ * 版本号旁的小标记：{ tone: 'ok' | 'info', text }；没检查过或检查失败返回 null。
+ * 「已是最新」只用这个标记提示，不再另起提示条。
+ */
+export function versionBadge(check) {
+  if (check?.status === 'latest') {
+    return { tone: 'ok', text: '已是最新' }
+  }
+  if (check?.status === 'available' && check.latest_version) {
+    return { tone: 'info', text: `可更新至 v${check.latest_version}` }
+  }
+  return null
+}
+
+/**
+ * 「检查更新」那一行的说明：{ error, meta }。
+ * 检查失败的原因写在这一行（红字），不另起提示条；meta 是上次检查时间或默认说明。
+ */
+export function describeCheckLine(check) {
+  if (!check) {
+    return { error: '', meta: '从发布渠道获取最新正式版本，与当前版本比较。' }
+  }
+  const time = formatDateTime(check.checked_at)
+  const meta = time ? `上次检查：${time}` : ''
+  const error = check.status === 'error' ? `检查失败：${check.error || '未知原因'}` : ''
+  return { error, meta }
+}
+
 /** 下载进度百分比（0–100 的整数）；总大小未知时返回 null */
 export function downloadPercent(download) {
   if (!download?.total) {
