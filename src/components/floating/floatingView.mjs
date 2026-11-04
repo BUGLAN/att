@@ -143,7 +143,7 @@ export function sealGlyphNudge(metrics, { fontSize = 22, tile = 36, bevel = 2 } 
   return Math.round((target - inkCenter) * 4) / 4
 }
 
-// ---------- 出字动效：匀速吐字 + 墨晕（设计稿 docs/prototype/floating-text-motion.html 方案 A1） ----------
+// ---------- 出字动效：匀速吐字 + 墨晕 ----------
 // 流式识别是「几个字一批」到的，直接上屏会一顿一顿。到字先进缓冲，再按稳定节拍一个个放出，
 // 每个字自己短促地洇开（floating.css .ch）；整行超宽后的左移也改成平滑追赶，不再一格一格跳。
 
