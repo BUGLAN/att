@@ -1,6 +1,6 @@
 {
   "name": "audio-to-text",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "落墨 — 录音转文字（Tauri 2 + Rust + Vue 3）",
   "scripts": {
     "dev": "vite --strictPort",
