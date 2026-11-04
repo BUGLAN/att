@@ -123,7 +123,10 @@ export function useElectron() {
     activateLLMModel: (id) => httpApi.activateLLMModel(id),
     updateLLMSettings: (payload) => httpApi.updateLLMSettings(payload),
     getPresets: () => httpApi.getPresets(),
-    setDefaultPreset: (id) => httpApi.setDefaultPreset(id)
+    setDefaultPreset: (id) => httpApi.setDefaultPreset(id),
+    createPreset: (payload) => httpApi.createPreset(payload),
+    updatePreset: (id, payload) => httpApi.updatePreset(id, payload),
+    deletePreset: (id) => httpApi.deletePreset(id)
   }
 
   const windowControl = {

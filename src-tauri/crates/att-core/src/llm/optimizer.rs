@@ -178,9 +178,12 @@ async fn run(
         });
     }
     let settings = core.settings();
-    let preset_id = preset_id.or(settings.default_preset_id.as_deref());
-    let template = crate::prompts::resolve_template(&core.prompts_dir, preset_id)
+    // 查找链：本次指定 → 设置里的默认预设 → 内置默认；指定的预设被删了也落到用户自己选的默认，而不是直接跳内置
+    let template = core
+        .prompt_library()
+        .resolve_template(&[preset_id, settings.default_preset_id.as_deref()])
         .unwrap_or_else(|| prompt::DEFAULT_PROMPT.to_string());
+    let preset_id = preset_id.or(settings.default_preset_id.as_deref());
     let messages = prompt::build_messages(text, &template, &settings.asr_hotwords);
 
     let target = core.llm.resolve_runtime(None)?;

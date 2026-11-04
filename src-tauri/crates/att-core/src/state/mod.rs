@@ -133,6 +133,45 @@ impl CoreState {
     pub fn public_settings(&self) -> serde_json::Value {
         self.settings().public_view(self.platform)
     }
+
+    /// 提示词预设库：内置 `prompts_dir` + 自定义 `data/custom_prompts.json`。
+    pub fn prompt_library(&self) -> crate::prompts::PromptLibrary {
+        crate::prompts::PromptLibrary::new(&self.prompts_dir, &self.data_dir)
+    }
+
+    /// 删除自定义预设；它正被选用时回退：
+    /// - 录音默认预设（`default_preset_id` / `last_used_preset_id`）→ 内置默认（「通用优化」，没有则第一个）
+    /// - 「优化选中文本」预设（`rewrite_preset_id`）→ None，即跟随默认预设
+    pub fn delete_custom_preset(&self, id: &str) -> Result<PresetFallback, crate::prompts::PresetError> {
+        let library = self.prompt_library();
+        library.delete(id)?;
+        let fallback_id = crate::prompts::default_id(&library.load_all());
+        let fallback = self
+            .update_settings(|s| {
+                if s.default_preset_id.as_deref() == Some(id) {
+                    s.default_preset_id = fallback_id.clone();
+                }
+                if s.last_used_preset_id.as_deref() == Some(id) {
+                    s.last_used_preset_id = fallback_id.clone();
+                }
+                if s.rewrite_preset_id.as_deref() == Some(id) {
+                    s.rewrite_preset_id = None;
+                }
+                PresetFallback {
+                    default_preset_id: s.default_preset_id.clone(),
+                    rewrite_preset_id: s.rewrite_preset_id.clone(),
+                }
+            })
+            .map_err(|e| crate::prompts::PresetError::Io(std::io::Error::other(e.to_string())))?;
+        Ok(fallback)
+    }
+}
+
+/// 删除预设后各选用处的当前值（供接口回报给前端刷新）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PresetFallback {
+    pub default_preset_id: Option<String>,
+    pub rewrite_preset_id: Option<String>,
 }
 
 #[cfg(test)]

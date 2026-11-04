@@ -52,8 +52,8 @@ export const SETTINGS_SECTIONS = Object.freeze([
     id: 'presets',
     group: 'AI',
     label: '提示词预设',
-    desc: '优化时使用的提示词，来自 prompts/ 目录。',
-    keywords: ['提示词', '预设', 'prompt', '默认预设']
+    desc: '优化时使用的提示词：内置预设只读，也可以新增、编辑自己的预设。',
+    keywords: ['提示词', '预设', 'prompt', '默认预设', '自定义', '新增预设', '编辑预设']
   },
   {
     id: 'permissions',

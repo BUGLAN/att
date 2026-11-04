@@ -67,6 +67,7 @@ import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useSettings, usePresets } from '@/composables/useSettings'
+import { resolveDefaultPresetId, resolveRewritePresetId, suggestNewName } from './presetLogic.mjs'
 import { useElectron } from '@/composables/useElectron'
 import { hasPendingSettingsEdits } from './settingsFormSync.mjs'
 import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
@@ -149,7 +150,8 @@ const isSavingPreset = ref(false)
 const lastSavedSettingsSnapshot = ref('')
 const lastSavedPresetId = ref('')
 
-const builtinPresets = computed(() => presets.value.filter((preset) => preset.is_builtin))
+// 全部预设：内置（只读）在前，自定义在后；下拉框与预设页都用它
+const allPresets = computed(() => presets.value)
 const isSyncing = computed(() => syncDepth.value > 0)
 const streamingRuntimeAvailable = computed(() => settingsStore.runtimeStatus.qwen_streaming_available === true)
 const streamingRuntimeSummary = computed(() => {
@@ -408,18 +410,9 @@ function serializeSettingsPayload(payload) {
   return JSON.stringify(payload)
 }
 
-function getPreferredBuiltinPresetId() {
-  return builtinPresets.value.find((preset) => preset.name === '通用优化')?.id ||
-    builtinPresets.value[0]?.id ||
-    ''
-}
-
+// 默认预设已不存在（被删 / 文件改名）时回退「通用优化」，再否则第一个
 function resolveSelectedPresetId() {
-  const presetIds = new Set(builtinPresets.value.map((preset) => preset.id))
-  if (defaultPresetId.value && presetIds.has(defaultPresetId.value)) {
-    return defaultPresetId.value
-  }
-  return getPreferredBuiltinPresetId()
+  return resolveDefaultPresetId(defaultPresetId.value, allPresets.value)
 }
 
 function runSyncUpdate(callback) {
@@ -457,19 +450,48 @@ async function loadAudioInputDevices() {
   }
 }
 
-// 传入 preset 时直接查看该预设（提示词预设页逐条「查看」），否则查看当前默认预设
+// 打开预设弹窗：传入 preset 时打开该预设，否则打开当前默认预设。
+// 内置预设只读 → 查看；自定义预设 → 直接编辑
 function openPresetModal(preset) {
-  const currentPreset = (preset?.id ? preset : null) ||
-    builtinPresets.value.find((item) => item.id === selectedPresetId.value) ||
-    builtinPresets.value[0] ||
+  const target = (preset?.id ? preset : null) ||
+    allPresets.value.find((item) => item.id === selectedPresetId.value) ||
+    allPresets.value[0] ||
     null
 
-  if (!currentPreset) {
+  if (!target) {
     return
   }
 
-  settingsStore.currentPreset = currentPreset
+  settingsStore.presetEditor = {
+    mode: target.is_builtin === false ? 'edit' : 'view',
+    preset: target,
+    name: target.name,
+    prompt_template: target.prompt_template || ''
+  }
   appStore.openModal('presetEdit')
+}
+
+// 新增空白自定义预设
+function openPresetCreator() {
+  settingsStore.presetEditor = {
+    mode: 'create',
+    preset: null,
+    name: suggestNewName(allPresets.value),
+    prompt_template: ''
+  }
+  appStore.openModal('presetEdit')
+}
+
+// 删除自定义预设：后端负责把正被选用处回退（默认 → 通用优化，优化选中文本 → 跟随默认），
+// store 随后重拉设置与列表，这里的 watch 会把表单同步到回退后的值
+async function deletePreset(preset) {
+  try {
+    await settingsStore.deletePreset(preset.id)
+    appStore.showToast(`已删除预设「${preset.name}」`, { tone: 'success' })
+  } catch (error) {
+    appStore.showToast(String(error?.message || error), { tone: 'error' })
+    throw error
+  }
 }
 
 function startHotkeyCapture(target = 'hotkey') {
@@ -580,7 +602,7 @@ async function handleDefaultPresetSave() {
     return
   }
 
-  const presetIds = new Set(builtinPresets.value.map((preset) => preset.id))
+  const presetIds = new Set(allPresets.value.map((preset) => preset.id))
   if (!selectedPresetId.value || !presetIds.has(selectedPresetId.value)) {
     return
   }
@@ -627,12 +649,24 @@ watch(settings, (value) => {
   })
 }, { immediate: true, deep: true })
 
-watch([defaultPresetId, builtinPresets], () => {
+watch([defaultPresetId, allPresets], () => {
   runSyncUpdate(() => {
     selectedPresetId.value = resolveSelectedPresetId()
     lastSavedPresetId.value = selectedPresetId.value
   })
 }, { immediate: true, deep: true })
+
+// 「优化选中文本」选的预设被删掉（或别处改了文件）时回退「跟随默认」，避免下拉框空白、把失效 id 写回去。
+// 列表为空（还没加载 / 加载失败）时不动，防止误清
+watch(allPresets, (list) => {
+  if (!isInitialized.value || !list.length || !form.value.rewrite_preset_id) {
+    return
+  }
+  const resolved = resolveRewritePresetId(form.value.rewrite_preset_id, list)
+  if (resolved !== form.value.rewrite_preset_id) {
+    form.value.rewrite_preset_id = resolved
+  }
+})
 
 watch(form, () => {
   if (!isInitialized.value || isSyncing.value) {
@@ -662,9 +696,11 @@ provide(SETTINGS_CTX, {
   audioInputDevices,
   streamingRuntimeAvailable,
   streamingRuntimeSummary,
-  builtinPresets,
+  allPresets,
   selectedPresetId,
   openPresetModal,
+  openPresetCreator,
+  deletePreset,
   hotkeyDisplay,
   isCapturingHotkey,
   panelHotkeyDisplay,
