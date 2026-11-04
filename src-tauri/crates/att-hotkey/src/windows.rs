@@ -142,6 +142,7 @@ pub fn spawn(shared: Arc<Shared>) -> Result<(), String> {
                 let _ = ready_tx.send(Err("安装键盘钩子失败".into()));
                 return;
             }
+            crate::listener::set_suppresses_keys(true);
             let _ = ready_tx.send(Ok(()));
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {

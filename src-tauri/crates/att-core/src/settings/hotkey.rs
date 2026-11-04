@@ -19,6 +19,20 @@ pub enum HotkeyAction {
     ShowMainWindow,
     /// 唤起 / 收起剪贴板悬浮框（点按切换）
     ClipboardPanel,
+    /// 优化选中文本：取前台应用的选中文字，按「选中文本优化」预设改写后流式输回原处（点按触发）
+    RewriteSelection,
+}
+
+impl HotkeyAction {
+    /// 中文名（撞键提示等文案用）。
+    pub fn label(self) -> &'static str {
+        match self {
+            HotkeyAction::Record => "录音",
+            HotkeyAction::ShowMainWindow => "显示主窗口",
+            HotkeyAction::ClipboardPanel => "剪贴板悬浮框",
+            HotkeyAction::RewriteSelection => "优化选中文本",
+        }
+    }
 }
 
 /// 触发模式（任务书要求 a 点按 / b 按住）。
@@ -136,6 +150,8 @@ impl HotkeyBinding {
 
     /// 各动作的平台默认绑定。剪贴板悬浮框默认 `⌃⌥V` / `Ctrl+Alt+V`：
     /// 监听是只听不吞的，组合键同时会送到前台应用，所以避开会打出字符的 `⌥V` 和常见的 `⌘⇧V`。
+    /// 优化选中文本默认 `⌥A` / `Alt+A`：有「辅助功能」权限时主键会被吞掉（不会打出 `å`），
+    /// 而这个功能本身就要靠辅助功能权限去复制选区、输回文字。
     pub fn default_for(action: HotkeyAction, platform: Platform) -> Self {
         match action {
             HotkeyAction::ClipboardPanel => Self {
@@ -143,6 +159,13 @@ impl HotkeyBinding {
                 trigger: TriggerMode::Toggle,
                 modifiers: ModSet::new(true, true, false, false),
                 hid_key: hid_from_char('v'),
+                enabled: true,
+            },
+            HotkeyAction::RewriteSelection => Self {
+                action,
+                trigger: TriggerMode::Toggle,
+                modifiers: ModSet::new(false, true, false, false),
+                hid_key: hid_from_char('a'),
                 enabled: true,
             },
             _ => Self { action, ..Self::default_binding(platform) },
@@ -344,6 +367,22 @@ mod tests {
         assert_eq!(binding.display(Platform::Macos), "⌃⌥V");
         assert_eq!(binding.display(Platform::Windows), "Ctrl+Alt+V");
         assert!(!binding.same_combo(&HotkeyBinding::default_binding(Platform::Macos)));
+    }
+
+    #[test]
+    fn 优化选中文本默认_点按的_alt_a() {
+        let binding = HotkeyBinding::default_for(HotkeyAction::RewriteSelection, Platform::Macos);
+        assert_eq!(binding.trigger, TriggerMode::Toggle);
+        assert_eq!(binding.display(Platform::Macos), "⌥A");
+        assert_eq!(binding.display(Platform::Windows), "Alt+A");
+        for other in [
+            HotkeyBinding::default_binding(Platform::Macos),
+            HotkeyBinding::default_binding(Platform::Windows),
+            HotkeyBinding::default_for(HotkeyAction::ClipboardPanel, Platform::Macos),
+        ] {
+            assert!(!binding.same_combo(&other));
+        }
+        assert_eq!(serde_json::to_value(HotkeyAction::RewriteSelection).unwrap(), "rewrite_selection");
     }
 
     #[test]

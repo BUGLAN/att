@@ -148,7 +148,11 @@ pub struct UserSettings {
     // ---- 提示词 ----
     pub default_preset_id: Option<String>,
     pub last_used_preset_id: Option<String>,
+    /// 「优化选中文本」用的预设；None = 跟随 `default_preset_id`
+    pub rewrite_preset_id: Option<String>,
     // ---- 热键（新版多绑定模型，取代旧 hotkey 单对象）----
+    /// 宽容读：认不出的绑定（如更新版本新增的动作）只丢那一条，不能让整份设置回落默认值
+    #[serde(default, deserialize_with = "deserialize_hotkeys_lenient")]
     pub hotkeys: Vec<HotkeyBinding>,
     /// 设置修订号（见 [`SETTINGS_REVISION`]）：不在 PUT 白名单里，只由加载升级维护
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
@@ -198,9 +202,11 @@ impl UserSettings {
             silence_level: -40,
             default_preset_id: None,
             last_used_preset_id: None,
+            rewrite_preset_id: None,
             hotkeys: vec![
                 HotkeyBinding::default_binding(platform),
                 HotkeyBinding::default_for(HotkeyAction::ClipboardPanel, platform),
+                HotkeyBinding::default_for(HotkeyAction::RewriteSelection, platform),
             ],
             settings_revision: SETTINGS_REVISION,
         }
@@ -229,8 +235,13 @@ impl UserSettings {
 
     /// 旧数据只有录音绑定：补上后来新增动作的默认绑定（只改内存，下次保存才落盘）。
     pub fn ensure_default_bindings(&mut self, platform: Platform) {
-        if self.binding_of(HotkeyAction::ClipboardPanel).is_none() {
-            self.hotkeys.push(HotkeyBinding::default_for(HotkeyAction::ClipboardPanel, platform));
+        if self.binding_of(HotkeyAction::Record).is_none() {
+            self.hotkeys.insert(0, HotkeyBinding::default_binding(platform));
+        }
+        for action in [HotkeyAction::ClipboardPanel, HotkeyAction::RewriteSelection] {
+            if self.binding_of(action).is_none() {
+                self.hotkeys.push(HotkeyBinding::default_for(action, platform));
+            }
         }
     }
 
@@ -306,10 +317,11 @@ impl UserSettings {
         self.binding_of(HotkeyAction::ClipboardPanel).is_some_and(|b| b.enabled)
     }
 
-    fn clipboard_panel_binding(&self, platform: Platform) -> HotkeyBinding {
-        self.binding_of(HotkeyAction::ClipboardPanel)
+    /// 指定动作的绑定；还没有时给平台默认值。
+    fn binding_or_default(&self, action: HotkeyAction, platform: Platform) -> HotkeyBinding {
+        self.binding_of(action)
             .cloned()
-            .unwrap_or_else(|| HotkeyBinding::default_for(HotkeyAction::ClipboardPanel, platform))
+            .unwrap_or_else(|| HotkeyBinding::default_for(action, platform))
     }
 
     /// GET /api/settings 响应视图：脱敏（密文 → *_set 布尔）+ 旧 hotkey 兼容字段。
@@ -328,11 +340,21 @@ impl UserSettings {
         view["doubao_asr_api_key_set"] = json!(self.doubao_asr_api_key_encrypted.is_some());
         view["chatgpt_asr_api_key_set"] = json!(self.chatgpt_asr_api_key_encrypted.is_some());
         view["hotkey"] = self.legacy_hotkey_view(platform);
-        view["clipboard_panel_hotkey"] = self.clipboard_panel_binding(platform).to_legacy(platform);
-        view["clipboard_panel_enabled"] = json!(self.clipboard_panel_enabled());
+        for &(action, hotkey_key, enabled_key) in EXTRA_HOTKEY_FIELDS {
+            let binding = self.binding_or_default(action, platform);
+            view[hotkey_key] = binding.to_legacy(platform);
+            view[enabled_key] = json!(binding.enabled);
+        }
         view
     }
 }
+
+/// 设置页以旧版 `{modifiers, key, display}` 形状读写的附加快捷键：(动作, 快捷键字段, 开关字段)。
+/// 开关就是该绑定的 `enabled`。
+const EXTRA_HOTKEY_FIELDS: &[(HotkeyAction, &str, &str)] = &[
+    (HotkeyAction::ClipboardPanel, "clipboard_panel_hotkey", "clipboard_panel_enabled"),
+    (HotkeyAction::RewriteSelection, "rewrite_hotkey", "rewrite_enabled"),
+];
 
 /// 设置更新结果：变更的运行时键（供上层触发停服务/重建 provider）。
 #[derive(Debug, Default)]
@@ -375,6 +397,23 @@ pub fn apply_settings_update(
         }
         let type_error = |expect: &str| format!("字段 {key} 类型非法，期望 {expect}");
 
+        if let Some(&(action, hotkey_key, _)) =
+            EXTRA_HOTKEY_FIELDS.iter().find(|(_, hotkey_key, enabled_key)| key == hotkey_key || key == enabled_key)
+        {
+            if key == hotkey_key {
+                if !value.is_object() {
+                    return Err(type_error("对象"));
+                }
+                settings.update_binding_from_legacy(action, platform, value);
+            } else {
+                let mut binding = settings.binding_or_default(action, platform);
+                binding.enabled = value.as_bool().ok_or_else(|| type_error("布尔值"))?;
+                settings.set_binding(binding);
+            }
+            outcome.restart_hotkey_backend = true;
+            continue;
+        }
+
         match key.as_str() {
             // ---- 密钥类（明文入口，只写不读）----
             "doubao_asr_api_key" => {
@@ -404,20 +443,6 @@ pub fn apply_settings_update(
             }
             // 已在循环前处理
             "hotkeys" => {}
-            "clipboard_panel_hotkey" => {
-                if !value.is_object() {
-                    return Err(type_error("对象"));
-                }
-                settings.update_binding_from_legacy(HotkeyAction::ClipboardPanel, platform, value);
-                outcome.restart_hotkey_backend = true;
-            }
-            "clipboard_panel_enabled" => {
-                let enabled = value.as_bool().ok_or_else(|| type_error("布尔值"))?;
-                let mut binding = settings.clipboard_panel_binding(platform);
-                binding.enabled = enabled;
-                settings.set_binding(binding);
-                outcome.restart_hotkey_backend = true;
-            }
             "clipboard_panel_enter_action" => {
                 let action = value.as_str().ok_or_else(|| type_error("字符串"))?;
                 if !matches!(action, "paste" | "copy") {
@@ -472,6 +497,11 @@ pub fn apply_settings_update(
                     settings.last_used_preset_id = v;
                 }
             }
+            // 空串 = 跟随默认预设（设置页下拉框的「跟随默认」选项）
+            "rewrite_preset_id" => {
+                let id = value.as_str().ok_or_else(|| type_error("字符串或 null"))?.trim();
+                settings.rewrite_preset_id = (!id.is_empty()).then(|| id.to_string());
+            }
 
             // ---- 整数键 ----
             "qwen_asr_max_new_tokens" => set_i64(&mut settings.qwen_asr_max_new_tokens, key, value, &type_error)?,
@@ -505,12 +535,10 @@ pub fn apply_settings_update(
     }
 
     // 两个全局快捷键撞键时只会触发其中一个：直接拒绝，让用户换一个
-    if let (Some(record), Some(panel)) = (
-        settings.binding_of(HotkeyAction::Record),
-        settings.binding_of(HotkeyAction::ClipboardPanel),
-    ) {
-        if record.enabled && panel.enabled && record.same_combo(panel) {
-            return Err("剪贴板悬浮框的快捷键与录音快捷键相同，请换一个".into());
+    let enabled: Vec<&HotkeyBinding> = settings.hotkeys.iter().filter(|b| b.enabled).collect();
+    for (index, later) in enabled.iter().enumerate() {
+        if let Some(earlier) = enabled[..index].iter().find(|b| b.action != later.action && b.same_combo(later)) {
+            return Err(format!("{}的快捷键与{}快捷键相同，请换一个", later.action.label(), earlier.action.label()));
         }
     }
 
@@ -563,6 +591,25 @@ where
         .ok_or_else(|| {
             serde::de::Error::custom("期望整数（或可取整的数字）")
         })
+}
+
+/// 热键宽容反序列化：逐条解析，认不出的条目（未知动作、结构异常）跳过。
+fn deserialize_hotkeys_lenient<'de, D>(deserializer: D) -> Result<Vec<HotkeyBinding>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    let items = value.as_array().cloned().unwrap_or_default();
+    Ok(items
+        .into_iter()
+        .filter_map(|item| match serde_json::from_value::<HotkeyBinding>(item) {
+            Ok(binding) => Some(binding),
+            Err(error) => {
+                tracing::warn!("跳过无法识别的快捷键绑定: {error}");
+                None
+            }
+        })
+        .collect())
 }
 
 /// 热词宽容反序列化：只认字符串数组里的字符串项，其余一律忽略（不报错）。
@@ -878,6 +925,50 @@ mod tests {
             "clipboard_panel_enabled": false
         });
         assert!(apply_settings_update(&mut settings, &disabled, Platform::Macos, &crypto).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 优化选中文本_旧数据补默认绑定_改键开关预设_撞键拒绝() {
+        let dir = temp_dir("rewrite");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, serde_json::json!({
+            "asr_provider": "doubao_asr",
+            "hotkeys": [
+                {"action": "record", "trigger": "hold", "modifiers": {"alt": true, "meta": true}, "enabled": true},
+                {"action": "future_action", "trigger": "toggle", "modifiers": {"ctrl": true}, "enabled": true}
+            ]
+        }).to_string()).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Macos);
+        assert_eq!(settings.asr_provider, "doubao_asr", "认不出的绑定不拖垮整份设置");
+        assert_eq!(settings.binding_of(HotkeyAction::Record).unwrap().display(Platform::Macos), "⌘⌥");
+        assert!(settings.rewrite_preset_id.is_none(), "默认跟随默认预设");
+        let view = settings.public_view(Platform::Macos);
+        assert_eq!(view["rewrite_hotkey"]["display"], "⌥A");
+        assert_eq!(view["rewrite_enabled"], true);
+
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let body = serde_json::json!({
+            "rewrite_hotkey": {"modifiers": ["ctrl", "alt"], "key": "p"},
+            "rewrite_enabled": false,
+            "rewrite_preset_id": "preset-程序员模式"
+        });
+        let outcome = apply_settings_update(&mut settings, &body, Platform::Macos, &crypto).unwrap();
+        assert!(outcome.restart_hotkey_backend);
+        let binding = settings.binding_of(HotkeyAction::RewriteSelection).unwrap();
+        assert_eq!(binding.display(Platform::Macos), "⌃⌥P");
+        assert_eq!(binding.trigger, TriggerMode::Toggle);
+        assert!(!binding.enabled);
+        assert_eq!(settings.rewrite_preset_id.as_deref(), Some("preset-程序员模式"));
+        apply_settings_update(&mut settings, &serde_json::json!({"rewrite_preset_id": ""}), Platform::Macos, &crypto).unwrap();
+        assert!(settings.rewrite_preset_id.is_none(), "空串 = 跟随默认");
+
+        // 关着的时候可以和剪贴板悬浮框同键；打开就拒绝
+        let same = serde_json::json!({"rewrite_hotkey": {"modifiers": ["ctrl", "alt"], "key": "v"}});
+        apply_settings_update(&mut settings, &same, Platform::Macos, &crypto).unwrap();
+        let err = apply_settings_update(&mut settings, &serde_json::json!({"rewrite_enabled": true}), Platform::Macos, &crypto)
+            .unwrap_err();
+        assert_eq!(err, "优化选中文本的快捷键与剪贴板悬浮框快捷键相同，请换一个");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

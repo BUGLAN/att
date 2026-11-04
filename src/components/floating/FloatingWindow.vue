@@ -72,15 +72,15 @@ import { deriveFloatingView, glideToward, nextVoiceState, paceStep, reconcileLin
 const SEAL_LABELS = { idle: '待命', listening: '录音中', converting: '处理中', success: '已完成', failure: '失败' }
 const WAVE_BARS = 7
 /** 安静时声纹收成的小点高度（px） */
-const WAVE_REST = 3
+const WAVE_REST = 2
 /** 与 floating.css 的 .capsule.leaving 过渡时长一致：淡出完再真正隐藏窗口 */
 const LEAVE_MS = 200
 /** 结果态悬停时暂停收起（读失败原因），移开后再停留这么久 */
 const HOVER_REHIDE_MS = 1200
 /** 胶囊贴底的边距，与 floating.css .floating-shell 的 padding-bottom 一致 */
-const SHELL_PADDING_BOTTOM = 12
+const SHELL_PADDING_BOTTOM = 8
 /** 量到尺寸前胶囊的默认边长，与 floating.css .capsule 的 width / height 一致 */
-const CAPSULE_MIN = 54
+const CAPSULE_MIN = 42
 
 const state = ref({ phase: 'idle' })
 const levels = ref(Array(WAVE_BARS).fill(0))
@@ -132,7 +132,7 @@ const showCancel = computed(() => view.value.cancellable && (expanded.value || h
 const showWave = computed(() => voiced.value && view.value.seal === 'listening')
 // 音量 0..1 偏小，开方放大低音量段的起伏；安静时收成一排小点
 const waveHeights = computed(() => levels.value.map((level) => (
-  voice.value.loud ? Math.round(4 + Math.sqrt(Math.min(1, level)) * 18) : WAVE_REST
+  voice.value.loud ? Math.round(3 + Math.sqrt(Math.min(1, level)) * 13) : WAVE_REST
 )))
 // 胶囊在窗口里的区域（贴底居中）；淡出 / 待命时为 null，整窗点击穿透。按目标尺寸算，不等宽高过渡走完
 const hitRect = computed(() => {
@@ -183,7 +183,7 @@ function measureGlyphNudge(glyph) {
       fontDescent: m.fontBoundingBoxDescent,
       inkAscent: m.actualBoundingBoxAscent,
       inkDescent: m.actualBoundingBoxDescent
-    }, { fontSize: parseFloat(style.fontSize), tile: el.offsetHeight || 36 }))
+    }, { fontSize: parseFloat(style.fontSize), tile: el.offsetHeight || 28, bevel: 0 }))
   }
   glyphNudges.value = { ...glyphNudges.value, [glyph]: nudgeCache.get(key) }
 }

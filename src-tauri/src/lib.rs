@@ -304,7 +304,7 @@ fn resolve_data_dir(app: &tauri::App) -> PathBuf {
         .join("data")
 }
 
-/// 启动全局键盘监听：按键匹配当前启用的绑定 → 录音交给录音 Actor，剪贴板悬浮框直接切换显示。
+/// 启动全局键盘监听：按键匹配当前启用的绑定 → 录音与优化选中文本交给录音 Actor，剪贴板悬浮框直接切换显示。
 /// 返回不可用原因（如 macOS 未授予「输入监控」权限），由设置页/首页提示用户。
 fn start_hotkey_listener(
     app: tauri::AppHandle,
@@ -318,7 +318,9 @@ fn start_hotkey_listener(
             .settings()
             .hotkeys
             .iter()
-            .filter(|b| b.enabled && matches!(b.action, HotkeyAction::Record | HotkeyAction::ClipboardPanel))
+            .filter(|b| {
+                b.enabled && matches!(b.action, HotkeyAction::Record | HotkeyAction::ClipboardPanel | HotkeyAction::RewriteSelection)
+            })
             .map(att_hotkey::HotkeySpec::from_binding)
             .collect()
     });
@@ -337,9 +339,10 @@ fn start_hotkey_listener(
             let settings = core.settings();
             let combo = |action| settings.binding_of(action).map(|b| b.display(core.platform)).unwrap_or_default();
             tracing::info!(
-                "全局快捷键已启用: 录音 {} / 剪贴板悬浮框 {}",
+                "全局快捷键已启用: 录音 {} / 剪贴板悬浮框 {} / 优化选中文本 {}",
                 combo(HotkeyAction::Record),
-                combo(HotkeyAction::ClipboardPanel)
+                combo(HotkeyAction::ClipboardPanel),
+                combo(HotkeyAction::RewriteSelection)
             );
             None
         }

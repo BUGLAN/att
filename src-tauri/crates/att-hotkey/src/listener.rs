@@ -8,8 +8,22 @@ use crate::matcher::Matcher;
 use crate::{HotkeyAction, HotkeySpec, KeyPhase};
 use att_core::settings::hotkey::ModSet;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// 监听能不能吞掉命中的主键（macOS 有「辅助功能」权限时装的是可拦截监听；Windows 低级钩子总能吞）。
+/// 只在启动监听时确定：macOS 运行中补授权不会让已装的只读监听变成可拦截，要重启应用。
+static SUPPRESSES_KEYS: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn set_suppresses_keys(value: bool) {
+    SUPPRESSES_KEYS.store(value, Ordering::SeqCst);
+}
+
+/// 快捷键的主键会不会被吞掉（不送到前台应用）。
+pub fn suppresses_keys() -> bool {
+    SUPPRESSES_KEYS.load(Ordering::SeqCst)
+}
 
 /// 当前启用的全部绑定（录音、剪贴板悬浮框…），每个动作至多一条。
 /// 推动匹配器的事件来源（写进触发日志）。

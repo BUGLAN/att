@@ -42,6 +42,33 @@
         </div>
       </div>
     </section>
+
+    <section class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">优化选中文本</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">使用的预设</span>
+            <span class="setting-desc">按「优化选中文本」快捷键（{{ rewriteHotkeyDisplay }}）时用的提示词，可以和录音的默认预设不同。</span>
+          </div>
+          <div class="setting-actions-inline">
+            <BaseSelect v-model="form.rewrite_preset_id" :disabled="!builtinPresets.length" aria-label="优化选中文本使用的预设">
+              <option value="">跟随默认优化预设</option>
+              <option v-for="preset in builtinPresets" :key="preset.id" :value="preset.id">{{ preset.name }}</option>
+            </BaseSelect>
+            <BaseButton variant="outline" :disabled="!builtinPresets.length" @click="openPresetModal(rewritePreset)">查看</BaseButton>
+          </div>
+        </div>
+        <div v-if="!form.rewrite_enabled" class="settings-note">
+          <span>「优化选中文本」快捷键当前已关闭。</span>
+          <BaseButton variant="outline" size="sm" @click="goSection('hotkey')">去开启</BaseButton>
+        </div>
+        <div v-else-if="!hasLlmModel" class="settings-note warn">
+          <span>还没有可用的 LLM 模型，优化选中文本不会生效。</span>
+          <BaseButton variant="outline" size="sm" @click="goSection('llm')">去配置</BaseButton>
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -52,7 +79,9 @@ import BaseSelect from '@/components/common/BaseSelect.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { SETTINGS_CTX } from '../settingsContext.js'
 
-const { form, builtinPresets, selectedPresetId, openPresetModal, goSection } = inject(SETTINGS_CTX)
+const { form, builtinPresets, selectedPresetId, openPresetModal, rewriteHotkeyDisplay, goSection } = inject(SETTINGS_CTX)
+// 「跟随默认」或预设文件已被删掉时查看默认预设（openPresetModal 不传参即默认预设）
+const rewritePreset = computed(() => builtinPresets.value.find((preset) => preset.id === form.value.rewrite_preset_id) || null)
 const settingsStore = useSettingsStore()
 const llmLoaded = ref(false)
 // 加载完成前不下结论，避免提示一闪而过

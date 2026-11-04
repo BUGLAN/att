@@ -4,7 +4,7 @@
 //! 页面 floating.html 里的 `window.floatingAPI` 由 floating.js 在 Tauri 下垫片实现：
 //! 订阅 `floating:state`、挂载时 `get_floating_state` 拉取最近状态、关闭走 `hide_floating_window`。
 //!
-//! 点击穿透：窗口比胶囊大一圈（给阴影和生长留位置），透明的部分不能挡住下面应用的点击——
+//! 点击穿透：窗口比胶囊大一圈（给入场位移和生长留位置），透明的部分不能挡住下面应用的点击——
 //! 用户多半正对着屏幕底部的输入框说话。页面上报胶囊所在区域（`floating_hit_rect`），
 //! 窗口显示期间按光标是否落在胶囊上切换 `set_ignore_cursor_events`。
 
@@ -15,10 +15,10 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 
 pub const LABEL: &str = "floating";
-/// 窗口按胶囊最大尺寸（约 400×54，单行）再留出阴影边；胶囊在窗口内贴底居中、按内容横向生长
-const WIDTH: f64 = 440.0;
-const HEIGHT: f64 = 84.0;
-const BOTTOM_OFFSET: f64 = 24.0;
+/// 窗口按胶囊最大尺寸（约 342×42，单行）再留一点边；胶囊在窗口内贴底居中、按内容横向生长
+const WIDTH: f64 = 360.0;
+const HEIGHT: f64 = 64.0;
+const BOTTOM_OFFSET: f64 = 28.0;
 /// 回到待命后等胶囊淡完（floating.css .capsule.leaving 的 opacity 180ms / transform 200ms）再隐藏窗口
 const HIDE_AFTER_FADE: Duration = Duration::from_millis(240);
 /// 点击穿透的光标检查间隔

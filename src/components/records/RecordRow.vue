@@ -30,12 +30,12 @@
 
       <div v-if="expanded" class="record-row-detail" @click.stop>
         <div>
-          <h4>原始转写</h4>
+          <h4>{{ isTextRecord ? '选中原文' : '原始转写' }}</h4>
           <p>{{ record.raw_text || '（没有原始转写）' }}</p>
         </div>
         <div>
-          <h4>识别信息</h4>
-          <p class="ui-mono">时长 {{ duration }}<template v-if="record.processing_time"> · 处理 {{ Number(record.processing_time).toFixed(1) }}s</template></p>
+          <h4>{{ isTextRecord ? '记录信息' : '识别信息' }}</h4>
+          <p class="ui-mono"><template v-if="isTextRecord">来自优化选中文本</template><template v-else>时长 {{ duration }}<template v-if="record.processing_time"> · 处理 {{ Number(record.processing_time).toFixed(1) }}s</template></template></p>
           <div class="record-row-actions">
             <button class="ui-tbtn is-line" type="button" :disabled="!hasText" @click="$emit('copy')">
               <span class="ui-tbtn-glyph">{{ G.copy }}</span>复制
@@ -67,6 +67,7 @@
       <span v-if="record.is_favorite" class="record-row-fav" title="已收藏" aria-hidden="true">{{ G.favorite }}</span>
       <div v-if="!selectMode" class="ui-hover-actions" :class="{ 'is-pinned': isPlaying }" @click.stop>
         <button
+          v-if="!isTextRecord"
           class="ui-gbtn"
           :class="{ 'is-on': isPlaying }"
           type="button"
@@ -88,7 +89,7 @@
           {{ G.favorite }}
         </button>
       </div>
-      <span class="record-row-duration ui-mono">{{ duration }}</span>
+      <span class="record-row-duration ui-mono">{{ isTextRecord ? '文本' : duration }}</span>
     </div>
   </div>
 </template>
@@ -156,6 +157,8 @@ const canOptimize = computed(() => (
 
 const clock = computed(() => formatClock(props.record.created_at))
 const duration = computed(() => formatRecordDuration(props.record.duration))
+// 优化选中文本建的记录：没有音频也没有时长（录音落盘失败的记录仍有时长，照常显示）
+const isTextRecord = computed(() => !props.record.audio_path && !Number(props.record.duration))
 const statusMeta = computed(() => recordStatusMeta(props.record, { optimizing: isStreamingOptimization.value }))
 
 function handleClick() {

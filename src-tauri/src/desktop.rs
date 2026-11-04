@@ -4,11 +4,17 @@
 //! - 粘贴：延迟 120ms 后发送 Cmd/Ctrl+V（macOS 需「辅助功能」权限，开发态归属启动它的终端）
 //! - 静音：macOS 走 osascript（与旧 audio_helper.py 相同）；Windows 走 Core Audio 端点静音，
 //!   每次调用都重新取当前默认输出设备（旧版 pycaw 句柄启动时固化，切换耳机后操作的是旧设备）
+//! - 取选中文本：模拟 Cmd/Ctrl+C，按剪贴板的换代计数判断前台应用有没有真的复制（见 [`copy_selection`]）
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// 粘贴前的延迟：给焦点窗口留出处理剪贴板变更的时间（旧版同值）。
 const PASTE_DELAY: Duration = Duration::from_millis(120);
+/// 模拟复制前最多等这么久让用户松开快捷键的修饰键：Windows 上仍按着的 Alt 会和模拟的 Ctrl+C 组成 Ctrl+Alt+C。
+const MODIFIER_RELEASE_TIMEOUT: Duration = Duration::from_millis(1200);
+/// 模拟复制后等前台应用写剪贴板的上限；到点剪贴板没换代 = 没有选中内容（或该应用不支持复制）。
+const COPY_TIMEOUT: Duration = Duration::from_millis(600);
+const COPY_POLL: Duration = Duration::from_millis(20);
 
 /// 写剪贴板文本。
 ///
@@ -33,6 +39,52 @@ pub fn write_clipboard(text: &str) -> Result<(), String> {
         }
     }
     Err(last)
+}
+
+/// 读剪贴板文本（重试理由同 [`write_clipboard`]）；不是文本或读不到时返回 None。
+fn read_clipboard_text() -> Option<String> {
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+            Ok(text) => return Some(text),
+            // 剪贴板里不是文本：重试也没用
+            Err(arboard::Error::ContentNotAvailable) => return None,
+            Err(_) => {}
+        }
+    }
+    None
+}
+
+/// 取前台应用的选中文本（阻塞约 0.1~2s，调用方放到阻塞线程）。
+///
+/// 等快捷键的修饰键松开 → 模拟 Cmd/Ctrl+C → 等剪贴板换代 → 读文本。不比较剪贴板内容而比较换代计数：
+/// 选中的正好是剪贴板里已有的文字时，内容比较会误判成「没复制」。
+/// 返回 `Ok(None)`：没有选中文本（剪贴板没换代，或换代后不是文字）。剪贴板里会留下这段选中文字，
+/// 和用户自己按复制一样；它不进剪贴板历史（标记为内部写入）。
+pub fn copy_selection() -> Result<Option<String>, String> {
+    platform::ensure_typing_ready().map_err(|e| e.replace("自动输入", "优化选中文本"))?;
+    let released_by = Instant::now() + MODIFIER_RELEASE_TIMEOUT;
+    while att_hotkey::listener::physical_modifiers().is_some_and(|mods| !mods.is_empty()) && Instant::now() < released_by {
+        std::thread::sleep(COPY_POLL);
+    }
+    let before = platform::clipboard_change_count().ok_or("当前平台暂不支持读取选中文本")?;
+    platform::copy()?;
+    let deadline = Instant::now() + COPY_TIMEOUT;
+    while platform::clipboard_change_count() == Some(before) {
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(COPY_POLL);
+    }
+    // 有的应用分两步写（先清空再放内容）：稍等再读，免得读到清空后的那一瞬
+    std::thread::sleep(COPY_POLL);
+    let text = read_clipboard_text().filter(|text| !text.trim().is_empty());
+    if let Some(text) = &text {
+        crate::clipboard::mark_internal_write(text);
+    }
+    Ok(text)
 }
 
 /// 模拟系统粘贴快捷键（阻塞约 200ms，调用方放到阻塞线程）。
@@ -98,14 +150,37 @@ mod platform {
             return Err("自动粘贴需要「辅助功能」权限：请在 系统设置 → 隐私与安全性 → 辅助功能 中允许本应用（开发态为启动它的终端）".into());
         }
         const KEY_V: u16 = 0x09;
+        command_shortcut(KEY_V)
+    }
+
+    pub fn copy() -> Result<(), String> {
+        const KEY_C: u16 = 0x08;
+        command_shortcut(KEY_C)
+    }
+
+    /// 发一次 ⌘ + 指定键（只带 ⌘：用户仍按着的其他修饰键不掺进来）。
+    fn command_shortcut(key: u16) -> Result<(), String> {
         let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| "创建键盘事件源失败".to_string())?;
         for down in [true, false] {
-            let event = CGEvent::new_keyboard_event(source.clone(), KEY_V, down).map_err(|_| "创建键盘事件失败".to_string())?;
+            let event = CGEvent::new_keyboard_event(source.clone(), key, down).map_err(|_| "创建键盘事件失败".to_string())?;
             event.set_flags(CGEventFlags::CGEventFlagCommand);
             post(&event);
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         Ok(())
+    }
+
+    /// 系统剪贴板的换代计数（NSPasteboard.changeCount）：任何应用写一次剪贴板就加一。
+    pub fn clipboard_change_count() -> Option<i64> {
+        use objc2::msg_send;
+        use objc2::runtime::{AnyClass, AnyObject};
+        let class = AnyClass::get(c"NSPasteboard")?;
+        let board: *mut AnyObject = unsafe { msg_send![class, generalPasteboard] };
+        if board.is_null() {
+            return None;
+        }
+        let count: isize = unsafe { msg_send![board, changeCount] };
+        Some(count as i64)
     }
 
     /// 单个键盘事件携带的 UTF-16 上限：Chromium 系应用超出部分会被截掉。
@@ -209,12 +284,27 @@ mod platform {
 
     pub fn paste() -> Result<(), String> {
         const VK_V: u16 = 0x56;
-        let inputs = [key(VK_CONTROL, false), key(VK_V, false), key(VK_V, true), key(VK_CONTROL, true)];
+        control_shortcut(VK_V).map_err(|_| "模拟粘贴失败（SendInput 被拦截）".into())
+    }
+
+    pub fn copy() -> Result<(), String> {
+        const VK_C: u16 = 0x43;
+        control_shortcut(VK_C).map_err(|_| "模拟复制失败（SendInput 被拦截）".into())
+    }
+
+    fn control_shortcut(vk: u16) -> Result<(), ()> {
+        let inputs = [key(VK_CONTROL, false), key(vk, false), key(vk, true), key(VK_CONTROL, true)];
         let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
         if sent as usize != inputs.len() {
-            return Err("模拟粘贴失败（SendInput 被拦截）".into());
+            return Err(());
         }
         Ok(())
+    }
+
+    /// 系统剪贴板的换代计数：任何程序写一次剪贴板就加一。
+    pub fn clipboard_change_count() -> Option<i64> {
+        let count = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+        Some(count as i64)
     }
 
     fn unicode(unit: u16, up: bool) -> INPUT {
@@ -286,6 +376,14 @@ mod platform {
 mod platform {
     pub fn paste() -> Result<(), String> {
         Err("当前平台暂不支持自动粘贴".into())
+    }
+
+    pub fn copy() -> Result<(), String> {
+        Err("当前平台暂不支持读取选中文本".into())
+    }
+
+    pub fn clipboard_change_count() -> Option<i64> {
+        None
     }
 
     pub fn ensure_typing_ready() -> Result<(), String> {
