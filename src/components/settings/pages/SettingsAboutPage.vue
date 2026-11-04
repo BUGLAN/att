@@ -1,0 +1,273 @@
+<template>
+  <div class="settings-stack">
+    <section class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">关于</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">落墨 Luomo</span>
+            <span class="setting-desc">{{ versionText }}</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">更新</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">检查更新</span>
+            <span class="setting-desc">{{ lastCheckedText }}</span>
+          </div>
+          <div class="setting-actions-inline about-actions">
+            <BaseButton variant="outline" :loading="isChecking" :disabled="isChecking" @click="checkNow">
+              {{ isChecking ? '正在检查…' : '检查更新' }}
+            </BaseButton>
+          </div>
+        </div>
+
+        <div v-if="loadError" class="settings-note about-note is-err" role="alert">
+          <span>读取更新状态失败：{{ loadError }}</span>
+        </div>
+
+        <div v-if="checkView" class="settings-note about-note" :class="`is-${checkView.tone}`" role="status">
+          <div class="about-note__body">
+            <strong class="about-note__title">{{ checkView.title }}</strong>
+            <span v-if="checkView.detail" class="about-note__detail">{{ checkView.detail }}</span>
+            <pre v-if="notes" class="about-note__notes">{{ notes }}</pre>
+            <span v-if="downloadText" class="about-note__detail" :class="{ 'is-err-text': download.status === 'error' }">{{ downloadText }}</span>
+            <div v-if="percent !== null && download.status === 'downloading'" class="about-progress" aria-hidden="true">
+              <span class="about-progress__bar" :style="{ width: `${percent}%` }"></span>
+            </div>
+          </div>
+          <div class="about-note__actions">
+            <BaseButton v-if="canDownload" variant="solid" size="sm" :loading="isStartingDownload" @click="downloadNow">
+              {{ download.status === 'error' ? '重新下载' : '下载更新' }}
+            </BaseButton>
+            <BaseButton v-if="download.status === 'done' && isDesktop" variant="outline" size="sm" @click="revealDownloaded">
+              在文件管理器中显示
+            </BaseButton>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">自动下载更新</span>
+            <span class="setting-desc">检查到新版本时自动下载安装包；开启后每次启动也会在后台检查一次。下载完成后打开安装包即可更新。</span>
+          </div>
+          <label class="toggle-switch">
+            <input v-model="form.auto_download_updates" type="checkbox" aria-label="自动下载更新">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+    </section>
+  </div>
+</template>
+
+<script setup>
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import BaseButton from '@/components/common/BaseButton.vue'
+import { api } from '@/api/client'
+import { useAppStore } from '@/stores/app'
+import { useElectron } from '@/composables/useElectron'
+import { SETTINGS_CTX } from '../settingsContext.js'
+import {
+  canStartDownload,
+  describeCheck,
+  describeDownload,
+  downloadPercent,
+  formatDateTime,
+  summarizeNotes
+} from '../updateView.mjs'
+
+// 自动下载开关走设置表单：与其他设置一样防抖保存到 settings.json（auto_download_updates）
+const { form } = inject(SETTINGS_CTX)
+const appStore = useAppStore()
+const { isDesktop, getAppInfo, revealAppPath } = useElectron()
+
+const appInfo = ref(null)
+const status = ref(null)
+const loadError = ref('')
+const isChecking = ref(false)
+const isStartingDownload = ref(false)
+let pollTimer = null
+
+const currentVersion = computed(() => appInfo.value?.version || status.value?.current_version || '')
+const versionText = computed(() => {
+  const version = currentVersion.value ? `版本 ${currentVersion.value}` : '版本未知'
+  return `${version} · ${isDesktop ? 'Tauri 桌面版' : '浏览器模式'}`
+})
+const check = computed(() => status.value?.check || null)
+const download = computed(() => status.value?.download || { status: 'idle' })
+const checkView = computed(() => describeCheck(check.value))
+const notes = computed(() => (check.value?.status === 'available' ? summarizeNotes(check.value.notes) : ''))
+const downloadText = computed(() => (check.value?.status === 'available' ? describeDownload(download.value) : ''))
+const percent = computed(() => downloadPercent(download.value))
+const canDownload = computed(() => canStartDownload(check.value, download.value))
+const lastCheckedText = computed(() => {
+  const time = formatDateTime(check.value?.checked_at)
+  return time ? `上次检查：${time}` : '从发布渠道获取最新正式版本，与当前版本比较。'
+})
+
+function applyStatus(next) {
+  status.value = next
+  loadError.value = ''
+  // 下载中：轮询进度；结束后停止
+  if (next?.download?.status === 'downloading') {
+    schedulePoll()
+  }
+}
+
+function schedulePoll() {
+  if (pollTimer) {
+    return
+  }
+  pollTimer = setTimeout(async () => {
+    pollTimer = null
+    await refreshStatus()
+  }, 1000)
+}
+
+async function refreshStatus() {
+  try {
+    applyStatus(await api.getUpdateStatus())
+  } catch (error) {
+    loadError.value = String(error?.message || error)
+  }
+}
+
+async function checkNow() {
+  isChecking.value = true
+  try {
+    applyStatus(await api.checkForUpdates())
+  } catch (error) {
+    // 接口本身不可达（数据面断开等）：同样把原因显示出来
+    status.value = {
+      ...(status.value || {}),
+      check: {
+        status: 'error',
+        current_version: currentVersion.value,
+        error: String(error?.message || error),
+        checked_at: new Date().toISOString()
+      }
+    }
+  } finally {
+    isChecking.value = false
+  }
+}
+
+async function downloadNow() {
+  isStartingDownload.value = true
+  try {
+    applyStatus(await api.downloadUpdate())
+  } catch (error) {
+    appStore.showToast(String(error?.message || error), { tone: 'error' })
+  } finally {
+    isStartingDownload.value = false
+  }
+}
+
+async function revealDownloaded() {
+  try {
+    await revealAppPath('update')
+  } catch (error) {
+    appStore.showToast(String(error?.message || error), { tone: 'error' })
+  }
+}
+
+// 打开开关时如果已经检查到新版本，立即补一次下载，免得要再点一次「检查更新」
+watch(() => form.value.auto_download_updates, (enabled, previous) => {
+  if (enabled && previous === false && canDownload.value) {
+    downloadNow()
+  }
+})
+
+onMounted(async () => {
+  refreshStatus()
+  try {
+    appInfo.value = await getAppInfo()
+  } catch (error) {
+    console.warn('[Settings] 读取应用信息失败：', error)
+  }
+})
+
+onUnmounted(() => {
+  if (pollTimer) {
+    clearTimeout(pollTimer)
+    pollTimer = null
+  }
+})
+</script>
+
+<style scoped>
+.about-actions {
+  justify-content: flex-end;
+}
+
+/* 结果提示条：沿用 .settings-note，按结果换色（ok / info / err） */
+.about-note {
+  align-items: flex-start;
+  margin-bottom: var(--s-3);
+}
+
+.about-note.is-ok {
+  background: var(--ok-soft);
+  border-color: var(--ok-line);
+}
+
+.about-note.is-err {
+  background: var(--err-soft);
+  border-color: var(--err-line);
+}
+
+.about-note__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 0;
+  flex: 1;
+}
+
+.about-note__title {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.about-note__detail {
+  word-break: break-all;
+}
+
+.is-err-text {
+  color: var(--err);
+}
+
+.about-note__notes {
+  margin: var(--s-1) 0 0;
+  font-family: inherit;
+  white-space: pre-wrap;
+  color: var(--text-3);
+}
+
+.about-note__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  flex-shrink: 0;
+}
+
+.about-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.about-progress__bar {
+  display: block;
+  height: 100%;
+  background: var(--info);
+  transition: width 0.3s ease;
+}
+</style>

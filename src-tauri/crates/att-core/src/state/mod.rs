@@ -39,6 +39,10 @@ pub struct CoreState {
     pub local_models: crate::stt::local::LocalModels,
     /// 提示词预设目录（prompts/*.txt；打包版由壳层改指向安装资源目录）
     pub prompts_dir: PathBuf,
+    /// 当前应用版本（检查更新用）：默认取本 crate 版本（与工作区版本同步），壳层改为 Tauri 包版本
+    pub app_version: String,
+    /// 检查更新与安装包下载
+    pub updater: crate::update::Updater,
     pub events: EventBus,
 }
 
@@ -98,6 +102,8 @@ impl CoreState {
             transcriber: Default::default(),
             local_models: Default::default(),
             prompts_dir: crate::prompts::resolve_dir(data_dir, None),
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            updater: crate::update::Updater::new(data_dir),
             events: EventBus::default(),
         })
     }

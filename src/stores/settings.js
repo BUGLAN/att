@@ -145,6 +145,7 @@ export const useSettingsStore = defineStore('settings', () => {
     pause_audio_on_recording: true,
     auto_optimize: false,
     auto_copy_to_clipboard: true,
+    auto_download_updates: false,
     audio_input_device: 'default',
     hotkey: getDefaultHotkey(),
     // 统一浮层已下线：clipboard_overlay_* 键一并移除，

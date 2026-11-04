@@ -102,6 +102,8 @@ pub fn run() {
             // 提示词预设：开发态用仓库 prompts/，打包版用随包资源（bundle.resources）
             core.prompts_dir = att_core::prompts::resolve_dir(&data_dir, app.path().resource_dir().ok().as_deref());
             tracing::info!("提示词目录: {}", core.prompts_dir.display());
+            // 检查更新用打包版本号（与「关于」页显示的版本一致）
+            core.app_version = app.package_info().version.to_string();
             let core = Arc::new(core);
 
             // 数据面：先用同步 bind 占住端口（优先固定端口，占用则回退随机），
@@ -147,6 +149,7 @@ pub fn run() {
 
             // 事件桥：核心事件 → 前端（Tauri event，3b 起随录音接入逐步生效）
             spawn_event_bridge(app.handle().clone(), core.clone());
+            spawn_startup_update_check(core.clone());
 
             // 录音 Actor + 全局热键（热键直达 Actor，不经过前端：窗口隐藏/后台时同样可用）
             let recorder = recording::RecordingController::spawn(app.handle().clone(), core.clone());
@@ -351,6 +354,20 @@ fn start_hotkey_listener(
             Some(message)
         }
     }
+}
+
+/// 开启「自动下载更新」时，启动后稍等片刻在后台检查一次，有新版本就下载安装包
+/// （关闭时启动不发任何更新请求，只在用户点「检查更新」时才联网）。
+fn spawn_startup_update_check(core: Arc<CoreState>) {
+    if !core.settings().auto_download_updates {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        // 避开启动高峰（模型预热、窗口创建）
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        let result = att_core::update::check_and_maybe_download(core).await;
+        tracing::info!("启动时自动检查更新：{}", result.status);
+    });
 }
 
 /// 核心事件 → 前端 Tauri events（事件名与旧 WS/IPC 对齐，见 events::AppEvent）。

@@ -464,6 +464,11 @@ export const api = {
   activateLLMModel: (id) => request('POST', `/llm/models/${id}/activate`),
   updateLLMSettings: (payload) => request('PUT', '/llm/settings', { body: payload }),
 
+  // 检查更新（设置页「关于」）：检查失败也是 200，原因在 check.error；下载在后台进行，轮询 getUpdateStatus 看进度
+  getUpdateStatus: () => request('GET', '/update'),
+  checkForUpdates: () => request('POST', '/update/check'),
+  downloadUpdate: () => request('POST', '/update/download'),
+
   // 提示词预设：内置（prompts/*.txt，只读）+ 自定义（data/custom_prompts.json，可增删改）
   getPresets: () => request('GET', '/prompts'),
   setDefaultPreset: (id) => request('PUT', '/prompts/default', { body: { preset_id: id } }),

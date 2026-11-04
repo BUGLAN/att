@@ -7,6 +7,7 @@
 //! - /api/prompts：列出（内置 + 自定义）、新建 / 修改 / 删除自定义预设、PUT /api/prompts/default 设默认
 //! - /api/llm/* LLM v2 全套（服务商目录 / 档案 / 模型 / 验证，见 [`llm`]）
 //! - 模型服务三端点（在线引擎凭据配齐即就绪）
+//! - /api/update：检查更新与安装包下载（见 [`update`]）
 //! - 录音由 Rust 录音 Actor 直接完成（Tauri 命令），上传/会话/转写类 HTTP 端点 → 501
 //!
 //! 两个 WebSocket 端点（/api/ws、/api/asr/stream）按 D4 决策**移除**：
@@ -15,6 +16,7 @@
 mod clipboard;
 mod llm;
 mod transcribe;
+mod update;
 
 use att_core::records::{RecordError, RecordUpdate};
 use att_core::state::CoreState;
@@ -83,6 +85,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .merge(clipboard::routes())
         // 本地文件转写
         .merge(transcribe::routes())
+        // 检查更新（设置页「关于」）
+        .merge(update::routes())
         .layer(cors)
         .with_state(state)
 }
@@ -802,6 +806,44 @@ mod tests {
         let (status, _) = request_with_body(&state, "DELETE", &format!("/api/prompts/{id}"), json!({})).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn 检查更新_失败带原因_未检查不能下载_开关随设置() {
+        let (base, _rx) = att_core::llm::testing::stub_routes(vec![att_core::llm::testing::StubRoute::json(
+            "GET /latest ",
+            404,
+            r#"{"message":"Not Found"}"#,
+        )])
+        .await;
+        let dir = std::env::temp_dir().join(format!("att-server-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut core = CoreState::init(&dir, att_core::Platform::Macos).unwrap();
+        core.updater = att_core::update::Updater::with_url(&dir, format!("{base}/latest"));
+        core.app_version = "2.5.1".into();
+        let state = Arc::new(ServerState { core: Arc::new(core) });
+
+        let (status, body) = get_json(&state, "/api/update").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["current_version"], json!("2.5.1"));
+        assert_eq!(body["auto_download"], json!(false));
+        assert_eq!(body["check"], Value::Null);
+        assert_eq!(body["download"]["status"], json!("idle"));
+
+        let (status, body) = request_with_body(&state, "POST", "/api/update/download", json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["detail"].as_str().unwrap().contains("先检查更新"));
+
+        let (status, body) = request_with_body(&state, "POST", "/api/update/check", json!({})).await;
+        assert_eq!(status, StatusCode::OK, "检查失败不是接口错误");
+        assert_eq!(body["check"]["status"], json!("error"));
+        assert!(body["check"]["error"].as_str().unwrap().contains("HTTP 404"));
+
+        let (status, _) = request_with_body(&state, "PUT", "/api/settings", json!({"auto_download_updates": true})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = get_json(&state, "/api/update").await;
+        assert_eq!(body["auto_download"], json!(true));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

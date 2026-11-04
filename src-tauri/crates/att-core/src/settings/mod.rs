@@ -124,6 +124,8 @@ pub struct UserSettings {
     pub pause_audio_on_recording: bool,
     pub auto_optimize: bool,
     pub auto_copy_to_clipboard: bool,
+    /// 检查到新版本时自动下载安装包（开启后启动时也会检查一次）；旧数据缺字段 = 关闭
+    pub auto_download_updates: bool,
     /// 剪贴板悬浮框里按回车：`paste` 粘贴到唤起前的应用；`copy` 只复制。
     /// 开关与快捷键存在 `hotkeys` 的 ClipboardPanel 绑定里（enabled 即开关）
     pub clipboard_panel_enter_action: String,
@@ -192,6 +194,7 @@ impl UserSettings {
             pause_audio_on_recording: true,
             auto_optimize: false,
             auto_copy_to_clipboard: true,
+            auto_download_updates: false,
             clipboard_panel_enter_action: "paste".into(),
             clipboard_panel_height: 244,
             clipboard_panel_max_width: 1280,
@@ -522,6 +525,7 @@ pub fn apply_settings_update(
             "pause_audio_on_recording" => set_bool(&mut settings.pause_audio_on_recording, key, value, &type_error)?,
             "auto_optimize" => set_bool(&mut settings.auto_optimize, key, value, &type_error)?,
             "auto_copy_to_clipboard" => set_bool(&mut settings.auto_copy_to_clipboard, key, value, &type_error)?,
+            "auto_download_updates" => set_bool(&mut settings.auto_download_updates, key, value, &type_error)?,
 
             // 未知键：静默丢弃（契约如此）
             _ => {}
@@ -943,7 +947,9 @@ mod tests {
         assert_eq!(settings.asr_provider, "doubao_asr", "认不出的绑定不拖垮整份设置");
         assert_eq!(settings.binding_of(HotkeyAction::Record).unwrap().display(Platform::Macos), "⌘⌥");
         assert!(settings.rewrite_preset_id.is_none(), "默认跟随默认预设");
+        assert!(!settings.auto_download_updates, "旧数据没有该字段 = 不自动下载更新");
         let view = settings.public_view(Platform::Macos);
+        assert_eq!(view["auto_download_updates"], false);
         assert_eq!(view["rewrite_hotkey"]["display"], "⌥A");
         assert_eq!(view["rewrite_enabled"], true);
 
@@ -962,6 +968,12 @@ mod tests {
         assert_eq!(settings.rewrite_preset_id.as_deref(), Some("preset-程序员模式"));
         apply_settings_update(&mut settings, &serde_json::json!({"rewrite_preset_id": ""}), Platform::Macos, &crypto).unwrap();
         assert!(settings.rewrite_preset_id.is_none(), "空串 = 跟随默认");
+
+        // 自动下载更新：布尔键，保存后重新读取仍保持
+        apply_settings_update(&mut settings, &serde_json::json!({"auto_download_updates": true}), Platform::Macos, &crypto).unwrap();
+        settings.save(&path).unwrap();
+        assert!(UserSettings::load(&path, Platform::Macos).auto_download_updates);
+        assert!(apply_settings_update(&mut settings, &serde_json::json!({"auto_download_updates": "yes"}), Platform::Macos, &crypto).is_err());
 
         // 关着的时候可以和剪贴板悬浮框同键；打开就拒绝
         let same = serde_json::json!({"rewrite_hotkey": {"modifiers": ["ctrl", "alt"], "key": "v"}});
