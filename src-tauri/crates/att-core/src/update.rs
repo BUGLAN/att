@@ -2,8 +2,10 @@
 //!
 //! - 更新源：GitHub Releases 的 `releases/latest` 接口（与 `.github/workflows/release.yml`
 //!   发布渠道一致，只返回非草稿、非预发布的最新版）。`ATT_UPDATE_URL` 可覆盖（测试 / 自建镜像）。
-//! - 只下载不安装：安装包落到 `<数据目录>/updates/`，由用户自己打开安装（不改动正在运行的程序，
-//!   也不需要更新签名基础设施）。
+//! - 应用内更新（桌面版）：桌面壳注入 [`InAppUpdater`]（Tauri updater 插件），下载经签名校验的更新包，
+//!   用户点「重启并更新」后安装并重启；更新包与清单 `latest.json` 由发布工作流签名产出。
+//! - 退路：没有应用内更新器（纯服务 / 测试）或它失败时，下载完整安装包到 `<数据目录>/updates/`，
+//!   由用户自己打开安装。
 //! - 状态（上次检查结果 + 下载进度）只在内存里；「自动下载更新」开关存 `settings.json`
 //!   的 `auto_download_updates`。
 
@@ -61,10 +63,12 @@ pub struct CheckResult {
     pub checked_at: String,
 }
 
-/// 下载状态。`status`：`idle` / `downloading` / `done` / `error`。
+/// 下载状态。`status`：`idle` / `downloading` / `done` / `installing` / `error`。
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadState {
     pub status: &'static str,
+    /// `in_app`：应用内更新包（下载完可「重启并更新」）；`installer`：完整安装包（下载完由用户打开）
+    pub mode: &'static str,
     pub version: Option<String>,
     pub file_name: Option<String>,
     pub path: Option<String>,
@@ -75,8 +79,20 @@ pub struct DownloadState {
 
 impl Default for DownloadState {
     fn default() -> Self {
-        Self { status: "idle", version: None, file_name: None, path: None, received: 0, total: None, error: None }
+        Self { status: "idle", mode: MODE_INSTALLER, version: None, file_name: None, path: None, received: 0, total: None, error: None }
     }
+}
+
+pub const MODE_IN_APP: &str = "in_app";
+pub const MODE_INSTALLER: &str = "installer";
+
+/// 应用内更新器（桌面壳实现，见 `src-tauri/src/app_update.rs`）：下载与安装都在后台进行，
+/// 进度与结果经 [`Updater::in_app_progress`] / [`Updater::in_app_finished`] 写回，前端照常轮询。
+pub trait InAppUpdater: Send + Sync {
+    /// 开始后台下载最新版的更新包（状态已由 [`Updater`] 占位为 downloading）。
+    fn start_download(&self);
+    /// 安装已下载的更新包并重启应用（Windows 上交给安装程序、当前进程退出）；失败时回写 error。
+    fn install(&self);
 }
 
 /// 已占位、待执行的下载。
@@ -97,6 +113,7 @@ pub struct Updater {
     url: String,
     download_dir: PathBuf,
     state: Mutex<UpdaterState>,
+    in_app: std::sync::OnceLock<Arc<dyn InAppUpdater>>,
 }
 
 impl Updater {
@@ -105,7 +122,110 @@ impl Updater {
     }
 
     pub fn with_url(data_dir: &Path, url: impl Into<String>) -> Self {
-        Self { url: url.into(), download_dir: data_dir.join("updates"), state: Mutex::new(UpdaterState::default()) }
+        Self {
+            url: url.into(),
+            download_dir: data_dir.join("updates"),
+            state: Mutex::new(UpdaterState::default()),
+            in_app: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// 桌面壳启动时注入应用内更新器（只能注入一次）。
+    pub fn set_in_app(&self, driver: Arc<dyn InAppUpdater>) {
+        let _ = self.in_app.set(driver);
+    }
+
+    pub fn has_in_app(&self) -> bool {
+        self.in_app.get().is_some()
+    }
+
+    /// 后台开始下载上次检查到的新版本（设置页按钮 / 自动下载共用）。
+    ///
+    /// 有应用内更新器且没要求 `installer` 时下载更新包，否则下载完整安装包；
+    /// 已在下载、或同一版本已下好时什么都不做；不能下载时返回原因。
+    pub fn start_download(self: &Arc<Self>, installer: bool) -> Result<(), String> {
+        match self.in_app.get().filter(|_| !installer) {
+            Some(driver) => {
+                if self.begin_in_app()? {
+                    driver.start_download();
+                }
+                Ok(())
+            }
+            None => {
+                if let Some(pending) = self.begin_download()? {
+                    let updater = self.clone();
+                    tokio::spawn(async move {
+                        updater.run_download(pending).await;
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// 应用内下载占位；返回 false 表示已在下载或同一版本已下好（不重复下载）。
+    fn begin_in_app(&self) -> Result<bool, String> {
+        let mut state = self.lock();
+        let check = state.last_check.clone().filter(|c| c.status == "available").ok_or("没有可下载的新版本，请先检查更新")?;
+        let download = &state.download;
+        if download.status == "downloading" || download.status == "installing" {
+            return Ok(false);
+        }
+        if download.status == "done" && download.mode == MODE_IN_APP && download.version == check.latest_version {
+            return Ok(false);
+        }
+        state.download = DownloadState {
+            status: "downloading",
+            mode: MODE_IN_APP,
+            version: check.latest_version.clone(),
+            ..DownloadState::default()
+        };
+        Ok(true)
+    }
+
+    /// 应用内下载进度：累加本次收到的字节，`total` 为整包大小（已知时）。
+    pub fn in_app_progress(&self, received: u64, total: Option<u64>) {
+        let mut state = self.lock();
+        if state.download.mode == MODE_IN_APP && state.download.status == "downloading" {
+            state.download.received += received;
+            if total.is_some() {
+                state.download.total = total;
+            }
+        }
+    }
+
+    /// 应用内下载 / 安装结束：成功时记下实际下载到的版本（以更新清单为准），失败记原因。
+    pub fn in_app_finished(&self, result: Result<String, String>) {
+        let mut state = self.lock();
+        state.download.mode = MODE_IN_APP;
+        match result {
+            Ok(version) => {
+                tracing::info!("更新包已下载：v{version}");
+                state.download.status = "done";
+                state.download.version = Some(version);
+                state.download.error = None;
+            }
+            Err(error) => {
+                tracing::warn!("应用内更新失败：{error}");
+                state.download.status = "error";
+                state.download.error = Some(error);
+            }
+        }
+    }
+
+    /// 安装已下载的更新包并重启（只适用于应用内下载完成的状态）。
+    pub fn install(&self) -> Result<(), String> {
+        let driver = self.in_app.get().ok_or("当前环境不支持应用内更新，请下载安装包手动更新")?;
+        {
+            let mut state = self.lock();
+            if state.download.mode != MODE_IN_APP || state.download.status != "done" {
+                return Err("更新包还没下载完成".into());
+            }
+            state.download.status = "installing";
+        }
+        tracing::info!("开始安装更新并重启");
+        driver.install();
+        Ok(())
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, UpdaterState> {
@@ -165,6 +285,7 @@ impl Updater {
         }
         state.download = DownloadState {
             status: "downloading",
+            mode: MODE_INSTALLER,
             version: check.latest_version.clone(),
             file_name: Some(asset.name.clone()),
             path: Some(target.display().to_string()),
@@ -251,6 +372,7 @@ impl Updater {
         serde_json::json!({
             "current_version": current_version,
             "auto_download": auto_download,
+            "in_app": self.has_in_app(),
             "source": self.url,
             "check": state.last_check,
             "download": state.download,
@@ -278,12 +400,11 @@ impl CheckResult {
 /// 检查一次；有新版本且开启了自动下载时在后台开始下载。设置页按钮与启动时的自动检查共用。
 pub async fn check_and_maybe_download(core: Arc<crate::state::CoreState>) -> CheckResult {
     let result = core.updater.check(&core.app_version).await;
-    if result.status == "available" && result.asset.is_some() && core.settings().auto_download_updates {
-        if let Ok(Some(pending)) = core.updater.begin_download() {
-            let core = core.clone();
-            tokio::spawn(async move {
-                core.updater.run_download(pending).await;
-            });
+    // 自动下载：有应用内更新器时下更新包（装不装仍由用户点「重启并更新」），否则下完整安装包
+    let downloadable = core.updater.has_in_app() || result.asset.is_some();
+    if result.status == "available" && downloadable && core.settings().auto_download_updates {
+        if let Err(reason) = core.updater.start_download(false) {
+            tracing::warn!("自动下载更新未开始：{reason}");
         }
     }
     result
@@ -502,6 +623,75 @@ mod tests {
         assert!(parse_release("<html>").unwrap_err().contains("无法解析"));
         assert!(describe_status(404, r#"{"message":"Not Found"}"#).contains("HTTP 404"));
         assert!(describe_status(403, "").contains("频率限制"));
+    }
+
+    /// 记录调用次数的假应用内更新器（真正的下载 / 安装在桌面壳里，这里只验状态机）
+    #[derive(Default)]
+    struct FakeInApp {
+        downloads: std::sync::atomic::AtomicUsize,
+        installs: std::sync::atomic::AtomicUsize,
+    }
+
+    impl InAppUpdater for FakeInApp {
+        fn start_download(&self) {
+            self.downloads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn install(&self) {
+            self.installs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn 应用内更新_下载占位_进度_完成后可安装_失败可退回安装包() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = std::env::temp_dir().join(format!("att-update-inapp-{}", uuid::Uuid::new_v4()));
+        let (base, _rx) = stub_routes(vec![StubRoute::json(
+            "GET /latest ",
+            200,
+            r#"{"tag_name":"v9.9.9","assets":[]}"#,
+        )])
+        .await;
+        let updater = Arc::new(Updater::with_url(&dir, format!("{base}/latest")));
+        assert!(updater.start_download(false).is_err(), "没检查过不能下载");
+        assert!(updater.install().is_err(), "没有应用内更新器时不能安装");
+
+        let fake = Arc::new(FakeInApp::default());
+        updater.set_in_app(fake.clone());
+        assert_eq!(updater.snapshot("2.6.1", false)["in_app"], true);
+        assert_eq!(updater.check("2.6.1").await.status, "available");
+        assert!(updater.install().is_err(), "还没下载完不能安装");
+
+        // 发布里没有本机安装包也能走应用内更新
+        updater.start_download(false).unwrap();
+        updater.start_download(false).unwrap();
+        assert_eq!(fake.downloads.load(SeqCst), 1, "下载中再点不重复下载");
+        let state = updater.download_state();
+        assert_eq!((state.status, state.mode, state.version.as_deref()), ("downloading", MODE_IN_APP, Some("9.9.9")));
+
+        updater.in_app_progress(400, Some(1000));
+        updater.in_app_progress(600, None);
+        let state = updater.download_state();
+        assert_eq!((state.received, state.total), (1000, Some(1000)));
+
+        updater.in_app_finished(Ok("9.9.9".into()));
+        assert_eq!(updater.download_state().status, "done");
+        updater.start_download(false).unwrap();
+        assert_eq!(fake.downloads.load(SeqCst), 1, "同一版本已下好不重复下载");
+
+        updater.install().unwrap();
+        assert_eq!(updater.download_state().status, "installing");
+        assert_eq!(fake.installs.load(SeqCst), 1);
+        assert!(updater.start_download(false).is_ok() && fake.downloads.load(SeqCst) == 1, "安装中不再下载");
+
+        // 安装失败：回到 error，可重试下载；也可显式改为下载安装包（这里发布里没有，给出原因）
+        updater.in_app_finished(Err("安装更新失败：x".into()));
+        let state = updater.download_state();
+        assert_eq!((state.status, state.error.as_deref()), ("error", Some("安装更新失败：x")));
+        updater.start_download(false).unwrap();
+        assert_eq!(fake.downloads.load(SeqCst), 2, "失败后可重新下载");
+        let reason = updater.start_download(true).unwrap_err();
+        assert!(reason.contains("没有适合本机的安装包"), "{reason}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

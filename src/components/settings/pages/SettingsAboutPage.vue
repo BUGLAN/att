@@ -48,10 +48,21 @@
             </div>
           </div>
           <div class="about-note__actions">
-            <BaseButton v-if="canDownload" variant="solid" size="sm" :loading="isStartingDownload" @click="downloadNow">
-              {{ download.status === 'error' ? '重新下载' : '下载更新' }}
+            <BaseButton v-if="canRestart" variant="solid" size="sm" :loading="isInstalling" @click="installNow">
+              重启并更新
             </BaseButton>
-            <BaseButton v-if="download.status === 'done' && isDesktop" variant="outline" size="sm" @click="revealDownloaded">
+            <BaseButton v-if="canDownload" variant="solid" size="sm" :loading="isStartingDownload" @click="downloadNow()">
+              {{ download.status === 'error' ? '重试' : inApp ? '下载更新' : '下载安装包' }}
+            </BaseButton>
+            <BaseButton v-if="canFallback" variant="outline" size="sm" @click="downloadNow({ installer: true })">
+              改为下载安装包
+            </BaseButton>
+            <BaseButton
+              v-if="download.status === 'done' && download.mode !== 'in_app' && isDesktop"
+              variant="outline"
+              size="sm"
+              @click="revealDownloaded"
+            >
               在文件管理器中显示
             </BaseButton>
           </div>
@@ -60,7 +71,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">自动下载更新</span>
-            <span class="setting-desc">检查到新版本时自动下载安装包；开启后每次启动也会在后台检查一次。下载完成后打开安装包即可更新。</span>
+            <span class="setting-desc">{{ autoDownloadDesc }}</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.auto_download_updates" type="checkbox" aria-label="自动下载更新">
@@ -81,6 +92,8 @@ import { useAppStore } from '@/stores/app'
 import { useElectron } from '@/composables/useElectron'
 import { SETTINGS_CTX } from '../settingsContext.js'
 import {
+  canFallbackToInstaller,
+  canInstall,
   canStartDownload,
   describeCheck,
   describeCheckLine,
@@ -100,6 +113,7 @@ const status = ref(null)
 const loadError = ref('')
 const isChecking = ref(false)
 const isStartingDownload = ref(false)
+const isInstalling = ref(false)
 let pollTimer = null
 
 const currentVersion = computed(() => appInfo.value?.version || status.value?.current_version || '')
@@ -109,19 +123,30 @@ const versionText = computed(() => {
 })
 const check = computed(() => status.value?.check || null)
 const download = computed(() => status.value?.download || { status: 'idle' })
-const checkView = computed(() => describeCheck(check.value))
+// 桌面版有应用内更新：下载签名更新包，下好后「重启并更新」；否则下载完整安装包手动安装
+const inApp = computed(() => status.value?.in_app === true)
+const checkView = computed(() => describeCheck(check.value, { inApp: inApp.value }))
 const notes = computed(() => (check.value?.status === 'available' ? summarizeNotes(check.value.notes) : ''))
 const downloadText = computed(() => (check.value?.status === 'available' ? describeDownload(download.value) : ''))
 const percent = computed(() => downloadPercent(download.value))
-const canDownload = computed(() => canStartDownload(check.value, download.value))
+const canDownload = computed(() => canStartDownload(check.value, download.value, { inApp: inApp.value }))
+const canRestart = computed(() => canInstall(download.value))
+const canFallback = computed(() => canFallbackToInstaller(check.value, download.value))
+const autoDownloadDesc = computed(() => (inApp.value
+  ? '检查到新版本时在后台下载更新包，下好后提示你点「重启并更新」，不会自己重启打断录音；开启后每次启动也会在后台检查一次。'
+  : '检查到新版本时自动下载安装包；开启后每次启动也会在后台检查一次。下载完成后打开安装包即可更新。'))
 const checkLine = computed(() => describeCheckLine(check.value))
 const badge = computed(() => versionBadge(check.value))
 
 function applyStatus(next) {
   status.value = next
   loadError.value = ''
-  // 下载中：轮询进度；结束后停止
-  if (next?.download?.status === 'downloading') {
+  // 安装失败时状态回到 error：按钮恢复可点
+  if (next?.download?.status !== 'installing') {
+    isInstalling.value = false
+  }
+  // 下载 / 安装中：轮询进度；结束后停止（安装成功时应用直接重启，轮询随之中断）
+  if (['downloading', 'installing'].includes(next?.download?.status)) {
     schedulePoll()
   }
 }
@@ -164,14 +189,24 @@ async function checkNow() {
   }
 }
 
-async function downloadNow() {
+async function downloadNow(options = {}) {
   isStartingDownload.value = true
   try {
-    applyStatus(await api.downloadUpdate())
+    applyStatus(await api.downloadUpdate(options))
   } catch (error) {
     appStore.showToast(String(error?.message || error), { tone: 'error' })
   } finally {
     isStartingDownload.value = false
+  }
+}
+
+async function installNow() {
+  isInstalling.value = true
+  try {
+    applyStatus(await api.installUpdate())
+  } catch (error) {
+    isInstalling.value = false
+    appStore.showToast(String(error?.message || error), { tone: 'error' })
   }
 }
 

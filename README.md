@@ -67,3 +67,9 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 发布：版本号写在 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`（及对应 lock 文件）；
 推送 `v*` 注释标签后，`.github/workflows/release.yml` 自动打包 macOS / Windows 安装包并发布 Release，
 标签注释正文即版本说明。
+
+应用内更新：发布时用仓库 Secrets 里的 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+给更新包签名，并生成 `latest.json`；已安装的应用据此下载、校验签名后「重启并更新」。公钥在 `tauri.conf.json`
+的 `plugins.updater.pubkey`，换密钥后旧版本将无法校验新版本的更新包，只能手动下载安装包更新。
+本地 `npm run tauri build` 同样需要这两个环境变量；不需要更新包时加
+`--config '{"bundle":{"createUpdaterArtifacts":false}}'`。

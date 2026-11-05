@@ -7,6 +7,7 @@
 //! 4. 单实例锁（二次启动唤起已有窗口）
 
 // 注意：Tauri generate_handler 需要命令模块公开可见（__cmd__ 宏重导出）
+pub mod app_update;
 pub mod clipboard;
 pub mod clipboard_image;
 pub mod clipboard_panel;
@@ -48,6 +49,8 @@ pub fn run() {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        // 应用内更新：下载经签名校验的更新包，安装后重启（见 app_update.rs）
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
             // 关闭主窗口（与旧 Electron 版的 close / window-all-closed 行为对齐）：
             // 悬浮窗是预创建的隐藏窗口，任由主窗口销毁会让进程带着全局热键残留在后台，
@@ -154,6 +157,7 @@ pub fn run() {
 
             // 事件桥：核心事件 → 前端（Tauri event，3b 起随录音接入逐步生效）
             spawn_event_bridge(app.handle().clone(), core.clone());
+            app_update::install_driver(app.handle().clone(), &core);
             spawn_startup_update_check(core.clone());
 
             // 录音 Actor + 全局热键（热键直达 Actor，不经过前端：窗口隐藏/后台时同样可用）

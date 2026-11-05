@@ -2,7 +2,8 @@
 //
 // 数据来自 GET/POST /api/update*（att-server/src/update.rs）：
 //   check:    { status: 'available' | 'latest' | 'error', current_version, latest_version, notes, published_at, asset, error, checked_at }
-//   download: { status: 'idle' | 'downloading' | 'done' | 'error', version, file_name, path, received, total, error }
+//   download: { status: 'idle' | 'downloading' | 'done' | 'installing' | 'error', mode, version, file_name, path, received, total, error }
+//   in_app:   桌面版有应用内更新（下载签名更新包 → 「重启并更新」）；mode = 'in_app' | 'installer' 标明这次下的是哪种
 
 /** 字节数 → 人类可读（KB / MB），用于安装包大小与下载进度 */
 export function formatBytes(bytes) {
@@ -33,7 +34,7 @@ export function formatDateTime(iso) {
  * 检查结果的展示：{ tone: 'ok' | 'info' | 'err', title, detail }；还没检查过返回 null。
  * 三种结果都要有明确反馈，失败时 detail 就是后端给的原因。
  */
-export function describeCheck(check) {
+export function describeCheck(check, { inApp = false } = {}) {
   if (!check) {
     return null
   }
@@ -44,7 +45,9 @@ export function describeCheck(check) {
     if (published) {
       parts.push(`发布于 ${published}`)
     }
-    if (!check.asset) {
+    if (inApp) {
+      // 应用内更新包的大小以更新清单为准，下载时显示进度
+    } else if (!check.asset) {
       parts.push('发布里没有适合本机的安装包，请到发布页手动下载')
     } else if (check.asset.size) {
       parts.push(`安装包 ${formatBytes(check.asset.size)}`)
@@ -105,21 +108,41 @@ export function describeDownload(download) {
       : formatBytes(download.received)
     return percent === null ? `正在下载… ${size}` : `正在下载… ${percent}%（${size}）`
   }
-  if (download.status === 'done') {
-    return `已下载 v${download.version}：${download.file_name}，打开安装包即可完成更新`
+  const inApp = download.mode === 'in_app'
+  if (download.status === 'installing') {
+    return '正在安装更新，应用会自动重启…'
   }
-  return `下载失败：${download.error || '未知原因'}`
+  if (download.status === 'done') {
+    return inApp
+      ? `v${download.version} 已下载，点「重启并更新」即可完成更新`
+      : `已下载 v${download.version}：${download.file_name}，打开安装包即可完成更新`
+  }
+  return `${inApp ? '更新失败' : '下载失败'}：${download.error || '未知原因'}`
 }
 
-/** 是否可以手动开始下载：有新版本、有本机安装包，且没在下载 / 这个版本还没下好 */
-export function canStartDownload(check, download) {
-  if (check?.status !== 'available' || !check.asset) {
+/**
+ * 是否可以手动开始下载：有新版本、能下载（有应用内更新，或发布里有本机安装包），
+ * 且没在下载 / 安装，这个版本也还没下好。
+ */
+export function canStartDownload(check, download, { inApp = false } = {}) {
+  if (check?.status !== 'available' || !(inApp || check.asset)) {
     return false
   }
-  if (download?.status === 'downloading') {
+  if (download?.status === 'downloading' || download?.status === 'installing') {
     return false
   }
   return !(download?.status === 'done' && download.version === check.latest_version)
+}
+
+/** 应用内更新包已下好：可以「重启并更新」 */
+export function canInstall(download) {
+  return download?.mode === 'in_app' && download.status === 'done'
+}
+
+/** 应用内更新失败时的退路：改为下载完整安装包手动安装（发布里要有本机安装包） */
+export function canFallbackToInstaller(check, download) {
+  return check?.status === 'available' && Boolean(check.asset) &&
+    download?.mode === 'in_app' && download.status === 'error'
 }
 
 /** 发布说明摘要：去掉空行，最多 maxLines 行 */

@@ -243,6 +243,11 @@ export function useElectron() {
     void addChannelListener('desktop:agent-error', callback)
   }
 
+  /** 应用内更新包已在后台下好（多为自动下载）：payload { version } */
+  function onUpdateReady(callback) {
+    void addChannelListener('update:ready', callback)
+  }
+
   // 原生录音（Tauri）：采集/识别/落库/粘贴都在 Rust 录音 Actor，前端只发指令与订阅状态
   const recording = {
     start: () => (isDesktop ? invoke('recording_start') : Promise.resolve()),
@@ -378,6 +383,7 @@ export function useElectron() {
     getAppInfo,
     revealAppPath,
     onHotkeyPress,
+    onUpdateReady,
     onHotkeyRelease,
     onPasteText,
     onNavigateSettings,

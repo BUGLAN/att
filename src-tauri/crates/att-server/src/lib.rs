@@ -819,7 +819,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("att-server-update-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut core = CoreState::init(&dir, att_core::Platform::Macos).unwrap();
-        core.updater = att_core::update::Updater::with_url(&dir, format!("{base}/latest"));
+        core.updater = std::sync::Arc::new(att_core::update::Updater::with_url(&dir, format!("{base}/latest")));
         core.app_version = "2.5.1".into();
         let state = Arc::new(ServerState { core: Arc::new(core) });
 

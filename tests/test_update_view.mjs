@@ -1,9 +1,12 @@
 // 设置页「关于」检查更新展示逻辑（src/components/settings/updateView.mjs）单元测试。
-// 覆盖：有新版本 / 已是最新 / 检查失败三种反馈、版本号标记与行内说明，下载进度与可否下载，发布说明摘要。
+// 覆盖：有新版本 / 已是最新 / 检查失败三种反馈、版本号标记与行内说明，下载进度与可否下载，发布说明摘要，
+// 以及应用内更新（下好后「重启并更新」、安装中、失败退回下载安装包）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  canFallbackToInstaller,
+  canInstall,
   canStartDownload,
   describeCheck,
   describeCheckLine,
@@ -89,4 +92,31 @@ test('格式化：字节、时间与发布说明摘要', () => {
   assert.match(formatDateTime('2026-11-04T13:23:57Z'), /^2026-11-0\d \d{2}:\d{2}$/)
   assert.equal(summarizeNotes('a\n\nb\r\nc', 2), 'a\nb\n…')
   assert.equal(summarizeNotes(null), '')
+})
+
+test('应用内更新：不依赖安装包、下好后可重启更新、安装中不能再下载', () => {
+  const noAsset = { ...AVAILABLE, asset: null }
+  assert.doesNotMatch(describeCheck(noAsset, { inApp: true }).detail, /安装包/, '应用内更新不提安装包')
+  assert.equal(canStartDownload(noAsset, { status: 'idle' }, { inApp: true }), true, '没有本机安装包也能应用内更新')
+
+  const done = { status: 'done', mode: 'in_app', version: '2.6.0' }
+  assert.equal(describeDownload(done), 'v2.6.0 已下载，点「重启并更新」即可完成更新')
+  assert.equal(canInstall(done), true)
+  assert.equal(canInstall({ ...done, mode: 'installer' }), false, '完整安装包要用户自己打开')
+  assert.equal(canStartDownload(AVAILABLE, done, { inApp: true }), false, '同版本已下好')
+
+  const installing = { status: 'installing', mode: 'in_app', version: '2.6.0' }
+  assert.equal(describeDownload(installing), '正在安装更新，应用会自动重启…')
+  assert.equal(canInstall(installing), false)
+  assert.equal(canStartDownload(AVAILABLE, installing, { inApp: true }), false)
+})
+
+test('应用内更新失败：可重试，发布里有本机安装包时还可改为下载安装包', () => {
+  const failed = { status: 'error', mode: 'in_app', error: '读取更新清单失败：HTTP 404' }
+  assert.equal(describeDownload(failed), '更新失败：读取更新清单失败：HTTP 404')
+  assert.equal(canStartDownload(AVAILABLE, failed, { inApp: true }), true, '可重试')
+  assert.equal(canFallbackToInstaller(AVAILABLE, failed), true)
+  assert.equal(canFallbackToInstaller({ ...AVAILABLE, asset: null }, failed), false, '没有本机安装包')
+  assert.equal(canFallbackToInstaller(AVAILABLE, { status: 'error', mode: 'installer' }), false, '已经是安装包下载')
+  assert.equal(canFallbackToInstaller(AVAILABLE, { status: 'downloading', mode: 'in_app' }), false)
 })

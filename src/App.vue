@@ -88,6 +88,7 @@ const {
   onNavigateSettings,
   onDesktopPermissionRequired,
   onDesktopAgentError,
+  onUpdateReady,
   removeAllListeners,
   syncDesktopSettings,
   getHotkeyStatus,
@@ -125,6 +126,12 @@ onMounted(async () => {
     appStore.showToast(payload?.error || '本地桌面代理发生错误')
   })
 
+  // 新版本已在后台下好：提示去「关于」页重启更新（不自动重启，免得打断正在进行的录音）
+  onUpdateReady((payload) => {
+    const version = payload?.version ? ` v${payload.version}` : ''
+    appStore.showToast(`新版本${version} 已下载：到「设置 → 关于」点「重启并更新」即可完成更新`, { tone: 'info', duration: 10000 })
+  })
+
   // 全局快捷键在 Rust 启动期就已注册：权限缺失（macOS「输入监控」）的原因在这里补拉并提示，
   // 不能只依赖事件（启动期事件发出时前端还没订阅）
   getHotkeyStatus()
@@ -153,6 +160,7 @@ onUnmounted(() => {
   removeAllListeners('navigate:settings')
   removeAllListeners('desktop:permission-required')
   removeAllListeners('desktop:agent-error')
+  removeAllListeners('update:ready')
 })
 </script>
 

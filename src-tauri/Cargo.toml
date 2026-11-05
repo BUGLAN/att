@@ -61,6 +61,7 @@ chrono = { workspace = true }
 sha2 = "0.10"
 # PNG 解码（写剪贴板图片）
 image = { version = "0.25", default-features = false, features = ["png"] }
+tauri-plugin-updater = "2"
 
 # 模拟粘贴（CGEvent）与辅助功能授权检测
 [target.'cfg(target_os = "macos")'.dependencies]

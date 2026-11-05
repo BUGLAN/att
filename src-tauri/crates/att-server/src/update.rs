@@ -1,7 +1,9 @@
 //! 检查更新路由（设置页「关于」）：
 //! - `GET  /api/update`：当前版本、自动下载开关、上次检查结果与下载进度
 //! - `POST /api/update/check`：发起一次检查（开启自动下载且有新版本时后台开始下载），返回最新状态
-//! - `POST /api/update/download`：后台下载上次检查到的新版本安装包，返回最新状态（前端轮询 GET 看进度）
+//! - `POST /api/update/download`：后台下载上次检查到的新版本，返回最新状态（前端轮询 GET 看进度）。
+//!   桌面版默认下应用内更新包；请求体 `{"installer": true}` 改为下载完整安装包（应用内更新失败时的退路）
+//! - `POST /api/update/install`：安装已下载的更新包并重启应用（只适用于应用内更新）
 
 use crate::ServerState;
 use axum::extract::State;
@@ -19,6 +21,7 @@ pub fn routes() -> Router<Arc<ServerState>> {
         .route("/api/update", get(status))
         .route("/api/update/check", post(check))
         .route("/api/update/download", post(download))
+        .route("/api/update/install", post(install))
 }
 
 fn snapshot(state: &ServerState) -> Value {
@@ -36,17 +39,19 @@ async fn check(State(state): Shared) -> Json<Value> {
     Json(snapshot(&state))
 }
 
-async fn download(State(state): Shared) -> Response {
+async fn download(State(state): Shared, body: Option<Json<Value>>) -> Response {
+    let installer = body.and_then(|Json(v)| v.get("installer").and_then(Value::as_bool)).unwrap_or(false);
     // 同步占位：返回给前端时状态已是 downloading；不能下载（没有新版本 / 没有本机安装包）时 400 + 原因
-    match state.core.updater.begin_download() {
-        Ok(Some(pending)) => {
-            let core = state.core.clone();
-            tokio::spawn(async move {
-                core.updater.run_download(pending).await;
-            });
-        }
-        Ok(None) => {} // 已在下载或已下载完成
-        Err(reason) => return (StatusCode::BAD_REQUEST, Json(json!({ "detail": reason }))).into_response(),
+    if let Err(reason) = state.core.updater.start_download(installer) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "detail": reason }))).into_response();
+    }
+    Json(snapshot(&state)).into_response()
+}
+
+/// 安装在后台进行：返回时状态已是 installing，随后应用会退出并重启（失败时状态回到 error）。
+async fn install(State(state): Shared) -> Response {
+    if let Err(reason) = state.core.updater.install() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "detail": reason }))).into_response();
     }
     Json(snapshot(&state)).into_response()
 }

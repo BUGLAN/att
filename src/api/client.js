@@ -467,7 +467,10 @@ export const api = {
   // 检查更新（设置页「关于」）：检查失败也是 200，原因在 check.error；下载在后台进行，轮询 getUpdateStatus 看进度
   getUpdateStatus: () => request('GET', '/update'),
   checkForUpdates: () => request('POST', '/update/check'),
-  downloadUpdate: () => request('POST', '/update/download'),
+  // installer: true 改为下载完整安装包（应用内更新失败时的退路）
+  downloadUpdate: ({ installer = false } = {}) => request('POST', '/update/download', { body: { installer } }),
+  // 安装已下载的应用内更新包并重启：返回时状态为 installing，随后应用退出重启
+  installUpdate: () => request('POST', '/update/install'),
 
   // 提示词预设：内置（prompts/*.txt，只读）+ 自定义（data/custom_prompts.json，可增删改）
   getPresets: () => request('GET', '/prompts'),

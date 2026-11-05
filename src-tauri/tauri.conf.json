@@ -19,6 +19,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/icon.ico",
       "icons/icon.png",
@@ -31,6 +32,17 @@
       "wix": {
         "language": "zh-CN",
         "upgradeCode": "7d1c25af-2d66-5be0-b96a-72ebab18ea36"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZBODAzNjFDNkY0RDg3MzcKUldRM2gwMXZIRGFBYXBpelN2RFQ2Vkd4UkpuVXpXVWQrdXJPWExXdlB1aVJvWis4QXJBaGdsck4K",
+      "endpoints": [
+        "https://github.com/BUGLAN/att/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

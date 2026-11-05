@@ -10,6 +10,11 @@
 # 两个平台都自带 CMake；Windows 的静态 CRT（+crt-static）由 src-tauri/.cargo/config.toml 提供。
 # 模型文件不随包（见 docs/遗留与下线.md §5），安装后在设置页按提示下载。
 #
+# 应用内更新：tauri.conf.json 开了 createUpdaterArtifacts，打包时用 Secrets 里的私钥给更新包签名
+# （TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD，公钥在 tauri.conf.json 的 plugins.updater），
+# tauri-action 上传 .sig 并生成 / 合并 latest.json（两个平台各写一份，后跑完的合并进同一个文件）；
+# 已安装的应用从 releases/latest/download/latest.json 读取新版本。缺少私钥时打包直接失败，不会发出没签名的版本。
+#
 # Release 标题只写版本号（如 v2.3.0）；版本说明取自注释标签的正文（标题行写版本号，正文按「新增 / 修改 / 修复」分节），
 # 后面接固定的安装说明。轻量标签或只有标题行时只有安装说明。
 
@@ -99,6 +104,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           # 显式用 npm 调 tauri：runner 的包管理器探测可能选错，仓库统一用 npm（package-lock.json）
           tauriScript: npm run tauri
@@ -114,7 +121,12 @@ jobs:
               全局快捷键与自动粘贴需要在「隐私与安全性」里给本应用「输入监控」和「辅助功能」权限。
             - **Windows（x64）**：下载 `.exe`（推荐）或 `.msi`。安装包未签名，SmartScreen 提示时选「更多信息 → 仍要运行」。
 
+            已安装的版本支持应用内更新时（「设置 → 关于」检查更新后出现「重启并更新」），直接在应用里更新即可，无需下载安装包。
+
             本地识别模型不随包，按设置页「识别引擎」的提示下载。
+          # 应用内更新清单：Windows 的通用条目指向 NSIS 安装包（MSI 安装的用户按 windows-x86_64-msi 条目走 MSI）
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
