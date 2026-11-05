@@ -5,8 +5,8 @@
         <h3 class="settings-group-title">录音快捷键</h3>
         <div class="setting-item">
           <div class="setting-info">
-            <span class="setting-label">按住录音，松开结束</span>
-            <span class="setting-desc">点击右侧输入框后按下新的组合即可录入；支持 `Win+Alt`、`⌘⌥` 这类无主键组合。</span>
+            <span class="setting-label">按住录音</span>
+            <span class="setting-desc">按住开始，松开结束。点击右侧输入框后按下新的组合即可录入；支持 `Win+Alt`、`⌘⌥` 这类无主键组合。</span>
           </div>
           <div class="hotkey-input-wrapper">
             <BaseInput
@@ -15,11 +15,18 @@
               :class="{ listening: isCapturingHotkey }"
               type="text"
               readonly
-              aria-label="录音快捷键"
-              placeholder="点击录入快捷键"
+              aria-label="按住录音快捷键"
+              placeholder="未设置 · 点击录入"
               @click="startHotkeyCapture('hotkey')"
             />
-            <BaseButton variant="ghost" icon title="恢复默认快捷键" aria-label="恢复默认快捷键" @click="resetHotkey('hotkey')">
+            <BaseButton v-if="hotkeyDisplay" variant="ghost" icon title="清空快捷键" aria-label="清空按住录音快捷键" @click="clearHotkey('hotkey')">
+              <template #icon>
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </template>
+            </BaseButton>
+            <BaseButton variant="ghost" icon title="恢复默认快捷键" aria-label="恢复按住录音默认快捷键" @click="resetHotkey('hotkey')">
               <template #icon>
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path d="M4 10.5A8 8 0 1 1 6.6 17" />
@@ -28,6 +35,41 @@
               </template>
             </BaseButton>
           </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">点按录音</span>
+            <span class="setting-desc">按一下开始，再按一下结束，长段口述不用一直按着。可与按住录音用不同的键；想用同一个键，先清空按住录音。</span>
+          </div>
+          <div class="hotkey-input-wrapper">
+            <BaseInput
+              :value="toggleHotkeyDisplay"
+              class="hotkey-input"
+              :class="{ listening: isCapturingToggleHotkey }"
+              type="text"
+              readonly
+              aria-label="点按录音快捷键"
+              placeholder="未设置 · 点击录入"
+              @click="startHotkeyCapture('record_toggle_hotkey')"
+            />
+            <BaseButton
+              v-if="toggleHotkeyDisplay"
+              variant="ghost"
+              icon
+              title="清空快捷键"
+              aria-label="清空点按录音快捷键"
+              @click="clearHotkey('record_toggle_hotkey')"
+            >
+              <template #icon>
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </template>
+            </BaseButton>
+          </div>
+        </div>
+        <div v-if="!hotkeyDisplay && !toggleHotkeyDisplay" class="settings-note warn">
+          <span>两种录音快捷键都为空：只能在首页点印章开始录音。</span>
         </div>
         <div class="settings-note" :class="{ warn: Boolean(status.error) }">
           <span>{{ status.error || '全局快捷键已启用：窗口在后台或最小化时同样生效。' }}</span>
@@ -111,11 +153,14 @@ const {
   form,
   hotkeyDisplay,
   isCapturingHotkey,
+  toggleHotkeyDisplay,
+  isCapturingToggleHotkey,
   rewriteHotkeyDisplay,
   isCapturingRewriteHotkey,
   hotkeyError,
   startHotkeyCapture,
   resetHotkey,
+  clearHotkey,
   goSection
 } = inject(SETTINGS_CTX)
 const { getHotkeyStatus } = useElectron()

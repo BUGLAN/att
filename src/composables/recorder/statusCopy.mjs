@@ -17,7 +17,7 @@ const REALTIME_PHASE_TEXT = Object.freeze({
 })
 
 // 空闲态兜底文案（原 setRealtimePhase 的 else 分支）
-export const IDLE_SESSION_STATUS_TEXT = '按住快捷键开始录音'
+export const IDLE_SESSION_STATUS_TEXT = '按快捷键开始录音'
 
 // 完成态三态文案：copied = 已复制并粘贴；failed = 尝试过但失败；plain = 未开启自动复制
 const COMPLETION_TOAST_COPY = Object.freeze({

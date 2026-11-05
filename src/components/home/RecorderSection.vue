@@ -117,6 +117,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import { ACTION_GLYPHS, SEALS, recorderSealState } from '@/components/common/glyphs.mjs'
 import { FAILURE_HOLD_MS, SUCCESS_HOLD_MS } from '@/components/floating/floatingView.mjs'
 import { providerLabel } from '@/components/settings/asrEngineStatus.mjs'
+import { recordHotkeySummary } from '@/components/settings/settingsHotkeys.mjs'
 
 const {
   isRecording,
@@ -290,7 +291,8 @@ watch(livePhase, (phase) => {
 
 onUnmounted(() => clearTimeout(sealFlashTimer))
 
-const hotkeyDisplay = computed(() => settingsStore.settings.hotkey?.display || '')
+// 按住 / 点按两种录音快捷键（为空的不列）
+const hotkeyDisplay = computed(() => recordHotkeySummary(settingsStore.settings))
 
 const statusLine = computed(() => {
   if (isRecording.value || isProcessing.value) {
@@ -299,7 +301,7 @@ const statusLine = computed(() => {
   if (sealState.value === 'success') return '完成'
   if (sealState.value === 'failure') return '这次没有成功，可以再试一次'
   if (recordingButtonDisabled.value) return buttonText.value
-  return hotkeyDisplay.value ? `待命 · 快捷键 ${hotkeyDisplay.value}` : '待命 · 点按印章开始'
+  return hotkeyDisplay.value ? `待命 · ${hotkeyDisplay.value}` : '待命 · 点按印章开始'
 })
 
 const statusDot = computed(() => {

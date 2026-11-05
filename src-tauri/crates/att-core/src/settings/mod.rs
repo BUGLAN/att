@@ -208,6 +208,7 @@ impl UserSettings {
             rewrite_preset_id: None,
             hotkeys: vec![
                 HotkeyBinding::default_binding(platform),
+                HotkeyBinding::default_for(HotkeyAction::RecordToggle, platform),
                 HotkeyBinding::default_for(HotkeyAction::ClipboardPanel, platform),
                 HotkeyBinding::default_for(HotkeyAction::RewriteSelection, platform),
             ],
@@ -238,13 +239,30 @@ impl UserSettings {
 
     /// 旧数据只有录音绑定：补上后来新增动作的默认绑定（只改内存，下次保存才落盘）。
     pub fn ensure_default_bindings(&mut self, platform: Platform) {
+        // 点按录音拆成独立动作之前，录音只有一条绑定、靠 trigger 二选一：
+        // 手动设成点按的旧数据挪成「点按录音」，按住录音留空（未启用），行为不变
+        if self.binding_of(HotkeyAction::RecordToggle).is_none() {
+            if let Some(record) = self
+                .hotkeys
+                .iter_mut()
+                .find(|b| b.action == HotkeyAction::Record && b.trigger == TriggerMode::Toggle)
+            {
+                record.action = HotkeyAction::RecordToggle;
+                let hold = HotkeyBinding { enabled: false, ..HotkeyBinding::default_binding(platform) };
+                self.hotkeys.insert(0, hold);
+            }
+        }
         if self.binding_of(HotkeyAction::Record).is_none() {
             self.hotkeys.insert(0, HotkeyBinding::default_binding(platform));
         }
-        for action in [HotkeyAction::ClipboardPanel, HotkeyAction::RewriteSelection] {
+        for action in [HotkeyAction::RecordToggle, HotkeyAction::ClipboardPanel, HotkeyAction::RewriteSelection] {
             if self.binding_of(action).is_none() {
                 self.hotkeys.push(HotkeyBinding::default_for(action, platform));
             }
+        }
+        // 触发方式由动作决定，存盘字段跟着归一（防止手改 / 旧数据里不一致）
+        for binding in &mut self.hotkeys {
+            binding.trigger = binding.action.trigger();
         }
     }
 
@@ -342,7 +360,6 @@ impl UserSettings {
         }
         view["doubao_asr_api_key_set"] = json!(self.doubao_asr_api_key_encrypted.is_some());
         view["chatgpt_asr_api_key_set"] = json!(self.chatgpt_asr_api_key_encrypted.is_some());
-        view["hotkey"] = self.legacy_hotkey_view(platform);
         for &(action, hotkey_key, enabled_key) in EXTRA_HOTKEY_FIELDS {
             let binding = self.binding_or_default(action, platform);
             view[hotkey_key] = binding.to_legacy(platform);
@@ -352,9 +369,11 @@ impl UserSettings {
     }
 }
 
-/// 设置页以旧版 `{modifiers, key, display}` 形状读写的附加快捷键：(动作, 快捷键字段, 开关字段)。
-/// 开关就是该绑定的 `enabled`。
+/// 设置页以旧版 `{modifiers, key, display}` 形状读写的快捷键：(动作, 快捷键字段, 开关字段)。
+/// 开关就是该绑定的 `enabled`；两种录音的「开关为否」在设置页显示为快捷键为空。
 const EXTRA_HOTKEY_FIELDS: &[(HotkeyAction, &str, &str)] = &[
+    (HotkeyAction::Record, "hotkey", "hotkey_enabled"),
+    (HotkeyAction::RecordToggle, "record_toggle_hotkey", "record_toggle_enabled"),
     (HotkeyAction::ClipboardPanel, "clipboard_panel_hotkey", "clipboard_panel_enabled"),
     (HotkeyAction::RewriteSelection, "rewrite_hotkey", "rewrite_enabled"),
 ];
@@ -438,11 +457,6 @@ pub fn apply_settings_update(
                 if value.as_bool().unwrap_or(false) {
                     settings.chatgpt_asr_api_key_encrypted = None;
                 }
-            }
-            // ---- 旧版热键对象（前端 saveSettings 会带上）----
-            "hotkey" => {
-                settings.update_record_binding_from_legacy(platform, value);
-                outcome.restart_hotkey_backend = true;
             }
             // 已在循环前处理
             "hotkeys" => {}
@@ -542,6 +556,9 @@ pub fn apply_settings_update(
     let enabled: Vec<&HotkeyBinding> = settings.hotkeys.iter().filter(|b| b.enabled).collect();
     for (index, later) in enabled.iter().enumerate() {
         if let Some(earlier) = enabled[..index].iter().find(|b| b.action != later.action && b.same_combo(later)) {
+            if later.action.is_record() && earlier.action.is_record() {
+                return Err("按住录音与点按录音的快捷键相同：同一个键只能用一种录音方式，请先清空其中一个".into());
+            }
             return Err(format!("{}的快捷键与{}快捷键相同，请换一个", later.action.label(), earlier.action.label()));
         }
     }
@@ -929,6 +946,69 @@ mod tests {
             "clipboard_panel_enabled": false
         });
         assert!(apply_settings_update(&mut settings, &disabled, Platform::Macos, &crypto).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 点按录音_旧数据补空绑定_可与按住录音分键_同键只能启用一种() {
+        let dir = temp_dir("record-toggle");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, serde_json::json!({
+            "hotkeys": [{"action": "record", "trigger": "hold", "modifiers": {"alt": true, "meta": true}, "enabled": true}]
+        }).to_string()).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Macos);
+        let toggle = settings.binding_of(HotkeyAction::RecordToggle).unwrap();
+        assert!(!toggle.enabled, "旧数据补上的点按录音默认为空");
+        assert_eq!(toggle.trigger, TriggerMode::Toggle);
+        let view = settings.public_view(Platform::Macos);
+        assert_eq!(view["hotkey"]["display"], "⌘⌥");
+        assert_eq!(view["hotkey_enabled"], true);
+        assert_eq!(view["record_toggle_enabled"], false);
+
+        // 分键：两种都启用
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let body = serde_json::json!({
+            "record_toggle_hotkey": {"modifiers": ["cmd", "shift"], "key": "t"},
+            "record_toggle_enabled": true
+        });
+        let outcome = apply_settings_update(&mut settings, &body, Platform::Macos, &crypto).unwrap();
+        assert!(outcome.restart_hotkey_backend);
+        let toggle = settings.binding_of(HotkeyAction::RecordToggle).unwrap();
+        assert_eq!((toggle.display(Platform::Macos), toggle.enabled), ("⌘⇧T".to_string(), true));
+        assert!(settings.binding_of(HotkeyAction::Record).unwrap().enabled);
+
+        // 同键且都启用：拒绝，提示先清空一个
+        let same = serde_json::json!({"record_toggle_hotkey": {"modifiers": ["cmd", "alt"]}});
+        let err = apply_settings_update(&mut settings.clone(), &same, Platform::Macos, &crypto).unwrap_err();
+        assert!(err.contains("先清空"), "{err}");
+
+        // 同键、清空按住录音：放行，只剩点按
+        let switch = serde_json::json!({"record_toggle_hotkey": {"modifiers": ["cmd", "alt"]}, "hotkey_enabled": false});
+        apply_settings_update(&mut settings, &switch, Platform::Macos, &crypto).unwrap();
+        assert!(!settings.binding_of(HotkeyAction::Record).unwrap().enabled);
+        assert_eq!(settings.binding_of(HotkeyAction::Record).unwrap().display(Platform::Macos), "⌘⌥", "清空只关开关，组合保留");
+        assert_eq!(settings.public_view(Platform::Macos)["hotkey_enabled"], false);
+        settings.save(&path).unwrap();
+        let reloaded = UserSettings::load(&path, Platform::Macos);
+        assert!(!reloaded.binding_of(HotkeyAction::Record).unwrap().enabled, "保存后重新读取仍为空");
+        assert!(reloaded.binding_of(HotkeyAction::RecordToggle).unwrap().enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 点按录音_旧数据录音绑定为点按时挪成点按录音() {
+        let dir = temp_dir("record-toggle-migrate");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, serde_json::json!({
+            "hotkeys": [{"action": "record", "trigger": "toggle", "modifiers": {"alt": true, "meta": true}, "enabled": true}]
+        }).to_string()).unwrap();
+        let settings = UserSettings::load(&path, Platform::Windows);
+        let toggle = settings.binding_of(HotkeyAction::RecordToggle).unwrap();
+        assert!(toggle.enabled);
+        assert_eq!(toggle.display(Platform::Windows), "Win+Alt");
+        let hold = settings.binding_of(HotkeyAction::Record).unwrap();
+        assert!(!hold.enabled, "按住录音留空，行为与旧版一致");
+        assert_eq!(hold.trigger, TriggerMode::Hold);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

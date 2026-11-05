@@ -71,7 +71,7 @@ import { resolveDefaultPresetId, resolveRewritePresetId, suggestNewName } from '
 import { useElectron } from '@/composables/useElectron'
 import { hasPendingSettingsEdits } from './settingsFormSync.mjs'
 import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
-import { findHotkeyConflict } from './settingsHotkeys.mjs'
+import { captureHotkey, clearHotkey as clearHotkeyPatch, isHotkeyEnabled } from './settingsHotkeys.mjs'
 import { SETTINGS_CTX } from './settingsContext.js'
 import { DEFAULT_SECTION_ID, buildNavGroups, findSection, resolveSectionId } from './settingsNav.mjs'
 import SettingsRecordingPage from './pages/SettingsRecordingPage.vue'
@@ -138,9 +138,10 @@ const { syncDesktopSettings, syncInputSettings, platform, isDesktop, listAudioDe
 
 const form = ref({})
 const audioInputDevices = ref([])
-// 正在录入哪个快捷键：HOTKEY_TARGETS 里的字段名（hotkey / clipboard_panel_hotkey / rewrite_hotkey）或 null
+// 正在录入哪个快捷键：HOTKEY_TARGETS 里的字段名（hotkey / record_toggle_hotkey / clipboard_panel_hotkey / rewrite_hotkey）或 null
 const captureTarget = ref(null)
 const isCapturingHotkey = computed(() => captureTarget.value === 'hotkey')
+const isCapturingToggleHotkey = computed(() => captureTarget.value === 'record_toggle_hotkey')
 const isCapturingPanelHotkey = computed(() => captureTarget.value === 'clipboard_panel_hotkey')
 const isCapturingRewriteHotkey = computed(() => captureTarget.value === 'rewrite_hotkey')
 const hotkeyError = ref('')
@@ -196,8 +197,12 @@ function goFirstMatch() {
   }
 }
 
+// 两种录音方式的快捷键可以为空（开关为否）：空时输入框显示占位文案
 const hotkeyDisplay = computed(() => {
-  return form.value.hotkey?.display || '点击录入快捷键'
+  return isHotkeyEnabled(form.value, 'hotkey') ? form.value.hotkey?.display || '' : ''
+})
+const toggleHotkeyDisplay = computed(() => {
+  return isHotkeyEnabled(form.value, 'record_toggle_hotkey') ? form.value.record_toggle_hotkey?.display || '' : ''
 })
 const panelHotkeyDisplay = computed(() => {
   return form.value.clipboard_panel_hotkey?.display || '点击录入快捷键'
@@ -243,6 +248,7 @@ function getDefaultRewriteHotkey() {
 function getDefaultHotkeyFor(field) {
   if (field === 'clipboard_panel_hotkey') return getDefaultPanelHotkey()
   if (field === 'rewrite_hotkey') return getDefaultRewriteHotkey()
+  // 按住录音、点按录音的默认组合相同（点按录音默认为空，同键时只能启用一种）
   return getDefaultHotkey()
 }
 
@@ -339,6 +345,10 @@ function normalizeSettings(value = {}) {
     auto_download_updates: value.auto_download_updates ?? false,
     audio_input_device: value.audio_input_device || 'default',
     hotkey: normalizedHotkey,
+    hotkey_enabled: value.hotkey_enabled ?? true,
+    // 点按录音默认为空（未启用）
+    record_toggle_hotkey: normalizeHotkeyConfig(value.record_toggle_hotkey),
+    record_toggle_enabled: value.record_toggle_enabled ?? false,
     clipboard_panel_enabled: value.clipboard_panel_enabled ?? true,
     clipboard_panel_hotkey: normalizeHotkeyConfig(value.clipboard_panel_hotkey, getDefaultPanelHotkey()),
     clipboard_panel_enter_action: value.clipboard_panel_enter_action === 'copy' ? 'copy' : 'paste',
@@ -379,6 +389,9 @@ function buildSettingsPayload() {
     auto_download_updates: Boolean(form.value.auto_download_updates),
     audio_input_device: form.value.audio_input_device,
     hotkey: normalizeHotkeyConfig(form.value.hotkey),
+    hotkey_enabled: form.value.hotkey_enabled !== false,
+    record_toggle_hotkey: normalizeHotkeyConfig(form.value.record_toggle_hotkey),
+    record_toggle_enabled: form.value.record_toggle_enabled === true,
     clipboard_panel_enabled: Boolean(form.value.clipboard_panel_enabled),
     clipboard_panel_hotkey: normalizeHotkeyConfig(form.value.clipboard_panel_hotkey, getDefaultPanelHotkey()),
     clipboard_panel_enter_action: form.value.clipboard_panel_enter_action,
@@ -508,9 +521,30 @@ function stopHotkeyCapture() {
   captureTarget.value = null
 }
 
-function resetHotkey(target = 'hotkey') {
+function applyHotkeyCapture(target, next) {
+  // 两个全局快捷键撞键时只会触发其中一个（后端同样会拒绝保存）；可清空的快捷键录入即启用
+  const result = captureHotkey(form.value, target, next)
+  if (result.error) {
+    hotkeyError.value = result.error
+    return
+  }
   hotkeyError.value = ''
-  form.value[target] = getDefaultHotkeyFor(target)
+  Object.assign(form.value, result.patch)
+}
+
+function resetHotkey(target = 'hotkey') {
+  stopHotkeyCapture()
+  applyHotkeyCapture(target, getDefaultHotkeyFor(target))
+}
+
+/** 清空录音快捷键（按住 / 点按）：只关开关，组合保留 */
+function clearHotkey(target) {
+  stopHotkeyCapture()
+  const patch = clearHotkeyPatch(target)
+  if (patch) {
+    hotkeyError.value = ''
+    Object.assign(form.value, patch)
+  }
 }
 
 /** KeyA–KeyZ / Digit0–9 → 'a'–'z' / '0'–'9'；修饰键与其他键返回 null（旧版只支持字母数字主键） */
@@ -550,15 +584,7 @@ function handleHotkeyKeydown(event) {
     modifiers,
     key
   })
-  // 两个全局快捷键撞键时只会触发其中一个（后端同样会拒绝保存）
-  const conflict = findHotkeyConflict(form.value, target, next)
-  if (conflict) {
-    hotkeyError.value = `${next.display} 已用作${conflict.label}快捷键，请换一个`
-    stopHotkeyCapture()
-    return
-  }
-  hotkeyError.value = ''
-  form.value[target] = next
+  applyHotkeyCapture(target, next)
   stopHotkeyCapture()
 }
 
@@ -708,6 +734,8 @@ provide(SETTINGS_CTX, {
   deletePreset,
   hotkeyDisplay,
   isCapturingHotkey,
+  toggleHotkeyDisplay,
+  isCapturingToggleHotkey,
   panelHotkeyDisplay,
   isCapturingPanelHotkey,
   rewriteHotkeyDisplay,
@@ -715,6 +743,7 @@ provide(SETTINGS_CTX, {
   hotkeyError,
   startHotkeyCapture,
   resetHotkey,
+  clearHotkey,
   goSection
 })
 

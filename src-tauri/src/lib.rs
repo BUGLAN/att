@@ -328,7 +328,14 @@ fn start_hotkey_listener(
             .hotkeys
             .iter()
             .filter(|b| {
-                b.enabled && matches!(b.action, HotkeyAction::Record | HotkeyAction::ClipboardPanel | HotkeyAction::RewriteSelection)
+                b.enabled
+                    && matches!(
+                        b.action,
+                        HotkeyAction::Record
+                            | HotkeyAction::RecordToggle
+                            | HotkeyAction::ClipboardPanel
+                            | HotkeyAction::RewriteSelection
+                    )
             })
             .map(att_hotkey::HotkeySpec::from_binding)
             .collect()
@@ -346,10 +353,17 @@ fn start_hotkey_listener(
     match att_hotkey::listener::start(bindings, sink) {
         Ok(()) => {
             let settings = core.settings();
-            let combo = |action| settings.binding_of(action).map(|b| b.display(core.platform)).unwrap_or_default();
+            let combo = |action| {
+                settings
+                    .binding_of(action)
+                    .filter(|b| b.enabled)
+                    .map(|b| b.display(core.platform))
+                    .unwrap_or_else(|| "未设置".into())
+            };
             tracing::info!(
-                "全局快捷键已启用: 录音 {} / 剪贴板悬浮框 {} / 优化选中文本 {}",
+                "全局快捷键已启用: 按住录音 {} / 点按录音 {} / 剪贴板悬浮框 {} / 优化选中文本 {}",
                 combo(HotkeyAction::Record),
+                combo(HotkeyAction::RecordToggle),
                 combo(HotkeyAction::ClipboardPanel),
                 combo(HotkeyAction::RewriteSelection)
             );

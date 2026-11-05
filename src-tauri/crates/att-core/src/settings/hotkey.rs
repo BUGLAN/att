@@ -13,8 +13,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HotkeyAction {
-    /// 录音（点按=切换开始/停止；按住=按下开始松开结束）
+    /// 按住录音：按下开始、松开结束
     Record,
+    /// 点按录音：按一下开始、再按一下结束（长段口述不用一直按着）。
+    /// 与按住录音各有一条绑定，可以用不同的键；同一个键只能启用其中一种（撞键校验会拒绝）
+    RecordToggle,
     /// 显示/唤起主窗口（预留给 3c）
     ShowMainWindow,
     /// 唤起 / 收起剪贴板悬浮框（点按切换）
@@ -24,10 +27,24 @@ pub enum HotkeyAction {
 }
 
 impl HotkeyAction {
+    /// 动作对应的触发方式：按住录音是按住，其余（点按录音、剪贴板悬浮框、优化选中文本）都是点按。
+    pub fn trigger(self) -> TriggerMode {
+        match self {
+            HotkeyAction::Record => TriggerMode::Hold,
+            _ => TriggerMode::Toggle,
+        }
+    }
+
+    /// 是否是录音动作（按住 / 点按）。
+    pub fn is_record(self) -> bool {
+        matches!(self, HotkeyAction::Record | HotkeyAction::RecordToggle)
+    }
+
     /// 中文名（撞键提示等文案用）。
     pub fn label(self) -> &'static str {
         match self {
-            HotkeyAction::Record => "录音",
+            HotkeyAction::Record => "按住录音",
+            HotkeyAction::RecordToggle => "点按录音",
             HotkeyAction::ShowMainWindow => "显示主窗口",
             HotkeyAction::ClipboardPanel => "剪贴板悬浮框",
             HotkeyAction::RewriteSelection => "优化选中文本",
@@ -35,7 +52,7 @@ impl HotkeyAction {
     }
 }
 
-/// 触发模式（任务书要求 a 点按 / b 按住）。
+/// 触发模式：由动作决定（见 [`HotkeyAction::trigger`]），存盘字段只为兼容旧数据。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerMode {
@@ -167,6 +184,13 @@ impl HotkeyBinding {
                 modifiers: ModSet::new(false, true, false, false),
                 hid_key: hid_from_char('a'),
                 enabled: true,
+            },
+            // 点按录音默认不启用（快捷键为空）：组合与按住录音的默认值相同，用户录入新键后才启用
+            HotkeyAction::RecordToggle => Self {
+                action,
+                trigger: TriggerMode::Toggle,
+                enabled: false,
+                ..Self::default_binding(platform)
             },
             _ => Self { action, ..Self::default_binding(platform) },
         }
@@ -383,6 +407,16 @@ mod tests {
             assert!(!binding.same_combo(&other));
         }
         assert_eq!(serde_json::to_value(HotkeyAction::RewriteSelection).unwrap(), "rewrite_selection");
+    }
+
+    #[test]
+    fn 点按录音默认_未启用且触发方式为点按() {
+        let binding = HotkeyBinding::default_for(HotkeyAction::RecordToggle, Platform::Windows);
+        assert!(!binding.enabled, "默认快捷键为空，不和按住录音抢键");
+        assert_eq!(binding.trigger, TriggerMode::Toggle);
+        assert_eq!(HotkeyAction::RecordToggle.trigger(), TriggerMode::Toggle);
+        assert_eq!(HotkeyAction::Record.trigger(), TriggerMode::Hold);
+        assert_eq!(serde_json::to_value(HotkeyAction::RecordToggle).unwrap(), "record_toggle");
     }
 
     #[test]

@@ -37,7 +37,7 @@ const activeRecordingMode = ref('single')
 const currentSessionId = ref(null)
 const processedSegmentCount = ref(0)
 const streamingConnectionState = ref('idle')
-const sessionStatusText = ref('按住快捷键开始录音')
+const sessionStatusText = ref('按快捷键开始录音')
 
 let pollingTimer = null
 // 当前轮询绑定的 record_id：旧录音的后台优化事件不能停掉新录音的轮询
@@ -507,7 +507,7 @@ function resetRealtimeState() {
   liveTranscript.value = ''
   liveSegments.value = []
   livePhase.value = 'idle'
-  sessionStatusText.value = '按住快捷键开始录音'
+  sessionStatusText.value = '按快捷键开始录音'
 }
 
 function updateLiveTranscriptPreview() {
@@ -689,7 +689,7 @@ async function prepareRecordingEnvironment() {
     floatingSessionActive = false
     streamingAwaitingFinish = false
     livePhase.value = 'idle'
-    sessionStatusText.value = '按住快捷键开始录音'
+    sessionStatusText.value = '按快捷键开始录音'
 
     syncFloatingWindow({
       phase: 'error',

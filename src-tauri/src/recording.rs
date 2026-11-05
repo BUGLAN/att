@@ -10,6 +10,11 @@
 //! 任意非 Idle ─cancel→ Idle（cancelled；Optimizing 下取消的是优化，保留原文）
 //! ```
 //!
+//! 两种录音快捷键（可分键，同键时只能启用一种）：
+//! - 按住录音 [`HotkeyAction::Record`]：按下开始、松开结束；
+//! - 点按录音 [`HotkeyAction::RecordToggle`]：按一下开始、再按一下结束，长段口述不用一直按着。
+//!   点按开始的录音进行中，按一下任一录音键都结束它；按住键的松开只收尾按住开始的会话。
+//!
 //! 按住模式的松开先进 [`HOLD_RELEASE_GRACE`] 缓冲（继续收音），缓冲内重新按下就当没松开、继续本段；
 //! 到点才 stop。修饰键组合偶尔会被系统报告「抬起一下又按回」，零容忍的话说到一半就被打断。
 //!
@@ -32,7 +37,7 @@
 //! `recording:level`（音量 0..1）。
 
 use att_core::records::{Record, RecordStatus};
-use att_core::settings::hotkey::{HotkeyAction, TriggerMode};
+use att_core::settings::hotkey::HotkeyAction;
 use att_core::state::CoreState;
 use att_core::llm::cleaning;
 use att_core::llm::optimizer::{self, OptimizeEvent, OptimizeOutcome};
@@ -177,7 +182,43 @@ struct Active {
     user_cancelled: bool,
     /// 按住模式已松开、正处在松开缓冲里：(缓冲序号, 松开时刻)。重新按下时清掉，到点仍在才收尾
     pending_release: Option<(u64, Instant)>,
+    /// 由「按住录音」键开始：只有这种会话在松开时收尾；点按录音 / 界面按钮开始的会话不理会松开
+    held: bool,
     started: Instant,
+}
+
+/// 录音热键在当前相位下该做什么（纯逻辑，见 [`record_hotkey_step`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordHotkeyStep {
+    /// 开始新录音；`held` = 由按住录音键开始（松开时收尾）
+    Start { held: bool },
+    /// 按住键按下：在松开缓冲里就接着录，否则当普通按下（开始 / 录音中的自动重复被吞）
+    ResumeOrStart,
+    Stop,
+    /// 按住键松开：进松开缓冲，到点收尾
+    Release,
+    /// 收尾中按下：摇一下印章表示这下没生效
+    Nudge,
+    Ignore,
+}
+
+/// 两种录音快捷键的分派：
+/// - 按住录音：按下开始、松开收尾；但点按开始的录音进行中按下它 = 结束（按任一录音键都能停）；
+/// - 点按录音：空闲 / 优化中按下开始，录音中（不论哪种方式开始）按下结束，收尾中按下摇印章；
+/// - 按住键的松开只收尾按住开始的会话，其余松开一律忽略。
+fn record_hotkey_step(action: HotkeyAction, key_phase: KeyPhase, phase: Phase, held: bool) -> RecordHotkeyStep {
+    let recording = matches!(phase, Phase::Connecting | Phase::Recording);
+    match (action, key_phase) {
+        (HotkeyAction::Record, KeyPhase::Pressed) if recording && !held => RecordHotkeyStep::Stop,
+        (HotkeyAction::Record, KeyPhase::Pressed) => RecordHotkeyStep::ResumeOrStart,
+        (HotkeyAction::Record, KeyPhase::Released) if held => RecordHotkeyStep::Release,
+        (HotkeyAction::RecordToggle, KeyPhase::Pressed) => match phase {
+            Phase::Idle | Phase::Optimizing => RecordHotkeyStep::Start { held: false },
+            Phase::Connecting | Phase::Recording => RecordHotkeyStep::Stop,
+            Phase::Finalizing => RecordHotkeyStep::Nudge,
+        },
+        _ => RecordHotkeyStep::Ignore,
+    }
 }
 
 #[derive(Clone)]
@@ -244,7 +285,7 @@ impl Actor {
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Cmd>) {
         while let Some(cmd) = rx.recv().await {
             match cmd {
-                Cmd::Start => self.start().await,
+                Cmd::Start => self.start(false).await,
                 Cmd::Stop => self.stop("正在完成转写"),
                 Cmd::Cancel => self.cancel(),
                 Cmd::Hotkey(action, key_phase) => self.on_hotkey(action, key_phase).await,
@@ -301,29 +342,20 @@ impl Actor {
             }
             return;
         }
-        if action != HotkeyAction::Record {
-            return;
-        }
-        let trigger = self
-            .core
-            .settings()
-            .binding_of(HotkeyAction::Record)
-            .map(|b| b.trigger)
-            .unwrap_or(TriggerMode::Hold);
-        tracing::debug!("录音热键 {key_phase:?}（{trigger:?}），当前 {:?}", self.phase);
-        match (trigger, key_phase) {
-            (TriggerMode::Hold, KeyPhase::Pressed) => {
+        let held = self.active.as_ref().is_some_and(|a| a.held);
+        let step = record_hotkey_step(action, key_phase, self.phase, held);
+        tracing::debug!("录音热键 {action:?} {key_phase:?}，当前 {:?}（按住开始: {held}）→ {step:?}", self.phase);
+        match step {
+            RecordHotkeyStep::Start { held } => self.start(held).await,
+            RecordHotkeyStep::ResumeOrStart => {
                 if !self.resume_released() {
-                    self.start().await;
+                    self.start(true).await;
                 }
             }
-            (TriggerMode::Hold, KeyPhase::Released) => self.release_after_grace(),
-            (TriggerMode::Toggle, KeyPhase::Pressed) => match self.phase {
-                Phase::Idle | Phase::Optimizing => self.start().await,
-                Phase::Connecting | Phase::Recording => self.stop("正在完成转写"),
-                Phase::Finalizing => crate::floating::nudge(&self.app),
-            },
-            (TriggerMode::Toggle, KeyPhase::Released) => {}
+            RecordHotkeyStep::Stop => self.stop("正在完成转写"),
+            RecordHotkeyStep::Release => self.release_after_grace(),
+            RecordHotkeyStep::Nudge => crate::floating::nudge(&self.app),
+            RecordHotkeyStep::Ignore => {}
         }
     }
 
@@ -414,7 +446,8 @@ impl Actor {
         self.emit_state("error", json!({ "message": message }));
     }
 
-    async fn start(&mut self) {
+    /// 开始一段录音；`held` = 由「按住录音」键按下开始（松开时收尾）。
+    async fn start(&mut self, held: bool) {
         if self.phase == Phase::Optimizing {
             // 流式：上一段优化转入后台继续跑，直接开始新录音；单段：优化期间保持「处理中」，吞掉
             match self.optimizing.as_ref() {
@@ -510,6 +543,7 @@ impl Actor {
             timed_out: false,
             user_cancelled: false,
             pending_release: None,
+            held,
             started: Instant::now(),
         });
 
@@ -1334,8 +1368,43 @@ async fn multi_task(
 
 #[cfg(test)]
 mod tests {
-    use super::{counts_as_timeout, finalize_budget, quiet_end_reason, recorded_until, Mode, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS};
+    use super::{
+        counts_as_timeout, finalize_budget, quiet_end_reason, record_hotkey_step, recorded_until, Mode, Phase,
+        RecordHotkeyStep, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS,
+    };
+    use att_core::settings::hotkey::HotkeyAction::{ClipboardPanel, Record, RecordToggle};
+    use att_hotkey::KeyPhase::{Pressed, Released};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn 按住录音_按下开始_松开收尾() {
+        assert_eq!(record_hotkey_step(Record, Pressed, Phase::Idle, false), RecordHotkeyStep::ResumeOrStart);
+        assert_eq!(record_hotkey_step(Record, Pressed, Phase::Recording, true), RecordHotkeyStep::ResumeOrStart, "缓冲里重新按下 / 自动重复");
+        assert_eq!(record_hotkey_step(Record, Released, Phase::Recording, true), RecordHotkeyStep::Release);
+        assert_eq!(record_hotkey_step(Record, Released, Phase::Connecting, true), RecordHotkeyStep::Release);
+    }
+
+    #[test]
+    fn 点按录音_按一下开始_再按一下结束_松开不管() {
+        assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Idle, false), RecordHotkeyStep::Start { held: false });
+        assert_eq!(record_hotkey_step(RecordToggle, Released, Phase::Recording, false), RecordHotkeyStep::Ignore);
+        assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Recording, false), RecordHotkeyStep::Stop);
+        assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Connecting, false), RecordHotkeyStep::Stop);
+        assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Finalizing, false), RecordHotkeyStep::Nudge);
+        assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Optimizing, false), RecordHotkeyStep::Start { held: false });
+    }
+
+    #[test]
+    fn 两种录音键混用_任一键都能结束点按录音_松开只收尾按住录音() {
+        // 点按开始的录音里按一下按住键：按下即结束，随后的松开不再触发任何事
+        assert_eq!(record_hotkey_step(Record, Pressed, Phase::Recording, false), RecordHotkeyStep::Stop);
+        assert_eq!(record_hotkey_step(Record, Released, Phase::Finalizing, false), RecordHotkeyStep::Ignore);
+        assert_eq!(record_hotkey_step(Record, Released, Phase::Recording, false), RecordHotkeyStep::Ignore);
+        // 按住开始的录音里点一下点按键：同样结束
+        assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Recording, true), RecordHotkeyStep::Stop);
+        // 非录音动作不归这里管
+        assert_eq!(record_hotkey_step(ClipboardPanel, Pressed, Phase::Idle, false), RecordHotkeyStep::Ignore);
+    }
 
     #[test]
     fn 松开缓冲_吸收修饰键闪断_且不把缓冲算进录音时长() {
