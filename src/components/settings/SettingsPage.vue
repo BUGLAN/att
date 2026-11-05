@@ -780,10 +780,13 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 两栏：左侧二级导航随外层 .page-view 滚动时吸顶，右侧为当前分页 */
+/* 两栏：左侧二级导航随外层 .page-view 滚动时吸顶，右侧为当前分页。
+   内容列最宽 760px（再宽说明文字行太长），两栏整体在页面容器里水平居中，
+   宽窗口下不再贴左、右侧留出一块空白 */
 .settings-page {
   display: grid;
-  grid-template-columns: 216px minmax(0, 1fr);
+  grid-template-columns: 216px minmax(0, 760px);
+  justify-content: center;
   gap: var(--s-6);
   align-items: start;
 }
@@ -956,7 +959,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--s-4);
   min-width: 0;
-  max-width: 760px;
 }
 
 /* 内容列过窄（800px 窗口 + 展开的主侧栏只剩约 340px）时，
@@ -1008,7 +1010,7 @@ onUnmounted(() => {
 /* 最小窗口（800px）下侧栏仍在：导航收窄，内容区留足宽度 */
 @media (max-width: 1100px) {
   .settings-page {
-    grid-template-columns: 164px minmax(0, 1fr);
+    grid-template-columns: 164px minmax(0, 760px);
     gap: var(--s-4);
   }
 
