@@ -17,6 +17,7 @@ pub mod permissions;
 pub mod recording;
 pub mod tray;
 pub mod typing;
+pub mod window_icon;
 pub mod window_shape;
 
 use att_core::{migration, state::CoreState, Platform};
@@ -66,6 +67,10 @@ pub fn run() {
             // 进出全屏：全屏贴满屏幕不留圆角，退出后恢复
             if let tauri::WindowEvent::Resized(_) = event {
                 window_shape::apply(window);
+            }
+            // 跨屏换缩放：窗口图标换成新 DPI 对应的那一档
+            if let tauri::WindowEvent::ScaleFactorChanged { .. } = event {
+                window_icon::apply(window);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -182,6 +187,7 @@ pub fn run() {
                 .initialization_script(&init_script)
                 .build()?;
             window_shape::apply(&main.as_ref().window());
+            window_icon::apply(&main.as_ref().window());
 
             // 录音悬浮窗：预创建隐藏，由录音 Actor 直接驱动
             if let Err(error) = floating::create(app.handle()) {

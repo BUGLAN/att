@@ -79,6 +79,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Memory",
     # 主窗口圆角：Windows 11 DWM 窗口圆角偏好
     "Win32_Graphics_Dwm",
+    # 窗口图标按 DPI 取档：GetDpiForWindow / GetSystemMetricsForDpi + 从 exe 资源 LoadImageW
+    "Win32_UI_HiDpi",
+    "Win32_System_LibraryLoader",
 ] }
 # 录音期间系统静音：Core Audio IAudioEndpointVolume（COM 接口只在 windows crate 里）
 windows = { version = "0.62", features = [
