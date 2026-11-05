@@ -12,7 +12,8 @@
 #
 # 应用内更新：tauri.conf.json 开了 createUpdaterArtifacts，打包时用 Secrets 里的私钥给更新包签名
 # （TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD，公钥在 tauri.conf.json 的 plugins.updater），
-# tauri-action 上传 .sig 并生成 / 合并 latest.json（两个平台各写一份，后跑完的合并进同一个文件）；
+# tauri-action 上传 .sig 并生成 / 合并 latest.json（两个平台各写一份，后跑完的合并进同一个文件；
+# 补发时用 workflow_dispatch 指定已有标签，同名附件会被覆盖）；
 # 已安装的应用从 releases/latest/download/latest.json 读取新版本。缺少私钥时打包直接失败，不会发出没签名的版本。
 #
 # Release 标题只写版本号（如 v2.3.0）；版本说明取自注释标签的正文（标题行写版本号，正文按「新增 / 修改 / 修复」分节），
@@ -101,7 +102,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: 打包并发布
-        uses: tauri-apps/tauri-action@v0
+        # v1：附件以原文件名为 label，latest.json 按 label 找下载地址；v0 按文件名找，
+        # 而 GitHub 会删掉附件名里的中文（落墨_xxx → _xxx），v0 因此找不到签名、不生成 latest.json
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -111,7 +114,8 @@ jobs:
           tauriScript: npm run tauri
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: ${{ env.RELEASE_TAG }}
-          # productName 是中文，GitHub 会把附件名里的非 ASCII 字符替换掉：附件统一用拼音名
+          # productName 是中文，GitHub 会把附件名里的非 ASCII 字符删掉：附件统一用拼音名
+          # （[ext] 认得 .app.tar.gz / .exe.sig 这类复合扩展名，更新包与签名同名配对）
           releaseAssetNamePattern: Luomo_[version]_[arch][setup][ext]
           releaseBody: |
             ${{ steps.notes.outputs.body }}
@@ -125,7 +129,7 @@ jobs:
 
             本地识别模型不随包，按设置页「识别引擎」的提示下载。
           # 应用内更新清单：Windows 的通用条目指向 NSIS 安装包（MSI 安装的用户按 windows-x86_64-msi 条目走 MSI）
-          includeUpdaterJson: true
+          uploadUpdaterJson: true
           updaterJsonPreferNsis: true
           releaseDraft: false
           prerelease: false
