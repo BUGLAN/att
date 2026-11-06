@@ -5,12 +5,12 @@
 //! - 旧数据缺 `error`/`revision` 字段可读（serde 默认兜底）
 //! - revision 乐观锁：PUT 冲突返回 [`RecordError::Conflict`]（HTTP 409）
 
+use crate::storage::dir_index::DirIndex;
 use crate::storage::json_store;
 use crate::now_rfc3339;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex, MutexGuard};
 
 /// 记录状态机（与 Python app/records/models.py 一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,10 +130,13 @@ pub fn normalize_audio_rel(raw: &str) -> String {
 }
 
 /// 记录仓库：每记录一个 JSON 文件；目录级互斥串行化读-改-写。
+///
+/// 列表 / 搜索走内存索引（[`DirIndex`]）：整目录只在首次读取或目录有外部变化时扫描一次，
+/// 本仓库的写入在同一把锁下同步更新索引。单条读取（`get` 与读-改-写）仍以文件为准。
 pub struct RecordRepo {
     records_dir: PathBuf,
     audio_dir: PathBuf,
-    lock: Arc<Mutex<()>>,
+    index: Mutex<DirIndex<Record>>,
 }
 
 /// PUT /api/records/{id} 的更新载荷。
@@ -147,12 +150,75 @@ pub struct RecordUpdate {
     pub revision: Option<u64>,
 }
 
+/// 按 created_at 倒序排列（新的在前）。
+fn sort_records(records: &mut [Record]) {
+    records.sort_by_cached_key(|r| std::cmp::Reverse(r.sort_key()));
+}
+
+/// 写入成功后把这条记录同步进索引：已有则替换（created_at 变了才重排），没有则插入后重排。
+fn upsert(records: &mut Vec<Record>, record: &Record) {
+    match records.iter().position(|r| r.id == record.id) {
+        Some(index) if records[index].created_at == record.created_at => records[index] = record.clone(),
+        Some(index) => {
+            records[index] = record.clone();
+            sort_records(records);
+        }
+        None => {
+            records.push(record.clone());
+            sort_records(records);
+        }
+    }
+}
+
+/// 扫描记录目录（损坏条目跳过并计数——绝不因单条坏数据让列表 500）。
+fn scan_records(dir: &Path) -> (Vec<Record>, usize) {
+    let mut records = Vec::new();
+    let mut skipped = 0usize;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return (records, skipped),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        match json_store::read_json_file::<Record>(&path) {
+            Ok(record) if is_safe_identifier(&record.id) => records.push(record),
+            Ok(_) => {
+                skipped += 1;
+                tracing::warn!("记录 id 非法，跳过: {}", path.display());
+            }
+            Err(error) => {
+                skipped += 1;
+                tracing::error!("记录损坏，跳过: {} ({error})", path.display());
+            }
+        }
+    }
+    sort_records(&mut records);
+    (records, skipped)
+}
+
+/// 搜索命中判定（`q` 已转小写；空串视为全部命中）。
+fn matches_query(record: &Record, q: &str, search_type: &str) -> bool {
+    if q.is_empty() {
+        return true;
+    }
+    let hit = |text: &Option<String>| text.as_deref().map(|t| t.to_lowercase().contains(q)).unwrap_or(false);
+    match search_type {
+        "raw" => hit(&record.raw_text),
+        "optimized" => hit(&record.optimized_text),
+        _ => hit(&record.raw_text) || hit(&record.optimized_text),
+    }
+}
+
 impl RecordRepo {
     pub fn new(data_dir: &Path) -> Self {
+        let records_dir = data_dir.join("records");
         Self {
-            records_dir: data_dir.join("records"),
+            index: Mutex::new(DirIndex::new(records_dir.clone())),
+            records_dir,
             audio_dir: data_dir.join("audio").join("records"),
-            lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -181,6 +247,18 @@ impl RecordRepo {
         self.records_dir.join(format!("{id}.json"))
     }
 
+    fn guard(&self) -> MutexGuard<'_, DirIndex<Record>> {
+        self.index.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 锁内写一条记录并同步索引（写入前先核对目录是否有外部变化）。
+    fn write_locked(&self, index: &mut DirIndex<Record>, record: &Record) -> Result<(), RecordError> {
+        index.before_write();
+        json_store::write_json_atomic(&self.record_path(&record.id), record)?;
+        index.after_write(|records| upsert(records, record));
+        Ok(())
+    }
+
     /// 确保目录存在（首次启动）。
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.records_dir)?;
@@ -188,47 +266,25 @@ impl RecordRepo {
         Ok(())
     }
 
-    /// 读取全部记录（损坏条目跳过并计数——绝不因单条坏数据让列表 500）。
+    /// 读取全部记录（按 created_at 倒序；第二项为跳过的损坏条目数）。
     pub fn load_all(&self) -> (Vec<Record>, usize) {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.load_all_locked()
-    }
-
-    fn load_all_locked(&self) -> (Vec<Record>, usize) {
-        let mut records = Vec::new();
-        let mut skipped = 0usize;
-        let entries = match std::fs::read_dir(&self.records_dir) {
-            Ok(entries) => entries,
-            Err(_) => return (records, skipped),
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            match json_store::read_json_file::<Record>(&path) {
-                Ok(record) if is_safe_identifier(&record.id) => records.push(record),
-                Ok(_) => {
-                    skipped += 1;
-                    tracing::warn!("记录 id 非法，跳过: {}", path.display());
-                }
-                Err(error) => {
-                    skipped += 1;
-                    tracing::error!("记录损坏，跳过: {} ({error})", path.display());
-                }
-            }
-        }
-        records.sort_by(|a, b| b.sort_key().cmp(&a.sort_key()));
-        (records, skipped)
+        let mut index = self.guard();
+        index.refresh(scan_records);
+        (index.items().to_vec(), index.skipped())
     }
 
     /// GET /api/records：分页列表（裸数组响应 + 按 created_at 倒序）。
     pub fn list(&self, status: Option<&str>, limit: usize, offset: usize) -> Vec<Record> {
-        let (mut records, _) = self.load_all();
-        if let Some(status) = status {
-            records.retain(|r| r.status.as_str() == status);
-        }
-        records.into_iter().skip(offset).take(limit).collect()
+        let mut index = self.guard();
+        index.refresh(scan_records);
+        index
+            .items()
+            .iter()
+            .filter(|r| status.map(|s| r.status.as_str() == s).unwrap_or(true))
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect()
     }
 
     /// GET /api/records/search：文本 + 收藏搜索。
@@ -240,32 +296,17 @@ impl RecordRepo {
         page: usize,
         page_size: usize,
     ) -> (Vec<Record>, usize) {
-        let (records, _) = self.load_all();
         let q = query.to_lowercase();
-        let matched: Vec<Record> = records
-            .into_iter()
-            .filter(|r| {
-                if favorite_only && !r.is_favorite {
-                    return false;
-                }
-                if q.is_empty() {
-                    return true;
-                }
-                let haystack: Option<String> = match search_type {
-                    "raw" => r.raw_text.clone(),
-                    "optimized" => r.optimized_text.clone(),
-                    _ => match (&r.raw_text, &r.optimized_text) {
-                        (Some(raw), Some(opt)) => Some(format!("{raw}\n{opt}")),
-                        (Some(raw), None) => Some(raw.clone()),
-                        (None, Some(opt)) => Some(opt.clone()),
-                        _ => None,
-                    },
-                };
-                haystack.map(|t| t.to_lowercase().contains(&q)).unwrap_or(false)
-            })
+        let mut index = self.guard();
+        index.refresh(scan_records);
+        let matched: Vec<&Record> = index
+            .items()
+            .iter()
+            .filter(|r| !favorite_only || r.is_favorite)
+            .filter(|r| matches_query(r, &q, search_type))
             .collect();
         let total = matched.len();
-        let items = matched.into_iter().skip((page - 1) * page_size).take(page_size).collect();
+        let items = matched.into_iter().skip((page.max(1) - 1) * page_size).take(page_size).cloned().collect();
         (items, total)
     }
 
@@ -273,7 +314,7 @@ impl RecordRepo {
         if !is_safe_identifier(id) {
             return Err(RecordError::NotFound);
         }
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = self.guard();
         json_store::read_json_file::<Record>(&self.record_path(id)).map_err(|_| RecordError::NotFound)
     }
 
@@ -282,22 +323,20 @@ impl RecordRepo {
         record.revision = 0;
         record.created_at = now_rfc3339();
         record.updated_at = record.created_at.clone();
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut index = self.guard();
         std::fs::create_dir_all(&self.records_dir)?;
-        json_store::write_json_atomic(&self.record_path(&record.id), &record)?;
-        Ok(())
+        self.write_locked(&mut index, &record)
     }
 
     /// 保存（内部写，已持有锁或新建场景）。
     pub fn save(&self, record: &Record) -> Result<(), RecordError> {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        json_store::write_json_atomic(&self.record_path(&record.id), record)?;
-        Ok(())
+        let mut index = self.guard();
+        self.write_locked(&mut index, record)
     }
 
     /// PUT 更新：revision 乐观锁 + 字段应用 + revision 自增。
     pub fn update(&self, id: &str, update: RecordUpdate) -> Result<Record, RecordError> {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut index = self.guard();
         let path = self.record_path(id);
         let mut record: Record =
             json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
@@ -321,7 +360,7 @@ impl RecordRepo {
         }
         record.revision += 1;
         record.updated_at = now_rfc3339();
-        json_store::write_json_atomic(&path, &record)?;
+        self.write_locked(&mut index, &record)?;
         Ok(record)
     }
 
@@ -331,13 +370,13 @@ impl RecordRepo {
         if !is_safe_identifier(id) {
             return Err(RecordError::NotFound);
         }
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut index = self.guard();
         let path = self.record_path(id);
         let mut record: Record = json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
         mutate(&mut record);
         record.revision += 1;
         record.updated_at = now_rfc3339();
-        json_store::write_json_atomic(&path, &record)?;
+        self.write_locked(&mut index, &record)?;
         Ok(record)
     }
 
@@ -346,7 +385,7 @@ impl RecordRepo {
         if !is_safe_identifier(id) {
             return Err(RecordError::NotFound);
         }
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut index = self.guard();
         let path = self.record_path(id);
         let record: Record =
             json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
@@ -356,7 +395,9 @@ impl RecordRepo {
                 let _ = std::fs::remove_file(&audio);
             }
         }
+        index.before_write();
         std::fs::remove_file(&path).map_err(|_| RecordError::NotFound)?;
+        index.after_write(|records| records.retain(|r| r.id != id));
         Ok(())
     }
 
@@ -376,15 +417,14 @@ impl RecordRepo {
 
     /// 音频错位修复用（migration 模块）：按 id 直接改写 audio_path 字段。
     pub fn set_audio_path(&self, id: &str, audio_file_name: &str) -> Result<(), RecordError> {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut index = self.guard();
         let path = self.record_path(id);
         let mut record: Record =
             json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
         record.audio_path = audio_file_name.to_string();
         record.revision += 1;
         record.updated_at = now_rfc3339();
-        json_store::write_json_atomic(&path, &record)?;
-        Ok(())
+        self.write_locked(&mut index, &record)
     }
 }
 
@@ -405,9 +445,6 @@ pub fn new_record_id() -> String {
     let (r1, r2) = (rand(), rand());
     format!("rec-{millis:x}-{r1:08x}{r2:08x}")
 }
-
-/// 空索引占位：3a 不建派生索引（915 条全扫耗时可接受），3e 数据量增长后再引入。
-pub type RecordIndexPlaceholder = HashMap<String, ()>;
 
 #[cfg(test)]
 mod tests {
@@ -553,6 +590,37 @@ mod tests {
 
         let (_, fav_total) = repo.search("", "all", true, 1, 100);
         assert_eq!(fav_total, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 列表索引_随增改删同步() {
+        let (repo, dir) = repo("index");
+        repo.insert(sample("rec-1", "第一条")).unwrap();
+        assert_eq!(repo.list(None, 10, 0).len(), 1, "首次读取建立索引");
+
+        repo.insert(sample("rec-2", "第二条")).unwrap();
+        let mut ids: Vec<String> = repo.list(None, 10, 0).into_iter().map(|r| r.id).collect();
+        ids.sort();
+        assert_eq!(ids, ["rec-1", "rec-2"], "新增记录同步进索引");
+
+        repo.update("rec-1", RecordUpdate { is_favorite: Some(true), ..Default::default() }).unwrap();
+        let (favorites, total) = repo.search("", "all", true, 1, 10);
+        assert_eq!(total, 1);
+        assert_eq!(favorites[0].id, "rec-1", "更新后的字段同步进索引");
+        assert_eq!(favorites[0].revision, 1);
+
+        repo.patch("rec-2", |r| r.optimized_text = Some("整理后".into())).unwrap();
+        assert_eq!(repo.search("整理", "optimized", false, 1, 10).1, 1, "patch 同步进索引");
+
+        repo.delete("rec-2").unwrap();
+        let ids: Vec<String> = repo.list(None, 10, 0).into_iter().map(|r| r.id).collect();
+        assert_eq!(ids, ["rec-1"], "删除同步移出索引");
+
+        // 另一个仓库实例（如启动迁移）写入：目录变化后本实例重扫可见
+        let other = RecordRepo::new(&dir);
+        other.insert(sample("rec-3", "另一实例写入")).unwrap();
+        assert_eq!(repo.search("另一实例", "all", false, 1, 10).1, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

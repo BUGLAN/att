@@ -58,14 +58,15 @@ async fn list(State(state): Shared, Query(params): Query<ListParams>) -> Result<
     if !(1..=500).contains(&limit) {
         return Err(detail(StatusCode::UNPROCESSABLE_ENTITY, "limit 必须在 1~500 之间"));
     }
-    let (items, total) = state.core.clipboard.list_page(&ListQuery {
+    let query = ListQuery {
         query: params.query,
         item_type,
         favorite_only: params.favorite_only,
         pinned_only: params.pinned_only,
         offset: params.offset,
         limit,
-    });
+    };
+    let (items, total) = crate::blocking(move || state.core.clipboard.list_page(&query)).await.unwrap_or_default();
     if params.with_total {
         return Ok(Json(json!({ "items": items, "total": total })));
     }

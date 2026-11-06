@@ -149,6 +149,18 @@ pub async fn serve(
     Ok(port)
 }
 
+/// 同步存储调用挪到阻塞线程池执行：记录 / 剪贴板首次读取要整目录扫盘，不能占着异步工作线程。
+/// 任务 panic 时返回 `None`（调用方按空结果处理，并留日志）。
+pub(crate) async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::error!("存储任务异常退出: {error}");
+            None
+        }
+    }
+}
+
 /// 允许的来源判定：localhost / 127.0.0.1 任意端口、Tauri 自定义协议、null（file://）。
 fn is_allowed_origin(origin: &str) -> bool {
     origin == "null"
@@ -388,9 +400,10 @@ async fn records_list(
 ) -> Json<Value> {
     let limit = parse_usize(&params, "limit", 200, 1000);
     let offset = params.get("offset").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
-    let status = params.get("status").map(String::as_str);
+    let status = params.get("status").cloned();
+    let records = blocking(move || state.core.records.list(status.as_deref(), limit, offset)).await.unwrap_or_default();
     // 裸数组响应（契约：非 {items,total} 包装）
-    Json(serde_json::to_value(state.core.records.list(status, limit, offset)).unwrap_or_default())
+    Json(serde_json::to_value(records).unwrap_or_default())
 }
 
 async fn records_search(
@@ -398,12 +411,13 @@ async fn records_search(
     Query(params): Query<HashMap<String, String>>,
 ) -> Json<Value> {
     let query = params.get("q").cloned().unwrap_or_default();
-    let search_type = params.get("search_type").map(String::as_str).unwrap_or("all");
+    let search_type = params.get("search_type").cloned().unwrap_or_else(|| "all".into());
     let favorite_only = params.get("favorite_only").map(|v| v == "true" || v == "1").unwrap_or(false);
     let page = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
     let page_size = parse_usize(&params, "page_size", 100, 200);
 
-    let (items, total) = state.core.records.search(&query, search_type, favorite_only, page, page_size);
+    let (items, total) =
+        blocking(move || state.core.records.search(&query, &search_type, favorite_only, page, page_size)).await.unwrap_or_default();
     let total_pages = if total == 0 { 0 } else { (total + page_size - 1) / page_size };
     Json(json!({
         "items": serde_json::to_value(items).unwrap_or_default(),

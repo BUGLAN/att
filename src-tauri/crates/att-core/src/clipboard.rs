@@ -6,6 +6,7 @@
 //! - 图片路径一律解析到 `data/clipboard/images/` 内，越界拒绝（防借图片接口读任意文件）。
 
 use crate::records::is_safe_identifier;
+use crate::storage::dir_index::DirIndex;
 use crate::storage::json_store;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -168,14 +169,46 @@ fn build_summary(content: &str) -> String {
     single_line.chars().take(240).collect()
 }
 
+/// 剪贴板仓库：列表 / 去重 / 统计走内存索引（[`DirIndex`]），写入在同一把锁下同步索引；
+/// 单条读取仍以文件为准。
 pub struct ClipboardRepo {
     dir: PathBuf,
-    lock: Mutex<()>,
+    index: Mutex<DirIndex<ClipboardItem>>,
+}
+
+/// 扫描剪贴板目录（损坏条目跳过并计数）。
+fn scan_items(dir: &Path) -> (Vec<ClipboardItem>, usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return (Vec::new(), 0) };
+    let mut skipped = 0usize;
+    let items = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .filter_map(|path| match json_store::read_json_file::<ClipboardItem>(&path) {
+            Ok(item) => Some(item),
+            Err(error) => {
+                // 旧版这里静默吞异常（已知缺陷 #6），损坏文件必须可观测
+                skipped += 1;
+                tracing::warn!("跳过无法解析的剪贴板条目 {}: {error}", path.display());
+                None
+            }
+        })
+        .collect();
+    (items, skipped)
+}
+
+/// 写入成功后把条目同步进索引（已有则替换，没有则追加；顺序在列表时再排）。
+fn upsert(items: &mut Vec<ClipboardItem>, item: &ClipboardItem) {
+    match items.iter_mut().find(|i| i.id == item.id) {
+        Some(slot) => *slot = item.clone(),
+        None => items.push(item.clone()),
+    }
 }
 
 impl ClipboardRepo {
     pub fn new(data_dir: &Path) -> Self {
-        Self { dir: data_dir.join("clipboard"), lock: Mutex::new(()) }
+        let dir = data_dir.join("clipboard");
+        Self { index: Mutex::new(DirIndex::new(dir.clone())), dir }
     }
 
     pub fn images_dir(&self) -> PathBuf {
@@ -186,8 +219,8 @@ impl ClipboardRepo {
         is_safe_identifier(id).then(|| self.dir.join(format!("{id}.json")))
     }
 
-    fn guard(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.lock.lock().unwrap_or_else(|e| e.into_inner())
+    fn guard(&self) -> std::sync::MutexGuard<'_, DirIndex<ClipboardItem>> {
+        self.index.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn load(&self, id: &str) -> Option<ClipboardItem> {
@@ -195,27 +228,14 @@ impl ClipboardRepo {
         json_store::read_json_file(&path).ok()
     }
 
-    fn save(&self, item: &mut ClipboardItem) -> std::io::Result<()> {
+    /// 锁内保存并同步索引（刷新 updated_at；写入前先核对目录是否有外部变化）。
+    fn save(&self, index: &mut DirIndex<ClipboardItem>, item: &mut ClipboardItem) -> std::io::Result<()> {
         item.updated_at = now_iso();
         let path = self.item_path(&item.id).ok_or_else(|| std::io::Error::other("非法剪贴板条目 id"))?;
-        json_store::write_json_atomic(&path, item)
-    }
-
-    fn load_all(&self) -> Vec<ClipboardItem> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return Vec::new() };
-        entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
-            .filter_map(|path| match json_store::read_json_file::<ClipboardItem>(&path) {
-                Ok(item) => Some(item),
-                Err(error) => {
-                    // 旧版这里静默吞异常（已知缺陷 #6），损坏文件必须可观测
-                    tracing::warn!("跳过无法解析的剪贴板条目 {}: {error}", path.display());
-                    None
-                }
-            })
-            .collect()
+        index.before_write();
+        json_store::write_json_atomic(&path, item)?;
+        index.after_write(|items| upsert(items, item));
+        Ok(())
     }
 
     pub fn get(&self, id: &str) -> Option<ClipboardItem> {
@@ -226,11 +246,16 @@ impl ClipboardRepo {
     pub fn capture(&self, request: CaptureRequest) -> std::io::Result<ClipboardItem> {
         let normalized = normalize_text(&request.content);
         let hash = content_hash(&normalized);
-        let _guard = self.guard();
+        let mut index = self.guard();
         if !normalized.is_empty() {
-            let duplicate = self.load_all().into_iter().find(|item| {
-                (item.content_hash.is_empty() || item.content_hash == hash) && normalize_text(&item.content) == normalized
-            });
+            index.refresh(scan_items);
+            let duplicate = index
+                .items()
+                .iter()
+                .find(|item| {
+                    (item.content_hash.is_empty() || item.content_hash == hash) && normalize_text(&item.content) == normalized
+                })
+                .cloned();
             if let Some(mut item) = duplicate {
                 item.source = if request.source.is_empty() { item.source } else { request.source };
                 item.content_size = normalized.chars().count() as i64;
@@ -241,7 +266,7 @@ impl ClipboardRepo {
                 if let Some(metadata) = request.metadata {
                     item.metadata.extend(metadata);
                 }
-                self.save(&mut item)?;
+                self.save(&mut index, &mut item)?;
                 return Ok(item);
             }
         }
@@ -267,7 +292,7 @@ impl ClipboardRepo {
             metadata: request.metadata.unwrap_or_default(),
         };
         std::fs::create_dir_all(&self.dir)?;
-        self.save(&mut item)?;
+        self.save(&mut index, &mut item)?;
         Ok(item)
     }
 
@@ -284,26 +309,25 @@ impl ClipboardRepo {
             .map(|t| t.split(',').map(str::trim).filter(|t| !t.is_empty()).collect())
             .unwrap_or_default();
         let needle = query.query.as_deref().map(|q| q.trim().to_lowercase()).unwrap_or_default();
-        let mut items: Vec<ClipboardItem> = self
-            .load_all()
-            .into_iter()
+        let hit = |text: &str| text.to_lowercase().contains(&needle);
+        let mut index = self.guard();
+        index.refresh(scan_items);
+        let mut items: Vec<&ClipboardItem> = index
+            .items()
+            .iter()
             .filter(|item| !query.favorite_only || item.is_favorite)
             .filter(|item| !query.pinned_only || item.is_pinned)
             .filter(|item| types.is_empty() || types.contains(&item.item_type.as_str()))
-            .filter(|item| needle.is_empty() || format!("{} {} {}", item.title, item.summary, item.content).to_lowercase().contains(&needle))
+            .filter(|item| needle.is_empty() || hit(&item.title) || hit(&item.summary) || hit(&item.content))
             .collect();
-        items.sort_by(|a, b| {
-            b.is_pinned
-                .cmp(&a.is_pinned)
-                .then_with(|| parse_time(&b.updated_at).cmp(&parse_time(&a.updated_at)))
-        });
+        items.sort_by_cached_key(|item| std::cmp::Reverse((item.is_pinned, parse_time(&item.updated_at))));
         let total = items.len();
-        let page = items.into_iter().skip(query.offset).take(query.limit.max(1)).collect();
+        let page = items.into_iter().skip(query.offset).take(query.limit.max(1)).cloned().collect();
         (page, total)
     }
 
     pub fn update(&self, id: &str, request: UpdateRequest) -> std::io::Result<Option<ClipboardItem>> {
-        let _guard = self.guard();
+        let mut index = self.guard();
         let Some(mut item) = self.load(id) else { return Ok(None) };
         let content_changed = request.content.is_some();
         if let Some(content) = request.content {
@@ -328,18 +352,25 @@ impl ClipboardRepo {
         if let Some(pinned) = request.is_pinned {
             item.is_pinned = pinned;
         }
-        self.save(&mut item)?;
+        self.save(&mut index, &mut item)?;
         Ok(Some(item))
     }
 
     pub fn delete(&self, id: &str) -> bool {
         let Some(path) = self.item_path(id) else { return false };
-        let _guard = self.guard();
-        std::fs::remove_file(path).is_ok()
+        let mut index = self.guard();
+        index.before_write();
+        if std::fs::remove_file(path).is_err() {
+            return false;
+        }
+        index.after_write(|items| items.retain(|i| i.id != id));
+        true
     }
 
     pub fn stats(&self) -> Value {
-        let items = self.load_all();
+        let mut index = self.guard();
+        index.refresh(scan_items);
+        let items = index.items();
         let today = chrono::Local::now().date_naive();
         json!({
             "total": items.len(),
@@ -441,6 +472,7 @@ mod tests {
         assert_eq!(stats["today"], 2);
         assert_eq!(stats["pinned"], 1);
         assert!(repo.delete(&link.id));
+        assert_eq!(repo.stats()["total"], 1, "删除同步移出索引");
         assert!(!repo.delete("../etc/passwd"));
         let _ = std::fs::remove_dir_all(&dir);
     }
