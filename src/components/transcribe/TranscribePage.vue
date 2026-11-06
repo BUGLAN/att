@@ -49,9 +49,14 @@
 
         <label class="ui-search transcribe-path">
           <span class="ui-search-glyph" aria-hidden="true">{{ G.file }}</span>
+          <!-- 关掉拼写检查与自动替换：macOS「智能破折号」会把手打的 -- 改成 —，路径就对不上了 -->
           <input
             v-model.trim="filePath"
             type="text"
+            spellcheck="false"
+            autocorrect="off"
+            autocapitalize="off"
+            autocomplete="off"
             placeholder="或粘贴本地绝对路径，回车开始转写"
             aria-label="本地文件路径"
             :disabled="isBusy"
@@ -77,12 +82,12 @@
           </div>
           <BaseSelect :model-value="engine" :disabled="isBusy" aria-label="识别引擎" @update:model-value="pickEngine">
             <option
-              v-for="item in TRANSCRIBE_ENGINES"
+              v-for="item in engineOptions"
               :key="item.value"
               :value="item.value"
-              :disabled="item.value === 'doubao_asr' && !doubaoKeySet"
+              :disabled="item.disabled"
             >
-              {{ item.label }} · {{ item.tag }}{{ item.value === 'doubao_asr' && !doubaoKeySet ? '（未配置）' : '' }}
+              {{ item.label }} · {{ item.tag }}{{ item.badge ? `（${item.badge}）` : '' }}
             </option>
           </BaseSelect>
         </div>
@@ -154,8 +159,8 @@
       </div>
     </section>
 
-    <!-- 结果：下划线标签切视图，复制在右侧 -->
-    <section v-if="result" class="settings-section">
+    <!-- 结果：下划线标签切视图，复制在右侧；出结果时滚进视口 -->
+    <section v-if="result" ref="resultSection" class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">
           结果
@@ -226,15 +231,15 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useFileTranscribe } from '@/composables/useFileTranscribe'
 import { useElectron } from '@/composables/useElectron'
 import {
-  TRANSCRIBE_ENGINES,
   buildProofreadDiff,
-  formatDuration
+  formatDuration,
+  transcribeEngineOptions
 } from '@/composables/transcribe/fileTranscribeModel.mjs'
 import BaseSelect from '@/components/common/BaseSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
@@ -248,6 +253,7 @@ const {
   language,
   wantSegments,
   engine,
+  selectEngine,
   proofreadOn,
   proofreadModelId,
   proofreadBatchSegments,
@@ -270,25 +276,26 @@ const {
 const copied = ref(false)
 const activeResultTab = ref('text')
 
-// 豆包凭据态：设置页保存过的 Access Token（GET /api/settings 只回布尔）
-const doubaoKeySet = computed(() => Boolean(settingsStore.settings?.doubao_asr_api_key_set))
+// 引擎可用性：豆包看设置页是否保存过 Access Token（GET /api/settings 只回布尔）；
+// 本地引擎只知道设置里选中的那个（/api/health 的 local_engine）。不可用的置灰并给出原因，后端 409 兜底
+const engineOptions = computed(() => transcribeEngineOptions({
+  doubaoKeySet: Boolean(settingsStore.settings?.doubao_asr_api_key_set),
+  localEngine: settingsStore.runtimeStatus?.local_engine || null
+}))
+const currentEngine = computed(() => engineOptions.value.find((item) => item.value === engine.value))
 
-// 引擎选择：豆包未配置凭据时卡片置灰不可选（后端也会 409 兜底）
 function pickEngine(value) {
-  if (value === 'doubao_asr' && !doubaoKeySet.value) {
-    appStore.showToast('请先在设置页配置豆包 Access Token', { tone: 'info' })
+  const option = engineOptions.value.find((item) => item.value === value)
+  if (option?.disabled) {
+    appStore.showToast(option.hint, { tone: 'info' })
     return
   }
-  engine.value = value
+  selectEngine(value)
 }
 
 const fileName = computed(() => filePath.value.split(/[\\/]/).pop() || filePath.value)
-const engineDesc = computed(() => {
-  if (!doubaoKeySet.value && engine.value !== 'doubao_asr') {
-    return `${TRANSCRIBE_ENGINES.find((item) => item.value === engine.value)?.desc || ''} 豆包需先在设置页配置 Access Token。`
-  }
-  return TRANSCRIBE_ENGINES.find((item) => item.value === engine.value)?.desc || ''
-})
+// 选中的引擎不可用时直接说原因，否则一句介绍
+const engineDesc = computed(() => currentEngine.value?.hint || currentEngine.value?.desc || '')
 
 async function toggleProofread() {
   proofreadOn.value = !proofreadOn.value
@@ -332,6 +339,16 @@ const resultMeta = computed(() => {
 })
 
 const proofreadDiff = computed(() => buildProofreadDiff(result.value?.rawText || '', result.value?.text || ''))
+
+// 出结果（新转写完成 / 点了历史）后把结果区滚进视口：它排在转写选项下面，完成时常在视口外。
+// nearest：已在视口内就不动，结果比视口高时对齐顶部
+const resultSection = ref(null)
+watch(result, async (value) => {
+  if (!value) return
+  await nextTick()
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  resultSection.value?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'nearest' })
+})
 
 function formatSegmentTime(seconds) {
   const total = Math.max(0, Number(seconds) || 0)

@@ -15,6 +15,9 @@ import {
   normalizeTranscribeResult,
   buildProofreadDiff,
   splitSentences,
+  defaultTranscribeEngine,
+  transcribeEngineOptions,
+  FALLBACK_TRANSCRIBE_ENGINE,
   TRANSCRIBE_ENGINES
 } from '../src/composables/transcribe/fileTranscribeModel.mjs'
 
@@ -27,7 +30,7 @@ test('同步超时常量与契约一致（15 分钟）', () => {
 test('buildTranscribeRequest：正常构造 snake_case 请求体（M2 含 engine/proofread）', () => {
   assert.deepEqual(
     buildTranscribeRequest({ path: '/tmp/dv/abc.mp4', language: 'zh', wantSegments: false }),
-    { path: '/tmp/dv/abc.mp4', language: 'zh', want_segments: false, engine: 'whisper', proofread: false }
+    { path: '/tmp/dv/abc.mp4', language: 'zh', want_segments: false, engine: 'doubao_asr', proofread: false }
   )
   assert.deepEqual(
     buildTranscribeRequest({ path: ' /a/b.wav ', wantSegments: true, engine: 'qwen_asr' }),
@@ -35,7 +38,7 @@ test('buildTranscribeRequest：正常构造 snake_case 请求体（M2 含 engine
   )
 })
 
-test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法引擎回落 whisper', () => {
+test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法引擎回落豆包', () => {
   const request = buildTranscribeRequest({
     path: '/a/b.wav',
     proofread: true,
@@ -50,14 +53,58 @@ test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法�
   const bare = buildTranscribeRequest({ path: '/a/b.wav', proofread: true })
   assert.ok(!('proofread_model_id' in bare))
   assert.deepEqual(bare.proofread_options, { batch_segments: 40, context_chars: 200 })
-  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'gpt' }).engine, 'whisper')
+  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'gpt' }).engine, 'doubao_asr')
+  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'chatgpt_asr' }).engine, 'doubao_asr')
 })
 
-test('TRANSCRIBE_ENGINES：三引擎元数据齐备', () => {
+test('TRANSCRIBE_ENGINES：三引擎元数据齐备，不标「默认」，描述各一句话', () => {
   assert.deepEqual(
     TRANSCRIBE_ENGINES.map((item) => item.value),
-    ['whisper', 'qwen_asr', 'doubao_asr']
+    ['doubao_asr', 'whisper', 'qwen_asr']
   )
+  for (const item of TRANSCRIBE_ENGINES) {
+    assert.ok(!item.badge, `${item.value} 不再带「默认」标记`)
+    assert.equal(item.desc.match(/[。！？]/g)?.length, 1, `${item.value} 描述只有一句：${item.desc}`)
+  }
+  assert.doesNotMatch(TRANSCRIBE_ENGINES.find((item) => item.value === 'whisper').desc, /速度快|中文优化/)
+})
+
+test('defaultTranscribeEngine：跟随设置里的识别引擎，文件转写不支持时退到豆包', () => {
+  assert.equal(FALLBACK_TRANSCRIBE_ENGINE, 'doubao_asr')
+  assert.equal(defaultTranscribeEngine('doubao_asr'), 'doubao_asr')
+  assert.equal(defaultTranscribeEngine('whisper'), 'whisper')
+  assert.equal(defaultTranscribeEngine('qwen_asr'), 'qwen_asr')
+  assert.equal(defaultTranscribeEngine('chatgpt_asr'), 'doubao_asr')
+  assert.equal(defaultTranscribeEngine(undefined), 'doubao_asr')
+  assert.equal(defaultTranscribeEngine(''), 'doubao_asr')
+})
+
+test('transcribeEngineOptions：豆包未配置、当前本地引擎缺模型时置灰并给出原因', () => {
+  const byValue = (options) => Object.fromEntries(options.map((item) => [item.value, item]))
+
+  const ready = byValue(transcribeEngineOptions({ doubaoKeySet: true }))
+  assert.ok(Object.values(ready).every((item) => !item.disabled && !item.badge && !item.hint))
+
+  const noToken = byValue(transcribeEngineOptions({ doubaoKeySet: false }))
+  assert.equal(noToken.doubao_asr.disabled, true)
+  assert.equal(noToken.doubao_asr.badge, '未配置')
+  assert.match(noToken.doubao_asr.hint, /Access Token/)
+  assert.equal(noToken.whisper.disabled, false, '拿不到状态的本地引擎不标')
+
+  const missing = byValue(transcribeEngineOptions({
+    doubaoKeySet: true,
+    localEngine: { provider: 'whisper', available: false, error: '本地 Whisper 模型未安装', error_detail: '下载……' }
+  }))
+  assert.equal(missing.whisper.disabled, true)
+  assert.equal(missing.whisper.badge, '未安装')
+  assert.equal(missing.whisper.hint, '本地 Whisper 模型未安装，可在「设置 → 识别引擎」查看安装方法。')
+  assert.equal(missing.qwen_asr.disabled, false, 'local_engine 只描述设置里选中的那个本地引擎')
+
+  const loaded = byValue(transcribeEngineOptions({
+    doubaoKeySet: true,
+    localEngine: { provider: 'qwen_asr', available: true, loaded: true }
+  }))
+  assert.equal(loaded.qwen_asr.disabled, false)
 })
 
 test('splitSentences：按句切分并过滤空串', () => {
