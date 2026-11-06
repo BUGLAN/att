@@ -88,6 +88,12 @@ pub fn copy_selection() -> Result<Option<String>, String> {
 }
 
 /// 模拟系统粘贴快捷键（阻塞约 200ms，调用方放到阻塞线程）。
+/// 系统剪贴板的换代计数（macOS `NSPasteboard.changeCount` / Windows `GetClipboardSequenceNumber`）：
+/// 任何程序写一次剪贴板就变；读取很便宜，不碰剪贴板内容。其他平台返回 `None`。
+pub fn clipboard_change_count() -> Option<i64> {
+    platform::clipboard_change_count()
+}
+
 pub fn paste_active() -> Result<(), String> {
     std::thread::sleep(PASTE_DELAY);
     platform::paste()

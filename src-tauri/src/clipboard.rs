@@ -1,4 +1,4 @@
-//! 系统剪贴板后台监控：800ms 轮询，文本/图片去重入库。
+//! 系统剪贴板后台监控：800ms 轮询换代计数，变化后才读内容，文本/图片去重入库。
 //!
 //! - 文本：规范化（CRLF→LF、trim）后与上次观测比较，变化才入库；
 //! - 图片：先对原始 RGBA 做哈希判断是否变化（避免每次轮询都编码 PNG），变化后编码 PNG，
@@ -62,11 +62,20 @@ pub fn start(core: Arc<CoreState>) {
         }
         let mut clipboard: Option<arboard::Clipboard> = None;
         // 基线：启动时剪贴板里已有的内容不入库
+        let mut last_change = crate::desktop::clipboard_change_count();
         let mut last_observed = observe(&mut clipboard).map(|o| o.key).unwrap_or_default();
         tracing::info!("剪贴板监控已启动（{}ms 轮询）", POLL_INTERVAL.as_millis());
         loop {
             std::thread::sleep(POLL_INTERVAL);
+            // 先看换代计数：没变就不读内容。剪贴板里放着大图时，每次读取都要整图解码 + 哈希，
+            // 常驻轮询会持续占 CPU。拿不到计数的平台照旧每次读取。
+            let change = crate::desktop::clipboard_change_count();
+            if change.is_some() && change == last_change {
+                continue;
+            }
+            // 读失败（如 Windows 上剪贴板正被别的程序占用）时不推进计数，下一轮重试
             let Some(observation) = observe(&mut clipboard) else { continue };
+            last_change = change;
             if observation.key == last_observed {
                 continue;
             }
