@@ -109,8 +109,10 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
     let whisper = core.local_models.status(core, LocalKind::Whisper);
     let qwen = core.local_models.status(core, LocalKind::Qwen);
     let doubao_ready = crate::stt::doubao_config(core).ensure().is_ok();
+    // 只给一句结论 + 去哪看安装方法：完整的目录与命令在设置页（选中该引擎后折叠展示）
     let unavailable = |kind: LocalKind, status: &crate::stt::local::LocalStatus| {
-        TranscribeError::new(409, format!("{}不可用：{}", kind.label(), status.error.clone().unwrap_or_default()))
+        let summary = status.error.clone().unwrap_or_else(|| format!("{}不可用", kind.label()));
+        TranscribeError::new(409, format!("{summary}，可在「设置 → 识别引擎」选中它查看安装方法"))
     };
 
     match requested.trim().to_lowercase().as_str() {
@@ -563,6 +565,22 @@ mod tests {
         let audio = dir.join("a.MP3");
         std::fs::write(&audio, b"x").unwrap();
         assert!(validate_path(&format!("\"{}\"", audio.display())).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 引擎解析_本地模型缺失只回一句结论() {
+        let dir = std::env::temp_dir().join(format!("att-ft-engine-{}", uuid::Uuid::new_v4()));
+        let core = CoreState::init(&dir, crate::Platform::Macos).unwrap();
+        for (engine, summary) in [("whisper", att_whisper::MODEL_MISSING), ("qwen_asr", att_qwen::MODEL_MISSING)] {
+            let error = resolve_engine(&core, engine).unwrap_err();
+            assert_eq!(error.status, 409);
+            assert!(error.message.starts_with(summary), "{}", error.message);
+            assert!(!error.message.contains('\n'), "不带多行详情：{}", error.message);
+            assert!(error.message.chars().count() < 60, "{}", error.message);
+        }
+        assert_eq!(resolve_engine(&core, "doubao_asr").unwrap_err().status, 409, "新数据目录没有豆包凭据");
+        assert_eq!(resolve_engine(&core, "chatgpt_asr").unwrap_err().status, 422, "文件转写不支持 ChatGPT 听写");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

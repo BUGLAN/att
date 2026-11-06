@@ -56,9 +56,9 @@
           </div>
         </div>
 
-        <!-- 引擎不可用：一行原因 + 去设置 -->
+        <!-- 引擎不可用：一行结论 + 去设置（获取方式等详情只在设置页） -->
         <div v-if="notReadyReason" class="settings-note warn">
-          <span>{{ notReadyReason }}</span>
+          <span class="recorder-reason" :title="notReadyReason">{{ notReadyReason }}</span>
           <button class="ui-tbtn" type="button" @click="appStore.openSettings('asr')">
             <span class="ui-tbtn-glyph">{{ ACTION_GLYPHS.settings }}</span>去设置
           </button>
@@ -116,7 +116,7 @@ import { shouldAutoScroll } from '@/composables/recorder/streamScroll.mjs'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { ACTION_GLYPHS, SEALS, recorderSealState } from '@/components/common/glyphs.mjs'
 import { FAILURE_HOLD_MS, SUCCESS_HOLD_MS } from '@/components/floating/floatingView.mjs'
-import { providerLabel } from '@/components/settings/asrEngineStatus.mjs'
+import { hintSummary, providerLabel } from '@/components/settings/asrEngineStatus.mjs'
 import { recordHotkeySummary } from '@/components/settings/settingsHotkeys.mjs'
 
 const {
@@ -167,9 +167,11 @@ const buttonText = computed(() => {
   if (recordingButtonDisabled.value) return '识别引擎未就绪'
   return '开始录音'
 })
+// 计时只跟着本次录音走（录音 → 转写 / 优化 → 成 / 敗停留片刻）；回到待命即归零，不留上一段时长
 const formattedDuration = computed(() => {
-  const mins = Math.floor(duration.value / 60)
-  const secs = duration.value % 60
+  const seconds = sealState.value === 'idle' ? 0 : duration.value
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 })
 
@@ -342,13 +344,13 @@ const optimizeStatus = computed(() => {
   return { text: preset ? `优化 · ${preset}` : '自动优化', dot: 'ok' }
 })
 
-// 引擎不可用时给出可照做的原因（加载中不算不可用）
+// 引擎不可用时只给一句结论（加载中不算不可用）；后端偶有多行文案时只取首行，详情去设置页看
 const notReadyReason = computed(() => {
   if (isRecording.value || isProcessing.value || serviceLoading.value || !recordingButtonDisabled.value) {
     return ''
   }
   const runtime = settingsStore.runtimeStatus
-  return runtime.streaming_error || runtime.model_service_error || buttonText.value
+  return hintSummary(runtime.streaming_error || runtime.model_service_error) || buttonText.value
 })
 
 const showLivePanel = computed(() => (
@@ -510,6 +512,14 @@ watch(
 
 .recorder-status {
   white-space: normal;
+}
+
+/* 不可用原因只占一行，过长时省略（完整文字在 title 里） */
+.recorder-reason {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .recorder-wave {
