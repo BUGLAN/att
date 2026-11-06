@@ -196,7 +196,7 @@ mod tests {
         assert!(dir.join(".encryption_key").is_file());
         assert!(dir.join("records").is_dir());
         assert!(dir.join("audio").join("temp").is_dir());
-        assert_eq!(core.settings().asr_provider, "whisper");
+        assert_eq!(core.settings().asr_provider, "doubao_asr");
 
         // 更新设置 → 落盘 → 重载可见
         core.apply_settings_update(&json!({"asr_provider": "qwen_asr"})).unwrap();

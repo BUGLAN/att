@@ -246,7 +246,9 @@ fn engine_status(core: &CoreState) -> EngineStatus {
     if let Some(kind) = att_core::stt::local_kind(&settings.asr_provider) {
         let status = core.local_models.status(core, kind);
         let streaming_error = streaming.then(|| format!("{}暂不支持流式录音，请使用单段或多段录音模式", kind.label()));
-        let load_error = status.load_error.as_ref().map(|error| format!("{}加载失败：{error}", kind.label()));
+        // 这里只给一句结论（首页、侧栏、诊断页直接显示）；缺模型的获取方式、加载失败的原因
+        // 在 local_engine.error_detail / load_error 里，由设置页折叠展示
+        let load_error = status.load_error.as_ref().map(|_| format!("{}模型加载失败", kind.label()));
         let error = if status.available { load_error.clone() } else { status.error.clone() };
         return EngineStatus {
             ready: status.available && load_error.is_none() && !streaming,
@@ -308,6 +310,9 @@ fn engine_status(core: &CoreState) -> EngineStatus {
 }
 
 /// 本地引擎详情（设置页的「加载中 / 已加载 / 缺模型」提示用）；在线引擎为 `null`。
+///
+/// `error` 是一句结论；`error_detail` 是缺模型时的目录与获取方式（Tab 缩进行为命令）；
+/// `load_error` 是文件在、但加载失败时的完整原因。
 fn local_engine_payload(core: &CoreState) -> Value {
     let Some(kind) = att_core::stt::local_kind(&core.settings().asr_provider) else {
         return Value::Null;
@@ -320,6 +325,7 @@ fn local_engine_payload(core: &CoreState) -> Value {
         "loaded": status.loaded,
         "loading": status.loading,
         "error": status.error,
+        "error_detail": status.error_detail,
         "load_error": status.load_error,
         "model_dir": status.model_dir.as_ref().map(|path| path.display().to_string()),
         "device": status.device,

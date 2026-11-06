@@ -4,11 +4,13 @@
  * 纯逻辑全部在 transcribe/fileTranscribeModel.mjs（有 Node 用例），这里只做
  * Vue 状态与副作用的粘合；HTTP 走 api/client，桌面对话框走 useElectron。
  */
-import { ref, shallowRef } from 'vue'
+import { ref, shallowRef, watch } from 'vue'
 import { api } from '@/api/client'
 import { useElectron } from '@/composables/useElectron'
+import { useSettingsStore } from '@/stores/settings'
 import {
   buildTranscribeRequest,
+  defaultTranscribeEngine,
   isAsyncJobAccepted,
   isJobPollExpired,
   isSupportedMediaPath,
@@ -24,13 +26,15 @@ function sleep(ms) {
 
 export function useFileTranscribe() {
   const { openMediaFile, filePathForFile, clipboard } = useElectron()
+  const settingsStore = useSettingsStore()
 
   const filePath = ref('')
   const language = ref('zh')
   const wantSegments = ref(false)
-  // M2：引擎与 LLM 校对（设计 §7：UI 不暴露 auto，默认显式 whisper；校对默认关）
-  // 本地引擎（faster-whisper / Qwen3-ASR）已接入 Tauri 版，桌面端与网页端缺省一致
-  const engine = ref('whisper')
+  // 引擎默认跟随设置里的识别引擎（文件转写不支持的退到豆包）；用户在本页手动选过就不再跟随。
+  // UI 不暴露 auto；校对默认关
+  const engine = ref(defaultTranscribeEngine(settingsStore.settings.asr_provider))
+  let enginePicked = false
   const proofreadOn = ref(false)
   const proofreadModelId = ref('')
   const proofreadBatchSegments = ref(40)
@@ -64,6 +68,25 @@ export function useFileTranscribe() {
 
   // 每次 startTranscribe 自增；轮询循环发现 runId 变化即自行退出，防止旧轮询污染新请求
   let runSeq = 0
+
+  // 设置是异步加载的，之后用户也可能去设置页换引擎：没手动选过就一直跟随
+  watch(() => settingsStore.settings.asr_provider, (provider) => {
+    if (!enginePicked) {
+      engine.value = defaultTranscribeEngine(provider)
+    }
+  })
+
+  // 换引擎或换文件后，上一次的报错已经不适用，立即清掉。
+  // 同步触发：startTranscribe 在同一轮里先改路径再写新错误时，不能被延后的清理盖掉
+  watch([engine, filePath], () => {
+    error.value = ''
+  }, { flush: 'sync' })
+
+  /** 用户在下拉里手动选引擎：之后不再跟随设置。 */
+  function selectEngine(value) {
+    enginePicked = true
+    engine.value = value
+  }
 
   async function chooseFile() {
     error.value = ''
@@ -237,6 +260,7 @@ export function useFileTranscribe() {
     language,
     wantSegments,
     engine,
+    selectEngine,
     proofreadOn,
     proofreadModelId,
     proofreadBatchSegments,

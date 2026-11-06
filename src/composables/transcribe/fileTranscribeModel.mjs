@@ -22,39 +22,73 @@ export const JOB_POLL_MAX_DELAY_MS = 5000
 export const JOB_POLL_MAX_WAIT_MS = 15 * 60 * 1000
 
 /**
- * 引擎卡片元数据（与后端 engine 参数一一对应；UI 不暴露 auto，缺省即显式 whisper）。
+ * 识别引擎下拉的元数据（与后端 engine 参数一一对应；UI 不暴露 auto）。
+ * 文件转写只支持这三个引擎（后端 att-core transcribe::resolve_engine），ChatGPT 听写不在其中。
  */
 export const TRANSCRIBE_ENGINES = [
+  {
+    value: 'doubao_asr',
+    label: '豆包 · 实时大模型',
+    tag: '在线',
+    desc: '火山在线识别，质量高、不占本机算力，按音频时长计费。'
+  },
   {
     value: 'whisper',
     label: 'faster-whisper',
     tag: '本地',
-    badge: '默认',
-    desc: '速度快，中文优化。长文件分段转写。'
+    desc: '本机离线识别，需要先安装模型。'
   },
   {
     value: 'qwen_asr',
     label: 'Qwen3-ASR',
     tag: '本地',
-    desc: '多语种效果更好；长文件自动按 30s 窗口分块。'
-  },
-  {
-    value: 'doubao_asr',
-    label: '豆包 · 实时大模型',
-    tag: '在线',
-    desc: '火山在线识别，质量高、不吃本机算力；按音频时长计费。'
+    desc: '本机离线识别，多语种更好，需要先安装模型和推理库。'
   }
 ]
 
+/** 设置里的引擎不能用于文件转写（如 ChatGPT 听写）时退到的引擎。 */
+export const FALLBACK_TRANSCRIBE_ENGINE = 'doubao_asr'
+
+function isTranscribeEngine(value) {
+  return TRANSCRIBE_ENGINES.some((item) => item.value === value)
+}
+
+/**
+ * 转文字页的默认引擎：跟随设置里的 `asr_provider`；文件转写不支持时退到豆包。
+ */
+export function defaultTranscribeEngine(asrProvider) {
+  return isTranscribeEngine(asrProvider) ? asrProvider : FALLBACK_TRANSCRIBE_ENGINE
+}
+
+/**
+ * 引擎下拉选项 + 能低成本拿到的可用性：
+ * - 豆包：设置里没保存 Access Token（`doubao_asr_api_key_set`）即不可用；
+ * - 本地引擎：/api/health 的 `local_engine` 只描述设置里选中的那个本地引擎，
+ *   它报缺模型 / 推理库时标出原因；其余本地引擎拿不到状态，不标（提交时后端 409 兜底）。
+ * 返回 [{ value, label, tag, desc, disabled, badge, hint }]：badge 是下拉里的短标注，hint 是一句原因。
+ */
+export function transcribeEngineOptions({ doubaoKeySet = false, localEngine = null } = {}) {
+  return TRANSCRIBE_ENGINES.map((item) => {
+    if (item.value === 'doubao_asr' && !doubaoKeySet) {
+      return { ...item, disabled: true, badge: '未配置', hint: '豆包需要先在「设置 → 识别引擎」填写 Access Token。' }
+    }
+    if (localEngine && localEngine.provider === item.value && localEngine.available === false) {
+      const summary = String(localEngine.error || '').split('\n')[0].trim() || `${item.label} 模型未安装`
+      return { ...item, disabled: true, badge: '未安装', hint: `${summary}，可在「设置 → 识别引擎」查看安装方法。` }
+    }
+    return { ...item, disabled: false, badge: '', hint: '' }
+  })
+}
+
 /**
  * 构造 POST /api/transcribe 请求体（M2：engine + LLM 校对参数）。
- * 路径为空时返回 null（调用方据此提示，不发请求）。
+ * 路径为空时返回 null（调用方据此提示，不发请求）；引擎不在 {@link TRANSCRIBE_ENGINES} 里时退到豆包。
  */
 export function buildTranscribeRequest({
   path,
   language = 'zh',
   wantSegments = false,
-  engine = 'whisper',
+  engine = FALLBACK_TRANSCRIBE_ENGINE,
   proofread = false,
   proofreadModelId = null,
   proofreadBatchSegments = 40,
@@ -69,7 +103,7 @@ export function buildTranscribeRequest({
     path: trimmed,
     language: String(language || 'zh'),
     want_segments: Boolean(wantSegments),
-    engine: TRANSCRIBE_ENGINES.some((item) => item.value === engine) ? engine : 'whisper',
+    engine: defaultTranscribeEngine(engine),
     proofread: Boolean(proofread)
   }
 

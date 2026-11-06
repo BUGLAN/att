@@ -171,7 +171,9 @@ impl UserSettings {
     /// 按平台构造默认值（热键默认绑定随平台变化）。
     pub fn with_platform(platform: Platform) -> Self {
         Self {
-            asr_provider: "whisper".into(),
+            // 新装默认在线豆包：安装包不带本地模型，默认本地引擎会让首屏直接报「模型缺失」。
+            // 老用户 settings.json 里已有值，不受影响；缺这个键的旧文件按新默认值补齐
+            asr_provider: "doubao_asr".into(),
             asr_language: "zh".into(),
             asr_hotwords: Vec::new(),
             whisper_model: "large-v3".into(),
@@ -727,6 +729,22 @@ mod tests {
         let binding = settings.binding_of(HotkeyAction::Record).unwrap();
         assert_eq!(binding.display(Platform::Linux), "Ctrl+Shift+R");
         assert_eq!(binding.trigger, TriggerMode::Hold);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 加载_缺识别引擎时取新默认豆包_已有值保持不变() {
+        let dir = temp_dir("provider-default");
+        let path = dir.join("settings.json");
+        // 新装（没有 settings.json）与缺 asr_provider 的旧文件：都取新默认值
+        assert_eq!(UserSettings::load(&path, Platform::Macos).asr_provider, "doubao_asr");
+        std::fs::write(&path, json!({ "auto_optimize": true }).to_string()).unwrap();
+        assert_eq!(UserSettings::load(&path, Platform::Macos).asr_provider, "doubao_asr");
+        // 老用户选过的引擎（含旧默认 whisper）原样保留
+        for provider in ["whisper", "qwen_asr", "chatgpt_asr", "doubao_asr"] {
+            std::fs::write(&path, json!({ "asr_provider": provider }).to_string()).unwrap();
+            assert_eq!(UserSettings::load(&path, Platform::Windows).asr_provider, provider);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

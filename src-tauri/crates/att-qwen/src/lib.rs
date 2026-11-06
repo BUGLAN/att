@@ -81,6 +81,13 @@ pub struct Transcript {
     pub elapsed: f64,
 }
 
+/// 缺模型时错误文案的首行结论（首页、诊断页只显示这一句，命令留给设置页）。
+pub const MODEL_MISSING: &str = "本地 Qwen3-ASR 模型未安装";
+/// 缺 sherpa-onnx 推理库时错误文案的首行结论。
+pub const LIB_MISSING: &str = "本地 Qwen3-ASR 推理库未安装";
+/// sherpa-onnx 官方导出的 Qwen3-ASR 0.6B int8 模型包（Release `asr-models` 的 assets 名）。
+const MODEL_PACKAGE: &str = "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2";
+
 /// 模型目录是否像一份 sherpa-onnx Qwen3-ASR 导出（三个 onnx + tokenizer 目录）。
 pub fn looks_like_model_dir(path: &Path) -> bool {
     path.is_dir()
@@ -132,13 +139,19 @@ pub fn resolve_model_dir(config: &QwenConfig) -> Result<PathBuf, String> {
             return Ok(found.clone());
         }
     }
-    Err(format!(
-        "未找到本地 Qwen3-ASR 模型「{}」：请用下面命令下载并解压到 {}（可用环境变量 ATT_MODELS_DIR 指定根目录）：\n\
-         \twget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2\n\
-         \ttar xvf sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2 -C {}\n\
-         目录内需要 {} 与 tokenizer/",
+    tracing::debug!(
+        "未找到本地 Qwen3-ASR 模型「{}」，已尝试：{}",
         config.model,
-        config.models_dir.display(),
+        candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("、")
+    );
+    // 首行一句结论（首页只显示这一句）；Tab 缩进行是命令，前端排成代码块；路径带引号，
+    // 打包版模型目录在「Application Support」下，含空格
+    Err(format!(
+        "{MODEL_MISSING}\n\
+         用下面的命令下载并解压到模型目录：\n\
+         \twget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/{MODEL_PACKAGE}\n\
+         \ttar xvf {MODEL_PACKAGE} -C \"{}\"\n\
+         解压后的目录内需要 {} 与 tokenizer/。",
         config.models_dir.display(),
         MODEL_FILES.join("、"),
     ))
@@ -163,14 +176,17 @@ pub fn resolve_lib_dir(config: &QwenConfig) -> Result<PathBuf, String> {
         }
     }
     let package = library_package_name();
+    let target = config.models_dir.join("sherpa-onnx");
+    tracing::debug!(
+        "未找到 sherpa-onnx 推理库 {library}，已尝试：{}",
+        candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("、")
+    );
     Err(format!(
-        "未找到 sherpa-onnx 推理库（缺少 {}）：请把 sherpa-onnx 的共享库放到 {}（或用环境变量 ATT_SHERPA_ONNX_DIR 指定），例如：\n\
+        "{LIB_MISSING}\n\
+         缺少 {library}，用下面的命令下载到推理库目录：\n\
          \twget https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/{package}\n\
-         \tmkdir -p {} && tar xvf {package} --strip-components=2 -C {}",
-        library,
-        config.models_dir.join("sherpa-onnx").display(),
-        config.models_dir.join("sherpa-onnx").display(),
-        config.models_dir.join("sherpa-onnx").display(),
+         \tmkdir -p \"{dir}\" && tar xvf {package} --strip-components=2 -C \"{dir}\"",
+        dir = target.display(),
     ))
 }
 
@@ -486,12 +502,19 @@ mod tests {
         assert_eq!(resolve_model_dir(&config).unwrap(), scanned);
         let _ = std::fs::remove_dir_all(&root);
 
-        // 3) 缺失时提示可照做
+        // 3) 缺失时：首行一句结论，其后是 Tab 缩进的命令（路径带引号，兼容含空格的目录）
         let root = temp_dir("missing");
         let config = QwenConfig::new("Qwen/Qwen3-ASR-1.7B", &root);
         let error = resolve_model_dir(&config).unwrap_err();
-        assert!(error.contains("sherpa-onnx-qwen3-asr"), "{error}");
+        assert_eq!(error.lines().next(), Some(MODEL_MISSING), "{error}");
+        let commands: Vec<&str> = error.lines().filter(|line| line.starts_with('\t')).collect();
+        assert_eq!(commands.len(), 2, "{error}");
+        assert!(commands[0].contains("sherpa-onnx-qwen3-asr"), "{error}");
+        assert!(commands[1].contains(&format!("-C \"{}\"", root.display())), "{error}");
         assert!(error.contains("conv_frontend.onnx"), "{error}");
+        assert!(!error.contains("ATT_MODELS_DIR"), "{error}");
+        // 设置里的模型名是兼容字段（默认 1.7B，与实际用的 sherpa 0.6B int8 不符），不进文案
+        assert!(!error.contains("Qwen3-ASR-1.7B"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -499,7 +522,10 @@ mod tests {
     fn 推理库目录解析_默认_models_sherpa_onnx() {
         let root = temp_dir("lib");
         let config = QwenConfig::new("m", &root);
-        assert!(resolve_lib_dir(&config).is_err(), "没有库时就该报错");
+        let error = resolve_lib_dir(&config).unwrap_err();
+        assert_eq!(error.lines().next(), Some(LIB_MISSING), "没有库时就该报错，首行只放结论：{error}");
+        assert!(error.contains(library_file_name()), "{error}");
+        assert_eq!(error.lines().filter(|line| line.starts_with('\t')).count(), 2, "{error}");
         let lib = root.join("sherpa-onnx");
         std::fs::create_dir_all(&lib).unwrap();
         std::fs::write(lib.join(library_file_name()), b"x").unwrap();

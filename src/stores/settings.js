@@ -117,7 +117,7 @@ export const useSettingsStore = defineStore('settings', () => {
   let streamingServicePollPromise = null
 
   const settings = ref({
-    asr_provider: 'whisper',
+    asr_provider: 'doubao_asr',
     asr_language: 'zh',
     asr_hotwords: [],
     whisper_model: 'large-v3',

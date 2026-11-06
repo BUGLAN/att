@@ -127,22 +127,54 @@ pub fn model_candidates(model: &str, models_dir: &Path) -> Vec<PathBuf> {
     candidates
 }
 
-/// 解析出真正要加载的模型目录；都找不到时给出可直接照做的提示。
+/// 缺模型时错误文案的首行结论：首页、诊断页只显示这一句，详情（目录与获取方式）留给设置页。
+pub const MODEL_MISSING: &str = "本地 Whisper 模型未安装";
+
+/// 默认的模型存放目录（`models/faster_whisper`，也是 [`model_candidates`] 里最常见的布局）。
+pub fn default_model_dir(models_dir: &Path) -> PathBuf {
+    models_dir.join("faster_whisper")
+}
+
+/// 解析出真正要加载的模型目录。
+///
+/// 都找不到时返回「首行结论 + 详情」两段式文案（见 [`model_missing_hint`]）；
+/// 尝试过的候选路径只写 debug 日志，不进错误文案（空数据目录下有二十多条，用户看了也没法照做）。
 pub fn resolve_model_dir(config: &WhisperConfig) -> Result<PathBuf, String> {
     let candidates = model_candidates(&config.model, &config.models_dir);
-    for candidate in &candidates {
-        if looks_like_model_dir(candidate) {
-            return Ok(candidate.clone());
-        }
+    if let Some(found) = candidates.iter().find(|candidate| looks_like_model_dir(candidate)) {
+        return Ok(found.clone());
     }
-    Err(format!(
-        "未找到本地 Whisper 模型「{}」：已尝试 {}；请把 CTranslate2 模型目录放到 {}（可用环境变量 ATT_MODELS_DIR 指定根目录），\
-         或用 `ct2-transformers-converter --model openai/whisper-{} --output_dir models/faster_whisper --copy_files tokenizer.json preprocessor_config.json` 生成",
+    tracing::debug!(
+        "未找到本地 Whisper 模型「{}」，已尝试：{}",
         config.model,
-        candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("、"),
-        config.models_dir.display(),
-        config.model,
-    ))
+        candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("、")
+    );
+    Err(model_missing_hint(config))
+}
+
+/// 缺模型提示：首行是结论；其后非缩进行是说明，Tab 缩进行是目录（前端排成可复制的代码块）。
+///
+/// 只给安装包用户做得到的获取方式：从 Hugging Face 下载现成的 CTranslate2 模型放进模型目录。
+/// 设置里填的是目录路径时，直接指出那个目录不是有效模型。
+fn model_missing_hint(config: &WhisperConfig) -> String {
+    let model = config.model.trim();
+    let is_path = Path::new(model).is_absolute() || model.starts_with('.') || model.contains('\\');
+    if is_path {
+        return format!(
+            "{MODEL_MISSING}\n设置里的模型目录不是有效的 Whisper 模型（需要 model.bin 与 tokenizer.json）：\n\t{model}"
+        );
+    }
+    // `large-v3` / `Systran/faster-whisper-large-v3` 都归一成短名
+    let short = model.rsplit('/').next().unwrap_or(model);
+    let short = short.strip_prefix("faster-whisper-").unwrap_or(short);
+    let short = if short.is_empty() { "large-v3" } else { short };
+    format!(
+        "{MODEL_MISSING}\n\
+         下载 https://huggingface.co/Systran/faster-whisper-{short} 的全部文件，放到这个目录：\n\
+         \t{}\n\
+         目录内至少要有 model.bin 与 tokenizer.json。",
+        default_model_dir(&config.models_dir).display()
+    )
 }
 
 /// 缺 `preprocessor_config.json` 时按 Whisper 官方默认值补写一份。
@@ -499,13 +531,28 @@ mod tests {
     }
 
     #[test]
-    fn 模型目录解析_缺失时给出可执行提示() {
+    fn 模型目录解析_缺失时首行结论_详情只给目录与获取方式() {
         let root = temp_dir("missing");
         let config = WhisperConfig::new("large-v3", "cpu", &root);
         let error = resolve_model_dir(&config).unwrap_err();
-        assert!(error.contains("未找到本地 Whisper 模型"), "{error}");
-        assert!(error.contains("ATT_MODELS_DIR"), "{error}");
-        assert!(error.contains("ct2-transformers-converter"), "{error}");
+        let mut lines = error.lines();
+        assert_eq!(lines.next(), Some(MODEL_MISSING), "首行只放一句结论：{error}");
+        let detail = lines.collect::<Vec<_>>().join("\n");
+        assert!(detail.contains("Systran/faster-whisper-large-v3"), "{error}");
+        assert!(detail.contains(&format!("\t{}", default_model_dir(&root).display())), "目录单独成行便于复制：{error}");
+        // 候选路径清单、开发者工具与环境变量都不进文案
+        assert!(!error.contains("ct2-transformers-converter"), "{error}");
+        assert!(!error.contains("ATT_MODELS_DIR"), "{error}");
+        assert!(!error.contains("models--Systran"), "{error}");
+        // 发行版不带 CUDA，推理设备选项已移除：文案不提设备
+        assert!(!error.to_lowercase().contains("cuda") && !error.contains("设备"), "{error}");
+        assert!(error.chars().count() < 300, "文案应保持简短：{} 字", error.chars().count());
+
+        // 设置里填的是目录路径：指出那个目录
+        let config = WhisperConfig::new(root.join("my-model").display().to_string(), "cpu", &root);
+        let error = resolve_model_dir(&config).unwrap_err();
+        assert!(error.starts_with(MODEL_MISSING), "{error}");
+        assert!(error.contains("my-model"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

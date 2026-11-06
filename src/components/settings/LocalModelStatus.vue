@@ -1,11 +1,11 @@
 <template>
-  <!-- 本地引擎的模型状态行（极简：只有状态点、标题与一行说明，不放按钮；加载/重试靠点上方的引擎卡片） -->
+  <!-- 本地引擎的模型状态行：状态点 + 标题 + 一句结论；获取方式 / 失败原因折叠在下面，不放按钮（加载/重试靠点上方的引擎卡片） -->
   <div class="model-status" :class="`is-${view.state}`" role="status" aria-live="polite">
     <div class="model-status-head">
       <span class="model-status-dot" aria-hidden="true"></span>
       <div class="model-status-body">
         <span class="model-status-title">{{ view.title }}</span>
-        <span class="model-status-desc" :class="{ 'is-mono': view.state === 'ready' }">{{ hint.summary }}</span>
+        <span class="model-status-desc" :class="{ 'is-mono': view.state === 'ready' }">{{ view.message }}</span>
       </div>
     </div>
 
@@ -14,9 +14,14 @@
       <span class="model-status-bar"></span>
     </div>
 
-    <div v-if="hint.commands.length || hint.notes.length || view.tip" class="model-status-extra">
-      <pre v-if="hint.commands.length" class="model-status-code"><code>{{ hint.commands.join('\n') }}</code></pre>
-      <p v-for="note in hint.notes" :key="note" class="model-status-note">{{ note }}</p>
+    <div v-if="blocks.length || view.tip" class="model-status-extra">
+      <details v-if="blocks.length" class="model-status-more">
+        <summary>{{ view.detailLabel || '详情' }}</summary>
+        <template v-for="(block, index) in blocks" :key="index">
+          <pre v-if="block.type === 'code'" class="model-status-code"><code>{{ block.text }}</code></pre>
+          <p v-else class="model-status-note">{{ block.text }}</p>
+        </template>
+      </details>
       <p v-if="view.tip" class="model-status-note">{{ view.tip }}</p>
     </div>
   </div>
@@ -24,7 +29,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { splitHint } from './asrEngineStatus.mjs'
+import { hintBlocks } from './asrEngineStatus.mjs'
 
 defineOptions({ name: 'LocalModelStatus' })
 
@@ -36,7 +41,8 @@ const props = defineProps({
   }
 })
 
-const hint = computed(() => splitHint(props.view.message))
+// 详情按原顺序排成「说明 / 命令块」，命令单独成块便于复制
+const blocks = computed(() => hintBlocks(props.view.detail))
 </script>
 
 <style scoped>
@@ -143,6 +149,28 @@ const hint = computed(() => splitHint(props.view.message))
   margin: var(--s-1) 0 0;
   font-size: var(--fs-cap);
   color: var(--text-3);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* 折叠的详情：开关做成一行小字，展开后说明与命令按后端给的顺序排列 */
+.model-status-more {
+  margin-top: var(--s-1);
+}
+
+.model-status-more > summary {
+  width: fit-content;
+  font-size: var(--fs-cap);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.model-status-more > summary:hover {
+  color: var(--text-1);
+}
+
+.model-status-more[open] > summary {
+  margin-bottom: var(--s-1);
 }
 
 @keyframes model-status-sweep {

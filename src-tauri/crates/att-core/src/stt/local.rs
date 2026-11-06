@@ -291,14 +291,29 @@ pub struct LocalStatus {
     pub loaded: bool,
     /// 是否正在后台加载
     pub loading: bool,
-    /// 不可用原因（available=false 时给出可照做的提示）
+    /// 不可用原因（available=false 时）：只有一句结论，如「本地 Whisper 模型未安装」，
+    /// 首页、诊断页、录音与文件转写的报错都只用这一句
     pub error: Option<String>,
+    /// 不可用时的详情：模型目录与获取方式（Tab 缩进的行是命令），只在设置页折叠展示
+    pub error_detail: Option<String>,
     /// 当前设置下最近一次加载失败的原因（文件在、但模型/推理库加载不起来）
     pub load_error: Option<String>,
     /// 模型目录（可用时）
     pub model_dir: Option<PathBuf>,
     /// 设备描述（已加载时）
     pub device: Option<String>,
+}
+
+/// 把引擎 crate 的两段式错误拆成（首行结论, 详情）：详情为空时返回 `None`。
+///
+/// 引擎 crate 约定：首行一句结论，其后是说明与 Tab 缩进的命令（见 `att_whisper::resolve_model_dir`）。
+pub fn split_hint(error: &str) -> (String, Option<String>) {
+    let trimmed = error.trim_end();
+    match trimmed.split_once('\n') {
+        Some((summary, detail)) if !detail.trim().is_empty() => (summary.trim().to_string(), Some(detail.to_string())),
+        Some((summary, _)) => (summary.trim().to_string(), None),
+        None => (trimmed.trim().to_string(), None),
+    }
 }
 
 /// 设置指纹：这些键一变就要重载模型（与 `MODEL_RUNTIME_KEYS` 对齐）。
@@ -481,14 +496,18 @@ impl LocalModels {
             .as_ref()
             .filter(|(failed, fingerprint, _)| *failed == kind && *fingerprint == expected)
             .map(|(_, _, error)| error.clone());
-        let unavailable = |error: String| LocalStatus {
-            available: false,
-            loaded,
-            loading,
-            error: Some(error),
-            load_error: None,
-            model_dir: None,
-            device: None,
+        let unavailable = |error: String| {
+            let (summary, detail) = split_hint(&error);
+            LocalStatus {
+                available: false,
+                loaded,
+                loading,
+                error: Some(summary),
+                error_detail: detail,
+                load_error: None,
+                model_dir: None,
+                device: None,
+            }
         };
         match kind {
             LocalKind::Whisper => {
@@ -499,6 +518,7 @@ impl LocalModels {
                         loaded,
                         loading,
                         error: None,
+                        error_detail: None,
                         load_error,
                         model_dir: Some(dir),
                         device: self.device_of(kind),
@@ -516,6 +536,7 @@ impl LocalModels {
                         loaded,
                         loading,
                         error: None,
+                        error_detail: None,
                         load_error,
                         model_dir: Some(dir),
                         device: self.device_of(kind),
@@ -570,19 +591,28 @@ mod tests {
     }
 
     #[test]
-    fn 就绪性_缺模型时给出可照做提示() {
+    fn 就绪性_缺模型时结论一句_详情另给() {
         let (dir, core) = temp_core("status");
         let models = LocalModels::default();
         let status = models.status(&core, LocalKind::Whisper);
         assert!(!status.available);
         assert!(!status.loaded);
-        let error = status.error.unwrap();
-        assert!(error.contains("未找到本地 Whisper 模型"), "{error}");
+        assert_eq!(status.error.as_deref(), Some(att_whisper::MODEL_MISSING));
+        let detail = status.error_detail.unwrap();
+        assert!(detail.contains(&core.models_dir.display().to_string()), "详情给出模型目录：{detail}");
 
         let status = models.status(&core, LocalKind::Qwen);
         assert!(!status.available);
-        assert!(status.error.unwrap().contains("Qwen3-ASR"));
+        assert_eq!(status.error.as_deref(), Some(att_qwen::MODEL_MISSING));
+        assert!(status.error_detail.unwrap().lines().any(|line| line.starts_with("\twget ")), "命令保持 Tab 缩进");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 错误拆分_首行结论与详情() {
+        assert_eq!(split_hint("结论\n说明\n\tcmd\n"), ("结论".to_string(), Some("说明\n\tcmd".to_string())));
+        assert_eq!(split_hint("只有一句"), ("只有一句".to_string(), None));
+        assert_eq!(split_hint("结论\n  \n"), ("结论".to_string(), None));
     }
 
     #[test]
