@@ -1,6 +1,6 @@
 //! 内嵌数据面 API（axum，仅绑定 127.0.0.1，随机端口）。
 //!
-//! 阶段 3a 范围（架构文档 §13）：
+//! 端点一览：
 //! - GET /api/health（前端 runtimeStatus 契约：model_service_* 与 qwen_streaming_* 双命名）
 //! - GET/PUT /api/settings（白名单/脱敏契约保真）
 //! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出）

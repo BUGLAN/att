@@ -1,6 +1,6 @@
 //! 本地 Qwen3-ASR 引擎（ONNX 版，走 sherpa-onnx）。
 //!
-//! 与 Python 版的差异（取舍见 `docs/架构.md` §5、限制见 `docs/遗留与下线.md` §3）：
+//! 与 Python 版的差异：
 //!
 //! | Python（transformers/vLLM） | 本 crate（sherpa-onnx + ONNX） |
 //! | --- | --- |

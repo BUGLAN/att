@@ -1,10 +1,10 @@
 # ATT 质量门禁（前端）
 #
-# 用例全部是纯 Node 的静态/单元断言（纯函数、只读源码正则），不需要显示器、不需要 Rust 工具链，
+# 用例全部是纯 Node 的单元断言（纯函数），不需要显示器、不需要 Rust 工具链，
 # 因此用 ubuntu-latest 即可。
 #
 # Rust 侧（`cargo test --workspace`）依赖 CTranslate2 / sherpa-onnx 的本地编译与系统库，
-# 托管 runner 上构建代价过高，目前由本机测试与 release.yml 的打包流程覆盖（见 docs/遗留与下线.md §4）。
+# 托管 runner 上构建代价过高，目前由本机测试与 release.yml 的打包流程覆盖。
 
 name: CI
 

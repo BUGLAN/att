@@ -8,7 +8,7 @@
 # 构建耗时主要在本地 Whisper 引擎：att-whisper 依赖的 ct2rs 会用 CMake 从源码编译 CTranslate2
 # （Windows 上还有 oneDNN），首次约 20–40 分钟；rust-cache 缓存 target 后会快很多。
 # 两个平台都自带 CMake；Windows 的静态 CRT（+crt-static）由 src-tauri/.cargo/config.toml 提供。
-# 模型文件不随包（见 docs/遗留与下线.md §5），安装后在设置页按提示下载。
+# 模型文件不随包，安装后在设置页按提示下载。
 #
 # 应用内更新：tauri.conf.json 开了 createUpdaterArtifacts，打包时用 Secrets 里的私钥给更新包签名
 # （TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD，公钥在 tauri.conf.json 的 plugins.updater），
@@ -57,8 +57,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
     env:
-      # 打包只用 Tauri；旧 Electron 依赖仍在 devDependencies 里，跳过它的二进制下载
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - name: 检出代码

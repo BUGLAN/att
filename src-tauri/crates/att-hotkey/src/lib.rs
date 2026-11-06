@@ -1,4 +1,4 @@
-//! 全局热键平台后端抽象（架构文档 §4.6 / §6.3）。
+//! 全局热键平台后端抽象。
 //!
 //! 当前可用实现：[`listener`]——底层键盘监听（macOS CGEventTap / Windows WH_KEYBOARD_LL）
 //! + [`matcher`] 触发状态机（支持纯修饰键组合，如旧版默认的 Win+Alt）。

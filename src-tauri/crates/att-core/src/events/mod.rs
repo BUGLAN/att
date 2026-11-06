@@ -1,8 +1,8 @@
 //! 进程内事件总线（tokio broadcast）。
 //!
-//! 设计（架构文档 §4.7）：lagged 只影响 UI（可丢弃）；关键命令走
+//! 设计：lagged 只影响 UI（可丢弃）；关键命令走
 //! RecordingSessionActor 的 mpsc（3b 接入），不经本总线。
-//! Tauri 事件桥按「旧 WS 事件名」重放给前端（useWebSocket 的替代，D4）。
+//! Tauri 事件桥按「旧 WS 事件名」重放给前端（旧版 WebSocket 已移除）。
 
 use serde::Serialize;
 use tokio::sync::broadcast;

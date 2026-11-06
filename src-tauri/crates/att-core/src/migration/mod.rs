@@ -1,6 +1,6 @@
 //! 一次性迁移（首启动执行，幂等，产出报告写入 `data/migration-report.json`）。
 //!
-//! 步骤（架构文档 §8.4）：
+//! 步骤：
 //! 1. settings.json：剥离退役键；旧 `hotkey` + 旧 Electron userData 的
 //!    desktop-settings.json 合并为新版 `hotkeys[]`（desktop 端优先，它是旧桌面层真相源）
 //! 2. 音频错位修复（阶段① 缺陷 #3）：record.audio_path 指向存在的文件 →
