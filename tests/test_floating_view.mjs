@@ -72,6 +72,17 @@ test('结果态：成 / 敗 只剩印章，按各自时长收起', () => {
   assert.equal(error.cancellable, false)
 })
 
+test('没听到人声：敗 + 检查麦克风提示，不沿用识别出的杂音', () => {
+  // 后端（recording.rs no_voice_state → floating.rs）把这种收尾映射成 ok:false、text 为提示
+  const session = { previousText: 'Clean.' }
+  const view = deriveFloatingView({ phase: 'complete', text: '没有听到声音，检查麦克风', ok: false }, session)
+  assert.equal(view.glyph, '敗')
+  assert.equal(view.active, false)
+  assert.equal(view.detail, '没有听到声音，检查麦克风')
+  assert.equal(view.text, '', '识别出的杂音不再显示')
+  assert.equal(view.hideAfterMs, FAILURE_HOLD_MS)
+})
+
 test('未知相位回到待命：錄、不自动隐藏', () => {
   const idle = deriveFloatingView({})
   assert.equal(idle.glyph, '錄')

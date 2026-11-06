@@ -5,5 +5,16 @@
   <!-- 麦克风采集在 Rust 侧（cpal）进行；缺少该声明时 macOS 会直接终止访问麦克风的进程 -->
   <key>NSMicrophoneUsageDescription</key>
   <string>Audio to Text 需要使用麦克风进行语音转文字。</string>
+  <!--
+    界面只有中文：声明中文本地化，系统往菜单栏里自动加的项（编辑里的「开始听写」「表情与符号」、
+    窗口里的「全部最小化」「填充」「居中」等）和系统对话框才会显示中文；不声明时按英文显示。
+    菜单本身见 src/menu.rs。
+  -->
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh_CN</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>zh_CN</string>
+  </array>
 </dict>
 </plist>

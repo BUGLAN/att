@@ -14,6 +14,8 @@ pub mod clipboard_panel;
 pub mod commands;
 pub mod desktop;
 pub mod floating;
+#[cfg(target_os = "macos")]
+mod menu;
 pub mod permissions;
 pub mod recording;
 pub mod tray;
@@ -43,7 +45,11 @@ pub struct AppState {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // macOS：中文菜单栏代替 Tauri 的英文默认菜单（其他平台本就没有菜单栏，不动）
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(menu::build);
+    builder
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 二次启动：唤起主窗口（与旧版 second-instance 行为一致）
             show_main_window(app);
