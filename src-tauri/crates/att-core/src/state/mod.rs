@@ -37,6 +37,8 @@ pub struct CoreState {
     pub transcriber: crate::transcribe::FileTranscriber,
     /// 本地引擎常驻池（faster-whisper / Qwen3-ASR）
     pub local_models: crate::stt::local::LocalModels,
+    /// 在线引擎最近一次凭据验证结果（按凭据指纹失效，只在内存里）
+    pub credential_checks: crate::stt::verify::CredentialChecks,
     /// 提示词预设目录（prompts/*.txt；打包版由壳层改指向安装资源目录）
     pub prompts_dir: PathBuf,
     /// 当前应用版本（检查更新用）：默认取本 crate 版本（与工作区版本同步），壳层改为 Tauri 包版本
@@ -101,6 +103,7 @@ impl CoreState {
             optimizer: OptimizationHub::default(),
             transcriber: Default::default(),
             local_models: Default::default(),
+            credential_checks: Default::default(),
             prompts_dir: crate::prompts::resolve_dir(data_dir, None),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             updater: Arc::new(crate::update::Updater::new(data_dir)),

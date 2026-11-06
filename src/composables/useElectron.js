@@ -88,6 +88,8 @@ export function useElectron() {
     exportRecord: (id, format) => httpApi.exportRecord(id, format),
     getRecordAudio: (id) => httpApi.getRecordAudio(id),
     getHealth: (probeRuntime = false) => httpApi.getHealth(probeRuntime),
+    getAsrCredentialCheck: (provider) => httpApi.getAsrCredentialCheck(provider),
+    checkAsrCredential: (provider) => httpApi.checkAsrCredential(provider),
     getStreamingServiceStatus: () => httpApi.getStreamingServiceStatus(),
     startStreamingService: (waitUntilReady = true) => httpApi.startStreamingService(waitUntilReady),
     stopStreamingService: () => httpApi.stopStreamingService(),

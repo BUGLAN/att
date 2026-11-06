@@ -91,15 +91,38 @@ fn classify_status(status: u16, body: &str) -> String {
     }
 }
 
+/// 听写失败：上游 HTTP 状态（没走到 HTTP 层时为 `None`）+ 可执行的中文提示。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatGptError {
+    pub status: Option<u16>,
+    /// 403 是否是边缘风控返回的 HTML 页（风控拦截与「令牌无权限」要区别对待）
+    pub html: bool,
+    pub message: String,
+}
+
+impl ChatGptError {
+    fn local(message: impl Into<String>) -> Self {
+        Self { status: None, html: false, message: message.into() }
+    }
+}
+
 /// 上传一段 16k 单声道 WAV 并返回识别文本。
 pub async fn transcribe_wav(config: &ChatGptConfig, wav: Vec<u8>, language: &str) -> Result<String, String> {
-    config.ensure()?;
+    transcribe_wav_detailed(config, wav, language).await.map_err(|error| error.message)
+}
+
+/// 同 [`transcribe_wav`]，失败时保留 HTTP 状态（凭据验证据此区分「令牌无效」与「暂时失败」）。
+pub async fn transcribe_wav_detailed(config: &ChatGptConfig, wav: Vec<u8>, language: &str) -> Result<String, ChatGptError> {
+    config.ensure().map_err(ChatGptError::local)?;
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(config.timeout)
         .build()
-        .map_err(|e| format!("HTTP 客户端初始化失败：{e}"))?;
-    let file = reqwest::multipart::Part::bytes(wav).file_name("recording.wav").mime_str("audio/wav").map_err(|e| e.to_string())?;
+        .map_err(|e| ChatGptError::local(format!("HTTP 客户端初始化失败：{e}")))?;
+    let file = reqwest::multipart::Part::bytes(wav)
+        .file_name("recording.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| ChatGptError::local(e.to_string()))?;
     let mut form = reqwest::multipart::Form::new().part("file", file);
     let language = language.trim();
     if !language.is_empty() && !language.eq_ignore_ascii_case("auto") {
@@ -117,20 +140,22 @@ pub async fn transcribe_wav(config: &ChatGptConfig, wav: Vec<u8>, language: &str
     }
     tracing::info!(endpoint = %config.endpoint, "调用 ChatGPT 听写接口");
     let response = request.send().await.map_err(|error| {
-        if error.is_timeout() {
+        ChatGptError::local(if error.is_timeout() {
             "听写请求超时，请稍后重试".to_string()
         } else if error.is_connect() {
             format!("无法连接听写服务（{}），请检查网络或代理设置", config.endpoint)
         } else {
             "听写请求失败，请稍后重试".to_string()
-        }
+        })
     })?;
     let status = response.status().as_u16();
     let body = response.text().await.unwrap_or_default();
     if status != 200 {
-        return Err(classify_status(status, &body));
+        let html = body.trim_start().starts_with('<');
+        return Err(ChatGptError { status: Some(status), html, message: classify_status(status, &body) });
     }
-    let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| "听写接口返回了无法解析的响应（非 JSON）".to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|_| ChatGptError { status: Some(status), html: false, message: "听写接口返回了无法解析的响应（非 JSON）".into() })?;
     Ok(value.get("text").and_then(serde_json::Value::as_str).unwrap_or("").trim().to_string())
 }
 

@@ -5,6 +5,7 @@
 //! - [`hotwords`]：个人词表的归一化与 token 预算（目前只有豆包使用）
 //! - [`chatgpt`]：ChatGPT 听写（在线批量，不支持流式）
 //! - [`local`]：本地引擎装配与常驻池（faster-whisper / Qwen3-ASR，进程内推理）
+//! - [`verify`]：在线引擎凭据验证（握手 / 静音请求，区分「已配置」与「可用」）
 //!
 //! 在线引擎（豆包 / ChatGPT）凭据齐备即就绪；本地引擎要在后台线程加载模型（large-v3 在 CPU 上
 //! 要十几秒），所以 [`Engine::resolve`] 只校验模型文件、随即在后台预加载（[`preload_local`]），
@@ -16,6 +17,7 @@ pub mod doubao;
 pub mod hotwords;
 pub mod local;
 pub mod sauc;
+pub mod verify;
 
 use crate::state::CoreState;
 use local::LocalKind;

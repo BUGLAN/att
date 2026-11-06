@@ -69,7 +69,9 @@ import { useSettingsStore } from '@/stores/settings'
 import { useSettings, usePresets } from '@/composables/useSettings'
 import { resolveDefaultPresetId, resolveRewritePresetId, suggestNewName } from './presetLogic.mjs'
 import { useElectron } from '@/composables/useElectron'
-import { hasPendingSettingsEdits } from './settingsFormSync.mjs'
+import { hasPendingSettingsEdits, serverOwnedPatch } from './settingsFormSync.mjs'
+import { isOnlineProvider, needsCredentialCheck } from './onlineEngineStatus.mjs'
+import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
 import { captureHotkey, clearHotkey as clearHotkeyPatch, isHotkeyEnabled } from './settingsHotkeys.mjs'
 import { SETTINGS_CTX } from './settingsContext.js'
@@ -133,6 +135,7 @@ function writeStoredSection(id) {
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const { settings, saveSettings } = useSettings()
+const credential = useAsrCredentialCheck()
 const { presets, defaultPresetId, loadPresets, setDefaultPreset } = usePresets()
 const { syncDesktopSettings, syncInputSettings, platform, isDesktop, listAudioDevices } = useElectron()
 
@@ -601,6 +604,8 @@ async function handleSave() {
   }
 
   isSavingSettings.value = true
+  // 保存前的服务端设置：用来判断这次是否换了在线引擎的凭据（换了就重新验证）
+  const previous = { ...settings.value }
 
   try {
     await saveSettings(payload, { silent: true })
@@ -611,7 +616,13 @@ async function handleSave() {
     form.value.doubao_asr_api_key_clear = false
     form.value.chatgpt_asr_api_key = ''
     form.value.chatgpt_asr_api_key_clear = false
+    Object.assign(form.value, serverOwnedPatch(settings.value))
     lastSavedSettingsSnapshot.value = serializeSettingsPayload(buildSettingsPayload())
+
+    // 填了新 Token、改了 Resource ID / 接入点或换了在线引擎：后台做一次真实验证，不阻塞保存
+    if (needsCredentialCheck(payload, previous) && serverOwnedPatch(settings.value)[`${payload.asr_provider}_api_key_set`]) {
+      credential.verify(payload.asr_provider)
+    }
 
     const inputSyncResult = await syncInputSettings({
       hotkey: payload.hotkey
@@ -672,6 +683,8 @@ watch(settings, (value) => {
       draftSnapshot: serializeSettingsPayload(buildSettingsPayload()),
       savedSnapshot: lastSavedSettingsSnapshot.value
     })) {
+      // 不重建表单，但「密钥是否已保存」只由服务端维护，必须照常跟随（见 serverOwnedPatch）
+      Object.assign(form.value, serverOwnedPatch(value))
       return
     }
 
@@ -772,6 +785,12 @@ onMounted(async () => {
 
   isInitialized.value = true
   window.addEventListener('keydown', handleHotkeyKeydown, true)
+
+  // 启动时验证一次当前在线引擎的凭据（豆包只握手不推音频），首页的「已就绪」才可信
+  const provider = settings.value.asr_provider
+  if (isOnlineProvider(provider) && serverOwnedPatch(settings.value)[`${provider}_api_key_set`]) {
+    credential.verify(provider)
+  }
 })
 
 onUnmounted(() => {

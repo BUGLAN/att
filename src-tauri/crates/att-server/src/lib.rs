@@ -6,13 +6,15 @@
 //! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出）
 //! - /api/prompts：列出（内置 + 自定义）、新建 / 修改 / 删除自定义预设、PUT /api/prompts/default 设默认
 //! - /api/llm/* LLM v2 全套（服务商目录 / 档案 / 模型 / 验证，见 [`llm`]）
-//! - 模型服务三端点（在线引擎凭据配齐即就绪）
+//! - 模型服务三端点（在线引擎凭据配齐即就绪；凭据验证确定失败时不就绪）
+//! - /api/asr/credential-check：在线引擎凭据验证（见 [`asr`]）
 //! - /api/update：检查更新与安装包下载（见 [`update`]）
 //! - 录音由 Rust 录音 Actor 直接完成（Tauri 命令），没有录音上传 / 多段会话类 HTTP 端点
 //!
 //! 两个 WebSocket 端点（/api/ws、/api/asr/stream）按 D4 决策**移除**：
 //! 事件改由 Tauri events 下发（旧事件名重放）。
 
+mod asr;
 mod clipboard;
 mod llm;
 mod transcribe;
@@ -79,6 +81,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .merge(clipboard::routes())
         // 本地文件转写
         .merge(transcribe::routes())
+        // 在线识别引擎凭据验证
+        .merge(asr::routes())
         // 检查更新（设置页「关于」）
         .merge(update::routes())
         .layer(cors)
@@ -255,7 +259,20 @@ fn engine_status(core: &CoreState) -> EngineStatus {
             loading: status.loading,
         };
     }
+    // 凭据验证「确定不可用」（Token 无效、Resource ID 不符、接入点不存在）时不报就绪；
+    // 没验过或只是没验成（网络等）按凭据齐备处理，不拦录音
+    let invalid = att_core::stt::verify::invalid_reason(core, &settings.asr_provider);
     match att_core::stt::Engine::online_from_settings(core) {
+        Ok(engine) if invalid.is_some() => EngineStatus {
+            ready: false,
+            error: invalid.map(|reason| format!("{}凭据验证失败：{reason}", engine.label())),
+            streaming_supported: false,
+            streaming_available: false,
+            streaming_backend: None,
+            mode: "online",
+            running: false,
+            loading: false,
+        },
         Err(message) => EngineStatus {
             ready: false,
             error: Some(message),

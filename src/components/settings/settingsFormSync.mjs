@@ -32,3 +32,23 @@ export function hasPendingSettingsEdits({ initialized, draftSnapshot, savedSnaps
 
   return draftSnapshot !== savedSnapshot
 }
+
+/**
+ * 只由服务端维护、不进提交载荷的表单字段：密钥「是否已保存」。
+ *
+ * 背景（真实踩坑）：保存带 Token 的设置时，store 写回服务端结果会先于 handleSave 清空明文 Token，
+ * 此时表单与快照不一致，watch(settings) 按「有未提交改动」跳过重建，而这两个字段又不在快照里，
+ * 之后再也不会被刷新——卡片一直显示「未配置」，直到重启应用。
+ */
+export const SERVER_OWNED_FIELDS = Object.freeze(['doubao_asr_api_key_set', 'chatgpt_asr_api_key_set'])
+
+/**
+ * 从服务端设置取出 {@link SERVER_OWNED_FIELDS} 的最新值（缺字段按「未保存」处理）。
+ * 有未提交改动时也要照常写回表单：它们不影响快照，不会触发多余的保存。
+ *
+ * @param {object} serverSettings GET / PUT /api/settings 的响应（或 store 里的 settings）
+ * @returns {Record<string, boolean>}
+ */
+export function serverOwnedPatch(serverSettings) {
+  return Object.fromEntries(SERVER_OWNED_FIELDS.map((key) => [key, Boolean(serverSettings?.[key])]))
+}

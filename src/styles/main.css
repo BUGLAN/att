@@ -1511,6 +1511,11 @@ textarea:focus-visible {
   border-color: var(--warn-line);
 }
 
+.settings-note.err {
+  background: var(--err-soft);
+  border-color: var(--err-line);
+}
+
 .settings-advanced {
   margin-top: var(--s-2);
 }

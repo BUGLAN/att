@@ -82,6 +82,9 @@
           </div>
           <BaseInput v-model.trim="form.doubao_asr_api_key" type="password" autocomplete="new-password" placeholder="请输入 Access Token" aria-label="Access Token" />
         </div>
+        <div v-if="doubaoNote" class="settings-note" :class="doubaoNote.tone" role="status">
+          <span>{{ doubaoNote.text }}</span>
+        </div>
         <div v-if="form.doubao_asr_api_key_set" class="setting-item">
           <div class="setting-info">
             <span class="setting-label">清除已保存的 Token</span>
@@ -137,6 +140,9 @@
           </div>
           <BaseInput v-model.trim="form.chatgpt_asr_api_key" type="password" autocomplete="new-password" placeholder="粘贴 ChatGPT 访问令牌（可带 Bearer 前缀）" aria-label="访问令牌" />
         </div>
+        <div v-if="chatgptNote" class="settings-note" :class="chatgptNote.tone" role="status">
+          <span>{{ chatgptNote.text }}</span>
+        </div>
         <div v-if="form.chatgpt_asr_api_key_set" class="setting-item">
           <div class="setting-info">
             <span class="setting-label">清除已保存的令牌</span>
@@ -184,17 +190,6 @@
             <option value="large-v3">large-v3</option>
           </BaseSelect>
         </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">推理设备</span>
-            <span class="setting-desc">自动会优先使用 CUDA，否则回退 CPU。</span>
-          </div>
-          <BaseSelect v-model="form.whisper_device" aria-label="Whisper 推理设备">
-            <option value="auto">自动</option>
-            <option value="cuda">CUDA</option>
-            <option value="cpu">CPU</option>
-          </BaseSelect>
-        </div>
       </div>
     </section>
 
@@ -202,38 +197,10 @@
       <div class="settings-group">
         <h3 class="settings-group-title">Qwen3-ASR · 本地模型</h3>
         <LocalModelStatus :view="localView" />
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">模型</span>
-            <span class="setting-desc">支持 Hugging Face 模型名或本地模型目录。</span>
-          </div>
-          <BaseInput v-model.trim="form.qwen_asr_model" type="text" placeholder="Qwen/Qwen3-ASR-1.7B" aria-label="Qwen3-ASR 模型" />
-        </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">推理设备</span>
-            <span class="setting-desc">自动会优先尝试 CUDA，否则回退 CPU。</span>
-          </div>
-          <BaseSelect v-model="form.qwen_asr_device" aria-label="Qwen 推理设备">
-            <option value="auto">自动</option>
-            <option value="cuda:0">CUDA:0</option>
-            <option value="cpu">CPU</option>
-          </BaseSelect>
-        </div>
+        <!-- 模型目录自动查找（models/ 下的 Qwen3-ASR ONNX），推理固定走 CPU；
+             旧版的设备 / dtype / 时间戳 / 强制对齐器选项在 Rust 引擎里没有作用，已从界面移除（字段保留兼容旧数据） -->
         <details class="settings-advanced">
-          <summary>高级：精度、输出长度、时间戳</summary>
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">dtype</span>
-              <span class="setting-desc">默认自动推断；显存紧张时可手动调整。</span>
-            </div>
-            <BaseSelect v-model="form.qwen_asr_dtype" aria-label="Qwen dtype">
-              <option value="auto">自动</option>
-              <option value="bfloat16">bfloat16</option>
-              <option value="float16">float16</option>
-              <option value="float32">float32</option>
-            </BaseSelect>
-          </div>
+          <summary>高级：输出长度、音频长度上限</summary>
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">最大输出 token</span>
@@ -247,33 +214,6 @@
               <span class="setting-desc">秒。单次送入模型的音频上限。</span>
             </div>
             <BaseInput v-model.number="form.qwen_asr_max_audio_seconds" type="number" min="5" max="600" step="5" aria-label="音频长度上限" />
-          </div>
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">返回时间戳</span>
-              <span class="setting-desc">开启后返回更细粒度的时间信息，代价是更重的推理链路。</span>
-            </div>
-            <label class="toggle-switch">
-              <input v-model="form.qwen_asr_return_timestamps" type="checkbox" aria-label="返回时间戳">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-          <div v-if="form.qwen_asr_return_timestamps" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">启用强制对齐器</span>
-              <span class="setting-desc">进一步细化时间戳，但会显著增加显存和加载时间。</span>
-            </div>
-            <label class="toggle-switch">
-              <input v-model="form.qwen_asr_use_forced_aligner" type="checkbox" aria-label="启用强制对齐器">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-          <div v-if="form.qwen_asr_return_timestamps && form.qwen_asr_use_forced_aligner" class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">强制对齐器模型</span>
-              <span class="setting-desc">默认使用 Qwen/Qwen3-ForcedAligner-0.6B，也可改为本地目录。</span>
-            </div>
-            <BaseInput v-model.trim="form.qwen_asr_forced_aligner_model" type="text" placeholder="Qwen/Qwen3-ForcedAligner-0.6B" aria-label="强制对齐器模型" />
           </div>
         </details>
       </div>
@@ -338,10 +278,13 @@ import {
   recordingModeOptions
 } from '../asrEngineStatus.mjs'
 import { hotwordView, parseHotwords } from '../asrHotwords.mjs'
+import { credentialNote, isOnlineProvider, onlineEngineChip } from '../onlineEngineStatus.mjs'
+import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 
 const { form, streamingRuntimeAvailable, streamingRuntimeSummary } = inject(SETTINGS_CTX)
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
+const credential = useAsrCredentialCheck()
 
 const LOCAL_STATUS_POLL_MS = 1000
 
@@ -373,8 +316,37 @@ function selectEngine(value) {
     loadLocalModel()
     return
   }
+  // 再点已选中、已填凭据的在线引擎 = 重新验证（与本地引擎「再点一下重试」同一个手势）
+  if (form.value.asr_provider === value && isOnlineProvider(value) && onlineKeySet(value)) {
+    credential.verify(value)
+    return
+  }
   form.value.asr_provider = value
 }
+
+function onlineKeySet(provider) {
+  return provider === 'doubao_asr' ? Boolean(form.value.doubao_asr_api_key_set) : Boolean(form.value.chatgpt_asr_api_key_set)
+}
+
+// 在线引擎：卡片状态与接入配置区的提示都跟随凭据验证结论
+function onlineChip(provider) {
+  return onlineEngineChip({ keySet: onlineKeySet(provider), check: credential.checks[provider] || null })
+}
+
+const doubaoNote = computed(() => (form.value.doubao_asr_api_key_set ? credentialNote(credential.checks.doubao_asr) : null))
+const chatgptNote = computed(() => (form.value.chatgpt_asr_api_key_set ? credentialNote(credential.checks.chatgpt_asr) : null))
+
+// 进入本页时：当前在线引擎没有「可用」结论就补验一次（上次没验成、验证失败后在控制台改过开通等）
+onMounted(async () => {
+  const provider = form.value.asr_provider
+  if (!isOnlineProvider(provider) || !onlineKeySet(provider)) {
+    return
+  }
+  const check = await credential.load(provider)
+  if (check?.status !== 'ok' && check?.status !== 'checking') {
+    credential.verify(provider)
+  }
+})
 
 function selectRecordingMode(mode) {
   if (mode.disabled) {
@@ -445,15 +417,13 @@ const engines = computed(() => [
   {
     value: 'doubao_asr',
     label: '豆包语音',
-    chip: form.value.doubao_asr_api_key_set ? '在线 · 已配置' : '在线 · 未配置',
-    tone: form.value.doubao_asr_api_key_set ? 'ok' : 'warn',
+    ...onlineChip('doubao_asr'),
     desc: '火山引擎大模型识别，支持单段 / 多段 / 流式'
   },
   {
     value: 'chatgpt_asr',
     label: 'ChatGPT 听写',
-    chip: form.value.chatgpt_asr_api_key_set ? '在线 · 已配置' : '在线 · 未配置',
-    tone: form.value.chatgpt_asr_api_key_set ? 'ok' : 'warn',
+    ...onlineChip('chatgpt_asr'),
     desc: '使用 ChatGPT 账号令牌，适合单段 / 多段'
   },
   {
