@@ -6,7 +6,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">自动 AI 优化</span>
-            <span class="setting-desc">用默认 LLM 模型整理口语文本，优化结果边生成边输入到当前输入框；失败时兜底粘贴原文。</span>
+            <span class="setting-desc">用 LLM 整理口语，边生成边输入。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.auto_optimize" type="checkbox" aria-label="自动 AI 优化">
@@ -20,7 +20,6 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">默认优化预设</span>
-            <span class="setting-desc">内置预设或你的自定义预设，可在「提示词预设」页新增和编辑。</span>
           </div>
           <div class="setting-actions-inline">
             <BaseSelect v-model="selectedPresetId" :disabled="!allPresets.length" aria-label="默认优化预设">
@@ -33,7 +32,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">自动复制并粘贴</span>
-            <span class="setting-desc">结果写入剪贴板，并输入到当前焦点输入框（开启自动 AI 优化时边生成边输入）。</span>
+            <span class="setting-desc">结果复制并输入到当前输入框。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.auto_copy_to_clipboard" type="checkbox" aria-label="自动复制并粘贴">
@@ -49,7 +48,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">使用的预设</span>
-            <span class="setting-desc">按「优化选中文本」快捷键（{{ rewriteHotkeyDisplay }}）时用的提示词，可以和录音的默认预设不同。</span>
+            <span class="setting-desc">「优化选中文本」（{{ rewriteHotkeyDisplay }}）用的预设。</span>
           </div>
           <div class="setting-actions-inline">
             <BaseSelect v-model="form.rewrite_preset_id" :disabled="!allPresets.length" aria-label="优化选中文本使用的预设">

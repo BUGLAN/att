@@ -1,6 +1,6 @@
 <template>
   <section class="recorder-page">
-    <PageHeader crumb="首页" title="录音" subtitle="按下印章或快捷键开始说话，转写与优化结果会自动复制。" />
+    <PageHeader crumb="首页" title="录音" />
 
     <!-- 录音：一枚印章 + 计时 / 状态 + 声纹 + 引擎状态；进行中底边流动细线（录音朱红 / 处理靛蓝） -->
     <section class="settings-section recorder-card">

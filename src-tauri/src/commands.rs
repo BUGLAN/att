@@ -83,7 +83,8 @@ pub fn save_desktop_settings(
     }
 }
 
-/// 旧 desktop:sync-input-settings 通道：热键更新（3c 接重绑）。
+/// 旧 desktop:sync-input-settings 通道：更新按住录音的组合键。
+/// 热键监听每次按键都读取最新设置，不需要重新注册。
 #[tauri::command]
 pub fn sync_input_settings(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
     let mut restart_hint = false;
@@ -96,8 +97,7 @@ pub fn sync_input_settings(state: State<'_, AppState>, payload: Value) -> Result
     match result {
         Ok(()) => {
             if restart_hint {
-                // 3c：这里通知热键后端重绑（当前无后端，仅日志）
-                tracing::info!("热键设置已更新（重绑在 3c 生效）");
+                tracing::debug!("录音快捷键已更新");
             }
             Ok(json!({
                 "success": true,

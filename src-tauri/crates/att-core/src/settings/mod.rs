@@ -30,8 +30,8 @@ pub const RETIRED_SETTINGS_KEYS: &[&str] = &[
     "clipboard_overlay_close_on_click_copy",
 ];
 
-/// 触发「停模型服务 + 重建 provider」的设置键（语义沿用 Python MODEL_RUNTIME_KEYS；
-/// provider 重建在 3f 接入引擎后生效，这里先返回变更清单）。
+/// 识别引擎相关的设置键（语义沿用 Python MODEL_RUNTIME_KEYS）：变更时数据面释放不再使用的本地模型、
+/// 并在后台预加载新选中的本地引擎（见 att-server 的 settings_put）。
 pub const MODEL_RUNTIME_KEYS: &[&str] = &[
     "asr_provider",
     "asr_language",
@@ -62,7 +62,7 @@ pub const CLIPBOARD_PANEL_WIDTH_RANGE: (i64, i64) = (720, 3840);
 ///    停顿后基本不确认，流式的未确认文字要到松开才变色）。
 pub const SETTINGS_REVISION: i64 = 2;
 
-/// 进程级配置（env 覆盖；3a 只需数据目录，后续阶段按需扩展）。
+/// 进程级配置（环境变量覆盖）：数据目录与模型目录。
 #[derive(Debug, Clone)]
 pub struct EnvSettings {
     pub data_dir: PathBuf,
@@ -83,7 +83,7 @@ impl EnvSettings {
 /// 用户设置（data/settings.json）。
 ///
 /// 字段名与默认值与 Python 版 `UserSettings.DEFAULT_SETTINGS` 逐一对齐
-/// （阶段①文档 §3.8 配置全表）；全部 `#[serde(default)]` 保证旧数据可读。
+/// （旧版配置全表）；全部 `#[serde(default)]` 保证旧数据可读。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserSettings {
@@ -389,7 +389,7 @@ pub struct SettingsUpdate {
 
 /// 应用 PUT /api/settings 请求体。
 ///
-/// 契约（阶段① §3.3，必须保真）：
+/// 契约（与旧版接口一致，必须保真）：
 /// - 白名单之外的未知键静默丢弃
 /// - `null` = 未提供（跳过）
 /// - 类型非法 → 中文错误（HTTP 400）

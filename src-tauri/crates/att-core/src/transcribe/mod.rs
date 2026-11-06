@@ -142,7 +142,7 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
         "qwen_asr" if qwen.available => Ok("qwen_asr"),
         "qwen_asr" => Err(unavailable(LocalKind::Qwen, &qwen)),
         "doubao_asr" if doubao_ready => Ok("doubao_asr"),
-        "doubao_asr" => Err(TranscribeError::new(409, "豆包凭据未配置：请在 ATT 设置页填写 Access Token 后重试")),
+        "doubao_asr" => Err(TranscribeError::new(409, "豆包语音未配置 Access Token，请在「设置 → 识别引擎」中填写")),
         other => Err(TranscribeError::new(422, format!("不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr）"))),
     }
 }

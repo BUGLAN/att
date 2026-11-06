@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  presetExcerpt,
   MAX_NAME_CHARS,
   describeDeleteImpact,
   resolveDefaultPresetId,
@@ -62,4 +63,14 @@ test('删除确认：未被使用 / 被默认与优化选中文本同时使用',
   assert.match(text, /录音默认预设将改为「通用优化」/)
   assert.match(text, /「优化选中文本」将改为跟随默认预设/)
   assert.equal(describeDeleteImpact(null), '')
+})
+
+test('presetExcerpt：跳过 Markdown 标题取第一行正文（内置预设都以「# 角色」开头）', () => {
+  assert.equal(presetExcerpt('# 角色\n你是语音转写文本的整理器，专门处理技术内容。'), '你是语音转写文本的整理器，专门处理技术内容。')
+  assert.equal(presetExcerpt('\n\n## 任务\n---\n- 去掉口头禅'), '去掉口头禅')
+  assert.equal(presetExcerpt('直接就是正文'), '直接就是正文')
+  assert.equal(presetExcerpt('# 只有标题'), '')
+  assert.equal(presetExcerpt(''), '')
+  assert.equal(presetExcerpt(null), '')
+  assert.equal(presetExcerpt('甲'.repeat(70)), `${'甲'.repeat(60)}…`)
 })

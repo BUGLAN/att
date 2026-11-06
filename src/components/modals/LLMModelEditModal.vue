@@ -32,8 +32,7 @@
         </div>
       </div>
       <p class="med-hint">
-        语音转写后的短文本润色不需要思考链。DeepSeek 现行模型默认强度是 high，每次都要先写一段推理才吐正文
-        （实测首字 1.6s → 0.55s）。思考 token 还计入 Max Tokens，占满后正文会为空。
+        语音润色建议设为「关闭」：更快，也不会因思考占满输出长度而返回空文本。
       </p>
 
       <div v-if="verifyState.status" class="med-banner" :class="verifyState.ok ? 'banner-ok' : 'banner-err'">

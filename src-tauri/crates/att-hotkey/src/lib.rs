@@ -100,7 +100,7 @@ pub trait HotkeyBackend: Send {
     fn resync_all(&mut self);
 }
 
-/// 3a 空实现：声明「热键尚未接入」，供 app 在 3c 之前编译与运行。
+/// 空实现：声明当前环境不支持全局热键（测试与不支持的平台用；实际监听见 [`listener`]）。
 pub struct NoopBackend {
     tx: mpsc::Sender<RawKeyEvent>,
     rx: mpsc::Receiver<RawKeyEvent>,
@@ -119,12 +119,12 @@ impl HotkeyBackend for NoopBackend {
             supported: false,
             can_suppress_keys: false,
             permission_prompt: None,
-            limitation: Some("热键系统将在阶段 3c 接入".into()),
+            limitation: Some("当前环境不支持全局快捷键".into()),
         }
     }
 
     fn register(&mut self, _spec: HotkeySpec) -> Result<BindingId, HotkeyError> {
-        Err(HotkeyError::Unsupported("阶段 3c 接入".into()))
+        Err(HotkeyError::Unsupported("当前环境不支持全局快捷键".into()))
     }
 
     fn unregister(&mut self, _id: BindingId) -> Result<(), HotkeyError> {

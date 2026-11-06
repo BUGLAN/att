@@ -1,5 +1,5 @@
 //! 数据面真实网络冒烟：起一个真 listener，用裸 TCP 访问 /api/health，
-//! 并校验 CORS 允许回环来源——这是 3a 实机「全站请求失败」事故的回归锁。
+//! 并校验 CORS 允许回环来源——这是早期实机「全站请求失败」事故的回归锁。
 
 use att_core::records::Record;
 use att_core::state::CoreState;
@@ -40,7 +40,7 @@ async fn 真监听自检_health_可访问() {
 
 /// 回归锁：数据面必须**持续在线**（只要停机信号发送端仍存活）。
 ///
-/// 3a 实机事故：app 侧把 shutdown 发送端当局部变量 drop，watch 通道关闭被
+/// 早期实机事故：app 侧把 shutdown 发送端当局部变量 drop，watch 通道关闭被
 /// `with_graceful_shutdown` 当作停机信号，数据面在启动后几秒内静默死亡。
 /// 此测试让服务跨过一个真实的时间片后再探活，锁死「服务不会自行退出」。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -64,7 +64,7 @@ async fn 发送端存活期间_数据面持续在线() {
 }
 
 /// CORS：dev 页面来源（127.0.0.1:任意端口）必须被放行，
-/// 否则浏览器会拦掉全部请求（3a 实机四类 toast 的根因之一）。
+/// 否则浏览器会拦掉全部请求（早期实机四类 toast 的根因之一）。
 #[tokio::test]
 async fn cors_放行回环来源_拒绝外部来源() {
     let state = temp_state("cors");

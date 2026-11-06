@@ -98,3 +98,17 @@ export function describeDeleteImpact(preset, { defaultPresetId = '', rewritePres
   const tail = uses.length ? `它正被使用：${uses.join('；')}。` : ''
   return `删除后无法恢复。${tail}`
 }
+
+/**
+ * 预设列表里的一行摘要：取第一行正文。
+ * 内置预设都以「# 角色」这类 Markdown 标题开头，取首行会让每条都显示成「# 角色」，所以跳过标题行，
+ * 并去掉列表符号等前缀；超过 maxLength 截断加省略号。没有正文时返回空串。
+ */
+export function presetExcerpt(template, maxLength = 60) {
+  const line = String(template || '')
+    .split('\n')
+    .map((text) => text.trim())
+    .find((text) => text && !/^#{1,6}\s/.test(text) && !/^[-*_]{3,}$/.test(text)) || ''
+  const plain = line.replace(/^([-*+]|\d+[.)])\s+/, '').replace(/^>\s*/, '')
+  return plain.length > maxLength ? `${plain.slice(0, maxLength)}…` : plain
+}

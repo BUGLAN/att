@@ -172,17 +172,7 @@ export const useSettingsStore = defineStore('settings', () => {
     streaming_available: false,
     streaming_supported: false,
     streaming_backend: null,
-    streaming_error: null,
-    qwen_streaming_available: false,
-    qwen_streaming_backend: null,
-    qwen_streaming_error: null,
-    qwen_streaming_service_managed: true,
-    qwen_streaming_service_running: false,
-    qwen_streaming_service_loading: false,
-    qwen_streaming_service_ready: false,
-    qwen_streaming_service_pid: null,
-    qwen_streaming_service_url: null,
-    qwen_streaming_service_error: null
+    streaming_error: null
   })
 
   const presets = ref([])
@@ -299,17 +289,7 @@ export const useSettingsStore = defineStore('settings', () => {
       streaming_available: result?.streaming_available ?? health.streaming_available ?? runtimeStatus.value.streaming_available,
       streaming_supported: result?.streaming_supported ?? runtimeStatus.value.streaming_supported,
       streaming_backend: result?.streaming_backend ?? health.streaming_backend ?? runtimeStatus.value.streaming_backend,
-      streaming_error: result?.streaming_error ?? health.error ?? runtimeStatus.value.streaming_error,
-      qwen_streaming_service_managed: result?.managed ?? runtimeStatus.value.qwen_streaming_service_managed,
-      qwen_streaming_service_running: result?.running ?? runtimeStatus.value.qwen_streaming_service_running,
-      qwen_streaming_service_loading: result?.loading ?? runtimeStatus.value.qwen_streaming_service_loading,
-      qwen_streaming_service_ready: result?.ready ?? runtimeStatus.value.qwen_streaming_service_ready,
-      qwen_streaming_service_pid: result?.pid ?? runtimeStatus.value.qwen_streaming_service_pid,
-      qwen_streaming_service_url: result?.base_url ?? runtimeStatus.value.qwen_streaming_service_url,
-      qwen_streaming_service_error: result?.error ?? runtimeStatus.value.qwen_streaming_service_error,
-      qwen_streaming_available: result?.streaming_available ?? health.loaded ?? runtimeStatus.value.qwen_streaming_available,
-      qwen_streaming_backend: health.backend ?? runtimeStatus.value.qwen_streaming_backend,
-      qwen_streaming_error: result?.streaming_error ?? health.error ?? runtimeStatus.value.qwen_streaming_error
+      streaming_error: result?.streaming_error ?? health.error ?? runtimeStatus.value.streaming_error
     }
   }
 
@@ -331,9 +311,7 @@ export const useSettingsStore = defineStore('settings', () => {
             runtimeStatus.value = {
               ...runtimeStatus.value,
               model_service_loading: false,
-              model_service_error: null,
-              qwen_streaming_service_loading: false,
-              qwen_streaming_service_error: null
+              model_service_error: null
             }
             return runtimeStatus.value
           }
@@ -342,9 +320,7 @@ export const useSettingsStore = defineStore('settings', () => {
             runtimeStatus.value = {
               ...runtimeStatus.value,
               model_service_loading: false,
-              model_service_error: result.error,
-              qwen_streaming_service_loading: false,
-              qwen_streaming_service_error: result.error
+              model_service_error: result.error
             }
             throw new Error(result.error)
           }
@@ -357,9 +333,7 @@ export const useSettingsStore = defineStore('settings', () => {
         runtimeStatus.value = {
           ...runtimeStatus.value,
           model_service_loading: false,
-          model_service_error: '等待模型服务加载超时',
-          qwen_streaming_service_loading: false,
-          qwen_streaming_service_error: '等待模型服务加载超时'
+          model_service_error: '等待模型服务加载超时'
         }
         throw new Error('等待模型服务加载超时')
       } finally {
@@ -375,9 +349,7 @@ export const useSettingsStore = defineStore('settings', () => {
       runtimeStatus.value = {
         ...runtimeStatus.value,
         model_service_loading: true,
-        model_service_error: null,
-        qwen_streaming_service_loading: true,
-        qwen_streaming_service_error: null
+        model_service_error: null
       }
       const result = await api.startStreamingService(waitUntilReady)
       applyStreamingServiceStatus(result)
@@ -387,18 +359,14 @@ export const useSettingsStore = defineStore('settings', () => {
         runtimeStatus.value = {
           ...runtimeStatus.value,
           model_service_loading: false,
-          model_service_error: result.error ?? null,
-          qwen_streaming_service_loading: false,
-          qwen_streaming_service_error: result.error ?? null
+          model_service_error: result.error ?? null
         }
       } else if (result.ready) {
         await loadRuntimeStatus(true)
         runtimeStatus.value = {
           ...runtimeStatus.value,
           model_service_loading: false,
-          model_service_error: null,
-          qwen_streaming_service_loading: false,
-          qwen_streaming_service_error: null
+          model_service_error: null
         }
       } else {
         void pollStreamingServiceUntilSettled().catch((pollError) => {
@@ -411,9 +379,7 @@ export const useSettingsStore = defineStore('settings', () => {
       runtimeStatus.value = {
         ...runtimeStatus.value,
         model_service_loading: false,
-        model_service_error: e.message,
-        qwen_streaming_service_loading: false,
-        qwen_streaming_service_error: e.message
+        model_service_error: e.message
       }
       error.value = e.message
       console.error('Failed to start streaming service:', e)
@@ -436,12 +402,7 @@ export const useSettingsStore = defineStore('settings', () => {
         streaming_available: result.streaming_available ?? false,
         streaming_supported: result.streaming_supported ?? runtimeStatus.value.streaming_supported,
         streaming_backend: result.streaming_backend ?? runtimeStatus.value.streaming_backend,
-        streaming_error: result.streaming_error ?? null,
-        qwen_streaming_service_running: result.running ?? false,
-        qwen_streaming_service_loading: result.loading ?? false,
-        qwen_streaming_service_ready: result.ready ?? false,
-        qwen_streaming_service_pid: result.pid ?? null,
-        qwen_streaming_service_error: result.error ?? null
+        streaming_error: result.streaming_error ?? null
       }
       return runtimeStatus.value
     } catch (e) {

@@ -6,7 +6,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">启用剪贴板悬浮框</span>
-            <span class="setting-desc">在任意应用里按快捷键，屏幕底部升起最近的剪贴板记录，打字即可搜索。</span>
+            <span class="setting-desc">按快捷键呼出最近的剪贴板记录，可直接打字搜索。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.clipboard_panel_enabled" type="checkbox" aria-label="启用剪贴板悬浮框">
@@ -17,7 +17,6 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">唤起快捷键</span>
-              <span class="setting-desc">点按一次打开，再按一次收起；不能与录音快捷键相同。</span>
             </div>
             <div class="hotkey-input-wrapper">
               <BaseInput
@@ -49,7 +48,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">选中条目后</span>
-              <span class="setting-desc">按回车或点击条目时的动作；按 {{ modKey }}↵ 执行另一种。</span>
+              <span class="setting-desc">回车或点击时执行；{{ modKey }}↵ 执行另一种。</span>
             </div>
             <BaseSelect v-model="form.clipboard_panel_enter_action" aria-label="选中条目后">
               <option value="paste">粘贴到原来的输入框</option>
@@ -59,7 +58,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">悬浮框尺寸</span>
-              <span class="setting-desc">在悬浮框的上边缘调高度、左右边缘调宽度，松手后自动记住；拉到屏幕宽度即铺满。</span>
+              <span class="setting-desc">拖动悬浮框边缘调整，自动记住。</span>
             </div>
             <div class="setting-actions-inline">
               <span class="ui-meta ui-mono">{{ sizeText }}</span>
@@ -69,16 +68,12 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">悬浮框位置</span>
-              <span class="setting-desc">按住悬浮框头部的空白处上下拖动，双击回到屏幕底部；水平方向始终居中。</span>
+              <span class="setting-desc">上下拖动悬浮框头部调整，双击回到底部。</span>
             </div>
             <div class="setting-actions-inline">
               <span class="ui-meta ui-mono">{{ positionText }}</span>
               <BaseButton variant="outline" size="sm" :disabled="!layout.bottom_offset" @click="resetPosition">恢复默认</BaseButton>
             </div>
-          </div>
-          <div v-if="form.clipboard_panel_enter_action === 'paste'" class="settings-note">
-            <span>自动粘贴需要「辅助功能」权限；没有权限时内容仍会复制到剪贴板。</span>
-            <BaseButton variant="outline" size="sm" @click="goSection('permissions')">查看权限</BaseButton>
           </div>
         </template>
       </div>
@@ -106,8 +101,7 @@ const {
   isCapturingPanelHotkey,
   hotkeyError,
   startHotkeyCapture,
-  resetHotkey,
-  goSection
+  resetHotkey
 } = inject(SETTINGS_CTX)
 const { clipboardPanel, platform } = useElectron()
 const modKey = platform === 'darwin' ? '⌘' : 'Ctrl+'

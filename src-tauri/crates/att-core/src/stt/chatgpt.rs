@@ -53,7 +53,7 @@ pub fn account_id_from_access_token(token: &str) -> String {
 impl ChatGptConfig {
     pub fn ensure(&self) -> Result<(), String> {
         if self.api_key.trim().is_empty() {
-            return Err("未配置 ChatGPT 访问令牌，请在「设置 → 语音识别」中填写后重试".into());
+            return Err("未配置 ChatGPT 访问令牌，请在「设置 → 识别引擎」中填写".into());
         }
         if self.endpoint.trim().is_empty() {
             return Err("未配置 ChatGPT 听写端点地址".into());

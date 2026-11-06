@@ -7,7 +7,6 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">麦克风</span>
-            <span class="setting-desc">跟随系统默认，或固定使用某个输入设备。</span>
           </div>
           <BaseSelect v-model="form.audio_input_device">
             <option value="default">系统默认</option>
@@ -19,7 +18,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">录音时暂停其他音频</span>
-            <span class="setting-desc">录音期间静音系统输出，结束后自动恢复。</span>
+            <span class="setting-desc">录音时静音系统声音，结束后恢复。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.pause_audio_on_recording" type="checkbox" aria-label="录音时暂停其他音频">

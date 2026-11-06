@@ -37,9 +37,9 @@ test('deriveCompletionToast：优化阶段三态文案', () => {
 })
 
 test('deriveCompletionToast：真流式阶段用的是"复制或粘贴失败"（与其他阶段不同）', () => {
-  assert.equal(deriveCompletionToast('streaming', { pasted: true }), '真流式转写完成，已复制并粘贴')
-  assert.equal(deriveCompletionToast('streaming', { attempted: true }), '真流式转写完成，复制或粘贴失败')
-  assert.equal(deriveCompletionToast('streaming', {}), '真流式转写完成')
+  assert.equal(deriveCompletionToast('streaming', { pasted: true }), '流式转写完成，已复制并粘贴')
+  assert.equal(deriveCompletionToast('streaming', { attempted: true }), '流式转写完成，复制或粘贴失败')
+  assert.equal(deriveCompletionToast('streaming', {}), '流式转写完成')
 })
 
 test('deriveCompletionToast：未知阶段抛错，避免静默拿到错误文案', () => {

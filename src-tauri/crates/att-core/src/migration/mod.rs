@@ -3,7 +3,7 @@
 //! 步骤：
 //! 1. settings.json：剥离退役键；旧 `hotkey` + 旧 Electron userData 的
 //!    desktop-settings.json 合并为新版 `hotkeys[]`（desktop 端优先，它是旧桌面层真相源）
-//! 2. 音频错位修复（阶段① 缺陷 #3）：record.audio_path 指向存在的文件 →
+//! 2. 音频错位修复（旧版已知缺陷）：record.audio_path 指向存在的文件 →
 //!    重命名为 `{record_id}.<原扩展名>`（新录音 .flac / 旧录音 .wav）；悬空引用按时长启发式匹配未认领的 wav；
 //!    仍未认领的移入 `audio/orphans/`（只隔离不删除）
 //! 3. 遗留文件不迁移（wordbook/、data/prompts/presets.json 保持原样，无代码读取）
@@ -44,7 +44,7 @@ pub struct MatchedAudio {
 
 /// 执行迁移（探测本机旧 Electron 桌面设置后委托 [`run_with_legacy`]）。
 ///
-/// 性能约定：首启动完成迁移后写 `data/.migration-3a.done` 标记，
+/// 性能约定：首启动完成迁移后写 `data/.migration-3a.done` 标记（文件名沿用，改名会让老用户重跑迁移），
 /// 后续启动直接跳过（否则每次都要扫 900+ 记录与全部 wav，实测拖慢启动）。
 /// 需要重跑时设置 `ATT_FORCE_MIGRATION=1`。
 pub fn run(data_dir: &Path, platform: Platform) -> MigrationReport {

@@ -75,7 +75,7 @@
       <div class="wiz-field">
         <label class="wiz-label">API Key</label>
         <input v-model="form.api_key" class="wiz-input" type="password" :placeholder="selectedProvider?.requires_key ? 'sk-…' : '本地服务可留空'">
-        <p class="wiz-hint">仅保存在本机 data/（Fernet 加密），不会上传；保存前会先用它做一次真实验证，验证后即弃。</p>
+        <p class="wiz-hint">只加密保存在本机，保存前会先验证一次。</p>
       </div>
       <div class="wiz-field">
         <label class="wiz-label">API Base（可选，留空使用默认端点）</label>
@@ -139,8 +139,7 @@
           </div>
         </div>
         <p class="wiz-hint">
-          超时与重试由网关注入到每次请求，杜绝「网络黑洞挂 10 分钟」。
-          语音润色建议把思考强度设为「关闭」：思考 token 计入 Max Tokens，占满后正文会为空。
+          语音润色建议把思考强度设为「关闭」：更快，也不会因思考占满输出长度而返回空文本。
         </p>
       </details>
 

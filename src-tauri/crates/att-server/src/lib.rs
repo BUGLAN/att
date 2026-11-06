@@ -1,7 +1,7 @@
 //! 内嵌数据面 API（axum，仅绑定 127.0.0.1，随机端口）。
 //!
 //! 端点一览：
-//! - GET /api/health（前端 runtimeStatus 契约：model_service_* 与 qwen_streaming_* 双命名）
+//! - GET /api/health（前端 runtimeStatus：model_service_* 与 streaming_*）
 //! - GET/PUT /api/settings（白名单/脱敏契约保真）
 //! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出）
 //! - /api/prompts：列出（内置 + 自定义）、新建 / 修改 / 删除自定义预设、PUT /api/prompts/default 设默认
@@ -41,7 +41,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
     // 跨域策略：只放行「回环来源」（页面本身可能在 dev 的 8090、打包后的 tauri:// 或
     // 自定义协议下），服务端也只绑定 127.0.0.1，不引入外部暴露面。
     // 用 predicate 而非固定清单：避免端口/协议推断偏差导致整站请求被 CORS 拦掉
-    // （3a 实机验收曾出现所有请求失败 + 四类 toast，即此类问题）。
+    // （早期实机验收曾出现所有请求失败 + 四类 toast，即此类问题）。
     let cors = tower_http::cors::CorsLayer::new()
         .allow_origin(tower_http::cors::AllowOrigin::predicate(
             |origin: &axum::http::HeaderValue, _parts: &axum::http::request::Parts| {
@@ -343,7 +343,6 @@ async fn health(State(state): State<Arc<ServerState>>) -> Json<Value> {
         "recording_mode": settings.recording_mode,
         "online_ready": engine.ready,
         "local_engine": local_engine_payload(&state.core),
-        // 新命名
         "model_service_managed": true,
         "model_service_running": engine.running,
         "model_service_loading": engine.loading,
@@ -355,17 +354,6 @@ async fn health(State(state): State<Arc<ServerState>>) -> Json<Value> {
         "streaming_supported": engine.streaming_supported,
         "streaming_backend": engine.streaming_backend,
         "streaming_error": engine.error,
-        // 旧命名（前端仍读取，见阶段① §3.3 双命名契约）
-        "qwen_streaming_available": engine.streaming_available,
-        "qwen_streaming_backend": engine.streaming_backend,
-        "qwen_streaming_error": engine.error,
-        "qwen_streaming_service_managed": true,
-        "qwen_streaming_service_running": engine.running,
-        "qwen_streaming_service_loading": engine.loading,
-        "qwen_streaming_service_ready": engine.ready,
-        "qwen_streaming_service_pid": Value::Null,
-        "qwen_streaming_service_url": Value::Null,
-        "qwen_streaming_service_error": engine.error,
     }))
 }
 
@@ -394,8 +382,8 @@ async fn settings_put(
                 }
             }
             if outcome.restart_hotkey_backend {
-                // 3c 接热键后：这里触发重绑
-                tracing::info!("热键设置变更（重绑将在 3c 生效）");
+                // 热键监听每次按键都读取最新设置，这里不需要重新注册
+                tracing::debug!("快捷键设置已更新");
             }
             Ok(Json(state.core.public_settings()))
         }
@@ -994,15 +982,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn health_双命名字段齐备() {
+    async fn health_运行时字段齐备_旧双命名已去掉() {
         let state = test_state("health").await;
         let (status, body) = get_json(&state, "/api/health").await;
         assert_eq!(status, StatusCode::OK);
         for field in [
-            "model_service_ready", "streaming_available", "qwen_streaming_service_ready",
-            "qwen_streaming_available", "model_service_mode", "streaming_backend",
+            "model_service_ready", "model_service_error", "model_service_mode", "model_service_loading",
+            "streaming_available", "streaming_backend", "streaming_error", "recording_mode", "local_engine",
         ] {
             assert!(body.get(field).is_some(), "health 缺字段 {field}");
         }
+        // 旧 Python 时代的 qwen_streaming_* 双命名前端已不再读取
+        assert!(body.as_object().unwrap().keys().all(|key| !key.starts_with("qwen_streaming")));
     }
 }

@@ -133,8 +133,8 @@ const canDownload = computed(() => canStartDownload(check.value, download.value,
 const canRestart = computed(() => canInstall(download.value))
 const canFallback = computed(() => canFallbackToInstaller(check.value, download.value))
 const autoDownloadDesc = computed(() => (inApp.value
-  ? '检查到新版本时在后台下载更新包，下好后提示你点「重启并更新」，不会自己重启打断录音；开启后每次启动也会在后台检查一次。'
-  : '检查到新版本时自动下载安装包；开启后每次启动也会在后台检查一次。下载完成后打开安装包即可更新。'))
+  ? '有新版本时在后台下载，下好后提示你重启更新。'
+  : '有新版本时自动下载安装包。'))
 const checkLine = computed(() => describeCheckLine(check.value))
 const badge = computed(() => versionBadge(check.value))
 

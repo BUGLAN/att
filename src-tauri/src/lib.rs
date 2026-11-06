@@ -161,7 +161,7 @@ pub fn run() {
             // 诊断信息：端口落盘，排障时可直接打开 http://127.0.0.1:<port>/api/health
             let _ = std::fs::write(data_dir.join(".backend-port"), port.to_string());
 
-            // 事件桥：核心事件 → 前端（Tauri event，3b 起随录音接入逐步生效）
+            // 事件桥：核心事件 → 前端（Tauri event）
             spawn_event_bridge(app.handle().clone(), core.clone());
             app_update::install_driver(app.handle().clone(), &core);
             spawn_startup_update_check(core.clone());
@@ -183,7 +183,7 @@ pub fn run() {
             // 主窗口在 setup 里手工创建（而非 tauri.conf 声明）：
             // 这样能把后端端口通过 initialization_script 注入到页面脚本执行之前，
             // 前端 getBackendPort() 首选的 window.__ATT_BACKEND_PORT__ 因此永远可用，
-            // 不再依赖 invoke 是否成功（3a 实机验收时 invoke 路径曾失败导致回退 8000）。
+            // 不再依赖 invoke 是否成功（早期实机验收时 invoke 路径曾失败导致回退 8000）。
             let init_script = format!(
                 "window.__ATT_BACKEND_PORT__ = {port}; window.__ATT_IS_DESKTOP__ = true;"
             );

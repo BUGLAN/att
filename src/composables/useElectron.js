@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { api as httpApi, getBackendPort } from '@/api/client'
 
 /**
- * 桌面能力包装层（Tauri 2 内核版，阶段 3a）。
+ * 桌面能力包装层（Tauri 2）。
  *
  * 形状兼容约定：
  * - 导出面与旧 Electron 版完全一致，组件/composable 零改动

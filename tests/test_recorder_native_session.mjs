@@ -31,7 +31,7 @@ test('完成态：按复制粘贴结果选择提示文案（真流式用「复�
   const pasted = deriveNativeSessionPatch({
     phase: 'completed', mode: 'streaming', text: '你好', copied: true, pasted: true, record: { id: 'r1' }
   })
-  assert.equal(pasted.toast, '真流式转写完成，已复制并粘贴')
+  assert.equal(pasted.toast, '流式转写完成，已复制并粘贴')
   assert.equal(pasted.transcript, '你好')
   assert.deepEqual(pasted.record, { id: 'r1' })
   assert.equal(pasted.transcribing, false)
@@ -39,7 +39,7 @@ test('完成态：按复制粘贴结果选择提示文案（真流式用「复�
   const failed = deriveNativeSessionPatch({
     phase: 'completed', mode: 'streaming', text: '你好', copied: true, pasted: false, copy_error: '已复制，需要权限'
   })
-  assert.equal(failed.toast, '真流式转写完成，复制或粘贴失败')
+  assert.equal(failed.toast, '流式转写完成，复制或粘贴失败')
 
   const plain = deriveNativeSessionPatch({ phase: 'completed', mode: 'single', text: '你好' })
   assert.equal(plain.toast, '转写完成')

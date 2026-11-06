@@ -1,6 +1,6 @@
 //! 记录域：Record 模型 + JSON 仓库（`data/records/{id}.json`，与 Python 版布局兼容）。
 //!
-//! 保真点（阶段① §3.9）：
+//! 保真点（与旧 Python 版数据格式一致）：
 //! - 字段名/取值与 Python `Record.to_dict` 完全一致（前端依赖）
 //! - 旧数据缺 `error`/`revision` 字段可读（serde 默认兜底）
 //! - revision 乐观锁：PUT 冲突返回 [`RecordError::Conflict`]（HTTP 409）
@@ -318,7 +318,7 @@ impl RecordRepo {
         json_store::read_json_file::<Record>(&self.record_path(id)).map_err(|_| RecordError::NotFound)
     }
 
-    /// 新建记录（3b 录音链路使用；id 由调用方生成）。
+    /// 新建记录（录音链路使用；id 由调用方生成）。
     pub fn insert(&self, mut record: Record) -> Result<(), RecordError> {
         record.revision = 0;
         record.created_at = now_rfc3339();
@@ -428,7 +428,7 @@ impl RecordRepo {
     }
 }
 
-/// 生成新记录 id（时间前缀 + 随机后缀，无 uuid 依赖；3b 起使用）。
+/// 生成新记录 id（时间前缀 + 随机后缀，无 uuid 依赖）。
 pub fn new_record_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let millis = SystemTime::now().duration_since(UNIX_EPOCH)

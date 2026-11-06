@@ -1,6 +1,6 @@
 <template>
   <div class="ui-page records-library-page">
-    <PageHeader crumb="首页 / 记录集" title="记录集" subtitle="搜索、筛选和整理你的录音记录。" />
+    <PageHeader crumb="首页 / 记录集" title="记录集" />
 
     <div class="ui-toolbar">
       <label class="ui-search">

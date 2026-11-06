@@ -6,7 +6,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">按住录音</span>
-            <span class="setting-desc">按住开始，松开结束。点击右侧输入框后按下新的组合即可录入；支持 `Win+Alt`、`⌘⌥` 这类无主键组合。</span>
+            <span class="setting-desc">按住说话，松开结束。</span>
           </div>
           <div class="hotkey-input-wrapper">
             <BaseInput
@@ -39,7 +39,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">点按录音</span>
-            <span class="setting-desc">按一下开始，再按一下结束，长段口述不用一直按着。可与按住录音用不同的键；想用同一个键，先清空按住录音。</span>
+            <span class="setting-desc">按一下开始，再按一下结束。</span>
           </div>
           <div class="hotkey-input-wrapper">
             <BaseInput
@@ -69,15 +69,11 @@
           </div>
         </div>
         <div v-if="!hotkeyDisplay && !toggleHotkeyDisplay" class="settings-note warn">
-          <span>两种录音快捷键都为空：只能在首页点印章开始录音。</span>
+          <span>两种录音快捷键都为空，只能在首页点印章录音。</span>
         </div>
-        <div class="settings-note" :class="{ warn: Boolean(status.error) }">
-          <span>{{ status.error || '全局快捷键已启用：窗口在后台或最小化时同样生效。' }}</span>
-          <BaseButton v-if="status.error" variant="outline" size="sm" @click="goSection('permissions')">查看权限</BaseButton>
-        </div>
-        <div class="settings-note">
-          <span>剪贴板悬浮框的快捷键在「剪贴板」页设置。</span>
-          <BaseButton variant="outline" size="sm" @click="goSection('clipboard')">去设置</BaseButton>
+        <div v-if="status.error" class="settings-note warn">
+          <span>{{ status.error }}</span>
+          <BaseButton variant="outline" size="sm" @click="goSection('permissions')">查看权限</BaseButton>
         </div>
       </div>
     </section>
@@ -88,7 +84,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">启用</span>
-            <span class="setting-desc">在任意应用里选中一段文字后按快捷键，用 LLM 优化并流式替换原文，进度显示在录音悬浮条里。</span>
+            <span class="setting-desc">选中文字后按快捷键，用 LLM 改写并替换原文。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.rewrite_enabled" type="checkbox" aria-label="启用优化选中文本">
@@ -98,7 +94,6 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">快捷键</span>
-            <span class="setting-desc">按一下即开始；优化途中点悬浮条上的 ✕ 取消。</span>
           </div>
           <div class="hotkey-input-wrapper">
             <BaseInput
@@ -128,10 +123,6 @@
               </template>
             </BaseButton>
           </div>
-        </div>
-        <div class="settings-note">
-          <span>用哪个提示词预设在「输出与优化」页选择。</span>
-          <BaseButton variant="outline" size="sm" @click="goSection('output')">去设置</BaseButton>
         </div>
       </div>
     </section>

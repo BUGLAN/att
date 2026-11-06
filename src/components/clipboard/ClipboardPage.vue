@@ -1,6 +1,6 @@
 <template>
   <section class="ui-page clipboard-page">
-    <PageHeader crumb="首页 / 剪贴板" title="剪贴板" subtitle="自动记录复制过的文本、图片和文件。" />
+    <PageHeader crumb="首页 / 剪贴板" title="剪贴板" />
 
     <div class="ui-toolbar">
       <label class="ui-search">

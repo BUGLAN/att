@@ -30,8 +30,7 @@
     <section class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">内置预设</h3>
-        <p class="setting-desc">随安装包发布、升级时更新，只能查看，不能修改。</p>
-        <p v-if="!groups.builtin.length" class="setting-desc">未发现 prompts/*.txt：请确认安装目录或仓库里的 prompts/ 是否存在。</p>
+        <p v-if="!groups.builtin.length" class="setting-desc">没有找到内置预设，请重新安装应用。</p>
         <div v-for="preset in groups.builtin" :key="preset.id" class="setting-item">
           <div class="setting-info">
             <span class="setting-label preset-name">
@@ -39,7 +38,7 @@
               <BaseBadge v-if="preset.id === selectedPresetId" tone="accent">默认</BaseBadge>
               <BaseBadge v-if="preset.id === form.rewrite_preset_id" tone="neutral">优化选中文本</BaseBadge>
             </span>
-            <span class="setting-desc">prompts/{{ preset.name }}.txt</span>
+            <span class="setting-desc preset-excerpt">{{ excerpt(preset) }}</span>
           </div>
           <div class="setting-actions-inline preset-actions">
             <BaseButton variant="ghost" size="sm" @click="openPresetModal(preset)">查看</BaseButton>
@@ -66,7 +65,7 @@ import { computed, inject, ref } from 'vue'
 import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
-import { describeDeleteImpact, splitPresets } from '../presetLogic.mjs'
+import { describeDeleteImpact, presetExcerpt, splitPresets } from '../presetLogic.mjs'
 import { SETTINGS_CTX } from '../settingsContext.js'
 
 const { form, allPresets, selectedPresetId, openPresetModal, openPresetCreator, deletePreset } = inject(SETTINGS_CTX)
@@ -87,8 +86,7 @@ function setDefault(id) {
 
 // 列表里显示提示词开头一行，方便区分
 function excerpt(preset) {
-  const firstLine = String(preset.prompt_template || '').split('\n').find((line) => line.trim()) || ''
-  return firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine
+  return presetExcerpt(preset.prompt_template)
 }
 
 function askDelete(preset) {

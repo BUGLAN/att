@@ -3,7 +3,6 @@
     <div class="llm-head">
       <div>
         <h3 v-if="showTitle" class="settings-group-title">LLM 服务</h3>
-        <p class="llm-head-desc">模型名原样透传给服务商 · 服务商发布新模型无需更新应用</p>
       </div>
       <div class="llm-head-actions">
         <BaseButton variant="outline" size="sm" @click="openWizard('provider')">添加供应商</BaseButton>

@@ -2,7 +2,7 @@
 
 // provider 在录音界面上的展示名（文案不再写死 Qwen）
 const STREAMING_PROVIDER_LABELS = Object.freeze({
-  qwen_asr: 'Qwen 真流式',
+  qwen_asr: 'Qwen 流式',
   doubao_asr: '豆包在线流式'
 })
 
@@ -10,5 +10,5 @@ const STREAMING_PROVIDER_LABELS = Object.freeze({
  * 真流式 provider 的展示名；未知 provider 回落到通用文案。
  */
 export function deriveStreamingProviderLabel(provider) {
-  return STREAMING_PROVIDER_LABELS[provider] || '真流式'
+  return STREAMING_PROVIDER_LABELS[provider] || '流式'
 }

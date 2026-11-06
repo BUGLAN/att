@@ -6,7 +6,7 @@
     @dragleave="onDragLeave"
     @drop.prevent="onDrop"
   >
-    <PageHeader crumb="首页 / 转文字" title="转文字" subtitle="把本地音视频转成文本，长文件自动进入后台任务。" />
+    <PageHeader crumb="首页 / 转文字" title="转文字" />
 
     <!-- 文件：投放区 + 路径输入；转写中印章换成「轉」，底边流动靛蓝细线 -->
     <section class="settings-section transcribe-file">
@@ -94,7 +94,6 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">识别语言</span>
-            <span class="setting-desc">本次转写使用的语言</span>
           </div>
           <BaseSelect v-model="language" :disabled="isBusy" aria-label="识别语言">
             <option value="zh">中文</option>
@@ -116,7 +115,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">LLM 校对</span>
-            <span class="setting-desc">转写完成后按窗口纠错，不润色；失败的批次保留原文</span>
+            <span class="setting-desc">转写后用 LLM 纠错，不改写</span>
           </div>
           <label class="toggle-switch">
             <input :checked="proofreadOn" type="checkbox" :disabled="isBusy" aria-label="LLM 校对" @change="toggleProofread">
@@ -137,7 +136,6 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">窗口批大小</span>
-              <span class="setting-desc">每次送去校对的句数</span>
             </div>
             <BaseSelect v-model.number="proofreadBatchSegments" :disabled="isBusy" aria-label="窗口批大小">
               <option :value="20">20 段 / 批</option>
@@ -148,7 +146,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">上下文重叠</span>
-              <span class="setting-desc">携带前文让断句处更准，但更费 token</span>
+              <span class="setting-desc">更准，但更费 token</span>
             </div>
             <BaseSelect v-model.number="proofreadContextChars" :disabled="isBusy" aria-label="上下文重叠">
               <option :value="200">携带前文 200 字</option>

@@ -49,7 +49,6 @@
       <header class="settings-main__head">
         <div class="settings-main__crumb">设置 / {{ currentSection.group }}</div>
         <h2 class="settings-main__title">{{ currentSection.label }}</h2>
-        <p class="settings-main__desc">{{ currentSection.desc }}</p>
       </header>
 
       <!-- 初始化完成前禁用全部表单控件：此阶段 watch(form) 的守卫会丢弃改动，
@@ -160,23 +159,15 @@ const lastSavedPresetId = ref('')
 // 全部预设：内置（只读）在前，自定义在后；下拉框与预设页都用它
 const allPresets = computed(() => presets.value)
 const isSyncing = computed(() => syncDepth.value > 0)
-const streamingRuntimeAvailable = computed(() => settingsStore.runtimeStatus.qwen_streaming_available === true)
+const streamingRuntimeAvailable = computed(() => settingsStore.runtimeStatus.streaming_available === true)
+// 流式录音的运行时提示：可用时不打扰，不可用时只说原因。
+// 后端还没切到流式（保存防抖中）时不下结论，免得选中流式的瞬间闪一下误报
 const streamingRuntimeSummary = computed(() => {
-  const runtimeEnvironment = settingsStore.runtimeStatus.runtime_environment || 'unknown'
-  const backend = settingsStore.runtimeStatus.qwen_streaming_backend
-
-  if (streamingRuntimeAvailable.value) {
-    return backend
-      ? `当前后端环境：${runtimeEnvironment}，真流式可用（${backend}）`
-      : `当前后端环境：${runtimeEnvironment}，真流式可用`
+  const runtime = settingsStore.runtimeStatus
+  if (streamingRuntimeAvailable.value || runtime.recording_mode !== 'streaming') {
+    return ''
   }
-
-  const reason = settingsStore.runtimeStatus.qwen_streaming_error
-  if (reason) {
-    return `当前后端环境：${runtimeEnvironment}，真流式不可用：${reason}`
-  }
-
-  return `当前后端环境：${runtimeEnvironment}，若在 PowerShell 启动后端将自动降级为单段录音`
+  return runtime.streaming_error || '流式录音暂不可用，请改用单段或多段。'
 })
 const activeSection = ref(resolveSectionId(appStore.settingsSection || readStoredSection() || DEFAULT_SECTION_ID))
 const currentSection = computed(() => findSection(activeSection.value))
@@ -738,7 +729,6 @@ watch(() => appStore.settingsSection, (section) => {
 provide(SETTINGS_CTX, {
   form,
   audioInputDevices,
-  streamingRuntimeAvailable,
   streamingRuntimeSummary,
   allPresets,
   selectedPresetId,
@@ -1011,13 +1001,6 @@ onUnmounted(() => {
   font-size: var(--fs-xl);
   font-weight: 600;
   color: var(--text-1);
-}
-
-.settings-main__desc {
-  margin: 0;
-  font-size: var(--fs-sm);
-  line-height: 1.6;
-  color: var(--text-2);
 }
 
 /* 外壳里的待加载提示不再挂在卡片顶部，改成独立提示条 */

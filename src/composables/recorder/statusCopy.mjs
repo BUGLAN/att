@@ -19,9 +19,9 @@ const COMPLETION_TOAST_COPY = Object.freeze({
     plain: '优化完成'
   }),
   streaming: Object.freeze({
-    copied: '真流式转写完成，已复制并粘贴',
-    failed: '真流式转写完成，复制或粘贴失败',
-    plain: '真流式转写完成'
+    copied: '流式转写完成，已复制并粘贴',
+    failed: '流式转写完成，复制或粘贴失败',
+    plain: '流式转写完成'
   })
 })
 

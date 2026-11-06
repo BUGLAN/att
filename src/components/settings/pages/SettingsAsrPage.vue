@@ -51,18 +51,14 @@
         <div v-if="modeConflict" class="settings-note warn">
           <span>{{ modeConflict }}</span>
         </div>
-        <div
-          v-else-if="form.recording_mode === 'streaming'"
-          class="settings-note"
-          :class="{ warn: !streamingRuntimeAvailable }"
-        >
+        <div v-else-if="form.recording_mode === 'streaming' && streamingRuntimeSummary" class="settings-note warn">
           <span>{{ streamingRuntimeSummary }}</span>
         </div>
 
         <div v-if="form.recording_mode === 'multi'" class="setting-item settings-advanced">
           <div class="setting-info">
             <span class="setting-label">静音分段阈值</span>
-            <span class="setting-desc">秒。静音持续超过该时长即切出一段送去识别。</span>
+            <span class="setting-desc">秒，停顿超过这么久就切一段。</span>
           </div>
           <BaseInput v-model.number="form.silence_threshold" type="number" min="0.5" max="5" step="0.5" aria-label="静音分段阈值" />
         </div>
@@ -77,7 +73,7 @@
           <div class="setting-info">
             <span class="setting-label">Access Token</span>
             <span class="setting-desc">
-              {{ form.doubao_asr_api_key_set ? '已保存（留空表示不修改）' : '火山语音技术控制台的 Access Token，注意与方舟大模型 key 不通用。' }}
+              {{ form.doubao_asr_api_key_set ? '已保存（留空表示不修改）' : '火山语音技术控制台的 Access Token（不是方舟 API Key）。' }}
             </span>
           </div>
           <BaseInput v-model.trim="form.doubao_asr_api_key" type="password" autocomplete="new-password" placeholder="请输入 Access Token" aria-label="Access Token" />
@@ -88,7 +84,6 @@
         <div v-if="form.doubao_asr_api_key_set" class="setting-item">
           <div class="setting-info">
             <span class="setting-label">清除已保存的 Token</span>
-            <span class="setting-desc">开启后保存设置会删除已加密存储的 Access Token。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.doubao_asr_api_key_clear" type="checkbox" aria-label="清除已保存的 Token">
@@ -98,7 +93,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">Resource ID</span>
-            <span class="setting-desc">必须与账号实际开通的产品一致，否则握手直接 403。ASR 1.0 用 bigasr，2.0 用 seedasr。</span>
+            <span class="setting-desc">需与控制台开通的产品一致（1.0 用 bigasr，2.0 用 seedasr）。</span>
           </div>
           <BaseSelect v-model="form.doubao_asr_resource_id" aria-label="Resource ID">
             <option value="volc.seedasr.sauc.duration">volc.seedasr.sauc.duration（ASR 2.0 · 时长）</option>
@@ -112,14 +107,14 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">接入点</span>
-              <span class="setting-desc">双向流式 WebSocket 地址，默认无需修改。</span>
+              <span class="setting-desc">默认无需修改。</span>
             </div>
             <BaseInput v-model.trim="form.doubao_asr_endpoint" type="text" placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async" aria-label="接入点" />
           </div>
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">强制断句静音时长</span>
-              <span class="setting-desc">毫秒，默认 800：停顿这么久就断句，悬浮窗里这句随即从淡白变为确认色。0 表示跟随服务端语义分段（停顿后基本不断句，要到松开才确认）；建议 200–800（最大 1000），超出该范围服务端可能拒绝并断开连接。</span>
+              <span class="setting-desc">毫秒，停顿这么久即断句；0 跟随服务端（建议 200–800）。</span>
             </div>
             <BaseInput v-model.number="form.doubao_asr_end_window_size" type="number" min="0" max="10000" step="100" aria-label="强制断句静音时长" />
           </div>
@@ -135,7 +130,7 @@
           <div class="setting-info">
             <span class="setting-label">访问令牌</span>
             <span class="setting-desc">
-              {{ form.chatgpt_asr_api_key_set ? '已保存（留空表示不修改）' : 'ChatGPT 网页账号的 access token（等同登录态，注意不是 platform.openai.com 的 API Key）。' }}
+              {{ form.chatgpt_asr_api_key_set ? '已保存（留空表示不修改）' : 'ChatGPT 网页登录的 access token（不是 API Key）。' }}
             </span>
           </div>
           <BaseInput v-model.trim="form.chatgpt_asr_api_key" type="password" autocomplete="new-password" placeholder="粘贴 ChatGPT 访问令牌（可带 Bearer 前缀）" aria-label="访问令牌" />
@@ -146,7 +141,6 @@
         <div v-if="form.chatgpt_asr_api_key_set" class="setting-item">
           <div class="setting-info">
             <span class="setting-label">清除已保存的令牌</span>
-            <span class="setting-desc">开启后保存设置会删除已加密存储的访问令牌。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.chatgpt_asr_api_key_clear" type="checkbox" aria-label="清除已保存的令牌">
@@ -156,7 +150,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">请求超时</span>
-            <span class="setting-desc">秒。批量转写要等整段音频处理完，长录音可适当调大。</span>
+            <span class="setting-desc">秒，长录音可调大。</span>
           </div>
           <BaseInput v-model.number="form.chatgpt_asr_timeout_seconds" type="number" min="10" max="600" step="10" aria-label="请求超时" />
         </div>
@@ -165,7 +159,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">端点</span>
-              <span class="setting-desc">ChatGPT 听写接口地址，默认无需修改。</span>
+              <span class="setting-desc">默认无需修改。</span>
             </div>
             <BaseInput v-model.trim="form.chatgpt_asr_endpoint" type="text" placeholder="https://chatgpt.com/backend-api/transcribe" aria-label="端点" />
           </div>
@@ -180,7 +174,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">模型</span>
-            <span class="setting-desc">模型越大识别越准，但速度也会更慢。</span>
+            <span class="setting-desc">越大越准，也越慢。</span>
           </div>
           <BaseSelect v-model="form.whisper_model" aria-label="Whisper 模型">
             <option value="tiny">tiny</option>
@@ -204,14 +198,13 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">最大输出 token</span>
-              <span class="setting-desc">限制单次生成长度，避免极端长音频时输出失控。</span>
             </div>
             <BaseInput v-model.number="form.qwen_asr_max_new_tokens" type="number" min="32" max="2048" step="32" aria-label="最大输出 token" />
           </div>
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">音频长度上限</span>
-              <span class="setting-desc">秒。单次送入模型的音频上限。</span>
+              <span class="setting-desc">秒。</span>
             </div>
             <BaseInput v-model.number="form.qwen_asr_max_audio_seconds" type="number" min="5" max="600" step="5" aria-label="音频长度上限" />
           </div>
@@ -224,7 +217,6 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">识别语言</span>
-            <span class="setting-desc">所有引擎共用。</span>
           </div>
           <BaseSelect v-model="form.asr_language" aria-label="识别语言">
             <option value="zh">中文</option>
@@ -240,7 +232,7 @@
     <section class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">热词</h3>
-        <p class="hotword-desc">容易认错的产品名、英文术语、人名，每行一个，靠前的优先。识别与 LLM 纠错两处都会用到。</p>
+        <p class="hotword-desc">容易认错的专有名词，每行一个。</p>
         <BaseTextarea
           v-model="form.asr_hotwords_text"
           class="hotword-input"
@@ -281,7 +273,7 @@ import { hotwordView, parseHotwords } from '../asrHotwords.mjs'
 import { credentialNote, isOnlineProvider, onlineEngineChip } from '../onlineEngineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 
-const { form, streamingRuntimeAvailable, streamingRuntimeSummary } = inject(SETTINGS_CTX)
+const { form, streamingRuntimeSummary } = inject(SETTINGS_CTX)
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const credential = useAsrCredentialCheck()
@@ -418,25 +410,25 @@ const engines = computed(() => [
     value: 'doubao_asr',
     label: '豆包语音',
     ...onlineChip('doubao_asr'),
-    desc: '火山引擎大模型识别，支持单段 / 多段 / 流式'
+    desc: '单段 / 多段 / 流式'
   },
   {
     value: 'chatgpt_asr',
     label: 'ChatGPT 听写',
     ...onlineChip('chatgpt_asr'),
-    desc: '使用 ChatGPT 账号令牌，适合单段 / 多段'
+    desc: '单段 / 多段'
   },
   {
     value: 'whisper',
     label: 'faster-whisper',
     ...localChip('whisper'),
-    desc: '离线识别（CTranslate2 进程内推理），模型放 models/ 下，单段 / 多段'
+    desc: '离线，需安装模型'
   },
   {
     value: 'qwen_asr',
     label: 'Qwen3-ASR',
     ...localChip('qwen_asr'),
-    desc: '离线识别（sherpa-onnx + ONNX，Qwen3-ASR-0.6B），CPU 即可，单段 / 多段'
+    desc: '离线，需安装模型'
   }
 ])
 </script>

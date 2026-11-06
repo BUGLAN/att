@@ -22,7 +22,7 @@
           </div>
         </div>
         <div v-if="isDesktop" class="settings-note">
-          <span>{{ platform === 'darwin' ? '开发态这些权限归属启动 tauri dev 的终端应用；授权后回到这里会自动刷新。' : '授权后回到这里会自动刷新。' }}</span>
+          <span>{{ isDevBuild && platform === 'darwin' ? '开发态权限归属启动 tauri dev 的终端；授权后回到这里会自动刷新。' : '授权后回到这里会自动刷新。' }}</span>
           <BaseButton variant="ghost" size="sm" :loading="loading" @click="refresh">重新检测</BaseButton>
         </div>
       </div>
@@ -42,6 +42,8 @@ const STATE_TONE = { granted: 'ok', denied: 'warn', unknown: 'neutral', not_requ
 
 const appStore = useAppStore()
 const { isDesktop, platform, getPermissionStatus, openPermissionSettings } = useElectron()
+// 开发态（tauri dev）权限归属启动它的终端，提示只在开发态出现
+const isDevBuild = import.meta.env.DEV
 const items = ref([])
 const loading = ref(false)
 

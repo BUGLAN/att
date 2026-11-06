@@ -1,4 +1,4 @@
-//! LLM v2：服务商注册表 + 档案/模型存储 + 调用网关（阶段 3f，移植自 Python `app/llm/`）。
+//! LLM v2：服务商注册表 + 档案/模型存储 + 调用网关（移植自 Python `app/llm/`）。
 //!
 //! - [`registry`]：服务商目录（只登记协议前缀与元信息，不登记模型清单）
 //! - [`store`]：`data/llm_v2.json`（与 Python 版同格式），含 v1 `llm_configs.json` 自动迁移

@@ -1,13 +1,13 @@
 //! 进程内事件总线（tokio broadcast）。
 //!
 //! 设计：lagged 只影响 UI（可丢弃）；关键命令走
-//! RecordingSessionActor 的 mpsc（3b 接入），不经本总线。
+//! RecordingSessionActor 的 mpsc，不经本总线。
 //! Tauri 事件桥按「旧 WS 事件名」重放给前端（旧版 WebSocket 已移除）。
 
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-/// 领域事件全集（3a 骨架子集；3b 起随录音/引擎接入逐步补全）。
+/// 领域事件全集。
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AppEvent {

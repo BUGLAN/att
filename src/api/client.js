@@ -161,7 +161,7 @@ async function request(method, endpoint, options = {}) {
     if (error?.name === 'AbortError') {
       throw new Error(`请求超时（超过 ${Math.round(timeout / 1000)} 秒未响应）`)
     }
-    // 打印真实 URL 便于排障（3a 实机验收时靠这条日志定位端口/CORS 问题）
+    // 打印真实 URL 便于排障（早期实机验收时靠这条日志定位端口/CORS 问题）
     console.error(`[API] 请求失败 ${method} ${url}:`, error)
     // 清掉缓存端口，下次调用重新解析（注入值会在 injectedPortCache 里保留优先级）
     backendPort = null

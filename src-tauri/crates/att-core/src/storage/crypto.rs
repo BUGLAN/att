@@ -1,6 +1,6 @@
 //! Fernet 兼容加密：密钥文件与密文格式与 Python `cryptography.fernet` 互认。
 //!
-//! 兼容性红线（阶段①文档 §3.9）：`data/.encryption_key` 与
+//! 兼容性红线：`data/.encryption_key` 与
 //! `doubao_asr_api_key_encrypted` / `llm_v2.json` 的密文都由 Python 生成，
 //! Rust 版必须能直接解密——下方 `python_互操作测试` 用真实的 Python 密文样本锁定。
 //! 具体算法实现在 [`super::fernet`]（纯 Rust，无 OpenSSL 依赖）。

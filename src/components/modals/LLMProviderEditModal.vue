@@ -12,7 +12,7 @@
         <label class="pep-label">API Key</label>
         <input v-model="form.api_key" class="pep-input" type="password" :placeholder="profile.api_key_hint ? '留空保持现有密钥' : 'sk-…'">
         <p class="pep-hint">
-          {{ profile.api_key_hint ? `当前：${profile.api_key_hint} · ` : '' }}仅保存在本机 data/（Fernet 加密）；编辑时留空表示保持现有密钥。
+          {{ profile.api_key_hint ? `当前：${profile.api_key_hint} · ` : '' }}只加密保存在本机；留空表示不修改。
         </p>
       </div>
 

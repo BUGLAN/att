@@ -82,7 +82,7 @@ impl DoubaoConfig {
         if self.api_key.trim().is_empty() {
             return Err(SttError::new(
                 ErrorKind::Auth,
-                "未配置火山引擎豆包语音 Access Token，请在「设置 → 语音识别」中填写后重试",
+                "未配置豆包语音 Access Token，请在「设置 → 识别引擎」中填写",
                 false,
                 "",
             ));

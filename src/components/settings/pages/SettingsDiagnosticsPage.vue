@@ -5,7 +5,7 @@
         <h3 class="settings-group-title">服务状态</h3>
         <div class="setting-item">
           <div class="setting-info">
-            <span class="setting-label">数据面服务</span>
+            <span class="setting-label">本地服务</span>
             <span class="setting-desc mono">{{ appInfo ? `http://127.0.0.1:${appInfo.backend_port}/api` : '前端与本地服务的连接' }}</span>
           </div>
           <div class="setting-actions-inline diag-actions">
@@ -15,7 +15,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">识别引擎</span>
-            <span class="setting-desc">{{ runtime.model_service_error || `${runtime.asr_provider || '未知'} · ${runtime.runtime_environment || 'unknown'}` }}</span>
+            <span class="setting-desc">{{ runtime.model_service_error || providerLabel(runtime.asr_provider) }}</span>
           </div>
           <div class="setting-actions-inline diag-actions">
             <BaseBadge :tone="runtime.model_service_ready ? 'ok' : 'warn'">{{ runtime.model_service_ready ? '就绪' : '不可用' }}</BaseBadge>
@@ -39,7 +39,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">运行日志</span>
-            <span class="setting-desc mono">{{ appInfo.log_file }}（每次启动覆盖）</span>
+            <span class="setting-desc mono">{{ appInfo.log_file }}（上一次启动的日志另存为 att-app.prev.log）</span>
           </div>
           <div class="setting-actions-inline diag-actions">
             <BaseButton variant="outline" size="sm" @click="reveal('log')">在文件管理器中显示</BaseButton>
@@ -58,6 +58,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { providerLabel } from '../asrEngineStatus.mjs'
 import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import { useAppStore } from '@/stores/app'
