@@ -513,6 +513,8 @@ mod tests {
         assert!(commands[1].contains(&format!("-C \"{}\"", root.display())), "{error}");
         assert!(error.contains("conv_frontend.onnx"), "{error}");
         assert!(!error.contains("ATT_MODELS_DIR"), "{error}");
+        // 设置里的模型名是兼容字段（默认 1.7B，与实际用的 sherpa 0.6B int8 不符），不进文案
+        assert!(!error.contains("Qwen3-ASR-1.7B"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

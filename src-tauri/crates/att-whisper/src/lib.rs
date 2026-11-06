@@ -544,6 +544,8 @@ mod tests {
         assert!(!error.contains("ct2-transformers-converter"), "{error}");
         assert!(!error.contains("ATT_MODELS_DIR"), "{error}");
         assert!(!error.contains("models--Systran"), "{error}");
+        // 发行版不带 CUDA，推理设备选项已移除：文案不提设备
+        assert!(!error.to_lowercase().contains("cuda") && !error.contains("设备"), "{error}");
         assert!(error.chars().count() < 300, "文案应保持简短：{} 字", error.chars().count());
 
         // 设置里填的是目录路径：指出那个目录
