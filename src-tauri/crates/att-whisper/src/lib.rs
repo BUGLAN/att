@@ -494,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn 模型目录解析_覆盖短名与HF快照布局() {
+    fn 模型目录解析_覆盖短名与hf快照布局() {
         let root = temp_dir("resolve");
         // 1) 模型根目录本身就是模型（直接放 model.bin/tokenizer.json）
         std::fs::write(root.join("model.bin"), b"x").unwrap();

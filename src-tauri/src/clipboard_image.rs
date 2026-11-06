@@ -12,14 +12,21 @@
 //! 剪贴板」失败，而且失败发生在 `EmptyClipboard` 之后——会把剪贴板清空，粘贴等于什么都没粘上）。
 //! 打开/写入整体重试：剪贴板同一时刻只允许一个线程打开，别的程序正在读写时会短暂占用。
 
+// 下面的格式常量、位图转换与 PNG 编码只有 Windows 写剪贴板用得到（macOS 交给 arboard），
+// 其他平台只在单元测试里编译，免得每次构建都报「never used」。
+#[cfg(windows)]
 use std::time::Duration;
 
 /// 标准位图：40 字节 `BITMAPINFOHEADER` + 像素（能读它的应用最多）
+#[cfg(windows)]
 const CF_DIB: u32 = 8;
 /// V5 头位图（Office / 终端等偏好的格式）
+#[cfg(windows)]
 const CF_DIBV5: u32 = 17;
 /// 重试次数与间隔（覆盖别的程序短暂占用剪贴板的窗口）
+#[cfg(windows)]
 const WRITE_ATTEMPTS: usize = 5;
+#[cfg(windows)]
 const RETRY_INTERVAL: Duration = Duration::from_millis(40);
 
 /// 把一张 RGBA 图片写进系统剪贴板。`rgba` 必须是 `width * height * 4` 字节。
@@ -49,6 +56,7 @@ pub fn write_rgba(app: &tauri::AppHandle, rgba: &[u8], width: u32, height: u32, 
 }
 
 /// 每行字节数：24bpp 位图按 4 字节对齐
+#[cfg(any(windows, test))]
 fn stride24(width: u32) -> usize {
     (width as usize * 3).div_ceil(4) * 4
 }
@@ -57,6 +65,7 @@ fn stride24(width: u32) -> usize {
 ///
 /// 自下而上是 DIB 的约定（正数 `biHeight`），自上而下的图像要翻行；
 /// 24bpp 而不是 32bpp：老应用对 24bpp 的支持最普遍，CF_DIB 本身也不带 alpha 语义。
+#[cfg(any(windows, test))]
 fn dib24(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     let stride = stride24(width);
     let pixel_bytes = stride * height as usize;
@@ -84,6 +93,7 @@ fn dib24(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
 }
 
 /// 124 字节 `BITMAPV5HEADER` + 自下而上的 32bpp BGRA 像素（`BI_RGB`，带 alpha）。
+#[cfg(any(windows, test))]
 fn dibv5(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     /// 色彩空间：sRGB（`LCS_sRGB`）
     const LCS_SRGB: u32 = 0x7352_4742;
@@ -118,6 +128,7 @@ fn dibv5(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
 }
 
 /// PNG 字节：注册格式 `PNG` 用（部分新式应用优先读它，剪贴板监控读回也走这条路）
+#[cfg(any(windows, test))]
 fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     use image::ImageEncoder;
     let mut png = Vec::new();

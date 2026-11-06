@@ -589,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn 电平_满幅约0dB_静音为下限() {
+    fn 电平_满幅约0db_静音为下限() {
         assert_eq!(chunk_db(&[]), -120.0);
         assert_eq!(chunk_db(&[0; 160]), -120.0);
         assert!(chunk_db(&[i16::MAX; 160]).abs() < 0.01);
