@@ -11,7 +11,8 @@
     "tauri:build": "tauri build",
     "test": "npm run test:node && npm run test:rust",
     "test:node": "node scripts/run-node-tests.mjs",
-    "test:rust": "cd src-tauri && cargo test --workspace"
+    "test:rust": "cd src-tauri && cargo test --workspace",
+    "version:bump": "node scripts/bump-version.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",

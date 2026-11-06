@@ -81,7 +81,8 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 | `DOUBAO_ASR_API_KEY` | 豆包密钥兜底（设置页填写的优先） |
 | `TRANSCRIBE_FILE_API_TOKEN` | 非空时文件转写接口要求请求头 `X-ATT-Token` |
 
-发布：版本号写在 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`（及对应 lock 文件）；
+发布：版本号写在 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`（及对应 lock 文件），
+用 `npm run version:bump -- 2.8.0` 一次改齐（`node scripts/bump-version.mjs --check` 只校验，Node 测试里也会校验）；
 推送 `v*` 注释标签后，`.github/workflows/release.yml` 自动打包 macOS / Windows 安装包并发布 Release，
 标签注释正文即版本说明。
 
