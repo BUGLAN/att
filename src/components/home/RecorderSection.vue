@@ -108,7 +108,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRecorder } from '@/composables/useRecorder'
-import { deriveStreamingProviderLabel } from '@/composables/recorder/streamProtocol.mjs'
+import { deriveStreamingProviderLabel } from '@/composables/recorder/streamingProvider.mjs'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useOptimizationStreamStore } from '@/stores/optimizationStream'

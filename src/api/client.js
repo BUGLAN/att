@@ -85,7 +85,6 @@ export async function getBaseUrl() {
 // 默认请求超时：普通 CRUD 30s；慢接口（LLM 优化 / 连接测试）单独放宽
 const DEFAULT_TIMEOUT_MS = 30000
 const SLOW_TIMEOUT_MS = 180000
-const UPLOAD_TIMEOUT_MS = 300000
 // 文件转写同步请求的读取超时：契约约定短文件给 15 分钟；更长的文件后端直接 202
 const TRANSCRIBE_SYNC_TIMEOUT_MS = 15 * 60 * 1000
 
@@ -304,56 +303,7 @@ async function streamNdjson(endpoint, options = {}) {
   return { eventCount }
 }
 
-async function uploadForm(endpoint, fileField, blob, filename) {
-  const baseUrl = await getBaseUrl()
-  const url = `${baseUrl}${endpoint}`
-  const formData = new FormData()
-  formData.append(fileField, blob, filename)
-
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS)
-
-  let response
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      body: formData,
-      signal: controller.signal
-    })
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error(`上传超时（超过 ${Math.round(UPLOAD_TIMEOUT_MS / 1000)} 秒未完成）`)
-    }
-    throw new Error(`上传失败：${error?.message || error}`)
-  } finally {
-    clearTimeout(timer)
-  }
-
-  if (!response.ok) {
-    let errorMessage = `HTTP ${response.status}: ${response.statusText}`
-    try {
-      errorMessage = extractErrorMessage(await response.json(), response)
-    } catch (error) {
-      // 解析失败时保留状态码文案
-    }
-    throw new Error(errorMessage)
-  }
-
-  return response.json()
-}
-
 export const api = {
-  async uploadAudio(blob, filename = 'recording.webm') {
-    return uploadForm('/audio/upload', 'file', blob, filename)
-  },
-
-  createSession: () => request('POST', '/sessions'),
-  async uploadSessionSegment(sessionId, blob, filename = 'segment.webm') {
-    return uploadForm(`/sessions/${sessionId}/segments`, 'file', blob, filename)
-  },
-  mergeSession: (sessionId) => request('POST', `/sessions/${sessionId}/merge`, { timeout: SLOW_TIMEOUT_MS }),
-  deleteSession: (sessionId) => request('DELETE', `/sessions/${sessionId}`),
-
   getRecords: () => request('GET', '/records'),
   async searchRecords(params = {}) {
     const searchParams = new URLSearchParams()
@@ -368,7 +318,6 @@ export const api = {
     return request('GET', `/records/search${query ? `?${query}` : ''}`)
   },
   getRecord: (id) => request('GET', `/records/${id}`),
-  getRecordStatus: (id) => request('GET', `/records/${id}/status`),
   updateRecord: (id, data) => request('PUT', `/records/${id}`, { body: data }),
   deleteRecord: (id) => request('DELETE', `/records/${id}`),
   optimizeRecord: (id) => request('POST', `/records/${id}/optimize`, { timeout: SLOW_TIMEOUT_MS }),
@@ -478,17 +427,7 @@ export const api = {
   createPreset: (payload) => request('POST', '/prompts', { body: payload }),
   updatePreset: (id, payload) => request('PUT', `/prompts/${encodeURIComponent(id)}`, { body: payload }),
   // 删除被选用的预设时后端会回退设置，响应里带回退后的 default_preset_id / rewrite_preset_id
-  deletePreset: (id) => request('DELETE', `/prompts/${encodeURIComponent(id)}`),
-
-  async getWebSocketUrl() {
-    const port = await getBackendPort()
-    return `ws://127.0.0.1:${port}/api/ws`
-  },
-
-  async getStreamingWebSocketUrl() {
-    const port = await getBackendPort()
-    return `ws://127.0.0.1:${port}/api/asr/stream`
-  }
+  deletePreset: (id) => request('DELETE', `/prompts/${encodeURIComponent(id)}`)
 }
 
 export default api

@@ -1,22 +1,9 @@
 // 录音状态 / 完成态文案映射（纯查表，无副作用）。
 //
-// 背景：原 useRecorder.js 里同一套"完成提示"三态文案重复了 6 遍（WS 通知、轮询、多段收尾、
-// 真流式完成），多段录音阶段文案又是一条 if-else 链。这里统一收敛成纯函数，
-// 文案字符串逐字保持原样（注意真流式那句是"复制或粘贴失败"，与其他阶段的"复制并粘贴失败"不同）。
-//
+// 完成提示按阶段给三态文案（注意真流式那句是"复制或粘贴失败"，与其他阶段的"复制并粘贴失败"不同）。
 // 本模块不依赖 Vue / 浏览器全局对象，可被 Node 直接单测。
 
-// 多段录音阶段（livePhase）-> 会话状态文案
-const REALTIME_PHASE_TEXT = Object.freeze({
-  listening: '静音切段已启用，停顿后会自动出字',
-  speaking: '正在监听语音片段...',
-  'segment-processing': '上一段正在转写，继续说话即可',
-  finalizing: '正在合并整场录音结果',
-  completed: '多段录音处理完成',
-  error: '本次录音未形成有效结果'
-})
-
-// 空闲态兜底文案（原 setRealtimePhase 的 else 分支）
+// 空闲态兜底文案
 export const IDLE_SESSION_STATUS_TEXT = '按快捷键开始录音'
 
 // 完成态三态文案：copied = 已复制并粘贴；failed = 尝试过但失败；plain = 未开启自动复制
@@ -35,25 +22,12 @@ const COMPLETION_TOAST_COPY = Object.freeze({
     copied: '真流式转写完成，已复制并粘贴',
     failed: '真流式转写完成，复制或粘贴失败',
     plain: '真流式转写完成'
-  }),
-  multi: Object.freeze({
-    copied: '多段录音完成，已复制并粘贴',
-    failed: '多段录音完成，复制并粘贴失败',
-    plain: '多段录音完成'
   })
 })
 
 /**
- * 多段录音阶段对应的会话状态文案；未知阶段回退空闲文案。
- * 对应原 setRealtimePhase 中 phase -> sessionStatusText 的 if-else 链。
- */
-export function deriveRealtimePhaseText(phase) {
-  return REALTIME_PHASE_TEXT[phase] || IDLE_SESSION_STATUS_TEXT
-}
-
-/**
- * 完成态提示文案。stage 取 transcription / optimization / streaming / multi。
- * copyResult 为 maybeCopyText 的返回值（{ attempted, copied, pasted }）。
+ * 完成态提示文案。stage 取 transcription / optimization / streaming。
+ * copyResult 为录音 Actor 回报的复制结果（{ attempted, copied, pasted }）。
  */
 export function deriveCompletionToast(stage, copyResult) {
   const copy = COMPLETION_TOAST_COPY[stage]

@@ -58,7 +58,7 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
-import { useGlobalWebSocket } from '@/composables/useWebSocket'
+import { useBackendConnection } from '@/composables/useBackendConnection'
 
 import Sidebar from '@/components/layout/Sidebar.vue'
 import TitleBar from '@/components/layout/TitleBar.vue'
@@ -81,7 +81,7 @@ import { useTrayIcon } from '@/composables/useTrayIcon'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
-const { connect } = useGlobalWebSocket()
+const { connect } = useBackendConnection()
 const {
   isElectron,
   onPasteText,

@@ -8,7 +8,7 @@
 //! - /api/llm/* LLM v2 全套（服务商目录 / 档案 / 模型 / 验证，见 [`llm`]）
 //! - 模型服务三端点（在线引擎凭据配齐即就绪）
 //! - /api/update：检查更新与安装包下载（见 [`update`]）
-//! - 录音由 Rust 录音 Actor 直接完成（Tauri 命令），上传/会话/转写类 HTTP 端点 → 501
+//! - 录音由 Rust 录音 Actor 直接完成（Tauri 命令），没有录音上传 / 多段会话类 HTTP 端点
 //!
 //! 两个 WebSocket 端点（/api/ws、/api/asr/stream）按 D4 决策**移除**：
 //! 事件改由 Tauri events 下发（旧事件名重放）。
@@ -64,12 +64,6 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/api/records/{id}/status", get(records_status))
         .route("/api/records/{id}/audio", get(records_audio))
         .route("/api/records/{id}/export", get(records_export))
-        .route("/api/audio/upload", post(ny_upload))
-        // 会话（多段）
-        .route("/api/sessions", post(ny_sessions))
-        .route("/api/sessions/{id}", get(ny_sessions).delete(ny_sessions))
-        .route("/api/sessions/{id}/segments", post(ny_sessions))
-        .route("/api/sessions/{id}/merge", post(ny_sessions))
         // 模型服务（骨架）
         .route("/api/model-service", get(model_service_status))
         .route("/api/model-service/start", post(model_service_start))
@@ -203,14 +197,6 @@ pub fn self_check_health(port: u16) -> Result<String, String> {
 /// 否则不同调用点会实例化出不同的 opaque 返回类型导致 match 臂类型不合。
 fn err(status: StatusCode, detail: String) -> impl IntoResponse {
     (status, Json(json!({ "detail": detail })))
-}
-
-async fn ny_upload() -> impl IntoResponse {
-    err(StatusCode::NOT_IMPLEMENTED, "录音上传将在阶段 3b 接入".into())
-}
-
-async fn ny_sessions() -> impl IntoResponse {
-    err(StatusCode::NOT_IMPLEMENTED, "多段会话将在阶段 3e 接入".into())
 }
 
 fn map_record_error(error: RecordError) -> impl IntoResponse {
@@ -966,13 +952,5 @@ mod tests {
         ] {
             assert!(body.get(field).is_some(), "health 缺字段 {field}");
         }
-    }
-
-    #[tokio::test]
-    async fn 未接端点返回501() {
-        let state = test_state("501").await;
-        let (status, body) = request_with_body(&state, "POST", "/api/audio/upload", json!({})).await;
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-        assert!(body["detail"].as_str().unwrap().contains("3b"));
     }
 }

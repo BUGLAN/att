@@ -124,14 +124,6 @@ pub fn sync_desktop_settings(state: State<'_, AppState>, payload: Value) -> Resu
     }
 }
 
-/// 旧 desktop:recording-state：静音联动已由 Rust 录音 Actor 自行处理，这里只做兼容回执。
-#[tauri::command]
-pub fn sync_recording_state(payload: Value) -> Value {
-    let recording = payload.get("recording").and_then(|v| v.as_bool()).unwrap_or(false);
-    tracing::debug!("录音状态同步（静音由录音 Actor 管理）: recording={recording}");
-    json!({ "success": true, "skipped": true, "reason": "managed-by-recorder" })
-}
-
 // ---------------- 剪贴板 ----------------
 
 #[tauri::command]
@@ -314,12 +306,6 @@ pub fn toggle_floating_window(app: AppHandle) {
     } else {
         crate::floating::update(&app, crate::floating::last_state(), true);
     }
-}
-
-/// 前端主窗口的悬浮窗同步：桌面端由录音 Actor 直接驱动悬浮窗，这里忽略（避免双源打架）。
-#[tauri::command]
-pub fn update_floating_window_state(payload: Value) {
-    let _ = payload;
 }
 
 /// 悬浮窗页面上报胶囊区域 [x, y, 宽, 高]（CSS px）；null = 胶囊不可见。用于透明部分点击穿透。

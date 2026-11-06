@@ -5,12 +5,11 @@ import { api as httpApi, getBackendPort } from '@/api/client'
 /**
  * 桌面能力包装层（Tauri 2 内核版，阶段 3a）。
  *
- * 形状兼容约定（架构文档 §10.1）：
+ * 形状兼容约定：
  * - 导出面与旧 Electron 版完全一致，组件/composable 零改动
  * - `isElectron` 名称保留（语义 = 「桌面环境」），新增 `isDesktop` 别名
- * - 事件通道名沿用旧名（hotkey:press / paste-text / clipboard:changed …），
- *   Rust 侧事件桥按同名发射
- * - 录音走 `recording.*`（Rust 录音 Actor），全局快捷键在 Rust 侧直达 Actor
+ * - 事件通道名沿用旧名（paste-text / clipboard:changed …），Rust 侧事件桥按同名发射
+ * - 录音走 `recording.*`（Rust 录音 Actor），全局快捷键在 Rust 侧直达 Actor，悬浮窗也由 Actor 驱动
  * - 待接入项：openMediaFile / filePathForFile 返回降级值
  */
 
@@ -78,17 +77,9 @@ export function useElectron() {
   }
 
   const api = {
-    uploadAudio: (blob, filename = 'recording.webm') => httpApi.uploadAudio(blob, filename),
-    createSession: () => httpApi.createSession(),
-    uploadSessionSegment: (sessionId, blob, filename = 'segment.webm') => httpApi.uploadSessionSegment(sessionId, blob, filename),
-    mergeSession: (sessionId) => httpApi.mergeSession(sessionId),
-    deleteSession: (sessionId) => httpApi.deleteSession(sessionId),
-    getWebSocketUrl: () => httpApi.getWebSocketUrl(),
-    getStreamingWebSocketUrl: () => httpApi.getStreamingWebSocketUrl(),
     getRecords: () => httpApi.getRecords(),
     searchRecords: (params) => httpApi.searchRecords(params),
     getRecord: (id) => httpApi.getRecord(id),
-    getRecordStatus: (id) => httpApi.getRecordStatus(id),
     updateRecord: (id, data) => httpApi.updateRecord(id, data),
     deleteRecord: (id) => httpApi.deleteRecord(id),
     optimizeRecord: (id) => httpApi.optimizeRecord(id),
@@ -138,13 +129,6 @@ export function useElectron() {
   const tray = {
     setIcon: (iconType) => isDesktop && void invoke('set_tray_icon', { iconType }),
     updateMenu: (records = []) => isDesktop && void invoke('update_tray_menu', { records })
-  }
-
-  const floatingWindow = {
-    show: () => isDesktop && void invoke('show_floating_window'),
-    hide: () => isDesktop && void invoke('hide_floating_window'),
-    toggle: () => isDesktop && void invoke('toggle_floating_window'),
-    updateState: (payload) => isDesktop && void invoke('update_floating_window_state', { payload: toPlainObject(payload) })
   }
 
   const clipboard = {
@@ -213,14 +197,6 @@ export function useElectron() {
     move: (bottomOffset, save = false) => (isDesktop ? invoke('clipboard_panel_move', { bottomOffset, save }) : Promise.resolve(null)),
     resetPosition: () => (isDesktop ? invoke('clipboard_panel_reset_position') : Promise.resolve()),
     onShow: (callback) => void addChannelListener('clipboard-panel:show', callback)
-  }
-
-  function onHotkeyPress(callback) {
-    void addChannelListener('hotkey:press', callback)
-  }
-
-  function onHotkeyRelease(callback) {
-    void addChannelListener('hotkey:release', callback)
   }
 
   function onPasteText(callback) {
@@ -330,13 +306,6 @@ export function useElectron() {
     return invoke('save_desktop_settings', { payload: toPlainObject(settings) })
   }
 
-  async function syncRecordingState(payload) {
-    if (!isDesktop) {
-      return { success: false, error: 'Recording state sync unavailable' }
-    }
-    return invoke('sync_recording_state', { payload: toPlainObject(payload) })
-  }
-
   // 「转文字」页：系统文件选择对话框（Rust 侧 dialog 插件）；取消返回 null
   async function openMediaFile() {
     if (!isDesktop) return null
@@ -372,7 +341,6 @@ export function useElectron() {
     api,
     windowControl,
     tray,
-    floatingWindow,
     clipboard,
     clipboardPanel,
     recording,
@@ -382,9 +350,7 @@ export function useElectron() {
     openPermissionSettings,
     getAppInfo,
     revealAppPath,
-    onHotkeyPress,
     onUpdateReady,
-    onHotkeyRelease,
     onPasteText,
     onNavigateSettings,
     onClipboardChanged,
@@ -397,7 +363,6 @@ export function useElectron() {
     syncDesktopSettings,
     getDesktopSettings,
     saveDesktopSettings,
-    syncRecordingState,
     openMediaFile,
     filePathForFile,
     getPlatform,
