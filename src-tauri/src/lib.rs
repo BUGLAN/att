@@ -274,14 +274,25 @@ pub fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-/// 日志同时输出到终端与 `data/logs/att-app.log`（每次启动覆盖；打包版没有终端可看）。
+/// 日志同时输出到终端与 `data/logs/att-app.log`（打包版没有终端可看）。
+///
+/// 每次启动先把上一次的日志改名为 `att-app.prev.log` 再新建：崩溃后用户重启应用，
+/// 上一次的现场还在。二次启动的进程在 single-instance 插件里就退出了，走不到这里，
+/// 不会把正在运行的实例的日志挪走。
 fn init_logging(data_dir: &std::path::Path) {
     use tracing_subscriber::fmt::writer::MakeWriterExt;
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info,att_core=debug,att_server=debug,att_app=debug,att_hotkey=debug".into());
     let log_dir = data_dir.join("logs");
-    let file = std::fs::create_dir_all(&log_dir)
-        .and_then(|_| std::fs::File::create(log_dir.join("att-app.log")));
+    let log_path = log_dir.join("att-app.log");
+    let file = std::fs::create_dir_all(&log_dir).and_then(|_| {
+        if log_path.exists() {
+            // 改名失败（如文件被别的程序占着）不阻断启动：照旧覆盖
+            let _ = std::fs::rename(&log_path, log_dir.join("att-app.prev.log"));
+        }
+        std::fs::File::create(&log_path)
+    });
+    install_panic_hook();
     match file {
         Ok(file) => {
             let file = std::sync::Arc::new(file);
@@ -294,6 +305,18 @@ fn init_logging(data_dir: &std::path::Path) {
             let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
         }
     }
+}
+
+/// panic 写进日志：默认的 panic 输出只到 stderr，打包版看不到。任何线程（含 tokio 任务）的 panic
+/// 都会经过这里；记完再交给默认处理（终端照常打印）。
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::error!("线程 {} panic：{info}\n{backtrace}", thread.name().unwrap_or("<未命名>"));
+        default_hook(info);
+    }));
 }
 
 /// 数据目录解析：ATT_DATA_DIR > 开发态仓库 data/（编译期锚点）> 应用数据目录。
