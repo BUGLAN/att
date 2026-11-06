@@ -203,6 +203,96 @@ pub fn chunk_db(chunk: &[i16]) -> f64 {
     if rms > 0.0 { 20.0 * rms.log10() } else { -120.0 }
 }
 
+/// 人声估计的分析帧：20ms 一帧。
+const VOICE_FRAME: usize = 320;
+/// 逐帧功率按 100ms（5 帧）滑动平均后再判定：压住底噪逐帧的随机起伏，又不至于抹掉一个音节。
+const VOICE_WINDOW_FRAMES: usize = 5;
+/// 低于这个电平当作没有信号（采集刚起来的全零帧），不参与估计底噪。
+const DIGITAL_SILENCE_DB: f64 = -90.0;
+/// 底噪取有信号帧电平的第 10 百分位：按下后开口前、字与字之间的停顿、松开缓冲都落在这一档。
+const NOISE_FLOOR_PERCENTILE: f64 = 0.10;
+/// 底噪估计的上限：一整段几乎不停顿的说话会把第 10 百分位抬到语音电平上；
+/// 真实环境的底噪极少高过 -30 dBFS（实测用户机器 -37 左右），封顶后这类录音照样数得出语音。
+const NOISE_FLOOR_CAP_DB: f64 = -30.0;
+/// 「清楚的声音」：高出底噪 10dB。底噪自身的起伏（滑动平均后）几乎碰不到这一档。
+const CLEAR_MARGIN_DB: f64 = 10.0;
+/// 「隐约的声音」：高出底噪 6dB。嘈杂环境里小声说话也过得了这一档，但偶发的杂声同样会过，所以要求更长。
+const FAINT_MARGIN_DB: f64 = 6.0;
+/// 清楚的声音累计这么久就算听到人声（一个短词）。
+const CLEAR_MIN_SECONDS: f64 = 0.5;
+/// 隐约的声音累计这么久也算（小声说了一两句）。
+const FAINT_MIN_SECONDS: f64 = 1.2;
+/// 短录音里的单字：清楚的声音至少这么久，且占整段的比例不低于 [`SHORT_CLEAR_MIN_RATIO`]。
+const SHORT_CLEAR_MIN_SECONDS: f64 = 0.2;
+const SHORT_CLEAR_MIN_RATIO: f64 = 0.05;
+
+/// 一段录音里人声的粗略估计（见 [`speech_activity`]）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpeechActivity {
+    /// 录音总时长（秒）
+    pub total_seconds: f64,
+    /// 估计的底噪电平（dBFS）；整段没有信号时为 -120
+    pub noise_floor_db: f64,
+    /// 高出底噪 10dB 的累计时长（秒）
+    pub clear_seconds: f64,
+    /// 高出底噪 6dB 的累计时长（秒，含 clear 部分）
+    pub faint_seconds: f64,
+}
+
+impl SpeechActivity {
+    /// 是否听到了人声。判定刻意偏保守（宁可把噪声放过去，也不把小声说话判成没声音），满足任一条就算听到：
+    /// - 清楚的声音累计 ≥ 0.5s（正常音量说一个短词）；
+    /// - 隐约的声音累计 ≥ 1.2s（嘈杂环境里小声说话，只高出底噪 6dB 左右）；
+    /// - 清楚的声音 ≥ 0.2s 且占整段 ≥ 5%（短录音里说一个字）。
+    ///
+    /// 判成没听到的典型情况：按住十几秒没说话，期间只有一下不到半秒的咳嗽 / 哼声 / 碰麦。
+    /// 代价是「按住很久、只说一个字」也会被判成没听到（录音和识别结果仍会保存）。
+    pub fn heard_voice(&self) -> bool {
+        self.clear_seconds >= CLEAR_MIN_SECONDS
+            || self.faint_seconds >= FAINT_MIN_SECONDS
+            || (self.clear_seconds >= SHORT_CLEAR_MIN_SECONDS && self.clear_seconds >= self.total_seconds * SHORT_CLEAR_MIN_RATIO)
+    }
+}
+
+fn power_db(power: f64) -> f64 {
+    if power > 0.0 { 10.0 * power.log10() } else { -120.0 }
+}
+
+/// 按短帧能量估计一段 16k 录音里有多少「像人声」的声音：底噪自适应（取安静帧的电平），
+/// 再数高出底噪一定分贝的时长。只看能量，不区分人声与其他声音（敲键盘也算），所以只用来兜「整段没人说话」。
+pub fn speech_activity(samples: &[i16]) -> SpeechActivity {
+    let total_seconds = samples.len() as f64 / TARGET_RATE as f64;
+    let powers: Vec<f64> = samples
+        .chunks_exact(VOICE_FRAME)
+        .map(|frame| frame.iter().map(|&s| (s as f64 / 32768.0).powi(2)).sum::<f64>() / VOICE_FRAME as f64)
+        .collect();
+    // 100ms 滑动平均（当前帧及之前 4 帧；开头不足 5 帧按实有帧数平均）
+    let mut levels = Vec::with_capacity(powers.len());
+    let mut window = 0.0;
+    for (index, power) in powers.iter().enumerate() {
+        window += power;
+        if index >= VOICE_WINDOW_FRAMES {
+            window -= powers[index - VOICE_WINDOW_FRAMES];
+        }
+        let count = (index + 1).min(VOICE_WINDOW_FRAMES);
+        levels.push(power_db(window.max(0.0) / count as f64));
+    }
+    let mut audible: Vec<f64> = levels.iter().copied().filter(|db| *db > DIGITAL_SILENCE_DB).collect();
+    if audible.is_empty() {
+        return SpeechActivity { total_seconds, noise_floor_db: -120.0, clear_seconds: 0.0, faint_seconds: 0.0 };
+    }
+    audible.sort_by(f64::total_cmp);
+    let floor = audible[(audible.len() as f64 * NOISE_FLOOR_PERCENTILE) as usize].min(NOISE_FLOOR_CAP_DB);
+    let frame_seconds = VOICE_FRAME as f64 / TARGET_RATE as f64;
+    let seconds_above = |margin: f64| levels.iter().filter(|db| **db > floor + margin).count() as f64 * frame_seconds;
+    SpeechActivity {
+        total_seconds,
+        noise_floor_db: floor,
+        clear_seconds: seconds_above(CLEAR_MARGIN_DB),
+        faint_seconds: seconds_above(FAINT_MARGIN_DB),
+    }
+}
+
 /// 多段录音的静音切段器（移植自前端 `recorder/segmentPolicy.mjs` 的 2.2s / 10s / 0.8s 策略）。
 ///
 /// - 每块按 RMS 电平（dBFS）判定有无语音：高于 `silence_level_db` 即为语音；
@@ -369,6 +459,133 @@ mod tests {
         segmenter.push(&speech);
         assert!(segmenter.finish().is_some(), "收尾交出最后一段");
         assert!(segmenter.finish().is_none());
+    }
+
+    /// 确定性伪随机数（LCG），取值 [-1, 1)。
+    struct Lcg(u32);
+
+    impl Lcg {
+        fn next(&mut self) -> f64 {
+            self.0 = self.0.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (self.0 >> 8) as f64 / (1u32 << 23) as f64 - 1.0
+        }
+    }
+
+    fn amplitude(db: f64) -> f64 {
+        10f64.powf(db / 20.0) * 32768.0
+    }
+
+    /// 白噪声底噪：RMS 约 `db` dBFS，每 100ms 电平随机起伏 ±3dB（真实底噪并不平稳）。
+    fn noise(seconds: f64, db: f64, seed: u32) -> Vec<f64> {
+        let mut rng = Lcg(seed);
+        let mut gain = 1.0;
+        (0..(seconds * 16_000.0) as usize)
+            .map(|i| {
+                if i % 1600 == 0 {
+                    gain = 10f64.powf(rng.next() * 3.0 / 20.0);
+                }
+                // 均匀分布的 RMS 是幅度的 1/√3
+                rng.next() * 3f64.sqrt() * amplitude(db) * gain
+            })
+            .collect()
+    }
+
+    /// 类人声：140Hz 基频带两个谐波，响的部分 RMS 约 `db` dBFS。
+    /// `syllables`：按音节开合（每 250ms 响 180ms，首尾 20ms 渐变）；否则一直响。
+    fn voice(seconds: f64, db: f64, syllables: bool) -> Vec<f64> {
+        // sin + 0.5·sin2 + 0.25·sin3 的 RMS
+        let rms = ((1.0 + 0.25 + 0.0625) / 2.0f64).sqrt();
+        let scale = amplitude(db) / rms;
+        (0..(seconds * 16_000.0) as usize)
+            .map(|i| {
+                let t = i as f64 / 16_000.0;
+                let w = 2.0 * std::f64::consts::PI * 140.0 * t;
+                let tone = w.sin() + 0.5 * (2.0 * w).sin() + 0.25 * (3.0 * w).sin();
+                let envelope = if syllables {
+                    let p = t % 0.25;
+                    if p >= 0.18 { 0.0 } else { (p / 0.02).min((0.18 - p) / 0.02).min(1.0) }
+                } else {
+                    1.0
+                };
+                tone * scale * envelope
+            })
+            .collect()
+    }
+
+    fn overlay(base: &mut [f64], at_seconds: f64, sound: &[f64]) {
+        let offset = (at_seconds * 16_000.0) as usize;
+        for (target, value) in base[offset..].iter_mut().zip(sound) {
+            *target += value;
+        }
+    }
+
+    fn activity(signal: &[f64]) -> SpeechActivity {
+        let pcm: Vec<i16> = signal.iter().map(|v| v.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16).collect();
+        speech_activity(&pcm)
+    }
+
+    #[test]
+    fn 人声估计_长时间底噪里一下短促的声音_不算听到() {
+        // 仿实测误识别样本：按住 16s，底噪约 -36 dBFS，中间只有一下 0.3s、-20 dBFS 的哼声
+        let mut held = noise(16.0, -36.0, 7);
+        overlay(&mut held, 4.0, &voice(0.3, -20.0, false));
+        let result = activity(&held);
+        assert!(!result.heard_voice(), "{result:?}");
+        assert!((result.noise_floor_db + 38.0).abs() < 3.0, "底噪估计: {result:?}");
+
+        // 同样一下放在 2 秒的短录音里：当成说了一个字
+        let mut short = noise(2.0, -36.0, 7);
+        overlay(&mut short, 0.8, &voice(0.3, -20.0, false));
+        assert!(activity(&short).heard_voice(), "{:?}", activity(&short));
+    }
+
+    #[test]
+    fn 人声估计_正常说话与小声说话都算听到() {
+        let cases: [(&str, Vec<f64>); 5] = [
+            ("正常音量说 3 秒", {
+                let mut s = noise(5.0, -36.0, 11);
+                overlay(&mut s, 0.5, &voice(3.0, -22.0, true));
+                s
+            }),
+            ("嘈杂环境小声说话：只比底噪高 6dB", {
+                let mut s = noise(5.0, -36.0, 13);
+                overlay(&mut s, 0.5, &voice(3.0, -30.0, true));
+                s
+            }),
+            ("安静房间小声说话", {
+                let mut s = noise(4.0, -60.0, 17);
+                overlay(&mut s, 0.5, &voice(2.0, -45.0, true));
+                s
+            }),
+            ("一句 0.6 秒的短话", {
+                let mut s = noise(3.0, -36.0, 19);
+                overlay(&mut s, 1.0, &voice(0.6, -24.0, true));
+                s
+            }),
+            ("整段几乎不停顿（底噪估计被语音抬高，靠封顶兜住）", {
+                let mut s = voice(3.0, -20.0, true);
+                overlay(&mut s, 0.0, &noise(3.0, -60.0, 23));
+                s
+            }),
+        ];
+        for (name, signal) in cases {
+            let result = activity(&signal);
+            assert!(result.heard_voice(), "{name}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn 人声估计_纯底噪与无信号不算听到() {
+        for (db, seed) in [(-36.0, 29), (-60.0, 31)] {
+            let result = activity(&noise(10.0, db, seed));
+            assert!(!result.heard_voice(), "{db} dBFS 底噪: {result:?}");
+        }
+        let silent = speech_activity(&[0; 32_000]);
+        assert!(!silent.heard_voice());
+        assert_eq!(silent.noise_floor_db, -120.0);
+        let empty = speech_activity(&[]);
+        assert!(!empty.heard_voice());
+        assert_eq!(empty.total_seconds, 0.0);
     }
 
     #[test]

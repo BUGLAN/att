@@ -24,6 +24,10 @@
 //! 与旧版语义一致：单段模式优化期间不接受新录音；流式模式允许直接开始下一段，
 //! 此时上一段的优化转入后台，结果只入库、不粘贴（避免粘进新输入框）。
 //!
+//! 没听到人声：识别出了字，但按短帧能量估计录音里几乎没有人声（[`att_core::audio::speech_activity`]，
+//! 典型是按住十几秒没说话、底噪被识别成一个词），三种模式一律不送优化、不复制也不输入，
+//! 悬浮窗提示检查麦克风；记录照常保存（error 字段注明），便于回听排查。
+//!
 //! 三防御语义在这里天然成立：
 //! - 不丢开头：采集先于建连启动，建连期间的样本缓存在会话任务里，就绪后统一冲刷；
 //! - 不丢尾：停止 = 停采集并等采集线程把环里尾部样本全部交付，之后才发末包；
@@ -63,6 +67,10 @@ const LEVEL_EMIT_INTERVAL: Duration = Duration::from_millis(40);
 /// 实测按住 ⌘⌥ 时系统偶尔报告 ⌘ 抬起约 200ms 又按回（⌥ 一直按着），立即停止的话一句话被截成两段。
 /// 代价是正常松开后晚这么久才开始收尾（多收一小段尾音，不影响识别）。
 const HOLD_RELEASE_GRACE: Duration = Duration::from_millis(250);
+/// 识别出了字、录音里却几乎没有人声时的提示（悬浮窗「敗」旁与主窗口共用）。
+const NO_VOICE_MESSAGE: &str = "没有听到声音，检查麦克风";
+/// 同上情况在记录里的标记：写进 error 字段（记录格式不变，旧数据照常可读）。
+const NO_VOICE_NOTE: &str = "没有听到人声，识别结果未优化、未输入";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -108,7 +116,6 @@ struct SessionOutcome {
     /// 识别失败原因（有部分文本时为降级成功）
     error: Option<String>,
     cancelled: bool,
-    processing_time: f64,
 }
 
 enum Cmd {
@@ -185,6 +192,8 @@ struct Active {
     /// 由「按住录音」键开始：只有这种会话在松开时收尾；点按录音 / 界面按钮开始的会话不理会松开
     held: bool,
     started: Instant,
+    /// 停止录音的时刻（按住模式取真实松开那一刻）：记录里的「处理耗时」从这里算起，不含录音本身
+    stopped_at: Option<Instant>,
 }
 
 /// 录音热键在当前相位下该做什么（纯逻辑，见 [`record_hotkey_step`]）。
@@ -545,6 +554,7 @@ impl Actor {
             pending_release: None,
             held,
             started: Instant::now(),
+            stopped_at: None,
         });
 
         let tx = self.tx.clone();
@@ -600,7 +610,9 @@ impl Actor {
             std::thread::spawn(move || capture.stop());
         }
         active.pending_release = None;
-        let recorded = recorded_until(active.started, released_at, Instant::now());
+        let now = Instant::now();
+        active.stopped_at = Some(released_at.unwrap_or(now));
+        let recorded = recorded_until(active.started, released_at, now);
         let quiet_end = quiet_end_reason(recorded, active.heard.load(Ordering::Relaxed));
         if let (true, Some(reason)) = (allow_silent, quiet_end) {
             active.quiet_end = Some(reason);
@@ -653,7 +665,7 @@ impl Actor {
             }
             return;
         }
-        self.finish(SessionOutcome { samples: Vec::new(), text: String::new(), error: None, cancelled: true, processing_time: 0.0 })
+        self.finish(SessionOutcome { samples: Vec::new(), text: String::new(), error: None, cancelled: true })
             .await;
     }
 
@@ -704,6 +716,7 @@ impl Actor {
         // 让 emit_state 仍能带上本次模式
         let mode = active.mode;
         let (quiet_end, timed_out) = (active.quiet_end, active.timed_out);
+        let processing_time = processing_seconds(active.stopped_at, Instant::now());
         self.active = Some(Active { capture: None, cancel: None, ..active });
         let duration = outcome.samples.len() as f64 / SAMPLE_RATE;
         if outcome.cancelled && timed_out {
@@ -727,14 +740,32 @@ impl Actor {
             match outcome.error {
                 // 识别失败且没有任何文本：音频落盘并建失败记录，避免录音丢失
                 Some(error) => {
-                    let record = self.save_record(&outcome.samples, duration, None, Some(error.clone()), outcome.processing_time).await;
+                    let record = self.save_record(&outcome.samples, duration, None, Some(error.clone()), processing_time).await;
                     self.emit_state("error", json!({ "message": error, "record": record }));
                 }
                 None => self.emit_state("completed", json!({ "message": "没有识别到语音内容", "text": "" })),
             }
+        } else if let Some(activity) = missing_voice(&outcome.samples) {
+            // 识别出了字，但录音里几乎没有人声：多半是底噪或一下杂音被识别成了词（实测按住 16s 没说话，识别出「Clean.」）。
+            // 不送优化、不复制也不输入；记录照常保存并在 error 里注明，便于回听排查
+            tracing::info!(
+                "没有听到人声，识别结果不输出（{}，共 {:.1}s，底噪 {:.0} dBFS，清楚 {:.2}s，隐约 {:.2}s，识别 {} 字）",
+                mode.as_str(),
+                activity.total_seconds,
+                activity.noise_floor_db,
+                activity.clear_seconds,
+                activity.faint_seconds,
+                outcome.text.chars().count()
+            );
+            let note = match &outcome.error {
+                Some(error) => format!("{NO_VOICE_NOTE}；{error}"),
+                None => NO_VOICE_NOTE.to_string(),
+            };
+            let record = self.save_record(&outcome.samples, duration, Some(outcome.text.clone()), Some(note), processing_time).await;
+            self.emit_state("completed", no_voice_state(&outcome.text, record));
         } else {
             let record = self
-                .save_record(&outcome.samples, duration, Some(outcome.text.clone()), outcome.error.clone(), outcome.processing_time)
+                .save_record(&outcome.samples, duration, Some(outcome.text.clone()), outcome.error.clone(), processing_time)
                 .await;
             let record_id = record.get("id").and_then(Value::as_str).map(str::to_string);
             let auto_optimize = self.core.settings().auto_optimize && optimizer::has_default_model(&self.core);
@@ -1015,6 +1046,27 @@ impl Actor {
     }
 }
 
+/// 识别出了字但录音里几乎没有人声时，返回人声估计（用于日志）；没有音频（强制收尾带回的空结果）时不判定。
+fn missing_voice(samples: &[i16]) -> Option<att_core::audio::SpeechActivity> {
+    if samples.is_empty() {
+        return None;
+    }
+    let activity = att_core::audio::speech_activity(samples);
+    (!activity.heard_voice()).then_some(activity)
+}
+
+/// 没听到人声时的收尾载荷：text 留空——主窗口据此只弹提示、不当成一次成功的转写，
+/// 悬浮窗按「敗 + 提示」收起（见 floating::from_recording_state）。识别出的字在 raw_text 与记录里。
+fn no_voice_state(raw_text: &str, record: Value) -> Value {
+    json!({ "message": NO_VOICE_MESSAGE, "text": "", "raw_text": raw_text, "record": record, "no_voice": true })
+}
+
+/// 记录里的「处理耗时」：从停止录音（按住模式是真实松开那一刻，松开缓冲算在处理里；多段模式最后一段也在这时送出）
+/// 到拿到识别结果，三种模式同一口径，不含录音本身。没经过停止就结束的（麦克风中途断开）记 0，界面不显示。
+fn processing_seconds(stopped_at: Option<Instant>, done_at: Instant) -> f64 {
+    stopped_at.map(|at| done_at.saturating_duration_since(at).as_secs_f64()).unwrap_or(0.0)
+}
+
 /// 看门狗强制结束会话时，算不算「识别超时」：用户取消与安静结束本就要丢弃，仍按原因收尾。
 fn counts_as_timeout(quiet_end: Option<&'static str>, user_cancelled: bool) -> bool {
     quiet_end.is_none() && !user_cancelled
@@ -1125,7 +1177,7 @@ async fn streaming_task(
                     session.cancel().await;
                 }
                 let _ = tx.send(Cmd::Done(id, SessionOutcome {
-                    samples: all, text, error: None, cancelled: true, processing_time: started.elapsed().as_secs_f64(),
+                    samples: all, text, error: None, cancelled: true,
                 }));
                 return;
             }
@@ -1213,7 +1265,6 @@ async fn streaming_task(
         text,
         error,
         cancelled,
-        processing_time: started.elapsed().as_secs_f64(),
     }));
 }
 
@@ -1231,7 +1282,7 @@ async fn batch_task(
         tokio::select! {
             _ = &mut cancel_rx => {
                 let _ = tx.send(Cmd::Done(id, SessionOutcome {
-                    samples: all, text: String::new(), error: None, cancelled: true, processing_time: 0.0,
+                    samples: all, text: String::new(), error: None, cancelled: true,
                 }));
                 return;
             }
@@ -1241,7 +1292,6 @@ async fn batch_task(
             },
         }
     }
-    let started = Instant::now();
     let (text, error, cancelled) = if (all.len() as f64 / SAMPLE_RATE) < MIN_DURATION_SECONDS {
         (String::new(), None, false)
     } else {
@@ -1259,7 +1309,6 @@ async fn batch_task(
         text,
         error,
         cancelled,
-        processing_time: started.elapsed().as_secs_f64(),
     }));
 }
 
@@ -1278,7 +1327,6 @@ async fn multi_task(
     app: AppHandle,
     tx: mpsc::UnboundedSender<Cmd>,
 ) {
-    let started = Instant::now();
     let mut all: Vec<i16> = Vec::new();
     let (result_tx, mut result_rx) = mpsc::unbounded_channel::<(usize, Result<String, String>)>();
     let mut texts: Vec<Option<Result<String, String>>> = Vec::new();
@@ -1305,7 +1353,7 @@ async fn multi_task(
             _ = &mut cancel_rx => {
                 let text = joined(&texts);
                 let _ = tx.send(Cmd::Done(id, SessionOutcome {
-                    samples: all, text, error: None, cancelled: true, processing_time: started.elapsed().as_secs_f64(),
+                    samples: all, text, error: None, cancelled: true,
                 }));
                 return;
             }
@@ -1338,7 +1386,7 @@ async fn multi_task(
             _ = &mut cancel_rx => {
                 let text = joined(&texts);
                 let _ = tx.send(Cmd::Done(id, SessionOutcome {
-                    samples: all, text, error: None, cancelled: true, processing_time: started.elapsed().as_secs_f64(),
+                    samples: all, text, error: None, cancelled: true,
                 }));
                 return;
             }
@@ -1362,16 +1410,17 @@ async fn multi_task(
         text,
         error,
         cancelled: false,
-        processing_time: started.elapsed().as_secs_f64(),
     }));
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        counts_as_timeout, finalize_budget, quiet_end_reason, record_hotkey_step, recorded_until, Mode, Phase,
-        RecordHotkeyStep, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS,
+        counts_as_timeout, finalize_budget, missing_voice, no_voice_state, processing_seconds, quiet_end_reason,
+        record_hotkey_step, recorded_until, Mode, Phase, RecordHotkeyStep, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS,
+        NO_VOICE_MESSAGE,
     };
+    use serde_json::{json, Value};
     use att_core::settings::hotkey::HotkeyAction::{ClipboardPanel, Record, RecordToggle};
     use att_hotkey::KeyPhase::{Pressed, Released};
     use std::time::{Duration, Instant};
@@ -1449,5 +1498,36 @@ mod tests {
         // 单段：ChatGPT 的超时设置与豆包按时长加时取大
         assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(30), 120), Duration::from_secs(135));
         assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(600), 120), Duration::from_secs(333));
+    }
+
+    #[test]
+    fn 处理耗时_从松开算起_不含录音时长() {
+        // 实测：流式录了 18s，松开后收尾 0.65s——记录里应是 0.65s，而不是 18.65s
+        let started = Instant::now();
+        let released = started + Duration::from_secs(18);
+        let done = released + Duration::from_millis(650);
+        assert!((processing_seconds(Some(released), done) - 0.65).abs() < 1e-9);
+        // 没经过停止（麦克风中途断开）：记 0，界面不显示
+        assert_eq!(processing_seconds(None, done), 0.0);
+        // 时钟不会倒退成负数
+        assert_eq!(processing_seconds(Some(done), released), 0.0);
+    }
+
+    #[test]
+    fn 没听到人声_不输出且悬浮窗提示检查麦克风() {
+        // 没有音频（强制收尾带回的空结果）不判定；有音频但全是静音则判定为没听到
+        assert!(missing_voice(&[]).is_none());
+        assert!(missing_voice(&[0; 32_000]).is_some());
+
+        let mut payload = no_voice_state("Clean.", Value::Null);
+        assert_eq!(payload["text"], "", "text 留空：主窗口只弹提示，不当成一次成功的转写");
+        assert_eq!(payload["raw_text"], "Clean.");
+        payload["phase"] = json!("completed");
+        payload["mode"] = json!("streaming");
+        let (floating, show) = crate::floating::from_recording_state(&payload).expect("悬浮窗要显示提示");
+        assert!(show);
+        assert_eq!(floating["phase"], "complete");
+        assert_eq!(floating["ok"], false, "按「敗」收起，不报「成」");
+        assert_eq!(floating["text"], NO_VOICE_MESSAGE);
     }
 }
