@@ -1,4 +1,6 @@
-//! 音频工具：16k 单声道 PCM16 的 WAV 读写与线性重采样（录音落盘 / 批量转写共用）。
+//! 音频工具：16k 单声道 PCM16 的 FLAC / WAV 读写与线性重采样（录音落盘 / 批量转写共用）。
+//!
+//! 录音落盘用 FLAC（无损，语音约为 WAV 体积的一半）；旧版本留下的 WAV 照常可读可播。
 
 use std::path::Path;
 
@@ -40,11 +42,79 @@ pub fn wav_bytes_16k(samples: &[i16]) -> std::io::Result<Vec<u8>> {
     Ok(cursor.into_inner())
 }
 
+/// 新录音落盘的扩展名（见 [`write_recording_16k`]）。
+pub const RECORDING_EXTENSION: &str = "flac";
+
+/// 录音落盘：16k 单声道 PCM16 无损压缩为 FLAC（先写 .tmp 再 rename，异常退出不留半截文件）。
+pub fn write_recording_16k(path: &Path, samples: &[i16]) -> std::io::Result<()> {
+    write_bytes_atomic(path, &flac_bytes_16k(samples)?)
+}
+
+/// 编码 16k 单声道 PCM16 FLAC 到内存。
+pub fn flac_bytes_16k(samples: &[i16]) -> std::io::Result<Vec<u8>> {
+    use flacenc::component::BitRepr;
+    use flacenc::error::Verify;
+    let config = flacenc::config::Encoder::default()
+        .into_verified()
+        .map_err(|(_, error)| std::io::Error::other(format!("FLAC 编码参数无效: {error:?}")))?;
+    let wide: Vec<i32> = samples.iter().map(|&s| i32::from(s)).collect();
+    let source = flacenc::source::MemSource::from_samples(&wide, 1, 16, TARGET_RATE as usize);
+    let stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
+        .map_err(|error| std::io::Error::other(format!("FLAC 编码失败: {error:?}")))?;
+    let mut sink = flacenc::bitsink::ByteSink::new();
+    stream.write(&mut sink).map_err(|error| std::io::Error::other(format!("FLAC 写出失败: {error:?}")))?;
+    Ok(sink.into_inner())
+}
+
+/// 同目录临时文件 + rename 落盘（失败时清理临时文件）。
+fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    let result = std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// 按扩展名取音频的 MIME 类型（录音回放端点用；未知按 WAV 处理，与旧版一致）。
+pub fn audio_content_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("flac") => "audio/flac",
+        _ => "audio/wav",
+    }
+}
+
+/// 读录音文件为 16k 单声道 i16：`.flac` 走 FLAC 解码，其余按 WAV 读。
+pub fn read_audio_16k_mono(path: &Path) -> std::io::Result<Vec<i16>> {
+    if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("flac")) {
+        read_flac_16k_mono(path)
+    } else {
+        read_wav_16k_mono(path)
+    }
+}
+
+/// 读 FLAC 为 16k 单声道 i16（本应用写出的 16k 单声道 16 位直接取样本，其余混音 + 重采样）。
+pub fn read_flac_16k_mono(path: &Path) -> std::io::Result<Vec<i16>> {
+    let mut reader = claxon::FlacReader::open(path).map_err(std::io::Error::other)?;
+    let info = reader.streaminfo();
+    let samples: Vec<i32> = reader.samples().collect::<Result<_, _>>().map_err(std::io::Error::other)?;
+    if info.channels == 1 && info.bits_per_sample == 16 && info.sample_rate == TARGET_RATE {
+        return Ok(samples.into_iter().map(|s| s as i16).collect());
+    }
+    let scale = (1i64 << info.bits_per_sample.saturating_sub(1)) as f32;
+    let interleaved: Vec<f32> = samples.into_iter().map(|s| s as f32 / scale).collect();
+    Ok(to_16k_mono(&interleaved, info.channels as usize, info.sample_rate))
+}
+
 /// 读 WAV 为 16k 单声道 i16（多声道取均值；非 16k 线性重采样）。
 pub fn read_wav_16k_mono(path: &Path) -> std::io::Result<Vec<i16>> {
     let mut reader = hound::WavReader::open(path).map_err(std::io::Error::other)?;
     let spec = reader.spec();
-    let channels = spec.channels.max(1) as usize;
     let interleaved: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => reader.samples::<f32>().filter_map(Result::ok).collect(),
         hound::SampleFormat::Int => {
@@ -52,14 +122,19 @@ pub fn read_wav_16k_mono(path: &Path) -> std::io::Result<Vec<i16>> {
             reader.samples::<i32>().filter_map(Result::ok).map(|s| s as f32 / scale).collect()
         }
     };
+    Ok(to_16k_mono(&interleaved, spec.channels as usize, spec.sample_rate))
+}
+
+/// 交错的 [-1, 1] 浮点样本 → 16k 单声道 i16（多声道取均值；非 16k 线性重采样）。
+fn to_16k_mono(interleaved: &[f32], channels: usize, sample_rate: u32) -> Vec<i16> {
     let mono: Vec<f32> = interleaved
-        .chunks(channels)
+        .chunks(channels.max(1))
         .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
         .collect();
-    let mut resampler = LinearResampler::new(spec.sample_rate, TARGET_RATE);
-    let mut out = Vec::with_capacity(mono.len() * TARGET_RATE as usize / spec.sample_rate.max(1) as usize + 1);
+    let mut resampler = LinearResampler::new(sample_rate, TARGET_RATE);
+    let mut out = Vec::with_capacity(mono.len() * TARGET_RATE as usize / sample_rate.max(1) as usize + 1);
     resampler.process(&mono, &mut out);
-    Ok(out.into_iter().map(f32_to_i16).collect())
+    out.into_iter().map(f32_to_i16).collect()
 }
 
 pub fn f32_to_i16(sample: f32) -> i16 {
@@ -226,12 +301,40 @@ mod tests {
     }
 
     #[test]
+    fn flac_往返_无损且比wav小() {
+        let dir = std::env::temp_dir().join(format!("att-audio-flac-{}", std::process::id()));
+        let path = dir.join(format!("a.{RECORDING_EXTENSION}"));
+        // 3 秒带噪声的「语音」：正弦叠加伪随机抖动，跨多个 FLAC 块
+        let mut seed = 12345u32;
+        let samples: Vec<i16> = (0..48_000)
+            .map(|i| {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                let noise = ((seed >> 16) % 600) as f32 - 300.0;
+                ((i as f32 * 0.05).sin() * 6000.0 + noise) as i16
+            })
+            .collect();
+        write_recording_16k(&path, &samples).unwrap();
+        assert!(!dir.join(format!("a.{RECORDING_EXTENSION}.tmp")).exists(), "不留临时文件");
+        assert_eq!(read_audio_16k_mono(&path).unwrap(), samples, "FLAC 必须逐样本无损");
+        let flac_size = std::fs::metadata(&path).unwrap().len() as usize;
+        assert!(flac_size < samples.len() * 2 * 3 / 4, "FLAC {flac_size} 字节，应明显小于 WAV");
+        assert_eq!(audio_content_type(&path), "audio/flac");
+        assert_eq!(audio_content_type(Path::new("x.WAV")), "audio/wav");
+
+        // 空录音也能编码（只有头）
+        write_recording_16k(&dir.join("empty.flac"), &[]).unwrap();
+        assert!(read_audio_16k_mono(&dir.join("empty.flac")).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn wav_往返() {
         let dir = std::env::temp_dir().join(format!("att-audio-{}", std::process::id()));
         let path = dir.join("a.wav");
         let samples: Vec<i16> = (0..1600).map(|i| (i * 10) as i16).collect();
         write_wav_16k(&path, &samples).unwrap();
         assert_eq!(read_wav_16k_mono(&path).unwrap().len(), 1600);
+        assert_eq!(read_audio_16k_mono(&path).unwrap().len(), 1600, "非 .flac 按 WAV 读");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

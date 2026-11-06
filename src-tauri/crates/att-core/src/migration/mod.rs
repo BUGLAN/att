@@ -4,7 +4,7 @@
 //! 1. settings.json：剥离退役键；旧 `hotkey` + 旧 Electron userData 的
 //!    desktop-settings.json 合并为新版 `hotkeys[]`（desktop 端优先，它是旧桌面层真相源）
 //! 2. 音频错位修复（阶段① 缺陷 #3）：record.audio_path 指向存在的文件 →
-//!    重命名为 `{record_id}.wav`；悬空引用按时长启发式匹配未认领的 wav；
+//!    重命名为 `{record_id}.<原扩展名>`（新录音 .flac / 旧录音 .wav）；悬空引用按时长启发式匹配未认领的 wav；
 //!    仍未认领的移入 `audio/orphans/`（只隔离不删除）
 //! 3. 遗留文件不迁移（wordbook/、data/prompts/presets.json 保持原样，无代码读取）
 
@@ -202,7 +202,8 @@ fn repair_audio_mismatch(data_dir: &Path, report: &mut MigrationReport) {
     // 载入全部记录（只读视角；set_audio_path 走仓库写路径）
     let (records, _) = repo.load_all();
 
-    // pass 1：audio_path 指向存在的文件 → 重命名为 {id}.wav
+    // pass 1：audio_path 指向存在的文件 → 重命名为 {id}.<原扩展名>
+    // （新录音是 .flac，旧录音是 .wav；扩展名必须跟着文件内容走，不能一律改成 .wav）
     for record in &records {
         if !is_safe_identifier(&record.id) {
             continue;
@@ -212,7 +213,8 @@ fn repair_audio_mismatch(data_dir: &Path, report: &mut MigrationReport) {
         }
         let source = repo.resolve_audio_path(&record.audio_path);
         if source.is_file() {
-            let target_name = format!("{}.wav", record.id);
+            let extension = source.extension().and_then(|e| e.to_str()).unwrap_or("wav");
+            let target_name = format!("{}.{extension}", record.id);
             if record.audio_path != target_name {
                 let target = audio_dir.join(&target_name);
                 if !target.exists() {
@@ -464,6 +466,30 @@ mod tests {
         assert!(report.orphan_audio.is_empty(), "被引用的 wav 不得进 orphans: {:?}", report.orphan_audio);
         assert_eq!(repo.get("rec-c").unwrap().audio_path, "rec-c.wav");
         assert!(audio.join("rec-c.wav").is_file(), "文件应已改名为 rec-c.wav");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 新录音存 FLAC：pass-1 改名必须保留 .flac 扩展名，也不得把它当孤儿隔离。
+    #[test]
+    fn 音频错位修复_flac录音保留扩展名() {
+        let dir = temp_data("audio-flac");
+        let repo = RecordRepo::new(&dir);
+        repo.ensure_dirs().unwrap();
+        let audio = repo.audio_dir();
+
+        crate::audio::write_recording_16k(&audio.join("uuid-d.flac"), &[0i16; 1600]).unwrap();
+        repo.insert(crate::records::Record {
+            id: "rec-d".into(),
+            audio_path: "uuid-d.flac".into(),
+            duration: 0.1,
+            ..Default::default()
+        }).unwrap();
+
+        let report = run_with_legacy(&dir, Platform::Windows, None);
+        assert!(report.renamed_audio.contains(&"rec-d.flac".to_string()), "改名: {:?}", report.renamed_audio);
+        assert!(report.orphan_audio.is_empty(), "被引用的 flac 不得进 orphans: {:?}", report.orphan_audio);
+        assert_eq!(repo.get("rec-d").unwrap().audio_path, "rec-d.flac");
+        assert_eq!(crate::audio::read_audio_16k_mono(&audio.join("rec-d.flac")).unwrap().len(), 1600);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

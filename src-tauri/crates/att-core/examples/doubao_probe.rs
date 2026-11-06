@@ -26,7 +26,7 @@ async fn main() {
         config.end_window_size = window;
     }
     println!("配置: {config:?}");
-    let samples = att_core::audio::read_wav_16k_mono(&wav).expect("读取 WAV 失败");
+    let samples = att_core::audio::read_audio_16k_mono(&wav).expect("读取音频失败");
     println!("音频: {} 采样 ≈ {:.2}s", samples.len(), samples.len() as f64 / 16000.0);
 
     let started = Instant::now();

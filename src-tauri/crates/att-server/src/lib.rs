@@ -487,7 +487,7 @@ async fn records_audio(
         Ok(Some(path)) => match tokio::fs::read(&path).await {
             Ok(bytes) => {
                 let mut headers = HeaderMap::new();
-                headers.insert(header::CONTENT_TYPE, "audio/wav".parse().unwrap());
+                headers.insert(header::CONTENT_TYPE, att_core::audio::audio_content_type(&path).parse().unwrap());
                 headers.insert(header::ACCEPT_RANGES, "none".parse().unwrap());
                 (StatusCode::OK, headers, bytes).into_response()
             }

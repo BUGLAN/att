@@ -22,6 +22,9 @@ base64 = "0.22"
 rand = "0.8"
 # WAV 读写与时长解析（迁移阶段的音频错位修复）
 hound = "3.5"
+# 录音落盘压成 FLAC（纯 Rust 编码，不开并行 / serde）；claxon 解码，供离线评测读回录音
+flacenc = { version = "0.5", default-features = false }
+claxon = "0.4"
 # 探测旧 Electron userData 目录（迁移 legacy desktop-settings.json）
 dirs = "6"
 # 豆包 SAUC 流式 ASR：WebSocket（native-tls：mac/Win 走系统 TLS，不引入 OpenSSL/aws-lc 构建依赖）

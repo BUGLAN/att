@@ -1,6 +1,6 @@
 //! 豆包识别 A/B 对比（默认忽略，会真实调用豆包并计费）。
 //!
-//! 用本机已存的录音（`data/audio/records/*.wav`）重跑豆包两遍并排输出：
+//! 用本机已存的录音（`data/audio/records/` 下的 `.flac` / 旧 `.wav`）重跑豆包两遍并排输出：
 //! - 默认对比识别语言 `zh` 与留空（`auto`），用来判断中英混说时是否应该放开语言限制；
 //! - 设了 `ATT_AB_HOTWORDS` 时改为对比「无热词」与「带热词」（语言固定 `zh`）。
 //!
@@ -130,7 +130,7 @@ async fn doubao_ab() {
     let mut report = format!("| 记录 | 当时原文 | {} | {} |\n| --- | --- | --- | --- |\n", labels[0], labels[1]);
     let mut differ = 0;
     for (index, sample) in samples.iter().enumerate() {
-        let pcm = att_core::audio::read_wav_16k_mono(&sample.wav).expect("读取录音");
+        let pcm = att_core::audio::read_audio_16k_mono(&sample.wav).expect("读取录音");
         let mut texts = Vec::new();
         for (_, language, hotwords) in &variants {
             config.hotwords = hotwords.clone();

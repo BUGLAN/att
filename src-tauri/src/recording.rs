@@ -923,12 +923,12 @@ impl Actor {
         processing_time: f64,
     ) -> Value {
         let id = uuid::Uuid::new_v4().to_string();
-        let audio_name = format!("{id}.wav");
-        // 没有音频（优化选中文本建的文本记录）：不落空 WAV，audio_path 留空
+        let audio_name = format!("{id}.{}", att_core::audio::RECORDING_EXTENSION);
+        // 没有音频（优化选中文本建的文本记录）：不落空音频文件，audio_path 留空
         let audio_ok = !samples.is_empty() && {
             let audio_path = self.core.records.audio_dir().join(&audio_name);
             let samples = samples.to_vec();
-            let wrote = tokio::task::spawn_blocking(move || att_core::audio::write_wav_16k(&audio_path, &samples)).await;
+            let wrote = tokio::task::spawn_blocking(move || att_core::audio::write_recording_16k(&audio_path, &samples)).await;
             if !matches!(wrote, Ok(Ok(()))) {
                 tracing::error!("录音落盘失败: {wrote:?}");
             }

@@ -79,4 +79,5 @@ models/                本地模型（不入库）：faster_whisper/（CT2 large
 | 图片写剪贴板 | Windows 上必须自己写 `CF_DIB`(BI_RGB) + `CF_DIBV5`(BI_RGB) + `PNG`（`src-tauri/src/clipboard_image.rs`）；换回 arboard 的 BI_BITFIELDS 写法会让 Chromium 系应用粘不出图 |
 | 新增模拟按键 | 自动输入 / 粘贴等自己发出的键盘事件必须打 `att_hotkey::SYNTHETIC_EVENT_TAG`（macOS `EVENT_SOURCE_USER_DATA`、Windows `dwExtraInfo`），否则热键监听会把它清零的修饰键当成用户松开，按住录音时被打断又自动开新一段 |
 | 剪贴板偶发写失败 | 剪贴板同一时刻只允许一个线程打开，写入要重试；失败发生在 `EmptyClipboard` 之后会把用户剪贴板清空 |
+| 录音文件格式 | 新录音落盘为 FLAC（`audio::write_recording_16k`），旧录音仍是 WAV；读录音一律走 `audio::read_audio_16k_mono`（按扩展名分派），回放端点按扩展名给 Content-Type |
 | 记录 / 剪贴板列表有内存索引 | `RecordRepo` / `ClipboardRepo` 的列表、搜索、去重走 `storage::dir_index`，靠目录修改时间发现外部增删；别绕过仓库原地改写 `data/records/`、`data/clipboard/` 里的文件（原地改内容不会被发现，需重启） |
