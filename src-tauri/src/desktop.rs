@@ -34,7 +34,10 @@ pub fn write_clipboard(text: &str) -> Result<(), String> {
         }
         let result = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text.to_string()));
         match result {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                crate::clipboard::mark_internal_change();
+                return Ok(());
+            }
             Err(error) => last = error.to_string(),
         }
     }

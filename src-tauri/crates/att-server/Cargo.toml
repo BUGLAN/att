@@ -20,3 +20,4 @@ tracing = { workspace = true }
 att-core = { path = "../att-core", features = ["test-support"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+image = { version = "0.25", default-features = false, features = ["png"] }

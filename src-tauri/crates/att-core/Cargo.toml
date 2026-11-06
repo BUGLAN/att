@@ -32,6 +32,8 @@ tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 flate2 = "1"
 uuid = { version = "1", features = ["v4"] }
+# 剪贴板图片缩略图：悬浮框卡片只要几百像素宽，原图（常见 2K~4K 截图）解码太重
+image = { version = "0.25", default-features = false, features = ["png"] }
 # 本地引擎：faster-whisper（CTranslate2/ct2rs）与 Qwen3-ASR（sherpa-onnx ONNX）
 att-whisper = { path = "../att-whisper" }
 att-qwen = { path = "../att-qwen" }

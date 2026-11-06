@@ -84,7 +84,7 @@
         </span>
 
         <span v-if="isClipboardImageItem(item)" class="panel-card-image">
-          <img v-if="previews[item.id]" :src="previews[item.id]" :alt="getClipboardDisplayTitle(item)">
+          <img v-if="previews[item.id]" :src="previews[item.id]" :alt="getClipboardDisplayTitle(item)" decoding="async">
           <span v-else class="ui-meta">{{ G.file }}</span>
         </span>
         <span v-else-if="item.item_type === 'link'" class="panel-card-body panel-card-link">
@@ -303,11 +303,12 @@ async function resetForShow() {
   await Promise.all([unchanged ? loadFirstPage() : null, loadContext()])
 }
 
-// 图片卡片直接显示缩略图：按条目缓存成 blob 地址，只取前面一屏多的，往后翻到再取
+// 图片卡片直接显示缩略图：按条目缓存成 blob 地址，只取前面一屏多的，往后翻到再取。
+// 取的是后端缩好的缩略图（长边 ≤ 560px）：原图常是 2K~4K 截图，每次唤起整张解码十几张会卡
 async function ensurePreview(item) {
   if (!item || !isClipboardImageItem(item) || previews[item.id]) return
   try {
-    const url = await api.getClipboardItemImageUrl(item.id, item.updated_at || item.created_at || '')
+    const url = await api.getClipboardItemThumbnailUrl(item.id, item.updated_at || item.created_at || '')
     const response = await fetch(url)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     previews[item.id] = URL.createObjectURL(await response.blob())
@@ -515,9 +516,9 @@ onBeforeUnmount(() => {
   flex-direction: column;
   border: 1px solid var(--line-soft-strong);
   border-radius: var(--r-md);
+  /* 不用 backdrop-filter：窗口是透明的，面板背后在页面里什么都没有，模糊不出任何效果，
+     却让每帧合成都多一遍整面板模糊（Windows 透明 WebView2 上尤其吃力，滚动、升起动画会掉帧） */
   background: var(--surface-float);
-  backdrop-filter: blur(24px) saturate(1.2);
-  -webkit-backdrop-filter: blur(24px) saturate(1.2);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), var(--edge-hi);
   overflow: hidden;
   animation: panel-rise 220ms cubic-bezier(0.2, 0.9, 0.25, 1);

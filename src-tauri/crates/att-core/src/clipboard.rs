@@ -3,7 +3,9 @@
 //!
 //! - 捕获去重：规范化文本（CRLF→LF、trim）的 SHA-256 相同即视为重复，只累加 `duplicate_count`；
 //! - 类型识别：链接 / 文件路径 / 代码 / 纯文本（图片由监控方显式指定）；
-//! - 图片路径一律解析到 `data/clipboard/images/` 内，越界拒绝（防借图片接口读任意文件）。
+//! - 图片路径一律解析到 `data/clipboard/images/` 内，越界拒绝（防借图片接口读任意文件）；
+//! - 缩略图：`data/clipboard/thumbnails/<原图文件名>`，长边不超过 [`THUMBNAIL_MAX`]，
+//!   新图入库时顺手生成，旧图首次请求时生成；原图本身够小就直接用原图。
 
 use crate::records::is_safe_identifier;
 use crate::storage::dir_index::DirIndex;
@@ -22,6 +24,31 @@ static CODE_WORDS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(function|const|let|class|def|import|return)\b").expect("正则合法"));
 
 pub const ITEM_TYPES: [&str; 5] = ["text", "link", "code", "file", "image"];
+
+/// 缩略图长边上限（像素）：悬浮框卡片约 250px 宽、剪贴板页悬停预览最大 280px，按 2 倍屏留够
+pub const THUMBNAIL_MAX: u32 = 560;
+
+/// 按长边等比缩到 [`THUMBNAIL_MAX`] 以内；本来就不超过时返回 None（直接用原图）。
+pub fn make_thumbnail(image: &image::RgbaImage) -> Option<image::RgbaImage> {
+    let (width, height) = image.dimensions();
+    let long = width.max(height);
+    if long <= THUMBNAIL_MAX {
+        return None;
+    }
+    let scale = THUMBNAIL_MAX as f64 / long as f64;
+    let target = |side: u32| ((side as f64 * scale).round() as u32).max(1);
+    Some(image::imageops::thumbnail(image, target(width), target(height)))
+}
+
+/// 写 PNG：同目录临时文件 + 改名（并发生成同一张缩略图时互不踩踏，读到的总是完整文件）。
+fn write_png_atomic(path: &Path, image: &image::RgbaImage) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
+    let result = image.save_with_format(&tmp, image::ImageFormat::Png).map_err(std::io::Error::other).and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
 
 /// 与 Python `datetime.isoformat()` 一致的本地无时区时间（旧数据两版互读）。
 fn now_iso() -> String {
@@ -213,6 +240,48 @@ impl ClipboardRepo {
 
     pub fn images_dir(&self) -> PathBuf {
         self.dir.join("images")
+    }
+
+    pub fn thumbnails_dir(&self) -> PathBuf {
+        self.dir.join("thumbnails")
+    }
+
+    /// 新图入库时由监控方调用：内存里已有解码好的整图，直接缩出缩略图（够小则不生成）。
+    pub fn save_thumbnail(&self, stored_file_name: &str, image: &image::RgbaImage) -> std::io::Result<()> {
+        let Some(thumbnail) = make_thumbnail(image) else { return Ok(()) };
+        if !is_safe_file_name(stored_file_name) {
+            return Err(std::io::Error::other("非法图片文件名"));
+        }
+        std::fs::create_dir_all(self.thumbnails_dir())?;
+        write_png_atomic(&self.thumbnails_dir().join(stored_file_name), &thumbnail)
+    }
+
+    /// 图片条目的缩略图路径：已生成的直接用；没有就从原图生成（阻塞，调用方放到阻塞线程）；
+    /// 原图够小、或格式解不开（旧版的 jpg / gif 等）时返回原图。
+    pub fn thumbnail_path(&self, id: &str) -> Option<PathBuf> {
+        let original = self.image_path(id)?;
+        let file_name = original.file_name()?.to_str()?.to_string();
+        let cached = self.thumbnails_dir().join(&file_name);
+        if cached.is_file() {
+            return Some(cached);
+        }
+        let decoded = image::open(&original).map(|image| image.to_rgba8());
+        let thumbnail = match decoded {
+            Ok(image) => make_thumbnail(&image),
+            Err(error) => {
+                tracing::debug!("剪贴板图片无法生成缩略图，改用原图 {}: {error}", original.display());
+                None
+            }
+        };
+        let Some(thumbnail) = thumbnail else { return Some(original) };
+        let written = std::fs::create_dir_all(self.thumbnails_dir()).and_then(|()| write_png_atomic(&cached, &thumbnail));
+        match written {
+            Ok(()) => Some(cached),
+            Err(error) => {
+                tracing::warn!("写入剪贴板缩略图失败，改用原图: {error}");
+                Some(original)
+            }
+        }
     }
 
     fn item_path(&self, id: &str) -> Option<PathBuf> {
@@ -419,6 +488,11 @@ impl ClipboardRepo {
     }
 }
 
+/// 缩略图沿用原图文件名：只允许单层文件名（不含路径分隔符、不以点开头）。
+fn is_safe_file_name(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('.') && !name.contains(['/', '\\']) && name != ".."
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,6 +548,49 @@ mod tests {
         assert!(repo.delete(&link.id));
         assert_eq!(repo.stats()["total"], 1, "删除同步移出索引");
         assert!(!repo.delete("../etc/passwd"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn image_item(repo: &ClipboardRepo, file_name: &str) -> ClipboardItem {
+        repo.capture(CaptureRequest {
+            content: format!("image:{file_name}"),
+            item_type: Some("image".into()),
+            metadata: Some(serde_json::from_value(json!({"image_path": format!("images/{file_name}")})).unwrap()),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn 缩略图_大图按长边缩到上限并缓存_小图与解不开的用原图() {
+        let (repo, dir) = repo("thumb");
+        image::RgbaImage::from_pixel(1200, 720, image::Rgba([10, 20, 30, 255]))
+            .save(repo.images_dir().join("big.png"))
+            .unwrap();
+        image::RgbaImage::from_pixel(300, 200, image::Rgba([1, 2, 3, 255])).save(repo.images_dir().join("small.png")).unwrap();
+        std::fs::write(repo.images_dir().join("broken.png"), b"not a png").unwrap();
+
+        let big = image_item(&repo, "big.png");
+        let thumb = repo.thumbnail_path(&big.id).unwrap();
+        assert!(thumb.starts_with(repo.thumbnails_dir()), "{}", thumb.display());
+        assert_eq!(image::image_dimensions(&thumb).unwrap(), (560, 336), "长边 560，等比");
+        let modified = std::fs::metadata(&thumb).unwrap().modified().unwrap();
+        assert_eq!(repo.thumbnail_path(&big.id).unwrap(), thumb);
+        assert_eq!(std::fs::metadata(&thumb).unwrap().modified().unwrap(), modified, "第二次直接用缓存");
+
+        let small = image_item(&repo, "small.png");
+        assert!(repo.thumbnail_path(&small.id).unwrap().ends_with("images/small.png"), "够小直接用原图");
+        let broken = image_item(&repo, "broken.png");
+        assert!(repo.thumbnail_path(&broken.id).unwrap().ends_with("images/broken.png"), "解不开退回原图");
+
+        // 入库时由监控方用内存里的整图生成；文件名不能带路径
+        let wide = image::RgbaImage::from_pixel(2000, 100, image::Rgba([0, 0, 0, 255]));
+        repo.save_thumbnail("wide.png", &wide).unwrap();
+        assert_eq!(image::image_dimensions(repo.thumbnails_dir().join("wide.png")).unwrap(), (560, 28));
+        assert!(repo.save_thumbnail("../escape.png", &wide).is_err());
+        assert!(make_thumbnail(&image::RgbaImage::new(THUMBNAIL_MAX, 100)).is_none(), "正好等于上限不缩");
+        let leftovers = std::fs::read_dir(repo.thumbnails_dir()).unwrap().flatten().filter(|e| e.path().to_string_lossy().contains(".tmp")).count();
+        assert_eq!(leftovers, 0, "不留临时文件");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

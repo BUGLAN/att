@@ -23,7 +23,8 @@ const WRITE_ATTEMPTS: usize = 5;
 const RETRY_INTERVAL: Duration = Duration::from_millis(40);
 
 /// 把一张 RGBA 图片写进系统剪贴板。`rgba` 必须是 `width * height * 4` 字节。
-pub fn write_rgba(app: &tauri::AppHandle, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
+/// `png`：手上已有的同一张图的 PNG 字节（如剪贴板历史里的原图文件），有就直接用，省掉一次整图编码。
+pub fn write_rgba(app: &tauri::AppHandle, rgba: &[u8], width: u32, height: u32, png: Option<&[u8]>) -> Result<(), String> {
     if width == 0 || height == 0 {
         return Err("图片尺寸为 0".into());
     }
@@ -33,12 +34,12 @@ pub fn write_rgba(app: &tauri::AppHandle, rgba: &[u8], width: u32, height: u32) 
 
     #[cfg(windows)]
     {
-        platform::write(app, rgba, width, height)
+        platform::write(app, rgba, width, height, png)
     }
 
     #[cfg(not(windows))]
     {
-        let _ = app;
+        let _ = (app, png);
         // macOS：arboard 走 NSImage，各应用都能读
         let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
         clipboard
@@ -197,16 +198,20 @@ mod platform {
         std::ptr::null_mut()
     }
 
-    pub fn write(app: &tauri::AppHandle, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
-        write_with_owner(owner(app), rgba, width, height)
+    pub fn write(app: &tauri::AppHandle, rgba: &[u8], width: u32, height: u32, png: Option<&[u8]>) -> Result<(), String> {
+        write_with_owner(owner(app), rgba, width, height, png)
     }
 
     /// 真正落剪贴板的实现；`hwnd` 为 NULL 时由当前线程「充当」owner（仅用于测试）。
-    pub fn write_with_owner(hwnd: HWND, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
-        // 先编码好，真正动剪贴板的时间越短越好（打开剪贴板期间全系统都写不了）
+    pub fn write_with_owner(hwnd: HWND, rgba: &[u8], width: u32, height: u32, png: Option<&[u8]>) -> Result<(), String> {
+        // 先编码好，真正动剪贴板的时间越短越好（打开剪贴板期间全系统都写不了）。
+        // 已有原图 PNG 就直接用：2K~4K 截图重新编码一遍要几百毫秒
         let dib = super::dib24(rgba, width, height);
         let dibv5 = super::dibv5(rgba, width, height);
-        let png = encode_png(rgba, width, height)?;
+        let png = match png {
+            Some(bytes) => bytes.to_vec(),
+            None => encode_png(rgba, width, height)?,
+        };
         let png = png_format().map(|id| (id, png)).ok_or_else(|| "注册 PNG 剪贴板格式失败".to_string())?;
 
         let mut last = String::new();
@@ -348,7 +353,7 @@ mod tests {
     fn 手动_写图片剪贴板后三种格式都合规() {
         use super::platform;
         let rgba = sample();
-        platform::write_with_owner(std::ptr::null_mut(), &rgba, 2, 2).expect("写剪贴板失败");
+        platform::write_with_owner(std::ptr::null_mut(), &rgba, 2, 2, None).expect("写剪贴板失败");
 
         let (dib, dibv5, png) = platform::with_open_clipboard(|| {
             (

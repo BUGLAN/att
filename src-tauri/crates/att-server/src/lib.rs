@@ -898,6 +898,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn 剪贴板缩略图_大图返回缩小的_png_找不到给404() {
+        let state = test_state("clip-thumb").await;
+        let clipboard = &state.core.clipboard;
+        std::fs::create_dir_all(clipboard.images_dir()).unwrap();
+        image::RgbaImage::from_pixel(1600, 900, image::Rgba([200, 10, 10, 255])).save(clipboard.images_dir().join("shot.png")).unwrap();
+        let item = clipboard
+            .capture(att_core::clipboard::CaptureRequest {
+                content: "image:shot".into(),
+                item_type: Some("image".into()),
+                metadata: Some(serde_json::from_value(json!({"image_path": "images/shot.png"})).unwrap()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let response = router(state.clone())
+            .oneshot(axum::http::Request::builder().uri(format!("/api/clipboard/items/{}/thumbnail", item.id)).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let thumb = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (560, 315));
+
+        let (status, _) = get_json(&state, "/api/clipboard/items/nope/thumbnail").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn records_列表是裸数组() {
         let state = test_state("list").await;
         let (status, body) = get_json(&state, "/api/records").await;

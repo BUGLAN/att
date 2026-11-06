@@ -23,6 +23,7 @@ pub fn routes() -> Router<Arc<ServerState>> {
         .route("/api/clipboard/stats", get(stats))
         .route("/api/clipboard/items/{id}", get(item).put(update).delete(remove))
         .route("/api/clipboard/items/{id}/image", get(image))
+        .route("/api/clipboard/items/{id}/thumbnail", get(thumbnail))
 }
 
 fn detail(status: StatusCode, message: &str) -> Response {
@@ -110,9 +111,28 @@ async fn remove(State(state): Shared, Path(id): Path<String>) -> Result<Json<Val
 }
 
 async fn image(State(state): Shared, Path(id): Path<String>) -> Result<Response, Response> {
-    let not_found = || detail(StatusCode::NOT_FOUND, "Clipboard image not found");
-    let path = state.core.clipboard.image_path(&id).ok_or_else(not_found)?;
-    let bytes = tokio::fs::read(&path).await.map_err(|_| not_found())?;
+    let path = state.core.clipboard.image_path(&id).ok_or_else(image_not_found)?;
+    serve_image(&path).await
+}
+
+/// 缩略图（长边不超过 560px）：悬浮框卡片用，避免每次唤起都整张解码 2K~4K 原图。
+/// 首次请求某张旧图时要解码原图生成，放到阻塞线程；原图够小或解不开时直接给原图。
+async fn thumbnail(State(state): Shared, Path(id): Path<String>) -> Result<Response, Response> {
+    let core = state.core.clone();
+    let path = tokio::task::spawn_blocking(move || core.clipboard.thumbnail_path(&id))
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(image_not_found)?;
+    serve_image(&path).await
+}
+
+fn image_not_found() -> Response {
+    detail(StatusCode::NOT_FOUND, "Clipboard image not found")
+}
+
+async fn serve_image(path: &std::path::Path) -> Result<Response, Response> {
+    let bytes = tokio::fs::read(path).await.map_err(|_| image_not_found())?;
     let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("gif") => "image/gif",

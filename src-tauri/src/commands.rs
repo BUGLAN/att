@@ -133,8 +133,11 @@ pub fn read_clipboard_text() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn write_clipboard_text(text: String) -> Result<bool, String> {
-    crate::desktop::write_clipboard(&text)?;
+pub async fn write_clipboard_text(text: String) -> Result<bool, String> {
+    // 不能在主线程上写：剪贴板被占用时要等几轮重试，期间所有窗口都卡住
+    tauri::async_runtime::spawn_blocking(move || crate::desktop::write_clipboard(&text))
+        .await
+        .map_err(|e| err(e.to_string()))??;
     Ok(true)
 }
 
@@ -142,17 +145,33 @@ pub fn write_clipboard_text(text: String) -> Result<bool, String> {
 ///
 /// 落剪贴板的格式由 `clipboard_image` 决定：Windows 上必须同时给 CF_DIB / CF_DIBV5（BI_RGB）+ PNG，
 /// 否则 Chromium/Skia 系应用（含网页输入框）粘不出图。
+///
+/// 放到阻塞线程：读文件 + 整图解码 + 转位图，大截图要几百毫秒，不能卡住主线程（所有窗口都会冻住）。
 #[tauri::command]
-pub fn write_clipboard_image(app: AppHandle, state: State<'_, AppState>, payload: Value) -> Result<bool, String> {
-    let raw_path = payload.get("imagePath").and_then(|v| v.as_str()).unwrap_or("");
-    let resolved = resolve_clipboard_image_path(&state.core.data_dir, raw_path)?;
+pub async fn write_clipboard_image(app: AppHandle, state: State<'_, AppState>, payload: Value) -> Result<bool, String> {
+    let raw_path = payload.get("imagePath").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let data_dir = state.core.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || write_clipboard_image_blocking(&app, &data_dir, &raw_path))
+        .await
+        .map_err(|e| err(e.to_string()))??;
+    Ok(true)
+}
+
+fn write_clipboard_image_blocking(app: &AppHandle, data_dir: &std::path::Path, raw_path: &str) -> Result<(), String> {
+    let resolved = resolve_clipboard_image_path(data_dir, raw_path)?;
     let bytes = std::fs::read(&resolved).map_err(|e| err(format!("读取图片失败: {e}")))?;
     let img = image::load_from_memory(&bytes).map_err(|e| err(format!("图片解码失败: {e}")))?;
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
-    crate::clipboard::mark_internal_image(rgba.as_raw());
-    crate::clipboard_image::write_rgba(&app, rgba.as_raw(), width, height)?;
-    Ok(true)
+    // 拿不到换代计数的平台才需要按内容标记（要对整图算哈希）；其余写完记换代计数即可
+    if crate::desktop::clipboard_change_count().is_none() {
+        crate::clipboard::mark_internal_image(rgba.as_raw());
+    }
+    // 原文件本来就是 PNG：直接作为剪贴板的 PNG 格式，免得重新编码
+    let png = bytes.starts_with(b"\x89PNG\r\n\x1a\n").then_some(bytes.as_slice());
+    crate::clipboard_image::write_rgba(app, rgba.as_raw(), width, height, png)?;
+    crate::clipboard::mark_internal_change();
+    Ok(())
 }
 
 /// 解析剪贴板图片路径（相对路径锚定 `data/clipboard/`），并确认真实路径落在数据目录内。

@@ -364,6 +364,12 @@ export const api = {
     const suffix = version ? `?v=${encodeURIComponent(version)}` : ''
     return `${baseUrl}/clipboard/items/${id}/image${suffix}`
   },
+  // 缩略图（长边不超过 560px）：卡片 / 悬停预览用，原图留给查看大图
+  async getClipboardItemThumbnailUrl(id, version = '') {
+    const baseUrl = await getBaseUrl()
+    const suffix = version ? `?v=${encodeURIComponent(version)}` : ''
+    return `${baseUrl}/clipboard/items/${id}/thumbnail${suffix}`
+  },
   updateClipboardItem: (id, data) => request('PUT', `/clipboard/items/${id}`, { body: data }),
   deleteClipboardItem: (id) => request('DELETE', `/clipboard/items/${id}`),
 
