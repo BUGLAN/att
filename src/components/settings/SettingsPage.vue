@@ -38,11 +38,6 @@
         </div>
         <p v-if="!navGroups.length" class="settings-nav__empty">没有匹配「{{ navQuery.trim() }}」的设置项</p>
       </nav>
-
-      <div class="settings-nav__foot" :class="{ saving: isSavingSettings || isSavingPreset }">
-        <span class="settings-nav__dot" aria-hidden="true"></span>
-        {{ isSavingSettings || isSavingPreset ? '正在保存…' : '改动自动保存' }}
-      </div>
     </aside>
 
     <div class="settings-main">
@@ -939,27 +934,6 @@ onUnmounted(() => {
   font-size: var(--fs-cap);
   color: var(--text-3);
   line-height: 1.6;
-}
-
-.settings-nav__foot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: var(--s-3) var(--s-4);
-  border-top: 1px solid var(--line);
-  font-size: var(--fs-cap);
-  color: var(--text-3);
-}
-
-.settings-nav__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--r-xs);
-  background: var(--ok);
-}
-
-.settings-nav__foot.saving .settings-nav__dot {
-  background: var(--accent);
 }
 
 .settings-main {

@@ -737,10 +737,6 @@ textarea:focus-visible {
     transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 
-.sidebar-health.is-quiet {
-    color: var(--text-3);
-}
-
 .sidebar-health:hover {
     background: var(--bg-card);
     color: var(--text-1);

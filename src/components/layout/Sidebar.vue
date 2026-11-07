@@ -26,11 +26,10 @@
       </template>
     </nav>
 
-    <!-- 底部只留一行总体状态：正常时一句「已就绪」，出问题才写原因；明细放在 title 里，点击去对应设置页 -->
-    <div class="sidebar-status">
+    <!-- 底部总体状态：一切正常时不显示，只在断开 / 引擎不可用 / 加载中时出现；明细放在 title 里，点击去对应设置页 -->
+    <div v-if="health.level !== 'ok'" class="sidebar-status">
       <button
         class="sidebar-health"
-        :class="{ 'is-quiet': health.level === 'ok' }"
         type="button"
         :title="health.detail"
         @click="appStore.openSettings(health.section)"
