@@ -6,7 +6,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">自动 AI 优化</span>
-            <span class="setting-desc">用 LLM 整理口语，边生成边输入。</span>
+            <span class="setting-desc">用 LLM 整理口语。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.auto_optimize" type="checkbox" aria-label="自动 AI 优化">
@@ -14,7 +14,7 @@
           </label>
         </div>
         <div v-if="form.auto_optimize && !hasLlmModel" class="settings-note warn">
-          <span>还没有可用的 LLM 模型，自动优化不会生效。</span>
+          <span>未配置 LLM 模型，自动优化不生效。</span>
           <BaseButton variant="outline" size="sm" @click="goSection('llm')">去配置</BaseButton>
         </div>
         <div class="setting-item">
@@ -32,7 +32,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">自动复制并粘贴</span>
-            <span class="setting-desc">结果复制并输入到当前输入框。</span>
+            <span class="setting-desc">输入到当前输入框。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.auto_copy_to_clipboard" type="checkbox" aria-label="自动复制并粘贴">
@@ -48,7 +48,6 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">使用的预设</span>
-            <span class="setting-desc">「优化选中文本」（{{ rewriteHotkeyDisplay }}）用的预设。</span>
           </div>
           <div class="setting-actions-inline">
             <BaseSelect v-model="form.rewrite_preset_id" :disabled="!allPresets.length" aria-label="优化选中文本使用的预设">
@@ -59,11 +58,11 @@
           </div>
         </div>
         <div v-if="!form.rewrite_enabled" class="settings-note">
-          <span>「优化选中文本」快捷键当前已关闭。</span>
+          <span>快捷键已关闭。</span>
           <BaseButton variant="outline" size="sm" @click="goSection('hotkey')">去开启</BaseButton>
         </div>
         <div v-else-if="!hasLlmModel" class="settings-note warn">
-          <span>还没有可用的 LLM 模型，优化选中文本不会生效。</span>
+          <span>未配置 LLM 模型，优化选中文本不生效。</span>
           <BaseButton variant="outline" size="sm" @click="goSection('llm')">去配置</BaseButton>
         </div>
       </div>

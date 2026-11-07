@@ -31,7 +31,7 @@ export function formatDateTime(iso) {
 }
 
 /**
- * 检查结果的展示：{ tone: 'ok' | 'info' | 'err', title, detail }；还没检查过返回 null。
+ * 检查结果的展示：{ tone: 'ok' | 'accent' | 'err', title, detail }；还没检查过返回 null。
  * 三种结果都要有明确反馈，失败时 detail 就是后端给的原因。
  */
 export function describeCheck(check, { inApp = false } = {}) {
@@ -52,7 +52,7 @@ export function describeCheck(check, { inApp = false } = {}) {
     } else if (check.asset.size) {
       parts.push(`安装包 ${formatBytes(check.asset.size)}`)
     }
-    return { tone: 'info', title: `发现新版本 v${check.latest_version}`, detail: parts.join(' · ') }
+    return { tone: 'accent', title: `发现新版本 v${check.latest_version}`, detail: parts.join(' · ') }
   }
   if (check.status === 'latest') {
     return { tone: 'ok', title: `已是最新版本（${current}）`, detail: '' }
@@ -61,7 +61,7 @@ export function describeCheck(check, { inApp = false } = {}) {
 }
 
 /**
- * 版本号旁的小标记：{ tone: 'ok' | 'info', text }；没检查过或检查失败返回 null。
+ * 版本号旁的小标记：{ tone: 'ok' | 'accent', text }；没检查过或检查失败返回 null。
  * 「已是最新」只用这个标记提示，不再另起提示条。
  */
 export function versionBadge(check) {
@@ -69,7 +69,7 @@ export function versionBadge(check) {
     return { tone: 'ok', text: '已是最新' }
   }
   if (check?.status === 'available' && check.latest_version) {
-    return { tone: 'info', text: `可更新至 v${check.latest_version}` }
+    return { tone: 'accent', text: `可更新至 v${check.latest_version}` }
   }
   return null
 }
@@ -80,7 +80,7 @@ export function versionBadge(check) {
  */
 export function describeCheckLine(check) {
   if (!check) {
-    return { error: '', meta: '从发布渠道获取最新正式版本，与当前版本比较。' }
+    return { error: '', meta: '' }
   }
   const time = formatDateTime(check.checked_at)
   const meta = time ? `上次检查：${time}` : ''

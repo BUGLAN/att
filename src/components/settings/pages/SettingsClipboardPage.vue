@@ -6,7 +6,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">启用剪贴板悬浮框</span>
-            <span class="setting-desc">按快捷键呼出最近的剪贴板记录，可直接打字搜索。</span>
+            <span class="setting-desc">呼出剪贴板历史，可打字搜索。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.clipboard_panel_enabled" type="checkbox" aria-label="启用剪贴板悬浮框">
@@ -48,7 +48,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">选中条目后</span>
-              <span class="setting-desc">回车或点击时执行；{{ modKey }}↵ 执行另一种。</span>
+              <span class="setting-desc">{{ modKey }}↵ 执行另一种。</span>
             </div>
             <BaseSelect v-model="form.clipboard_panel_enter_action" aria-label="选中条目后">
               <option value="paste">粘贴到原来的输入框</option>
@@ -58,7 +58,6 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">悬浮框尺寸</span>
-              <span class="setting-desc">拖动悬浮框边缘调整，自动记住。</span>
             </div>
             <div class="setting-actions-inline">
               <span class="ui-meta ui-mono">{{ sizeText }}</span>
@@ -68,7 +67,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">悬浮框位置</span>
-              <span class="setting-desc">上下拖动悬浮框头部调整，双击回到底部。</span>
+              <span class="setting-desc">拖动头部调整，双击回底部。</span>
             </div>
             <div class="setting-actions-inline">
               <span class="ui-meta ui-mono">{{ positionText }}</span>

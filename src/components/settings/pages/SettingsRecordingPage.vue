@@ -18,7 +18,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">录音时暂停其他音频</span>
-            <span class="setting-desc">录音时静音系统声音，结束后恢复。</span>
+            <span class="setting-desc">结束后自动恢复。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.pause_audio_on_recording" type="checkbox" aria-label="录音时暂停其他音频">

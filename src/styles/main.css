@@ -1490,30 +1490,67 @@ textarea:focus-visible {
   line-height: 1.5;
 }
 
-/* 卡片内的轻提示条（info / warn） */
+/* 卡片内的提示条：不用彩色底和彩色框，语义只落在左侧一道细色条上（info 金 / warn 琥珀 / err 红）。
+   紧跟设置项时并入该行，成为它的「页脚」（虚线分隔），不再是独立的方框。 */
 .settings-note {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--s-3);
-  margin-top: var(--s-3);
-  padding: var(--s-2) var(--s-3);
-  border-radius: var(--r-sm);
+  gap: var(--s-2);
+  margin: var(--s-2) 0;
+  padding: var(--s-2) var(--s-4);
+  border-radius: var(--r-md);
   font-size: var(--fs-cap);
   line-height: 1.6;
-  color: var(--text-2);
-  background: var(--info-soft);
-  border: 1px solid var(--info-line);
+  color: var(--text-3);
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+}
+
+.settings-note::before {
+  content: '';
+  flex: none;
+  align-self: flex-start;
+  width: 3px;
+  height: 14px;
+  margin-top: 0.2em;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 .settings-note.warn {
-  background: var(--warn-soft);
-  border-color: var(--warn-line);
+  color: var(--text-2);
+}
+
+.settings-note.warn::before {
+  background: var(--warn);
 }
 
 .settings-note.err {
-  background: var(--err-soft);
-  border-color: var(--err-line);
+  color: var(--err);
+}
+
+.settings-note.err::before {
+  background: var(--err);
+}
+
+/* 操作按钮靠右 */
+.settings-note > .ui-btn {
+  flex: none;
+  margin-left: auto;
+}
+
+.setting-item:has(+ .settings-note) {
+  margin-bottom: 0;
+  border-bottom-color: transparent;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.setting-item + .settings-note {
+  margin-top: 0;
+  border-top: 1px dashed var(--line-strong);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 .settings-advanced {

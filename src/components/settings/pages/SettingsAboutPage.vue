@@ -33,7 +33,7 @@
           </div>
         </div>
 
-        <div v-if="loadError" class="settings-note about-note is-err" role="alert">
+        <div v-if="loadError" class="settings-note about-note err" role="alert">
           <span>读取更新状态失败：{{ loadError }}</span>
         </div>
 
@@ -133,7 +133,7 @@ const canDownload = computed(() => canStartDownload(check.value, download.value,
 const canRestart = computed(() => canInstall(download.value))
 const canFallback = computed(() => canFallbackToInstaller(check.value, download.value))
 const autoDownloadDesc = computed(() => (inApp.value
-  ? '有新版本时在后台下载，下好后提示你重启更新。'
+  ? '后台下载，完成后提示重启。'
   : '有新版本时自动下载安装包。'))
 const checkLine = computed(() => describeCheckLine(check.value))
 const badge = computed(() => versionBadge(check.value))
@@ -247,7 +247,7 @@ onUnmounted(() => {
   justify-content: flex-end;
 }
 
-/* 版本号旁的小标记：样式全用 BaseBadge（tone ok / info），这里只管与版本文字的间距 */
+/* 版本号旁的小标记：样式全用 BaseBadge（tone ok / accent），这里只管与版本文字的间距 */
 .about-badge {
   margin-left: var(--s-2);
   vertical-align: 1px;
@@ -259,15 +259,9 @@ onUnmounted(() => {
   word-break: break-all;
 }
 
-/* 发现新版本的提示条：沿用 .settings-note（读取状态失败也用它，带 is-err） */
+/* 发现新版本的提示条：沿用 .settings-note（读取状态失败也用它，带 err） */
 .about-note {
   align-items: flex-start;
-  margin-bottom: var(--s-3);
-}
-
-.about-note.is-err {
-  background: var(--err-soft);
-  border-color: var(--err-line);
 }
 
 .about-note__body {
@@ -299,6 +293,7 @@ onUnmounted(() => {
 }
 
 .about-note__actions {
+  margin-left: auto;
   display: flex;
   flex-wrap: wrap;
   gap: var(--s-2);
@@ -315,7 +310,7 @@ onUnmounted(() => {
 .about-progress__bar {
   display: block;
   height: 100%;
-  background: var(--info);
+  background: var(--accent);
   transition: width 0.3s ease;
 }
 </style>

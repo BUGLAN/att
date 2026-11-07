@@ -69,7 +69,7 @@
           </div>
         </div>
         <div v-if="!hotkeyDisplay && !toggleHotkeyDisplay" class="settings-note warn">
-          <span>两种录音快捷键都为空，只能在首页点印章录音。</span>
+          <span>未设置录音快捷键，只能在首页点印章录音。</span>
         </div>
         <div v-if="status.error" class="settings-note warn">
           <span>{{ status.error }}</span>
@@ -84,7 +84,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">启用</span>
-            <span class="setting-desc">选中文字后按快捷键，用 LLM 改写并替换原文。</span>
+            <span class="setting-desc">用 LLM 改写选中的文字。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.rewrite_enabled" type="checkbox" aria-label="启用优化选中文本">

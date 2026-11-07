@@ -30,7 +30,7 @@ test('检查结果：三种情况都有明确反馈，失败带原因', () => {
   assert.equal(describeCheck(null), null, '没检查过不显示')
 
   const available = describeCheck(AVAILABLE)
-  assert.equal(available.tone, 'info')
+  assert.equal(available.tone, 'accent')
   assert.equal(available.title, '发现新版本 v2.6.0')
   assert.match(available.detail, /当前 v2\.5\.1/)
   assert.match(available.detail, /安装包 7\.1 MB/)
@@ -52,11 +52,11 @@ test('检查结果：三种情况都有明确反馈，失败带原因', () => {
 test('版本号标记与检查更新行：已是最新只给标记，失败原因写在行内', () => {
   assert.equal(versionBadge(null), null, '没检查过不显示')
   assert.deepEqual(versionBadge({ status: 'latest' }), { tone: 'ok', text: '已是最新' })
-  assert.deepEqual(versionBadge(AVAILABLE), { tone: 'info', text: '可更新至 v2.6.0' })
+  assert.deepEqual(versionBadge(AVAILABLE), { tone: 'accent', text: '可更新至 v2.6.0' })
   assert.equal(versionBadge({ status: 'error', error: 'x' }), null)
 
   assert.deepEqual(describeCheckLine(null), {
-    error: '', meta: '从发布渠道获取最新正式版本，与当前版本比较。'
+    error: '', meta: ''
   })
   const latest = describeCheckLine({ status: 'latest', checked_at: '2026-11-04T07:22:00Z' })
   assert.equal(latest.error, '')

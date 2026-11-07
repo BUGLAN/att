@@ -83,7 +83,7 @@ export function localEngineView(provider, localEngine) {
       tone: 'info',
       chip: '加载中',
       title: '正在加载模型',
-      message: '首次加载需要十几秒到半分钟，期间可以照常录音，识别会在加载完成后进行。'
+      message: '首次加载约需半分钟，期间可照常录音。'
     }
   }
   if (!localEngine.available) {

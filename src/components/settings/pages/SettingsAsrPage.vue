@@ -58,7 +58,7 @@
         <div v-if="form.recording_mode === 'multi'" class="setting-item settings-advanced">
           <div class="setting-info">
             <span class="setting-label">静音分段阈值</span>
-            <span class="setting-desc">秒，停顿超过这么久就切一段。</span>
+            <span class="setting-desc">停顿超过该秒数即切段。</span>
           </div>
           <BaseInput v-model.number="form.silence_threshold" type="number" min="0.5" max="5" step="0.5" aria-label="静音分段阈值" />
         </div>
@@ -93,7 +93,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">Resource ID</span>
-            <span class="setting-desc">需与控制台开通的产品一致（1.0 用 bigasr，2.0 用 seedasr）。</span>
+            <span class="setting-desc">与控制台开通的产品一致。</span>
           </div>
           <BaseSelect v-model="form.doubao_asr_resource_id" aria-label="Resource ID">
             <option value="volc.seedasr.sauc.duration">volc.seedasr.sauc.duration（ASR 2.0 · 时长）</option>
@@ -114,7 +114,7 @@
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">强制断句静音时长</span>
-              <span class="setting-desc">毫秒，停顿这么久即断句；0 跟随服务端（建议 200–800）。</span>
+              <span class="setting-desc">毫秒；0 跟随服务端。</span>
             </div>
             <BaseInput v-model.number="form.doubao_asr_end_window_size" type="number" min="0" max="10000" step="100" aria-label="强制断句静音时长" />
           </div>
@@ -150,7 +150,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">请求超时</span>
-            <span class="setting-desc">秒，长录音可调大。</span>
+            <span class="setting-desc">秒。</span>
           </div>
           <BaseInput v-model.number="form.chatgpt_asr_timeout_seconds" type="number" min="10" max="600" step="10" aria-label="请求超时" />
         </div>
@@ -232,7 +232,6 @@
     <section class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">热词</h3>
-        <p class="hotword-desc">容易认错的专有名词，每行一个。</p>
         <BaseTextarea
           v-model="form.asr_hotwords_text"
           class="hotword-input"
@@ -434,13 +433,6 @@ const engines = computed(() => [
 </script>
 
 <style scoped>
-.hotword-desc {
-  margin: calc(var(--s-2) * -1) 0 var(--s-3);
-  font-size: var(--fs-cap);
-  color: var(--text-3);
-  line-height: 1.55;
-}
-
 /* 选择器带上父级：与 BaseTextarea 自身的 scoped 样式同权重时谁后加载谁赢，这里要稳定压过它 */
 .settings-group .hotword-input {
   font-size: var(--fs-sm);

@@ -7,7 +7,7 @@
           <BaseButton variant="solid" size="sm" @click="openPresetCreator()">新增预设</BaseButton>
         </div>
         <p v-if="!groups.custom.length" class="setting-desc">
-          还没有自定义预设，点「新增预设」写一个自己的提示词。
+          暂无自定义预设。
         </p>
         <div v-for="preset in groups.custom" :key="preset.id" class="setting-item">
           <div class="setting-info">

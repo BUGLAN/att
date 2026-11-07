@@ -22,7 +22,7 @@
           </div>
         </div>
         <div v-if="isDesktop" class="settings-note">
-          <span>{{ isDevBuild && platform === 'darwin' ? '开发态权限归属启动 tauri dev 的终端；授权后回到这里会自动刷新。' : '授权后回到这里会自动刷新。' }}</span>
+          <span>{{ isDevBuild && platform === 'darwin' ? '开发态权限归属启动 tauri dev 的终端；授权后自动刷新。' : '授权后自动刷新。' }}</span>
           <BaseButton variant="ghost" size="sm" :loading="loading" @click="refresh">重新检测</BaseButton>
         </div>
       </div>

@@ -104,10 +104,10 @@ export function hotwordBudget(words, budget = HOTWORD_TOKEN_BUDGET) {
 function asrRow(provider, list) {
   const label = `识别 · ${providerLabel(provider)}`
   if (!supportsHotwords(provider)) {
-    return { tone: 'neutral', label, text: '不支持热词，切换到豆包语音后生效。', dropped: [] }
+    return { tone: 'neutral', label, text: '当前引擎不支持热词。', dropped: [] }
   }
   if (!list.length) {
-    return { tone: 'neutral', label, text: `支持，按顺序发送，最多约 ${HOTWORD_TOKEN_BUDGET} token。`, dropped: [] }
+    return { tone: 'neutral', label, text: `支持，最多约 ${HOTWORD_TOKEN_BUDGET} token。`, dropped: [] }
   }
   const { used, sent, dropped } = hotwordBudget(list)
   if (dropped.length) {
@@ -126,13 +126,13 @@ function asrRow(provider, list) {
 function llmRow(list, { hasLlmModel = true, autoOptimize = false } = {}) {
   const label = 'LLM 纠错'
   if (!hasLlmModel) {
-    return { tone: 'warn', label, text: '还没有可用的 LLM 模型，词表暂时只用于识别。' }
+    return { tone: 'warn', label, text: '未配置 LLM 模型，暂只用于识别。' }
   }
   if (!list.length) {
-    return { tone: 'neutral', label, text: '填写后，AI 优化和文件校对会按词表纠正同音错字，所有引擎都适用。' }
+    return { tone: 'neutral', label, text: '用于 AI 优化和文件校对时纠正同音错字。' }
   }
   if (!autoOptimize) {
-    return { tone: 'neutral', label, text: '手动优化和文件校对时生效；开启「自动 AI 优化」后每次录音都会用到。' }
+    return { tone: 'neutral', label, text: '手动优化和文件校对时生效。' }
   }
   return { tone: 'ok', label, text: `已生效：AI 优化和文件校对会按这 ${list.length} 个词纠正同音错字。` }
 }

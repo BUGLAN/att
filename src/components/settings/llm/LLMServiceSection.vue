@@ -10,7 +10,7 @@
       </div>
     </div>
 
-    <div v-if="skippedEntries.length" class="llm-alert llm-alert-warn">
+    <div v-if="skippedEntries.length" class="settings-note warn">
       有 {{ skippedEntries.length }} 条旧配置因数据损坏被跳过（{{ skippedEntries.join('、') }}），其余配置不受影响。
     </div>
 
@@ -121,7 +121,7 @@
         <dt>备用模型</dt>
         <dd :class="{ 'is-unset': !fallbackModelLabel }">
           {{ fallbackModelLabel || '未设置' }}
-          <span class="llm-summary-note">{{ fallbackModelLabel ? '默认模型失败时自动切换' : '默认不自动切换，避免意外费用' }}</span>
+          <span v-if="fallbackModelLabel" class="llm-summary-note">默认模型失败时自动切换</span>
         </dd>
       </div>
     </dl>
@@ -337,9 +337,6 @@ defineExpose({ deleteProfile })
 .llm-head-desc { margin: 0; font-size: var(--fs-cap); color: var(--text-3); line-height: 1.6; }
 .settings-group-title + .llm-head-desc { margin-top: calc(-1 * var(--s-2)); }
 .llm-head-actions { margin-left: auto; display: flex; gap: var(--s-2); flex: none; }
-
-.llm-alert { border-radius: var(--r-md); padding: 10px 14px; font-size: var(--fs-cap); line-height: 1.7; }
-.llm-alert-warn { background: var(--warn-soft); border: 1px solid var(--warn-line); color: var(--warn); }
 
 .llm-empty {
   border: 1px dashed var(--line-strong); border-radius: var(--r-md);
