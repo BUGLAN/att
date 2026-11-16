@@ -17,7 +17,11 @@ fn temp_state(tag: &str) -> Arc<ServerState> {
 }
 
 async fn call(state: &Arc<ServerState>, method: &str, uri: &str, body: Option<Value>) -> (u16, Value) {
-    let mut request = axum::http::Request::builder().method(method).uri(uri);
+    let mut request = axum::http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("x-att-token", "test-token")
+        .header("host", "127.0.0.1");
     let body = match body {
         Some(value) => {
             request = request.header("content-type", "application/json");

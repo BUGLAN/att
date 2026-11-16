@@ -117,6 +117,14 @@ export async function getBaseUrl() {
   return `http://127.0.0.1:${port}/api`
 }
 
+// <audio>/<img>/下载链接带不了请求头：把令牌拼进查询串，中间件同样接受 GET/HEAD 的 ?token=
+function appendToken(url, token) {
+  if (!token) {
+    return url
+  }
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+}
+
 // 默认请求超时：普通 CRUD 30s；慢接口（LLM 优化 / 连接测试）单独放宽
 const DEFAULT_TIMEOUT_MS = 30000
 const SLOW_TIMEOUT_MS = 180000
@@ -410,26 +418,30 @@ export const api = {
   createClipboardItem: (data) => request('POST', '/clipboard/items', { body: data }),
   async getClipboardItemImageUrl(id, version = '') {
     const baseUrl = await getBaseUrl()
+    const token = await getBackendToken()
     const suffix = version ? `?v=${encodeURIComponent(version)}` : ''
-    return `${baseUrl}/clipboard/items/${id}/image${suffix}`
+    return appendToken(`${baseUrl}/clipboard/items/${id}/image${suffix}`, token)
   },
   // 缩略图（长边不超过 560px）：卡片 / 悬停预览用，原图留给查看大图
   async getClipboardItemThumbnailUrl(id, version = '') {
     const baseUrl = await getBaseUrl()
+    const token = await getBackendToken()
     const suffix = version ? `?v=${encodeURIComponent(version)}` : ''
-    return `${baseUrl}/clipboard/items/${id}/thumbnail${suffix}`
+    return appendToken(`${baseUrl}/clipboard/items/${id}/thumbnail${suffix}`, token)
   },
   updateClipboardItem: (id, data) => request('PUT', `/clipboard/items/${id}`, { body: data }),
   deleteClipboardItem: (id) => request('DELETE', `/clipboard/items/${id}`),
 
   async exportRecord(id, format = 'txt') {
     const baseUrl = await getBaseUrl()
-    return `${baseUrl}/records/${id}/export?format=${format}`
+    const token = await getBackendToken()
+    return appendToken(`${baseUrl}/records/${id}/export?format=${format}`, token)
   },
 
   async getRecordAudio(id) {
     const baseUrl = await getBaseUrl()
-    return `${baseUrl}/records/${id}/audio`
+    const token = await getBackendToken()
+    return appendToken(`${baseUrl}/records/${id}/audio`, token)
   },
 
   // 本地文件转写：短文件同步 200；长文件 202 {job_id}，再用 getTranscribeJob 轮询

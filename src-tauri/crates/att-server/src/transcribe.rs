@@ -10,7 +10,7 @@ use crate::ServerState;
 use att_core::transcribe::{self, Outcome, TranscribeError, TranscribeRequest};
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -33,20 +33,6 @@ fn error_response(error: TranscribeError) -> Response {
         }
     }
     response
-}
-
-/// 常量时间比较，避免时序侧信道。
-fn token_matches(expected: &str, actual: &str) -> bool {
-    expected.len() == actual.len() && expected.bytes().zip(actual.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
-}
-
-fn require_token(state: &ServerState, headers: &HeaderMap) -> Result<(), Response> {
-    let actual = headers.get("x-att-token").and_then(|v| v.to_str().ok()).unwrap_or("");
-    if !state.token.is_empty() && token_matches(&state.token, actual) {
-        Ok(())
-    } else {
-        Err((StatusCode::UNAUTHORIZED, Json(json!({ "detail": "缺少或错误的 X-ATT-Token" }))).into_response())
-    }
 }
 
 #[derive(Deserialize)]
@@ -73,10 +59,7 @@ fn default_engine() -> String {
     "auto".into()
 }
 
-async fn transcribe_file(State(state): State<Arc<ServerState>>, headers: HeaderMap, body: Bytes) -> Response {
-    if let Err(response) = require_token(&state, &headers) {
-        return response;
-    }
+async fn transcribe_file(State(state): State<Arc<ServerState>>, body: Bytes) -> Response {
     let body: Body = match serde_json::from_slice(&body) {
         Ok(body) => body,
         Err(error) => {
@@ -99,10 +82,7 @@ async fn transcribe_file(State(state): State<Arc<ServerState>>, headers: HeaderM
     }
 }
 
-async fn job(State(state): State<Arc<ServerState>>, headers: HeaderMap, Path(job_id): Path<String>) -> Response {
-    if let Err(response) = require_token(&state, &headers) {
-        return response;
-    }
+async fn job(State(state): State<Arc<ServerState>>, Path(job_id): Path<String>) -> Response {
     match state.core.transcriber.get_job(&job_id) {
         Some(job) => Json(job).into_response(),
         None => (StatusCode::NOT_FOUND, Json(json!({ "detail": "任务不存在或已过期" }))).into_response(),
@@ -134,6 +114,7 @@ mod tests {
         let mut builder = axum::http::Request::builder()
             .method("POST")
             .uri("/api/transcribe")
+            .header("host", "127.0.0.1")
             .header("content-type", "application/json");
         if let Some(token) = token {
             builder = builder.header("x-att-token", token);
@@ -146,7 +127,7 @@ mod tests {
     }
 
     async fn get_job(app: &Router, token: Option<&str>) -> StatusCode {
-        let mut builder = axum::http::Request::builder().uri("/api/transcribe/jobs/nope");
+        let mut builder = axum::http::Request::builder().uri("/api/transcribe/jobs/nope").header("host", "127.0.0.1");
         if let Some(token) = token {
             builder = builder.header("x-att-token", token);
         }

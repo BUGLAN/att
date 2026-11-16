@@ -80,8 +80,9 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 | `ATT_FORCE_MIGRATION=1` | 重跑一次性数据迁移 |
 | `DOUBAO_ASR_API_KEY` | 豆包密钥兜底（设置页填写的优先） |
 
-数据面令牌由应用每次启动随机生成并注入前端，文件转写接口默认要求请求头 `X-ATT-Token`；
-可转写的文件也只接受在界面里选择 / 拖入 / 手动确认过的路径（精确白名单），HTTP 调用不能自行扩大范围。
+数据面令牌由应用每次启动随机生成并注入前端；除 `/api/health` 外所有接口都要求 `X-ATT-Token`，
+录音回放 / 图片 / 导出等 `<audio>`、`<img>` 无法带请求头的地址改用 `?token=`。文件转写还要求
+路径在界面里选择 / 拖入 / 手动确认过的精确白名单内，HTTP 调用不能自行扩大范围。
 
 发布：版本号写在 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`（及对应 lock 文件），
 用 `npm run version:bump -- 2.8.0` 一次改齐（`node scripts/bump-version.mjs --check` 只校验，Node 测试里也会校验）；

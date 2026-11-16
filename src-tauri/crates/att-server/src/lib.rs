@@ -1,5 +1,9 @@
 //! 内嵌数据面 API（axum，仅绑定 127.0.0.1，随机端口）。
 //!
+//! 鉴权：每次启动生成随机 token；除 `/api/health` 外所有端点要求 `X-ATT-Token`
+//! （`<audio>` / `<img>` / 下载等带不了请求头的 GET 用 `?token=`）。来源按协议 + 主机名
+//! 精确匹配本地页面与 Tauri 自定义来源，Host 只允许 `127.0.0.1` / `localhost`（挡住 DNS rebinding）。
+//!
 //! 端点一览：
 //! - GET /api/health（前端 runtimeStatus：model_service_* 与 streaming_*）
 //! - GET/PUT /api/settings（白名单/脱敏契约保真）
@@ -23,7 +27,8 @@ mod update;
 use att_core::records::{RecordError, RecordUpdate};
 use att_core::state::CoreState;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, Method, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -56,6 +61,9 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .allow_methods(tower_http::cors::Any)
         .allow_headers(tower_http::cors::Any);
 
+    // 令牌校验在 CORS 内侧：预检由 CORS 层直接应答，不会要求 X-ATT-Token。
+    // 除 /api/health 外所有端点都必须带本次启动的令牌。
+    let guard_token = state.token.clone();
     Router::new()
         .route("/", get(root))
         .route("/api/health", get(health))
@@ -87,8 +95,60 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .merge(asr::routes())
         // 检查更新（设置页「关于」）
         .merge(update::routes())
+        .layer(middleware::from_fn(move |req, next| {
+            let token = guard_token.clone();
+            async move { data_plane_guard(token, req, next).await }
+        }))
         .layer(cors)
         .with_state(state)
+}
+
+/// 常量时间比较，避免时序侧信道。
+fn token_matches(expected: &str, actual: &str) -> bool {
+    expected.len() == actual.len() && expected.bytes().zip(actual.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+}
+
+/// 从查询串里取 `token=`（媒体元素带不了请求头时的兜底）。
+fn token_from_query(query: &str) -> Option<&str> {
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == "token" && !value.is_empty()).then_some(value)
+    })
+}
+
+/// 数据面统一鉴权 / Host 校验。
+///
+/// - `/api/health` 与 CORS 预检放行（探活与浏览器预检不需要令牌）；
+/// - 其余请求必须带 `X-ATT-Token`；GET/HEAD（录音回放、图片、导出）也接受 `?token=`；
+/// - Host 只能是 `127.0.0.1[:端口]` / `localhost[:端口]`，挡住 DNS rebinding。
+async fn data_plane_guard(token: String, req: axum::extract::Request, next: Next) -> axum::response::Response {
+    if req.method() == Method::OPTIONS || req.uri().path() == "/api/health" {
+        return next.run(req).await;
+    }
+
+    let header_token = req.headers().get("x-att-token").and_then(|value| value.to_str().ok());
+    let query_token = (req.method() == Method::GET || req.method() == Method::HEAD)
+        .then(|| req.uri().query().and_then(token_from_query))
+        .flatten();
+    let actual = header_token.or(query_token).unwrap_or("");
+    if !token_matches(&token, actual) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "detail": "缺少或错误的 X-ATT-Token" }))).into_response();
+    }
+
+    let host_ok = {
+        let host = req
+            .headers()
+            .get(header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .or_else(|| req.uri().authority().map(|authority| authority.as_str()))
+            .unwrap_or("");
+        is_allowed_host(host)
+    };
+    if !host_ok {
+        return (StatusCode::FORBIDDEN, Json(json!({ "detail": "Host 不被允许" }))).into_response();
+    }
+
+    next.run(req).await
 }
 
 /// 同步绑定监听端口：优先 preferred 列表（固定端口，便于前端兜底探测），
@@ -161,16 +221,54 @@ pub(crate) async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send 
     }
 }
 
-/// 允许的来源判定：localhost / 127.0.0.1 任意端口、Tauri 自定义协议、null（file://）。
+/// 拆出 authority 的主机与可选端口；端口为空 / 非法由调用方继续判断。
+fn split_host_port(authority: &str) -> Option<(&str, Option<&str>)> {
+    if authority.is_empty() {
+        return None;
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) => (!host.is_empty() && !port.is_empty()).then_some((host, Some(port))),
+        None => Some((authority, None)),
+    }
+}
+
+/// 允许的来源判定：协议 + 主机名精确匹配（任意端口）。
+///
+/// 只接受本地页面（dev 的 localhost / 127.0.0.1）与 Tauri 自定义来源；
+/// 不接受 `null`，也不做 `starts_with` 前缀匹配（`http://localhost.evil.com` 必须被拒）。
 fn is_allowed_origin(origin: &str) -> bool {
-    origin == "null"
-        || origin.starts_with("http://localhost")
-        || origin.starts_with("http://127.0.0.1")
-        || origin.starts_with("https://localhost")
-        || origin.starts_with("https://127.0.0.1")
-        || origin.starts_with("tauri://")
-        || origin.starts_with("http://tauri.localhost")
-        || origin.starts_with("https://tauri.localhost")
+    let Some((scheme, rest)) = origin.split_once("://") else {
+        return false;
+    };
+    if rest.is_empty() || rest.chars().any(|c| matches!(c, '/' | '?' | '#' | '@')) {
+        return false;
+    }
+    let Some((host, port)) = split_host_port(rest) else {
+        return false;
+    };
+    if port.is_some_and(|port| port.parse::<u16>().is_err()) {
+        return false;
+    }
+    match scheme.to_ascii_lowercase().as_str() {
+        "tauri" => host.eq_ignore_ascii_case("localhost"),
+        "http" | "https" => {
+            host.eq_ignore_ascii_case("localhost")
+                || host.eq_ignore_ascii_case("127.0.0.1")
+                || host.eq_ignore_ascii_case("tauri.localhost")
+        }
+        _ => false,
+    }
+}
+
+/// Host 只能是回环地址（端口可选、必须是数字），挡住 DNS rebinding。
+fn is_allowed_host(host: &str) -> bool {
+    let Some((name, port)) = split_host_port(host) else {
+        return false;
+    };
+    if port.is_some_and(|port| port.parse::<u16>().is_err()) {
+        return false;
+    }
+    name.eq_ignore_ascii_case("127.0.0.1") || name.eq_ignore_ascii_case("localhost")
 }
 
 /// 数据面自检：用裸 TCP 发一次 `GET /api/health`，返回状态行。
@@ -741,7 +839,14 @@ mod tests {
 
     async fn get_json(state: &Arc<ServerState>, uri: &str) -> (StatusCode, Value) {
         let response = router(state.clone())
-            .oneshot(axum::http::Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .header("x-att-token", "test-token")
+                    .header("host", "127.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let status = response.status();
@@ -760,6 +865,8 @@ mod tests {
                 axum::http::Request::builder()
                     .method(method)
                     .uri(uri)
+                    .header("x-att-token", "test-token")
+                    .header("host", "127.0.0.1")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -769,6 +876,129 @@ mod tests {
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    #[test]
+    fn 来源精确匹配_拒绝前缀绕过与null() {
+        for ok in [
+            "http://127.0.0.1:8090",
+            "http://localhost:8090",
+            "https://localhost:1234",
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+        ] {
+            assert!(is_allowed_origin(ok), "应放行：{ok}");
+        }
+        for bad in [
+            "null",
+            "http://localhost.evil.com",
+            "http://127.0.0.1.evil.com",
+            "http://localhost:8090.evil.com",
+            "http://evil.com",
+            "http://user@localhost:8090",
+            "http://localhost:8090/",
+        ] {
+            assert!(!is_allowed_origin(bad), "应拒绝：{bad}");
+        }
+    }
+
+    #[test]
+    fn host_只允许回环地址() {
+        for ok in ["127.0.0.1:17890", "localhost:17890", "127.0.0.1", "localhost"] {
+            assert!(is_allowed_host(ok), "应放行：{ok}");
+        }
+        for bad in ["evil.com", "127.0.0.1.evil.com", "localhost.evil.com:17890", "127.0.0.1:abc", "", "[::1]:17890"] {
+            assert!(!is_allowed_host(bad), "应拒绝：{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn 全局鉴权_除health外都要求token与回环host() {
+        let state = test_state("guard").await;
+        let app = router(state);
+
+        // health 不需要 token / Host
+        let response = app
+            .clone()
+            .oneshot(axum::http::Request::builder().uri("/api/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = response.into_body().collect().await;
+
+        // 缺少 token → 401（Host 缺失也先判 token）
+        let response = app
+            .clone()
+            .oneshot(axum::http::Request::builder().uri("/api/settings").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        // token 正确但 Host 非回环 → 403
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/settings")
+                    .header("x-att-token", "test-token")
+                    .header("host", "evil.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // token + 回环 Host → 200
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/settings")
+                    .header("x-att-token", "test-token")
+                    .header("host", "127.0.0.1:17890")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = response.into_body().collect().await;
+
+        // GET 媒体 / 导出类接受查询参数 token（<audio>/<img> 带不了请求头）
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/settings?token=test-token")
+                    .header("host", "127.0.0.1:17890")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = response.into_body().collect().await;
+    }
+
+    #[tokio::test]
+    async fn cors预检不需要token() {
+        let state = test_state("preflight").await;
+        let response = router(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/settings")
+                    .header("origin", "http://127.0.0.1:8090")
+                    .header("access-control-request-method", "PUT")
+                    .header("access-control-request-headers", "x-att-token,content-type")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.status().is_success(), "预检应成功，实际 {}", response.status());
+        assert_eq!(response.headers()["access-control-allow-origin"], "http://127.0.0.1:8090");
     }
 
     #[tokio::test]
@@ -939,7 +1169,14 @@ mod tests {
             .unwrap();
 
         let response = router(state.clone())
-            .oneshot(axum::http::Request::builder().uri(format!("/api/clipboard/items/{}/thumbnail", item.id)).body(Body::empty()).unwrap())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/api/clipboard/items/{}/thumbnail", item.id))
+                    .header("x-att-token", "test-token")
+                    .header("host", "127.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
