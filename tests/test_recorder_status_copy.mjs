@@ -42,6 +42,12 @@ test('deriveCompletionToast：真流式阶段用的是"复制或粘贴失败"（
   assert.equal(deriveCompletionToast('streaming', {}), '流式转写完成')
 })
 
+test('deriveCompletionToast：已复制但粘贴失败时单独提示，不再说复制失败', () => {
+  const copiedOnly = { attempted: true, copied: true, pasted: false, copyError: '已复制，辅助功能未授权' }
+  assert.equal(deriveCompletionToast('transcription', copiedOnly), '已复制，粘贴失败（多为缺少「辅助功能」权限）')
+  assert.equal(deriveCompletionToast('streaming', copiedOnly), '已复制，粘贴失败（多为缺少「辅助功能」权限）')
+})
+
 test('deriveCompletionToast：未知阶段抛错，避免静默拿到错误文案', () => {
   assert.throws(() => deriveCompletionToast('unknown', { pasted: true }), /未知的完成态阶段/)
   assert.throws(() => deriveCompletionToast(undefined, {}), /未知的完成态阶段/)

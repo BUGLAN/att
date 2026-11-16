@@ -708,7 +708,10 @@ async fn prompts_set_default(
     });
     match result {
         Ok(()) => Ok(Json(json!({ "status": "updated", "default_preset_id": preset_id }))),
-        Err(e) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        Err(e) => {
+            tracing::error!("保存默认预设失败: {e}");
+            Err(err(StatusCode::INTERNAL_SERVER_ERROR, "无法保存默认预设".into()))
+        }
     }
 }
 

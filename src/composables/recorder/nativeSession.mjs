@@ -5,7 +5,7 @@
 // `recording:state` 事件并据此刷新 appStore / 实时转写区 / 计时器。
 // 这里把「事件载荷 → 界面补丁」收敛成纯查表，便于 Node 直接单测。
 //
-// 载荷形状：{ phase, mode, message?, text?, raw_text?, record?, copied?, pasted?, degraded?,
+// 载荷形状：{ phase, mode, message?, text?, raw_text?, record?, copied?, pasted?, copy_error?, degraded?,
 //           optimized?, optimization_cancelled?, optimize_error? }
 // phase ∈ idle | connecting | recording | finalizing | optimizing | completed | error | cancelled
 //
@@ -93,7 +93,8 @@ export function deriveNativeSessionPatch(payload = {}) {
       const copyResult = {
         attempted: Boolean(payload.copied) || Boolean(payload.copy_error),
         copied: Boolean(payload.copied),
-        pasted: Boolean(payload.pasted)
+        pasted: Boolean(payload.pasted),
+        copyError: payload.copy_error || ''
       }
       const optimization = payload.optimized
         ? 'finish'

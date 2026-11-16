@@ -1,6 +1,7 @@
 // 录音状态 / 完成态文案映射（纯查表，无副作用）。
 //
 // 完成提示按阶段给三态文案（注意真流式那句是"复制或粘贴失败"，与其他阶段的"复制并粘贴失败"不同）。
+// 已复制但自动粘贴失败时用独立文案，避免用户误以为剪贴板里没有内容。
 // 本模块不依赖 Vue / 浏览器全局对象，可被 Node 直接单测。
 
 // 空闲态兜底文案
@@ -25,9 +26,12 @@ const COMPLETION_TOAST_COPY = Object.freeze({
   })
 })
 
+// 剪贴板写入成功、自动粘贴失败（多见于 macOS 缺少“辅助功能”权限）。
+const COPIED_NOT_PASTED_TOAST = '已复制，粘贴失败（多为缺少「辅助功能」权限）'
+
 /**
  * 完成态提示文案。stage 取 transcription / optimization / streaming。
- * copyResult 为录音 Actor 回报的复制结果（{ attempted, copied, pasted }）。
+ * copyResult 为录音 Actor 回报的复制结果（{ attempted, copied, pasted, copyError }）。
  */
 export function deriveCompletionToast(stage, copyResult) {
   const copy = COMPLETION_TOAST_COPY[stage]
@@ -37,6 +41,10 @@ export function deriveCompletionToast(stage, copyResult) {
 
   if (copyResult.pasted) {
     return copy.copied
+  }
+
+  if (copyResult.copied && copyResult.copyError) {
+    return COPIED_NOT_PASTED_TOAST
   }
 
   if (copyResult.attempted) {

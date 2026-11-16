@@ -27,7 +27,7 @@ test('收尾相位：录音与转写标志互斥', () => {
   assert.equal(patch.clock, 'stop')
 })
 
-test('完成态：按复制粘贴结果选择提示文案（真流式用「复制或粘贴失败」）', () => {
+test('完成态：按复制粘贴结果选择提示文案（已复制未粘贴时明确告知剪贴板里有内容）', () => {
   const pasted = deriveNativeSessionPatch({
     phase: 'completed', mode: 'streaming', text: '你好', copied: true, pasted: true, record: { id: 'r1' }
   })
@@ -39,7 +39,12 @@ test('完成态：按复制粘贴结果选择提示文案（真流式用「复�
   const failed = deriveNativeSessionPatch({
     phase: 'completed', mode: 'streaming', text: '你好', copied: true, pasted: false, copy_error: '已复制，需要权限'
   })
-  assert.equal(failed.toast, '流式转写完成，复制或粘贴失败')
+  assert.equal(failed.toast, '已复制，粘贴失败（多为缺少「辅助功能」权限）')
+
+  const singleFailed = deriveNativeSessionPatch({
+    phase: 'completed', mode: 'single', text: '你好', copied: true, pasted: false, copy_error: '已复制，需要权限'
+  })
+  assert.equal(singleFailed.toast, '已复制，粘贴失败（多为缺少「辅助功能」权限）')
 
   const plain = deriveNativeSessionPatch({ phase: 'completed', mode: 'single', text: '你好' })
   assert.equal(plain.toast, '转写完成')
