@@ -11,6 +11,9 @@
 //! 并用真实窗口做 owner（arboard 用 NULL owner，偶发 `SetClipboardData` 1418「线程没有打开的
 //! 剪贴板」失败，而且失败发生在 `EmptyClipboard` 之后——会把剪贴板清空，粘贴等于什么都没粘上）。
 //! 打开/写入整体重试：剪贴板同一时刻只允许一个线程打开，别的程序正在读写时会短暂占用。
+//! 但重试只发生在「还没清空剪贴板」的阶段：三种格式的全局内存都在 `OpenClipboard` 之前
+//! 分配并拷贝好，`EmptyClipboard` 之后只做 `SetClipboardData`；中途失败时写回操作前的快照，
+//! 不会为了重试再次清空用户剪贴板。
 
 // 下面的格式常量、位图转换与 PNG 编码只有 Windows 写剪贴板用得到（macOS 交给 arboard），
 // 其他平台只在单元测试里编译，免得每次构建都报「never used」。
@@ -141,11 +144,14 @@ fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
 #[cfg(windows)]
 mod platform {
     use super::{encode_png, CF_DIB, CF_DIBV5, RETRY_INTERVAL, WRITE_ATTEMPTS};
-    use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HWND};
+    use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
     use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+        CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, OpenClipboard,
+        RegisterClipboardFormatW, SetClipboardData,
     };
-    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows_sys::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+    };
 
     /// 已打开的剪贴板：`Drop` 时关闭，任何一步失败都不会把剪贴板锁住。
     struct Opened;
@@ -167,26 +173,86 @@ mod platform {
         }
     }
 
-    /// 把字节装进 GMEM_MOVEABLE 全局内存交给剪贴板；成功后所有权归系统，不能再 free。
-    fn put(format: u32, bytes: &[u8]) -> Result<(), String> {
-        unsafe {
-            let handle = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
-            if handle.is_null() {
-                return Err(last_error("分配剪贴板内存失败"));
-            }
-            let target = GlobalLock(handle);
-            if target.is_null() {
-                GlobalFree(handle);
-                return Err(last_error("锁定剪贴板内存失败"));
-            }
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), target as *mut u8, bytes.len());
-            GlobalUnlock(handle);
-            if SetClipboardData(format, handle as HANDLE).is_null() {
-                GlobalFree(handle);
-                return Err(last_error(&format!("写入剪贴板格式 {format} 失败")));
+    /// 一块已经拷贝好数据的全局内存。交给剪贴板后 `into_raw` 放弃所有权，
+    /// 其余情况随 `Drop` 释放——分配必须发生在 `OpenClipboard` 之前。
+    struct Block(HGLOBAL);
+
+    impl Block {
+        fn new(bytes: &[u8]) -> Result<Self, String> {
+            // 0 字节的格式（极少见）也按 1 字节分配：GMEM_MOVEABLE 下 0 字节的结果不稳定
+            let size = bytes.len().max(1);
+            unsafe {
+                let handle = GlobalAlloc(GMEM_MOVEABLE, size);
+                if handle.is_null() {
+                    return Err(last_error("分配剪贴板内存失败"));
+                }
+                let target = GlobalLock(handle);
+                if target.is_null() {
+                    GlobalFree(handle);
+                    return Err(last_error("锁定剪贴板内存失败"));
+                }
+                if !bytes.is_empty() {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), target as *mut u8, bytes.len());
+                }
+                GlobalUnlock(handle);
+                Ok(Self(handle))
             }
         }
-        Ok(())
+
+        /// 放弃所有权，由剪贴板或失败路径上的调用方释放。
+        fn into_raw(mut self) -> HGLOBAL {
+            let handle = self.0;
+            self.0 = std::ptr::null_mut();
+            handle
+        }
+    }
+
+    impl Drop for Block {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { GlobalFree(self.0) };
+            }
+        }
+    }
+
+    /// 一个待写入的格式；`block` 为 `None` 表示数据已经交给剪贴板。
+    struct Prepared {
+        format: u32,
+        block: Option<Block>,
+    }
+
+    impl Prepared {
+        fn new(format: u32, bytes: &[u8]) -> Result<Self, String> {
+            Ok(Self { format, block: Some(Block::new(bytes)?) })
+        }
+    }
+
+    /// 剪贴板原语。生产用 Win32；测试换成假实现，验证失败路径不会动用户剪贴板。
+    trait ClipboardOps {
+        fn open(&mut self, hwnd: HWND) -> bool;
+        fn empty(&mut self) -> bool;
+        fn set(&mut self, format: u32, handle: HGLOBAL) -> bool;
+        fn close(&mut self);
+    }
+
+    struct SystemOps;
+
+    impl ClipboardOps for SystemOps {
+        fn open(&mut self, hwnd: HWND) -> bool {
+            (unsafe { OpenClipboard(hwnd) }) != 0
+        }
+
+        fn empty(&mut self) -> bool {
+            (unsafe { EmptyClipboard() }) != 0
+        }
+
+        fn set(&mut self, format: u32, handle: HGLOBAL) -> bool {
+            !(unsafe { SetClipboardData(format, handle as HANDLE) }).is_null()
+        }
+
+        fn close(&mut self) {
+            unsafe { CloseClipboard() };
+        }
     }
 
     fn png_format() -> Option<u32> {
@@ -213,6 +279,109 @@ mod platform {
         write_with_owner(owner(app), rgba, width, height, png)
     }
 
+    /// 标准剪贴板里内容确实是 HGLOBAL 的格式。`HBITMAP`、元文件、私有格式不是，
+    /// `GlobalSize` 拿不到大小，快照跳过——恢复是尽力而为。
+    fn is_global_format(format: u32) -> bool {
+        matches!(format, 1 | 7 | 8 | 13 | 15 | 16 | 17) || format >= 0xC000
+    }
+
+    /// 读回某个全局内存格式的字节（调用方负责先打开剪贴板）。
+    fn read_block(format: u32) -> Option<Vec<u8>> {
+        unsafe {
+            let handle = GetClipboardData(format);
+            if handle.is_null() {
+                return None;
+            }
+            let size = GlobalSize(handle);
+            if size == 0 {
+                return None;
+            }
+            let source = GlobalLock(handle);
+            if source.is_null() {
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(source as *const u8, size).to_vec();
+            GlobalUnlock(handle);
+            Some(bytes)
+        }
+    }
+
+    /// 操作前的剪贴板快照（只读打开，不清空）。打不开时返回空，写入照常继续。
+    fn snapshot(hwnd: HWND) -> Vec<(u32, Vec<u8>)> {
+        let Some(_opened) = open(hwnd) else {
+            tracing::warn!("读取剪贴板快照失败：剪贴板正被其他程序占用，失败时无法恢复原内容");
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut format = 0;
+        loop {
+            format = unsafe { EnumClipboardFormats(format) };
+            if format == 0 {
+                break;
+            }
+            if is_global_format(format) {
+                if let Some(bytes) = read_block(format) {
+                    out.push((format, bytes));
+                }
+            }
+        }
+        out
+    }
+
+    /// 只做 `SetClipboardData`，不再分配内存。失败时按 Win32 约定由调用方释放未交出的句柄。
+    fn write_all<O: ClipboardOps>(ops: &mut O, items: &mut [Prepared]) -> Result<(), String> {
+        for item in items.iter_mut() {
+            let Some(block) = item.block.take() else {
+                continue;
+            };
+            let handle = block.into_raw();
+            if !ops.set(item.format, handle) {
+                let error = last_error(&format!("写入剪贴板格式 {} 失败", item.format));
+                unsafe { GlobalFree(handle) };
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn write_prepared<O: ClipboardOps>(
+        ops: &mut O,
+        hwnd: HWND,
+        prepared: &mut [Prepared],
+        restore: &mut [Prepared],
+    ) -> Result<(), String> {
+        let mut last = String::new();
+        for attempt in 0..WRITE_ATTEMPTS {
+            if attempt > 0 {
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            if !ops.open(hwnd) {
+                last = last_error("剪贴板正被其他程序占用");
+                continue;
+            }
+            if !ops.empty() {
+                // 清空失败时剪贴板内容没变，重试不会丢用户内容
+                last = last_error("清空剪贴板失败");
+                ops.close();
+                continue;
+            }
+            // 从这里开始剪贴板已清空：只做 SetClipboardData。失败时写回快照，绝不重新清空重来。
+            match write_all(ops, prepared) {
+                Ok(()) => {
+                    ops.close();
+                    return Ok(());
+                }
+                Err(error) => {
+                    let _ = ops.empty();
+                    let _ = write_all(ops, restore);
+                    ops.close();
+                    return Err(format!("写入图片到剪贴板失败：{error}"));
+                }
+            }
+        }
+        Err(format!("写入图片到剪贴板失败：{last}"))
+    }
+
     /// 真正落剪贴板的实现；`hwnd` 为 NULL 时由当前线程「充当」owner（仅用于测试）。
     pub fn write_with_owner(hwnd: HWND, rgba: &[u8], width: u32, height: u32, png: Option<&[u8]>) -> Result<(), String> {
         // 先编码好，真正动剪贴板的时间越短越好（打开剪贴板期间全系统都写不了）。
@@ -223,29 +392,23 @@ mod platform {
             Some(bytes) => bytes.to_vec(),
             None => encode_png(rgba, width, height)?,
         };
-        let png = png_format().map(|id| (id, png)).ok_or_else(|| "注册 PNG 剪贴板格式失败".to_string())?;
+        let png_id = png_format().ok_or_else(|| "注册 PNG 剪贴板格式失败".to_string())?;
 
-        let mut last = String::new();
-        for attempt in 0..WRITE_ATTEMPTS {
-            if attempt > 0 {
-                std::thread::sleep(RETRY_INTERVAL);
-            }
-            let Some(_opened) = open(hwnd) else {
-                last = last_error("剪贴板正被其他程序占用");
-                continue;
-            };
-            if unsafe { EmptyClipboard() } == 0 {
-                last = last_error("清空剪贴板失败");
-                continue;
-            }
+        // 快照只读；随后所有 GlobalAlloc + 数据拷贝都在真正 OpenClipboard 之前完成。
+        let snapshot = snapshot(hwnd);
+        let mut prepared = vec![
             // CF_DIB 先放：只认它的老应用（Chromium/Skia 系）靠它
-            let result = put(CF_DIB, &dib).and_then(|()| put(CF_DIBV5, &dibv5)).and_then(|()| put(png.0, &png.1));
-            match result {
-                Ok(()) => return Ok(()),
-                Err(error) => last = error,
-            }
-        }
-        Err(format!("写入图片到剪贴板失败：{last}"))
+            Prepared::new(CF_DIB, &dib)?,
+            Prepared::new(CF_DIBV5, &dibv5)?,
+            Prepared::new(png_id, &png)?,
+        ];
+        // 失败时要写回的旧内容也提前装好，恢复路径里不再有可失败的内存分配
+        let mut restore: Vec<Prepared> = snapshot
+            .into_iter()
+            .filter_map(|(format, bytes)| Prepared::new(format, &bytes).ok())
+            .collect();
+
+        write_prepared(&mut SystemOps, hwnd, &mut prepared, &mut restore)
     }
 
     /// 读回某个剪贴板格式的字节（调用方负责先 open、最后 close）。
@@ -279,6 +442,138 @@ mod platform {
     #[cfg(test)]
     pub fn png_clipboard_format() -> Option<u32> {
         png_format()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::collections::HashMap;
+
+        /// 假剪贴板：只记录内容与调用次数，不碰系统剪贴板。
+        struct FakeOps {
+            open_calls: usize,
+            empty_calls: usize,
+            set_calls: usize,
+            /// 从第几次（1 起）OpenClipboard 开始一直失败；0 表示不失败
+            fail_open_from: usize,
+            /// 第几次（1 起）EmptyClipboard 失败；0 表示不失败
+            fail_empty_at: usize,
+            /// 第几次（1 起）SetClipboardData 失败；0 表示不失败
+            fail_set_at: usize,
+            content: HashMap<u32, Vec<u8>>,
+        }
+
+        impl FakeOps {
+            fn new() -> Self {
+                Self {
+                    open_calls: 0,
+                    empty_calls: 0,
+                    set_calls: 0,
+                    fail_open_from: 0,
+                    fail_empty_at: 0,
+                    fail_set_at: 0,
+                    content: HashMap::new(),
+                }
+            }
+        }
+
+        impl ClipboardOps for FakeOps {
+            fn open(&mut self, _hwnd: HWND) -> bool {
+                self.open_calls += 1;
+                self.fail_open_from == 0 || self.open_calls < self.fail_open_from
+            }
+
+            fn empty(&mut self) -> bool {
+                self.empty_calls += 1;
+                if self.fail_empty_at == self.empty_calls {
+                    return false;
+                }
+                self.content.clear();
+                true
+            }
+
+            fn set(&mut self, format: u32, handle: HGLOBAL) -> bool {
+                self.set_calls += 1;
+                if self.fail_set_at == self.set_calls {
+                    // 按 Win32 约定：失败时内存仍归调用方，这里不释放
+                    return false;
+                }
+                unsafe {
+                    let size = GlobalSize(handle);
+                    let source = GlobalLock(handle);
+                    if source.is_null() {
+                        return false;
+                    }
+                    let bytes = std::slice::from_raw_parts(source as *const u8, size).to_vec();
+                    GlobalUnlock(handle);
+                    GlobalFree(handle);
+                    self.content.insert(format, bytes);
+                }
+                true
+            }
+
+            fn close(&mut self) {}
+        }
+
+        fn prepared(format: u32, bytes: &[u8]) -> Prepared {
+            Prepared::new(format, bytes).expect("分配全局内存失败")
+        }
+
+        #[test]
+        fn 第二次打开剪贴板失败时不清空原内容() {
+            let mut ops = FakeOps::new();
+            ops.content.insert(13, b"old text".to_vec());
+            // 第一次 EmptyClipboard 失败（内容没变），第二次开始 OpenClipboard 一直失败
+            ops.fail_empty_at = 1;
+            ops.fail_open_from = 2;
+
+            let mut new = vec![prepared(CF_DIB, b"new dib")];
+            let mut restore = Vec::new();
+            let error = write_prepared(&mut ops, std::ptr::null_mut(), &mut new, &mut restore).expect_err("应当失败");
+
+            assert!(error.contains("写入图片到剪贴板失败"), "{error}");
+            assert_eq!(ops.open_calls, WRITE_ATTEMPTS);
+            assert_eq!(ops.content.get(&13).map(Vec::as_slice), Some(b"old text".as_slice()), "原内容不能丢");
+        }
+
+        #[test]
+        fn 写格式失败时写回原剪贴板快照() {
+            let mut ops = FakeOps::new();
+            ops.content.insert(13, b"old text".to_vec());
+            // CF_DIB 成功、CF_DIBV5 失败：失败发生在 EmptyClipboard 之后
+            ops.fail_set_at = 2;
+
+            let mut new = vec![
+                prepared(CF_DIB, b"new dib"),
+                prepared(CF_DIBV5, b"new dibv5"),
+                prepared(0xC000, b"new png"),
+            ];
+            let mut restore = vec![prepared(13, b"old text")];
+            let error = write_prepared(&mut ops, std::ptr::null_mut(), &mut new, &mut restore).expect_err("应当失败");
+
+            assert!(error.contains("写入图片到剪贴板失败"), "{error}");
+            assert_eq!(ops.open_calls, 1, "清空之后失败不得重新 OpenClipboard 重来");
+            assert_eq!(ops.empty_calls, 2, "一次正常清空 + 一次恢复前清空");
+            assert_eq!(ops.content.len(), 1, "不能留下部分写入的格式");
+            assert_eq!(ops.content.get(&13).map(Vec::as_slice), Some(b"old text".as_slice()));
+        }
+
+        #[test]
+        fn 三种格式都成功时不需要恢复() {
+            let mut ops = FakeOps::new();
+            let mut new = vec![
+                prepared(CF_DIB, b"new dib"),
+                prepared(CF_DIBV5, b"new dibv5"),
+                prepared(0xC000, b"new png"),
+            ];
+            let mut restore = Vec::new();
+
+            write_prepared(&mut ops, std::ptr::null_mut(), &mut new, &mut restore).expect("写入失败");
+
+            assert_eq!(ops.open_calls, 1);
+            assert_eq!(ops.empty_calls, 1);
+            assert_eq!(ops.content.len(), 3);
+        }
     }
 }
 
