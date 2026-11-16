@@ -2,7 +2,7 @@
 //!
 //! - 豆包：只做 WebSocket 握手（401 / 403 / 404 在握手阶段就能判定），成功后立刻断开，
 //!   不推音频、不产生计费时长；
-//! - ChatGPT 听写：上传 0.5 秒静音（空文本是合法结果），按 HTTP 状态判定。
+//! - ChatGPT 听写 / DeepSeek：上传 0.5 秒静音（空文本是合法结果），按 HTTP 状态判定。
 //!
 //! 结果按「凭据指纹」缓存在内存（[`CredentialChecks`]，挂在 `CoreState` 上）：Token、Resource ID、
 //! 接入点任一变化，旧结果自动失效。指纹只是进程内哈希，不落盘、不外发。
@@ -11,7 +11,7 @@
 //! 网络、限流、服务端异常记为 [`CheckStatus::Unknown`]，不据此拦录音。
 
 use super::sauc::ErrorKind;
-use super::{chatgpt, chatgpt_config, doubao, doubao_config};
+use super::{chatgpt, chatgpt_config, deepseek, deepseek_config, doubao, doubao_config};
 use crate::state::CoreState;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -23,9 +23,13 @@ use std::time::Duration;
 pub const DOUBAO: &str = "doubao_asr";
 /// ChatGPT 听写 provider 标识。
 pub const CHATGPT: &str = "chatgpt_asr";
+/// DeepSeek 语音识别 provider 标识。
+pub const DEEPSEEK: &str = "deepseek_asr";
 
 /// ChatGPT 验证请求的超时：比正常听写短，验证不该让设置页等太久。
 const CHATGPT_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+/// DeepSeek 验证请求的超时（与 ChatGPT 同一考虑）。
+const DEEPSEEK_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,7 +76,7 @@ impl CredentialChecks {
 
 /// 是否是需要验证凭据的在线引擎。
 pub fn is_online_provider(provider: &str) -> bool {
-    matches!(provider.trim(), DOUBAO | CHATGPT)
+    matches!(provider.trim(), DOUBAO | CHATGPT | DEEPSEEK)
 }
 
 fn fingerprint(parts: &[&str]) -> u64 {
@@ -95,6 +99,11 @@ fn current_fingerprint(core: &CoreState, provider: &str) -> Option<u64> {
             let config = chatgpt_config(core);
             config.ensure().ok()?;
             Some(fingerprint(&[CHATGPT, &config.api_key, &config.endpoint]))
+        }
+        DEEPSEEK => {
+            let config = deepseek_config(core);
+            config.ensure().ok()?;
+            Some(fingerprint(&[DEEPSEEK, &config.api_key, &config.endpoint]))
         }
         _ => None,
     }
@@ -128,6 +137,14 @@ pub async fn check(core: &CoreState, provider: &str) -> Result<CredentialCheck, 
             let fingerprint = fingerprint(&[CHATGPT, &config.api_key, &config.endpoint]);
             config.timeout = config.timeout.min(CHATGPT_CHECK_TIMEOUT);
             let (status, message) = check_chatgpt(&config).await;
+            (status, message, fingerprint)
+        }
+        DEEPSEEK => {
+            let mut config = deepseek_config(core);
+            config.ensure()?;
+            let fingerprint = fingerprint(&[DEEPSEEK, &config.api_key, &config.endpoint]);
+            config.timeout = config.timeout.min(DEEPSEEK_CHECK_TIMEOUT);
+            let (status, message) = check_deepseek(&config).await;
             (status, message, fingerprint)
         }
         other => return Err(format!("{other} 不是在线引擎，无需验证凭据")),
@@ -197,6 +214,27 @@ pub fn chatgpt_status(status: Option<u16>, html: bool) -> CheckStatus {
     }
 }
 
+/// DeepSeek：上传 0.5 秒静音。
+async fn check_deepseek(config: &deepseek::DeepSeekConfig) -> (CheckStatus, String) {
+    let wav = match crate::audio::wav_bytes_16k(&[0i16; 8000]) {
+        Ok(wav) => wav,
+        Err(error) => return (CheckStatus::Unknown, format!("验证音频生成失败：{error}")),
+    };
+    match deepseek::transcribe_wav_detailed(config, wav).await {
+        Ok(_) => (CheckStatus::Ok, String::new()),
+        Err(error) => (deepseek_status(error.status), error.message),
+    }
+}
+
+/// DeepSeek HTTP 状态 → 验证结论：401、403、404 是 Key 或端点问题；
+/// 400（静音音频/格式）、限流、5xx、网络只算没验成，避免把有效 Key 误判成不可用。
+pub fn deepseek_status(status: Option<u16>) -> CheckStatus {
+    match status {
+        Some(401) | Some(403) | Some(404) => CheckStatus::Invalid,
+        _ => CheckStatus::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +263,17 @@ mod tests {
         assert_eq!(chatgpt_status(Some(429), false), CheckStatus::Unknown);
         assert_eq!(chatgpt_status(Some(502), false), CheckStatus::Unknown);
         assert_eq!(chatgpt_status(None, false), CheckStatus::Unknown);
+    }
+
+    #[test]
+    fn deepseek_状态分类_只把鉴权与端点问题算确定不可用() {
+        assert_eq!(deepseek_status(Some(401)), CheckStatus::Invalid);
+        assert_eq!(deepseek_status(Some(403)), CheckStatus::Invalid);
+        assert_eq!(deepseek_status(Some(404)), CheckStatus::Invalid);
+        assert_eq!(deepseek_status(Some(400)), CheckStatus::Unknown);
+        assert_eq!(deepseek_status(Some(429)), CheckStatus::Unknown);
+        assert_eq!(deepseek_status(Some(503)), CheckStatus::Unknown);
+        assert_eq!(deepseek_status(None), CheckStatus::Unknown);
     }
 
     #[test]
@@ -274,7 +323,10 @@ mod tests {
         assert!(check(&core, "whisper").await.is_err());
         let error = check(&core, DOUBAO).await.unwrap_err();
         assert!(error.contains("Access Token"), "{error}");
+        let error = check(&core, DEEPSEEK).await.unwrap_err();
+        assert!(error.contains("DeepSeek API Key"), "{error}");
         assert!(!is_online_provider("qwen_asr"));
         assert!(is_online_provider(" doubao_asr "));
+        assert!(is_online_provider("deepseek_asr"));
     }
 }

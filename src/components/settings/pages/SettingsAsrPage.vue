@@ -167,6 +167,54 @@
       </div>
     </section>
 
+    <!-- DeepSeek 语音识别（在线批量）：API Key 只写不读，后端加密落盘 -->
+    <section v-if="form.asr_provider === 'deepseek_asr'" class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">DeepSeek 语音识别 · 接入配置</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">API Key</span>
+            <span class="setting-desc">
+              {{ form.deepseek_asr_api_key_set ? '已保存（留空表示不修改）' : 'DeepSeek 开放平台的 API Key（sk- 开头，不是网页登录态）。' }}
+            </span>
+          </div>
+          <BaseInput v-model.trim="form.deepseek_asr_api_key" type="password" autocomplete="new-password" placeholder="粘贴 DeepSeek API Key（可带 Bearer 前缀）" aria-label="DeepSeek API Key" />
+        </div>
+        <div v-if="deepseekNote" class="settings-note" :class="deepseekNote.tone" role="status">
+          <span>{{ deepseekNote.text }}</span>
+        </div>
+        <div v-if="form.deepseek_asr_api_key_set" class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">清除已保存的 Key</span>
+          </div>
+          <label class="toggle-switch">
+            <input v-model="form.deepseek_asr_api_key_clear" type="checkbox" aria-label="清除已保存的 Key">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">请求超时</span>
+            <span class="setting-desc">秒。</span>
+          </div>
+          <BaseInput v-model.number="form.deepseek_asr_timeout_seconds" type="number" min="10" max="600" step="10" aria-label="请求超时" />
+        </div>
+        <div class="settings-note">
+          <span>批量识别，暂不支持流式；单次音频最长 120 秒，更长的录音会自动分段识别。</span>
+        </div>
+        <details class="settings-advanced">
+          <summary>高级：端点</summary>
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">端点</span>
+              <span class="setting-desc">默认无需修改。</span>
+            </div>
+            <BaseInput v-model.trim="form.deepseek_asr_endpoint" type="text" placeholder="https://api.deepseek.com/v1/tools/asr" aria-label="端点" />
+          </div>
+        </details>
+      </div>
+    </section>
+
     <section v-if="form.asr_provider === 'whisper'" class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">faster-whisper · 本地模型</h3>
@@ -316,7 +364,9 @@ function selectEngine(value) {
 }
 
 function onlineKeySet(provider) {
-  return provider === 'doubao_asr' ? Boolean(form.value.doubao_asr_api_key_set) : Boolean(form.value.chatgpt_asr_api_key_set)
+  if (provider === 'doubao_asr') return Boolean(form.value.doubao_asr_api_key_set)
+  if (provider === 'deepseek_asr') return Boolean(form.value.deepseek_asr_api_key_set)
+  return Boolean(form.value.chatgpt_asr_api_key_set)
 }
 
 // 在线引擎：卡片状态与接入配置区的提示都跟随凭据验证结论
@@ -326,6 +376,7 @@ function onlineChip(provider) {
 
 const doubaoNote = computed(() => (form.value.doubao_asr_api_key_set ? credentialNote(credential.checks.doubao_asr) : null))
 const chatgptNote = computed(() => (form.value.chatgpt_asr_api_key_set ? credentialNote(credential.checks.chatgpt_asr) : null))
+const deepseekNote = computed(() => (form.value.deepseek_asr_api_key_set ? credentialNote(credential.checks.deepseek_asr) : null))
 
 // 进入本页时：当前在线引擎没有「可用」结论就补验一次（上次没验成、验证失败后在控制台改过开通等）
 onMounted(async () => {
@@ -415,6 +466,12 @@ const engines = computed(() => [
     value: 'chatgpt_asr',
     label: 'ChatGPT 听写',
     ...onlineChip('chatgpt_asr'),
+    desc: '单段 / 多段'
+  },
+  {
+    value: 'deepseek_asr',
+    label: 'DeepSeek',
+    ...onlineChip('deepseek_asr'),
     desc: '单段 / 多段'
   },
   {

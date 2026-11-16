@@ -40,22 +40,33 @@ test('存在未提交改动时必须禁止用服务端值覆盖表单', () => {
 // watch(settings) 判成「有未提交改动」跳过重建，卡片一直显示「未配置」。
 // 这两个字段不进快照，必须无条件跟随服务端。
 test('密钥「是否已保存」只由服务端维护：两个字段都要取到', () => {
-  assert.deepEqual([...SERVER_OWNED_FIELDS].sort(), ['chatgpt_asr_api_key_set', 'doubao_asr_api_key_set'])
+  assert.deepEqual(
+    [...SERVER_OWNED_FIELDS].sort(),
+    ['chatgpt_asr_api_key_set', 'deepseek_asr_api_key_set', 'doubao_asr_api_key_set']
+  )
 })
 
 test('serverOwnedPatch 跟随服务端值（保存 / 清除 Token 两个方向）', () => {
   assert.deepEqual(
-    serverOwnedPatch({ doubao_asr_api_key_set: true, chatgpt_asr_api_key_set: false, asr_provider: 'doubao_asr' }),
-    { doubao_asr_api_key_set: true, chatgpt_asr_api_key_set: false }
+    serverOwnedPatch({ doubao_asr_api_key_set: true, chatgpt_asr_api_key_set: false, deepseek_asr_api_key_set: false, asr_provider: 'doubao_asr' }),
+    { doubao_asr_api_key_set: true, chatgpt_asr_api_key_set: false, deepseek_asr_api_key_set: false }
   )
   assert.deepEqual(
-    serverOwnedPatch({ doubao_asr_api_key_set: false, chatgpt_asr_api_key_set: true }),
-    { doubao_asr_api_key_set: false, chatgpt_asr_api_key_set: true }
+    serverOwnedPatch({ doubao_asr_api_key_set: false, chatgpt_asr_api_key_set: true, deepseek_asr_api_key_set: true }),
+    { doubao_asr_api_key_set: false, chatgpt_asr_api_key_set: true, deepseek_asr_api_key_set: true }
   )
 })
 
-test('serverOwnedPatch 缺字段 / 空值按「未保存」处理，且只返回这两个字段', () => {
-  assert.deepEqual(serverOwnedPatch({}), { doubao_asr_api_key_set: false, chatgpt_asr_api_key_set: false })
-  assert.deepEqual(serverOwnedPatch(null), { doubao_asr_api_key_set: false, chatgpt_asr_api_key_set: false })
+test('serverOwnedPatch 缺字段 / 空值按「未保存」处理，且只返回这几个字段', () => {
+  assert.deepEqual(serverOwnedPatch({}), {
+    doubao_asr_api_key_set: false,
+    chatgpt_asr_api_key_set: false,
+    deepseek_asr_api_key_set: false
+  })
+  assert.deepEqual(serverOwnedPatch(null), {
+    doubao_asr_api_key_set: false,
+    chatgpt_asr_api_key_set: false,
+    deepseek_asr_api_key_set: false
+  })
   assert.deepEqual(Object.keys(serverOwnedPatch({ hotkey: {}, doubao_asr_api_key_set: true })).sort(), [...SERVER_OWNED_FIELDS].sort())
 })

@@ -40,7 +40,11 @@ export function hasPendingSettingsEdits({ initialized, draftSnapshot, savedSnaps
  * 此时表单与快照不一致，watch(settings) 按「有未提交改动」跳过重建，而这两个字段又不在快照里，
  * 之后再也不会被刷新——卡片一直显示「未配置」，直到重启应用。
  */
-export const SERVER_OWNED_FIELDS = Object.freeze(['doubao_asr_api_key_set', 'chatgpt_asr_api_key_set'])
+export const SERVER_OWNED_FIELDS = Object.freeze([
+  'doubao_asr_api_key_set',
+  'chatgpt_asr_api_key_set',
+  'deepseek_asr_api_key_set'
+])
 
 /**
  * 从服务端设置取出 {@link SERVER_OWNED_FIELDS} 的最新值（缺字段按「未保存」处理）。

@@ -142,6 +142,11 @@ export const useSettingsStore = defineStore('settings', () => {
     chatgpt_asr_api_key_set: false,
     chatgpt_asr_endpoint: 'https://chatgpt.com/backend-api/transcribe',
     chatgpt_asr_timeout_seconds: 120,
+    // DeepSeek 语音识别（在线批量）：API Key 同样只以「是否已配置」展示，
+    // 加密落盘为 deepseek_asr_api_key_encrypted
+    deepseek_asr_api_key_set: false,
+    deepseek_asr_endpoint: 'https://api.deepseek.com/v1/tools/asr',
+    deepseek_asr_timeout_seconds: 120,
     pause_audio_on_recording: true,
     auto_optimize: false,
     auto_copy_to_clipboard: true,

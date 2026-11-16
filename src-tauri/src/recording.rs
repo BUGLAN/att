@@ -493,7 +493,7 @@ impl Actor {
             "multi" => Mode::Multi,
             _ => Mode::Batch,
         };
-        // 流式只有豆包支持（ChatGPT 听写是批量接口）
+        // 流式只有豆包支持（ChatGPT 听写 / DeepSeek 是批量接口）
         let streaming_config = match (&engine, mode) {
             (stt::Engine::Doubao(config), Mode::Streaming) => Some(config.clone()),
             (_, Mode::Streaming) => {
@@ -647,7 +647,15 @@ impl Actor {
     }
 
     fn finalize_budget(&self, mode: Mode, recorded: Duration) -> Duration {
-        finalize_budget(mode, recorded, self.core.settings().chatgpt_asr_timeout_seconds)
+        let settings = self.core.settings();
+        // 批量在线引擎共用单段收尾预算：取当前引擎自己的超时，避免 DeepSeek 设了更长的超时却被
+        // ChatGPT 的预算提前取消
+        let batch_timeout = if settings.asr_provider == "deepseek_asr" {
+            settings.deepseek_asr_timeout_seconds
+        } else {
+            settings.chatgpt_asr_timeout_seconds
+        };
+        finalize_budget(mode, recorded, batch_timeout)
     }
 
     /// 看门狗到点仍在收尾：先取消会话任务（它会带着已收到的音频与文字回来）；

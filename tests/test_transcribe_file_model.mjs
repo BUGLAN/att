@@ -57,10 +57,10 @@ test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法�
   assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'chatgpt_asr' }).engine, 'doubao_asr')
 })
 
-test('TRANSCRIBE_ENGINES：三引擎元数据齐备，不标「默认」，描述各一句话', () => {
+test('TRANSCRIBE_ENGINES：四引擎元数据齐备，不标「默认」，描述各一句话', () => {
   assert.deepEqual(
     TRANSCRIBE_ENGINES.map((item) => item.value),
-    ['doubao_asr', 'whisper', 'qwen_asr']
+    ['doubao_asr', 'deepseek_asr', 'whisper', 'qwen_asr']
   )
   for (const item of TRANSCRIBE_ENGINES) {
     assert.ok(!item.badge, `${item.value} 不再带「默认」标记`)
@@ -74,25 +74,30 @@ test('defaultTranscribeEngine：跟随设置里的识别引擎，文件转写不
   assert.equal(defaultTranscribeEngine('doubao_asr'), 'doubao_asr')
   assert.equal(defaultTranscribeEngine('whisper'), 'whisper')
   assert.equal(defaultTranscribeEngine('qwen_asr'), 'qwen_asr')
+  assert.equal(defaultTranscribeEngine('deepseek_asr'), 'deepseek_asr')
   assert.equal(defaultTranscribeEngine('chatgpt_asr'), 'doubao_asr')
   assert.equal(defaultTranscribeEngine(undefined), 'doubao_asr')
   assert.equal(defaultTranscribeEngine(''), 'doubao_asr')
 })
 
-test('transcribeEngineOptions：豆包未配置、当前本地引擎缺模型时置灰并给出原因', () => {
+test('transcribeEngineOptions：豆包 / DeepSeek 未配置、当前本地引擎缺模型时置灰并给出原因', () => {
   const byValue = (options) => Object.fromEntries(options.map((item) => [item.value, item]))
 
-  const ready = byValue(transcribeEngineOptions({ doubaoKeySet: true }))
+  const ready = byValue(transcribeEngineOptions({ doubaoKeySet: true, deepseekKeySet: true }))
   assert.ok(Object.values(ready).every((item) => !item.disabled && !item.badge && !item.hint))
 
-  const noToken = byValue(transcribeEngineOptions({ doubaoKeySet: false }))
+  const noToken = byValue(transcribeEngineOptions({ doubaoKeySet: false, deepseekKeySet: false }))
   assert.equal(noToken.doubao_asr.disabled, true)
   assert.equal(noToken.doubao_asr.badge, '未配置')
   assert.match(noToken.doubao_asr.hint, /Access Token/)
+  assert.equal(noToken.deepseek_asr.disabled, true)
+  assert.equal(noToken.deepseek_asr.badge, '未配置')
+  assert.match(noToken.deepseek_asr.hint, /API Key/)
   assert.equal(noToken.whisper.disabled, false, '拿不到状态的本地引擎不标')
 
   const missing = byValue(transcribeEngineOptions({
     doubaoKeySet: true,
+    deepseekKeySet: true,
     localEngine: { provider: 'whisper', available: false, error: '本地 Whisper 模型未安装', error_detail: '下载……' }
   }))
   assert.equal(missing.whisper.disabled, true)
@@ -102,6 +107,7 @@ test('transcribeEngineOptions：豆包未配置、当前本地引擎缺模型时
 
   const loaded = byValue(transcribeEngineOptions({
     doubaoKeySet: true,
+    deepseekKeySet: true,
     localEngine: { provider: 'qwen_asr', available: true, loaded: true }
   }))
   assert.equal(loaded.qwen_asr.disabled, false)

@@ -17,7 +17,7 @@ test('录音模式：流式只有豆包可选，其余引擎置灰并说明原�
   assert.deepEqual(doubao.map((mode) => mode.value), ['single', 'multi', 'streaming'])
   assert.ok(doubao.every((mode) => !mode.disabled))
 
-  for (const provider of ['whisper', 'qwen_asr', 'chatgpt_asr']) {
+  for (const provider of ['whisper', 'qwen_asr', 'chatgpt_asr', 'deepseek_asr']) {
     const streaming = recordingModeOptions(provider).find((mode) => mode.value === 'streaming')
     assert.equal(streaming.disabled, true, provider)
     assert.match(streaming.hint, /不支持流式/)

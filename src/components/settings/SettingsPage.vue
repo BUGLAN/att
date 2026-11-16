@@ -328,6 +328,12 @@ function normalizeSettings(value = {}) {
     chatgpt_asr_api_key_set: value.chatgpt_asr_api_key_set ?? false,
     chatgpt_asr_endpoint: value.chatgpt_asr_endpoint || 'https://chatgpt.com/backend-api/transcribe',
     chatgpt_asr_timeout_seconds: value.chatgpt_asr_timeout_seconds ?? 120,
+    // DeepSeek 语音识别：明文 Key 同样只存在于表单内存里，初始值恒为空
+    deepseek_asr_api_key: '',
+    deepseek_asr_api_key_clear: false,
+    deepseek_asr_api_key_set: value.deepseek_asr_api_key_set ?? false,
+    deepseek_asr_endpoint: value.deepseek_asr_endpoint || 'https://api.deepseek.com/v1/tools/asr',
+    deepseek_asr_timeout_seconds: value.deepseek_asr_timeout_seconds ?? 120,
     pause_audio_on_recording: value.pause_audio_on_recording ?? true,
     auto_optimize: value.auto_optimize ?? false,
     auto_copy_to_clipboard: value.auto_copy_to_clipboard ?? true,
@@ -372,6 +378,8 @@ function buildSettingsPayload() {
     doubao_asr_end_window_size: form.value.doubao_asr_end_window_size,
     chatgpt_asr_endpoint: form.value.chatgpt_asr_endpoint,
     chatgpt_asr_timeout_seconds: form.value.chatgpt_asr_timeout_seconds,
+    deepseek_asr_endpoint: form.value.deepseek_asr_endpoint,
+    deepseek_asr_timeout_seconds: form.value.deepseek_asr_timeout_seconds,
     pause_audio_on_recording: form.value.pause_audio_on_recording,
     auto_optimize: form.value.auto_optimize,
     auto_copy_to_clipboard: form.value.auto_copy_to_clipboard,
@@ -408,6 +416,14 @@ function buildSettingsPayload() {
 
   if (form.value.chatgpt_asr_api_key_clear) {
     payload.chatgpt_asr_api_key_clear = true
+  }
+
+  if (form.value.deepseek_asr_api_key) {
+    payload.deepseek_asr_api_key = form.value.deepseek_asr_api_key
+  }
+
+  if (form.value.deepseek_asr_api_key_clear) {
+    payload.deepseek_asr_api_key_clear = true
   }
 
   return payload
@@ -602,6 +618,8 @@ async function handleSave() {
     form.value.doubao_asr_api_key_clear = false
     form.value.chatgpt_asr_api_key = ''
     form.value.chatgpt_asr_api_key_clear = false
+    form.value.deepseek_asr_api_key = ''
+    form.value.deepseek_asr_api_key_clear = false
     Object.assign(form.value, serverOwnedPatch(settings.value))
     lastSavedSettingsSnapshot.value = serializeSettingsPayload(buildSettingsPayload())
 

@@ -1,9 +1,9 @@
-// 在线识别引擎（豆包 / ChatGPT 听写）卡片状态的纯逻辑（不依赖 Vue，供 tests/test_settings_online_engine.mjs 锁定）。
+// 在线识别引擎（豆包 / ChatGPT 听写 / DeepSeek）卡片状态的纯逻辑（不依赖 Vue，供 tests/test_settings_online_engine.mjs 锁定）。
 //
 // 「填了 Token」不等于「能用」：保存后后端会做一次真实握手（见 att_core::stt::verify），
 // 卡片据此区分「已配置 / 验证中 / 可用 / 验证失败 / 未能验证」。
 
-export const ONLINE_PROVIDERS = Object.freeze(['doubao_asr', 'chatgpt_asr'])
+export const ONLINE_PROVIDERS = Object.freeze(['doubao_asr', 'chatgpt_asr', 'deepseek_asr'])
 
 export function isOnlineProvider(provider) {
   return ONLINE_PROVIDERS.includes(provider)
@@ -69,6 +69,10 @@ export function needsCredentialCheck(payload, previous = {}) {
     return Boolean(payload.doubao_asr_api_key) ||
       payload.doubao_asr_resource_id !== previous?.doubao_asr_resource_id ||
       payload.doubao_asr_endpoint !== previous?.doubao_asr_endpoint
+  }
+  if (provider === 'deepseek_asr') {
+    return Boolean(payload.deepseek_asr_api_key) ||
+      payload.deepseek_asr_endpoint !== previous?.deepseek_asr_endpoint
   }
   return Boolean(payload.chatgpt_asr_api_key) || payload.chatgpt_asr_endpoint !== previous?.chatgpt_asr_endpoint
 }

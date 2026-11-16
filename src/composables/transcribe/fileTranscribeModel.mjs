@@ -23,7 +23,7 @@ export const JOB_POLL_MAX_WAIT_MS = 15 * 60 * 1000
 
 /**
  * 识别引擎下拉的元数据（与后端 engine 参数一一对应；UI 不暴露 auto）。
- * 文件转写只支持这三个引擎（后端 att-core transcribe::resolve_engine），ChatGPT 听写不在其中。
+ * 文件转写只支持这几个引擎（后端 att-core transcribe::resolve_engine），ChatGPT 听写不在其中。
  */
 export const TRANSCRIBE_ENGINES = [
   {
@@ -31,6 +31,12 @@ export const TRANSCRIBE_ENGINES = [
     label: '豆包 · 实时大模型',
     tag: '在线',
     desc: '火山在线识别，质量高、不占本机算力，按音频时长计费。'
+  },
+  {
+    value: 'deepseek_asr',
+    label: 'DeepSeek 语音识别',
+    tag: '在线',
+    desc: 'DeepSeek 在线批量识别，自动判定语种，按音频时长计费。'
   },
   {
     value: 'whisper',
@@ -67,10 +73,13 @@ export function defaultTranscribeEngine(asrProvider) {
  *   它报缺模型 / 推理库时标出原因；其余本地引擎拿不到状态，不标（提交时后端 409 兜底）。
  * 返回 [{ value, label, tag, desc, disabled, badge, hint }]：badge 是下拉里的短标注，hint 是一句原因。
  */
-export function transcribeEngineOptions({ doubaoKeySet = false, localEngine = null } = {}) {
+export function transcribeEngineOptions({ doubaoKeySet = false, deepseekKeySet = false, localEngine = null } = {}) {
   return TRANSCRIBE_ENGINES.map((item) => {
     if (item.value === 'doubao_asr' && !doubaoKeySet) {
       return { ...item, disabled: true, badge: '未配置', hint: '豆包需要先在「设置 → 识别引擎」填写 Access Token。' }
+    }
+    if (item.value === 'deepseek_asr' && !deepseekKeySet) {
+      return { ...item, disabled: true, badge: '未配置', hint: 'DeepSeek 需要先在「设置 → 识别引擎」填写 API Key。' }
     }
     if (localEngine && localEngine.provider === item.value && localEngine.available === false) {
       const summary = String(localEngine.error || '').split('\n')[0].trim() || `${item.label} 模型未安装`

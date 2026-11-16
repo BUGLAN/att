@@ -4,15 +4,17 @@
 //! - [`doubao`]：豆包会话（流式推流 / 批量转写）
 //! - [`hotwords`]：个人词表的归一化与 token 预算（目前只有豆包使用）
 //! - [`chatgpt`]：ChatGPT 听写（在线批量，不支持流式）
+//! - [`deepseek`]：DeepSeek 语音识别（在线批量，不支持流式）
 //! - [`local`]：本地引擎装配与常驻池（faster-whisper / Qwen3-ASR，进程内推理）
 //! - [`verify`]：在线引擎凭据验证（握手 / 静音请求，区分「已配置」与「可用」）
 //!
-//! 在线引擎（豆包 / ChatGPT）凭据齐备即就绪；本地引擎要在后台线程加载模型（large-v3 在 CPU 上
+//! 在线引擎（豆包 / ChatGPT / DeepSeek）凭据齐备即就绪；本地引擎要在后台线程加载模型（large-v3 在 CPU 上
 //! 要十几秒），所以 [`Engine::resolve`] 只校验模型文件、随即在后台预加载（[`preload_local`]），
 //! 录音立刻开始；真正推理时（[`Engine::transcribe_pcm`] / [`transcribe_local`]）再取常驻句柄，
 //! 若还在加载就在 blocking 线程上等它加载完。
 
 pub mod chatgpt;
+pub mod deepseek;
 pub mod doubao;
 pub mod hotwords;
 pub mod local;
@@ -64,6 +66,24 @@ pub fn chatgpt_config(core: &CoreState) -> chatgpt::ChatGptConfig {
     }
 }
 
+/// 从用户设置组装 DeepSeek 语音识别配置（API Key 只存密文，运行期解密）。
+pub fn deepseek_config(core: &CoreState) -> deepseek::DeepSeekConfig {
+    let settings = core.settings();
+    let api_key = settings
+        .deepseek_asr_api_key_encrypted
+        .as_deref()
+        .filter(|token| !token.is_empty())
+        .and_then(|token| core.crypto.decrypt(token))
+        .map(|key| deepseek::strip_bearer_prefix(&key))
+        .unwrap_or_default();
+    let endpoint = settings.deepseek_asr_endpoint.trim();
+    deepseek::DeepSeekConfig {
+        api_key,
+        endpoint: if endpoint.is_empty() { deepseek::DEFAULT_ENDPOINT.into() } else { endpoint.to_string() },
+        timeout: std::time::Duration::from_secs(settings.deepseek_asr_timeout_seconds.clamp(10, 600) as u64),
+    }
+}
+
 /// provider 是否是本地引擎（`whisper` / `qwen_asr`）。
 pub fn local_kind(provider: &str) -> Option<LocalKind> {
     LocalKind::from_provider(provider)
@@ -87,6 +107,7 @@ impl std::fmt::Debug for LocalHandle {
 pub enum Engine {
     Doubao(doubao::DoubaoConfig),
     ChatGpt(chatgpt::ChatGptConfig),
+    DeepSeek(deepseek::DeepSeekConfig),
     Local(LocalHandle),
 }
 
@@ -99,6 +120,11 @@ impl Engine {
                 let config = chatgpt_config(core);
                 config.ensure()?;
                 Ok(Engine::ChatGpt(config))
+            }
+            "deepseek_asr" => {
+                let config = deepseek_config(core);
+                config.ensure()?;
+                Ok(Engine::DeepSeek(config))
             }
             "doubao_asr" | "" => {
                 let config = doubao_config(core);
@@ -137,6 +163,7 @@ impl Engine {
         match self {
             Engine::Doubao(_) => "豆包语音",
             Engine::ChatGpt(_) => "ChatGPT 听写",
+            Engine::DeepSeek(_) => "DeepSeek 语音识别",
             Engine::Local(handle) => handle.kind.label(),
         }
     }
@@ -149,6 +176,7 @@ impl Engine {
                 let wav = crate::audio::wav_bytes_16k(samples).map_err(|e| format!("音频编码失败：{e}"))?;
                 chatgpt::transcribe_wav(config, wav, language).await
             }
+            Engine::DeepSeek(config) => deepseek::transcribe_pcm(config, samples).await,
             Engine::Local(handle) => transcribe_local(handle.core.clone(), handle.kind, language.to_string(), samples.to_vec())
                 .await
                 .map(|(_, outcome)| outcome.text),
@@ -218,5 +246,6 @@ mod tests {
         assert_eq!(local_kind("qwen_asr"), Some(LocalKind::Qwen));
         assert_eq!(local_kind("doubao_asr"), None);
         assert_eq!(local_kind("chatgpt_asr"), None);
+        assert_eq!(local_kind("deepseek_asr"), None);
     }
 }

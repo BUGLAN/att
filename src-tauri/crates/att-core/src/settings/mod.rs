@@ -50,6 +50,8 @@ pub const MODEL_RUNTIME_KEYS: &[&str] = &[
     "doubao_asr_end_window_size",
     "chatgpt_asr_endpoint",
     "chatgpt_asr_timeout_seconds",
+    "deepseek_asr_endpoint",
+    "deepseek_asr_timeout_seconds",
 ];
 
 /// 剪贴板悬浮框高度的允许范围（逻辑像素）：再矮放不下卡片内容，再高就挡住大半个屏幕。
@@ -88,7 +90,7 @@ impl EnvSettings {
 #[serde(default)]
 pub struct UserSettings {
     // ---- ASR 基础 ----
-    pub asr_provider: String,          // whisper | qwen_asr | doubao_asr | chatgpt_asr
+    pub asr_provider: String,          // whisper | qwen_asr | doubao_asr | chatgpt_asr | deepseek_asr
     pub asr_language: String,          // zh | en | ja | ko
     /// 个人词表（热词）：与引擎无关地保存，目前只有豆包会发送（见 `stt::hotwords`）。
     /// 宽容读：结构异常只丢这一项，不能拖垮整份设置
@@ -117,9 +119,14 @@ pub struct UserSettings {
     pub chatgpt_asr_endpoint: String,
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub chatgpt_asr_timeout_seconds: i64,
+    // ---- DeepSeek 语音识别（在线批量）----
+    pub deepseek_asr_endpoint: String,
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub deepseek_asr_timeout_seconds: i64,
     // ---- 密文（GET 视图替换为 *_set 布尔，明文永不外发）----
     pub doubao_asr_api_key_encrypted: Option<String>,
     pub chatgpt_asr_api_key_encrypted: Option<String>,
+    pub deepseek_asr_api_key_encrypted: Option<String>,
     // ---- 行为 ----
     pub pause_audio_on_recording: bool,
     pub auto_optimize: bool,
@@ -191,8 +198,11 @@ impl UserSettings {
             doubao_asr_end_window_size: 800,
             chatgpt_asr_endpoint: "https://chatgpt.com/backend-api/transcribe".into(),
             chatgpt_asr_timeout_seconds: 120,
+            deepseek_asr_endpoint: crate::stt::deepseek::DEFAULT_ENDPOINT.into(),
+            deepseek_asr_timeout_seconds: 120,
             doubao_asr_api_key_encrypted: None,
             chatgpt_asr_api_key_encrypted: None,
+            deepseek_asr_api_key_encrypted: None,
             pause_audio_on_recording: true,
             auto_optimize: false,
             auto_copy_to_clipboard: true,
@@ -354,7 +364,10 @@ impl UserSettings {
         if let Some(map) = object.as_object() {
             for (key, value) in map {
                 // 密文字段绝不外发
-                if key == "doubao_asr_api_key_encrypted" || key == "chatgpt_asr_api_key_encrypted" {
+                if matches!(
+                    key.as_str(),
+                    "doubao_asr_api_key_encrypted" | "chatgpt_asr_api_key_encrypted" | "deepseek_asr_api_key_encrypted"
+                ) {
                     continue;
                 }
                 view[key] = value.clone();
@@ -362,6 +375,7 @@ impl UserSettings {
         }
         view["doubao_asr_api_key_set"] = json!(self.doubao_asr_api_key_encrypted.is_some());
         view["chatgpt_asr_api_key_set"] = json!(self.chatgpt_asr_api_key_encrypted.is_some());
+        view["deepseek_asr_api_key_set"] = json!(self.deepseek_asr_api_key_encrypted.is_some());
         for &(action, hotkey_key, enabled_key) in EXTRA_HOTKEY_FIELDS {
             let binding = self.binding_or_default(action, platform);
             view[hotkey_key] = binding.to_legacy(platform);
@@ -460,6 +474,16 @@ pub fn apply_settings_update(
                     settings.chatgpt_asr_api_key_encrypted = None;
                 }
             }
+            "deepseek_asr_api_key" => {
+                let plain = value.as_str().filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| type_error("字符串"))?;
+                settings.deepseek_asr_api_key_encrypted = Some(crypto.encrypt(plain.trim()));
+            }
+            "deepseek_asr_api_key_clear" => {
+                if value.as_bool().unwrap_or(false) {
+                    settings.deepseek_asr_api_key_encrypted = None;
+                }
+            }
             // 已在循环前处理
             "hotkeys" => {}
             "clipboard_panel_enter_action" => {
@@ -494,6 +518,9 @@ pub fn apply_settings_update(
             "chatgpt_asr_endpoint" => {
                 set_string(&mut settings.chatgpt_asr_endpoint, key, value, &type_error)?
             }
+            "deepseek_asr_endpoint" => {
+                set_string(&mut settings.deepseek_asr_endpoint, key, value, &type_error)?
+            }
             "recording_mode" => {
                 let mode = value.as_str().ok_or_else(|| type_error("字符串"))?;
                 if !matches!(mode, "single" | "multi" | "streaming") {
@@ -527,6 +554,7 @@ pub fn apply_settings_update(
             "qwen_asr_max_audio_seconds" => set_i64(&mut settings.qwen_asr_max_audio_seconds, key, value, &type_error)?,
             "doubao_asr_end_window_size" => set_i64(&mut settings.doubao_asr_end_window_size, key, value, &type_error)?,
             "chatgpt_asr_timeout_seconds" => set_i64(&mut settings.chatgpt_asr_timeout_seconds, key, value, &type_error)?,
+            "deepseek_asr_timeout_seconds" => set_i64(&mut settings.deepseek_asr_timeout_seconds, key, value, &type_error)?,
             "silence_level" => set_i64(&mut settings.silence_level, key, value, &type_error)?,
 
             // ---- 浮点键 ----
@@ -741,7 +769,7 @@ mod tests {
         std::fs::write(&path, json!({ "auto_optimize": true }).to_string()).unwrap();
         assert_eq!(UserSettings::load(&path, Platform::Macos).asr_provider, "doubao_asr");
         // 老用户选过的引擎（含旧默认 whisper）原样保留
-        for provider in ["whisper", "qwen_asr", "chatgpt_asr", "doubao_asr"] {
+        for provider in ["whisper", "qwen_asr", "chatgpt_asr", "doubao_asr", "deepseek_asr"] {
             std::fs::write(&path, json!({ "asr_provider": provider }).to_string()).unwrap();
             assert_eq!(UserSettings::load(&path, Platform::Windows).asr_provider, provider);
         }
@@ -792,7 +820,49 @@ mod tests {
         assert!(view.get("doubao_asr_api_key_encrypted").is_none(), "密文字段绝不能出现在 GET 视图");
         assert_eq!(view["doubao_asr_api_key_set"], json!(true));
         assert_eq!(view["chatgpt_asr_api_key_set"], json!(false));
+        assert_eq!(view["deepseek_asr_api_key_set"], json!(false));
         assert!(view["hotkey"].is_object(), "旧 hotkey 兼容字段必须存在");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deepseek_设置_旧数据兜底与密钥只存密文() {
+        let dir = temp_dir("deepseek");
+        let path = dir.join("settings.json");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+
+        // 旧 settings.json 没有 DeepSeek 字段：默认值补齐，原有配置不丢
+        std::fs::write(&path, json!({ "asr_provider": "chatgpt_asr", "auto_optimize": true }).to_string()).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Windows);
+        assert_eq!(settings.asr_provider, "chatgpt_asr");
+        assert!(settings.auto_optimize);
+        assert_eq!(settings.deepseek_asr_endpoint, crate::stt::deepseek::DEFAULT_ENDPOINT);
+        assert_eq!(settings.deepseek_asr_timeout_seconds, 120);
+        assert!(settings.deepseek_asr_api_key_encrypted.is_none());
+
+        // 密钥只以密文落盘；GET 视图只给 *_set
+        let body = json!({
+            "asr_provider": "deepseek_asr",
+            "deepseek_asr_api_key": "sk-deepseek-123",
+            "deepseek_asr_endpoint": "https://api.deepseek.com/v1/tools/asr",
+            "deepseek_asr_timeout_seconds": 90,
+        });
+        let outcome = apply_settings_update(&mut settings, &body, Platform::Windows, &crypto).unwrap();
+        assert!(outcome.runtime_keys_changed.contains(&"deepseek_asr_endpoint"));
+        assert!(outcome.runtime_keys_changed.contains(&"deepseek_asr_timeout_seconds"));
+        assert_eq!(settings.deepseek_asr_timeout_seconds, 90);
+        let cipher = settings.deepseek_asr_api_key_encrypted.clone().unwrap();
+        assert_ne!(cipher, "sk-deepseek-123");
+        assert_eq!(crypto.decrypt(&cipher).as_deref(), Some("sk-deepseek-123"));
+        settings.save(&path).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("sk-deepseek-123"));
+        let view = UserSettings::load(&path, Platform::Windows).public_view(Platform::Windows);
+        assert_eq!(view["deepseek_asr_api_key_set"], json!(true));
+        assert!(view.get("deepseek_asr_api_key_encrypted").is_none());
+
+        // 清除
+        apply_settings_update(&mut settings, &json!({"deepseek_asr_api_key_clear": true}), Platform::Windows, &crypto).unwrap();
+        assert!(settings.deepseek_asr_api_key_encrypted.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

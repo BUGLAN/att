@@ -50,7 +50,14 @@ test('保存后何时重新验证：换引擎、填新 Token、改 Resource ID /
   assert.equal(needsCredentialCheck({ ...same, doubao_asr_endpoint: 'wss://b' }, saved), true)
   assert.equal(needsCredentialCheck({ ...same, asr_provider: 'chatgpt_asr' }, saved), true)
   assert.equal(needsCredentialCheck({ ...same, asr_provider: 'chatgpt_asr', chatgpt_asr_api_key: 't' }, { ...saved, asr_provider: 'chatgpt_asr' }), true)
+  // DeepSeek：换引擎 / 填新 Key / 改端点都要重新验证
+  assert.equal(needsCredentialCheck({ ...same, asr_provider: 'deepseek_asr' }, saved), true)
+  const dsSaved = { ...saved, asr_provider: 'deepseek_asr', deepseek_asr_endpoint: 'https://api.deepseek.com/v1/tools/asr' }
+  assert.equal(needsCredentialCheck({ ...dsSaved }, dsSaved), false)
+  assert.equal(needsCredentialCheck({ ...dsSaved, deepseek_asr_api_key: 'sk-new' }, dsSaved), true)
+  assert.equal(needsCredentialCheck({ ...dsSaved, deepseek_asr_endpoint: 'https://proxy.example/asr' }, dsSaved), true)
   // 本地引擎不需要验证凭据
   assert.equal(needsCredentialCheck({ ...same, asr_provider: 'whisper' }, saved), false)
   assert.equal(isOnlineProvider('qwen_asr'), false)
+  assert.equal(isOnlineProvider('deepseek_asr'), true)
 })

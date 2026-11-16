@@ -109,6 +109,7 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
     let whisper = core.local_models.status(core, LocalKind::Whisper);
     let qwen = core.local_models.status(core, LocalKind::Qwen);
     let doubao_ready = crate::stt::doubao_config(core).ensure().is_ok();
+    let deepseek_ready = crate::stt::deepseek_config(core).ensure().is_ok();
     // 只给一句结论 + 去哪看安装方法：完整的目录与命令在设置页（选中该引擎后折叠展示）
     let unavailable = |kind: LocalKind, status: &crate::stt::local::LocalStatus| {
         let summary = status.error.clone().unwrap_or_else(|| format!("{}不可用", kind.label()));
@@ -143,7 +144,12 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
         "qwen_asr" => Err(unavailable(LocalKind::Qwen, &qwen)),
         "doubao_asr" if doubao_ready => Ok("doubao_asr"),
         "doubao_asr" => Err(TranscribeError::new(409, "豆包语音未配置 Access Token，请在「设置 → 识别引擎」中填写")),
-        other => Err(TranscribeError::new(422, format!("不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr）"))),
+        "deepseek_asr" if deepseek_ready => Ok("deepseek_asr"),
+        "deepseek_asr" => Err(TranscribeError::new(409, "DeepSeek 语音识别未配置 API Key，请在「设置 → 识别引擎」中填写")),
+        other => Err(TranscribeError::new(
+            422,
+            format!("不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr/deepseek_asr）"),
+        )),
     }
 }
 
@@ -426,7 +432,10 @@ async fn run_transcription(
                 "segments": segments,
             })
         }
-        None => run_doubao(core, language, &samples, duration, engine).await?,
+        None => match engine {
+            "deepseek_asr" => run_deepseek(core, &samples, duration).await?,
+            _ => run_doubao(core, language, &samples, duration, engine).await?,
+        },
     };
     core.transcriber.cache_store(core, hash, engine, &payload);
     Ok(payload)
@@ -469,6 +478,35 @@ async fn run_doubao(
         payload["billing"] = json!({ "audio_duration_seconds": (billing_ms as f64 / 1000.0 * 1000.0).round() / 1000.0 });
     }
     Ok(payload)
+}
+
+/// DeepSeek 路径：接口单次最长 120 秒，按 115 秒切块顺序识别，段偏移拼成时间戳。
+async fn run_deepseek(core: &CoreState, samples: &[i16], duration: f64) -> Result<Value, TranscribeError> {
+    let config = crate::stt::deepseek_config(core);
+    let chunk_samples = crate::stt::deepseek::MAX_CHUNK_SAMPLES;
+    let mut segments = Vec::new();
+    for (index, chunk) in samples.chunks(chunk_samples).enumerate() {
+        let offset = (index * chunk_samples) as f64 / SAMPLE_RATE as f64;
+        let wav = crate::audio::wav_bytes_16k(chunk)
+            .map_err(|error| TranscribeError::new(500, format!("音频编码失败：{error}")))?;
+        let text = crate::stt::deepseek::transcribe_wav(&config, wav)
+            .await
+            .map_err(|error| TranscribeError::new(500, format!("转写失败：{error}")))?;
+        if !text.is_empty() {
+            segments.push(json!({
+                "start": offset,
+                "end": offset + chunk.len() as f64 / SAMPLE_RATE as f64,
+                "text": text,
+            }));
+        }
+    }
+    let text = segments.iter().filter_map(|segment| segment["text"].as_str()).collect::<Vec<_>>().join("\n");
+    Ok(json!({
+        "text": text,
+        "duration_seconds": if duration > 0.0 { duration } else { samples.len() as f64 / SAMPLE_RATE as f64 },
+        "engine": "deepseek-asr",
+        "segments": segments,
+    }))
 }
 
 fn start_job(core: Arc<CoreState>, request: TranscribeRequest, path: PathBuf, hash: String, duration: f64, engine: &'static str) -> Result<String, TranscribeError> {
@@ -614,6 +652,7 @@ mod tests {
         }
         assert_eq!(resolve_engine(&core, "doubao_asr").unwrap_err().status, 409, "新数据目录没有豆包凭据");
         assert_eq!(resolve_engine(&core, "chatgpt_asr").unwrap_err().status, 422, "文件转写不支持 ChatGPT 听写");
+        assert_eq!(resolve_engine(&core, "deepseek_asr").unwrap_err().status, 409, "新数据目录没有 DeepSeek 凭据");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

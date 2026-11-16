@@ -297,7 +297,7 @@ fn engine_status(core: &CoreState) -> EngineStatus {
             running: true,
             loading: false,
         },
-        // ChatGPT 听写：批量接口，流式模式下不可用（与 Python get_runtime_capabilities 一致）
+        // ChatGPT 听写 / DeepSeek：批量接口，流式模式下不可用（与 Python get_runtime_capabilities 一致）
         Ok(engine) => EngineStatus {
             ready: !streaming,
             error: streaming.then(|| format!("{}暂不支持流式录音，请使用单段或多段录音模式", engine.label())),
@@ -568,6 +568,7 @@ fn model_service_payload(core: &CoreState) -> Value {
         None => match settings.asr_provider.as_str() {
             "doubao_asr" => Value::from("bigmodel"),
             "chatgpt_asr" => Value::from("chatgpt-dictation"),
+            "deepseek_asr" => Value::from("deepseek-asr"),
             _ => Value::Null,
         },
     };

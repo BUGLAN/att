@@ -18,6 +18,7 @@ export const RECORDING_MODES = Object.freeze([
 const PROVIDER_LABELS = Object.freeze({
   doubao_asr: '豆包语音',
   chatgpt_asr: 'ChatGPT 听写',
+  deepseek_asr: 'DeepSeek 语音识别',
   whisper: 'faster-whisper',
   qwen_asr: 'Qwen3-ASR'
 })
