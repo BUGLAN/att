@@ -5,8 +5,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["local-engines"]
+local-engines = ["att-core/local-engines"]
+
 [dependencies]
-att-core = { path = "../att-core" }
+att-core = { path = "../att-core", default-features = false }
 axum = "0.8"
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -17,7 +21,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-att-core = { path = "../att-core", features = ["test-support"] }
+att-core = { path = "../att-core", default-features = false, features = ["test-support"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 image = { version = "0.25", default-features = false, features = ["png"] }

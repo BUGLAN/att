@@ -5,8 +5,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["local-engines"]
+local-engines = ["att-core/local-engines"]
+
 [dependencies]
-att-core = { path = "../att-core" }
+att-core = { path = "../att-core", default-features = false }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

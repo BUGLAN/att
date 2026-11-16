@@ -643,12 +643,19 @@ mod tests {
     fn 引擎解析_本地模型缺失只回一句结论() {
         let dir = std::env::temp_dir().join(format!("att-ft-engine-{}", uuid::Uuid::new_v4()));
         let core = CoreState::init(&dir, crate::Platform::Macos).unwrap();
+        #[cfg(feature = "local-engines")]
         for (engine, summary) in [("whisper", att_whisper::MODEL_MISSING), ("qwen_asr", att_qwen::MODEL_MISSING)] {
             let error = resolve_engine(&core, engine).unwrap_err();
             assert_eq!(error.status, 409);
             assert!(error.message.starts_with(summary), "{}", error.message);
             assert!(!error.message.contains('\n'), "不带多行详情：{}", error.message);
             assert!(error.message.chars().count() < 60, "{}", error.message);
+        }
+        #[cfg(not(feature = "local-engines"))]
+        for engine in ["whisper", "qwen_asr"] {
+            let error = resolve_engine(&core, engine).unwrap_err();
+            assert_eq!(error.status, 409);
+            assert!(error.message.contains(crate::stt::local::LOCAL_ENGINES_DISABLED), "{}", error.message);
         }
         assert_eq!(resolve_engine(&core, "doubao_asr").unwrap_err().status, 409, "新数据目录没有豆包凭据");
         assert_eq!(resolve_engine(&core, "chatgpt_asr").unwrap_err().status, 422, "文件转写不支持 ChatGPT 听写");

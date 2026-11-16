@@ -35,14 +35,17 @@ uuid = { version = "1", features = ["v4"] }
 # 剪贴板图片缩略图：悬浮框卡片只要几百像素宽，原图（常见 2K~4K 截图）解码太重
 image = { version = "0.25", default-features = false, features = ["png"] }
 # 本地引擎：faster-whisper（CTranslate2/ct2rs）与 Qwen3-ASR（sherpa-onnx ONNX）
-att-whisper = { path = "../att-whisper" }
-att-qwen = { path = "../att-qwen" }
+att-whisper = { path = "../att-whisper", optional = true }
+att-qwen = { path = "../att-qwen", optional = true }
 # LLM 网关：native-tls 与 WebSocket 同一套系统 TLS；system-proxy 读系统代理（与 Python httpx 走代理的行为对齐）
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "http2", "charset", "system-proxy", "multipart"] }
 # LLM 错误文案脱敏
 regex = "1"
 
 [features]
+# 默认包含本地引擎；CI / 纯数据面构建可用 --no-default-features 跳过 CTranslate2 与 sherpa-onnx
+default = ["local-engines"]
+local-engines = ["dep:att-whisper", "dep:att-qwen"]
 # 测试支撑（本地 LLM HTTP 桩），供下游 crate 的测试启用
 test-support = []
 

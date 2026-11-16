@@ -1,10 +1,11 @@
-# ATT 质量门禁（前端）
+# ATT 质量门禁（前端 + Rust 核心）
 #
-# 用例全部是纯 Node 的单元断言（纯函数），不需要显示器、不需要 Rust 工具链，
-# 因此用 ubuntu-latest 即可。
-#
-# Rust 侧（`cargo test --workspace`）依赖 CTranslate2 / sherpa-onnx 的本地编译与系统库，
-# 托管 runner 上构建代价过高，目前由本机测试与 release.yml 的打包流程覆盖。
+# 前端：纯 Node 单元断言（纯函数），不需要显示器。
+# Rust：att-core 的本地引擎依赖（CTranslate2 / sherpa-onnx）默认开启，CI 用
+# `--no-default-features` 关闭后再跑 clippy / test；默认构建仍由本机
+# `cargo test --workspace` 与 release.yml 的打包流程覆盖。
+# fmt 暂不进门禁：仓库现有代码尚未按 rustfmt 统一（另有卡片跟踪），先只拦编译、
+# clippy 与测试，避免 CI 一开始就长期红。
 
 name: CI
 
@@ -54,3 +55,29 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 7
+
+  rust-core:
+    name: Rust 门禁（不含本地引擎）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Clippy（core / server / hotkey，不含本地引擎）
+        working-directory: src-tauri
+        run: cargo clippy -p att-core -p att-server -p att-hotkey --no-default-features
+
+      - name: Rust 测试（core / server / hotkey，不含本地引擎）
+        working-directory: src-tauri
+        run: cargo test -p att-core -p att-server -p att-hotkey --no-default-features

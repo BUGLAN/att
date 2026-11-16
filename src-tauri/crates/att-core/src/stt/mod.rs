@@ -248,4 +248,16 @@ mod tests {
         assert_eq!(local_kind("chatgpt_asr"), None);
         assert_eq!(local_kind("deepseek_asr"), None);
     }
+
+    #[cfg(not(feature = "local-engines"))]
+    #[test]
+    fn 关闭本地引擎时_resolve_给出明确结论() {
+        let dir = std::env::temp_dir().join(format!("att-no-local-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let core = Arc::new(CoreState::init(&dir, crate::Platform::current()).unwrap());
+        core.apply_settings_update(&serde_json::json!({ "asr_provider": "whisper" })).unwrap();
+        let error = Engine::resolve(&core).unwrap_err();
+        assert_eq!(error, local::LOCAL_ENGINES_DISABLED);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
