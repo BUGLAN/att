@@ -275,16 +275,21 @@ impl RecordRepo {
 
     /// GET /api/records：分页列表（裸数组响应 + 按 created_at 倒序）。
     pub fn list(&self, status: Option<&str>, limit: usize, offset: usize) -> Vec<Record> {
+        self.list_page(status, limit, offset).0
+    }
+
+    /// GET /api/records?with_total=true：分页列表 + 过滤后的总数（单次加锁/扫描）。
+    pub fn list_page(&self, status: Option<&str>, limit: usize, offset: usize) -> (Vec<Record>, usize) {
         let mut index = self.guard();
         index.refresh(scan_records);
-        index
+        let matched: Vec<&Record> = index
             .items()
             .iter()
             .filter(|r| status.map(|s| r.status.as_str() == s).unwrap_or(true))
-            .skip(offset)
-            .take(limit)
-            .cloned()
-            .collect()
+            .collect();
+        let total = matched.len();
+        let items = matched.into_iter().skip(offset).take(limit).cloned().collect();
+        (items, total)
     }
 
     /// GET /api/records/search：文本 + 收藏搜索。

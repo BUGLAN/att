@@ -77,7 +77,7 @@ export function useElectron() {
   }
 
   const api = {
-    getRecords: () => httpApi.getRecords(),
+    getRecords: (params) => httpApi.getRecords(params),
     searchRecords: (params) => httpApi.searchRecords(params),
     getRecord: (id) => httpApi.getRecord(id),
     updateRecord: (id, data) => httpApi.updateRecord(id, data),

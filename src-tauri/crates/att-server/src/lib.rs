@@ -398,7 +398,16 @@ async fn records_list(
     let limit = parse_usize(&params, "limit", 200, 1000);
     let offset = params.get("offset").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
     let status = params.get("status").cloned();
-    let records = blocking(move || state.core.records.list(status.as_deref(), limit, offset)).await.unwrap_or_default();
+    let with_total = params.get("with_total").map(|v| v == "true" || v == "1").unwrap_or(false);
+    let (records, total) =
+        blocking(move || state.core.records.list_page(status.as_deref(), limit, offset)).await.unwrap_or_default();
+    if with_total {
+        // with_total=true：分页加载方拿总数算页数（剪贴板列表同款契约）
+        return Json(json!({
+            "items": serde_json::to_value(records).unwrap_or_default(),
+            "total": total,
+        }));
+    }
     // 裸数组响应（契约：非 {items,total} 包装）
     Json(serde_json::to_value(records).unwrap_or_default())
 }
@@ -944,6 +953,51 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(body.is_array(), "契约：GET /api/records 响应必须是裸数组");
         assert_eq!(body[0]["id"], json!("rec-x"));
+    }
+
+    #[tokio::test]
+    async fn records_超过两百条仍可分页_带总数时返回items与total() {
+        let state = test_state("records-page").await;
+        // test_state 已插入 rec-x，这里补到 250 条
+        for index in 0..249 {
+            state
+                .core
+                .records
+                .insert(att_core::records::Record {
+                    id: format!("rec-page-{index:03}"),
+                    raw_text: Some(format!("第 {index} 条")),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+
+        // 旧契约：不带参数仍是裸数组，默认最多 200 条
+        let (status, body) = get_json(&state, "/api/records").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.is_array(), "契约：GET /api/records 响应必须是裸数组");
+        assert_eq!(body.as_array().unwrap().len(), 200);
+
+        // offset 越过前 200 条仍能取到数据
+        let (status, body) = get_json(&state, "/api/records?limit=50&offset=200").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 50, "第 201 条之后必须有数据");
+
+        // with_total=true：{items, total}，total 是过滤后的总数
+        let (status, body) = get_json(&state, "/api/records?limit=50&offset=200&with_total=true").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["items"].as_array().unwrap().len(), 50);
+        assert_eq!(body["total"], json!(250));
+        let (status, body) = get_json(&state, "/api/records?status=failed&with_total=true").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["items"].as_array().unwrap().len(), 0);
+        assert_eq!(body["total"], json!(0), "total 必须按 status 过滤后统计");
+
+        // 记录集页面用的搜索分页：第 3 页（offset 200）不是空白页
+        let (status, body) = get_json(&state, "/api/records/search?page=3&page_size=100").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["items"].as_array().unwrap().len(), 50);
+        assert_eq!(body["total"], json!(250));
+        assert_eq!(body["total_pages"], json!(3));
     }
 
     #[tokio::test]

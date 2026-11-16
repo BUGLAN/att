@@ -304,7 +304,17 @@ async function streamNdjson(endpoint, options = {}) {
 }
 
 export const api = {
-  getRecords: () => request('GET', '/records'),
+  getRecords(params = {}) {
+    const searchParams = new URLSearchParams()
+
+    if (params.limit) searchParams.set('limit', String(params.limit))
+    if (params.offset) searchParams.set('offset', String(params.offset))
+    if (params.status) searchParams.set('status', params.status)
+    if (params.with_total) searchParams.set('with_total', 'true')
+
+    const query = searchParams.toString()
+    return request('GET', `/records${query ? `?${query}` : ''}`)
+  },
   async searchRecords(params = {}) {
     const searchParams = new URLSearchParams()
 

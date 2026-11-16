@@ -10,6 +10,9 @@ export const useRecordsStore = defineStore('records', () => {
   const isLoading = ref(false)
   const error = ref(null)
 
+  // 记录集页面走 /records/search 服务端分页；store 只保留最近这么多条，供托盘菜单和首页「最近」使用。
+  const RECENT_LIMIT = 200
+
   const sortedRecords = computed(() => {
     return [...records.value].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
   })
@@ -32,7 +35,7 @@ export const useRecordsStore = defineStore('records', () => {
     error.value = null
 
     try {
-      const result = await api.getRecords()
+      const result = await api.getRecords({ limit: RECENT_LIMIT })
       records.value = Array.isArray(result) ? result : []
       syncTrayMenu()
       return records.value
