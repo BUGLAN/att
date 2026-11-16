@@ -3,6 +3,8 @@
 // 列表按天分组（今天 / 昨天 / 10 月 29 日），行内只放时刻、正文与时长；
 // 状态只在「进行中 / 失败 / 已编辑」时用小圆点 + 灰字标出，已优化是常态不再标。
 
+const NO_VOICE_PREFIX = '没有听到人声'
+
 function toDate(value) {
   const date = value instanceof Date ? value : new Date(value)
   return Number.isNaN(date.getTime()) ? null : date
@@ -59,6 +61,9 @@ export function recordStatusMeta(record, { optimizing = false } = {}) {
   if (optimizing || record?.status === 'optimizing') return { text: '优化中', dot: 'blue pulse' }
   if (record?.status === 'transcribing' || record?.status === 'pending') return { text: '转写中', dot: 'blue pulse' }
   if (record?.status === 'failed') return { text: '失败', dot: 'err' }
+  if (typeof record?.error === 'string' && record.error.startsWith(NO_VOICE_PREFIX)) {
+    return { text: '未听到人声', dot: 'warn', title: record.error }
+  }
   if (record?.is_modified) return { text: '已编辑', dot: '' }
   return null
 }

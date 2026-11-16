@@ -50,3 +50,12 @@ test('行内状态：常态不标，进行中 / 失败 / 已编辑才标', () =>
   assert.equal(recordStatusMeta({ status: 'failed', is_modified: true }).text, '失败')
   assert.equal(recordStatusMeta({ status: 'optimized', is_modified: true }).text, '已编辑')
 })
+
+test('行内状态：没听到人声的记录带原因标记', () => {
+  const note = '没有听到人声，识别结果未优化、未输入'
+  const meta = recordStatusMeta({ status: 'transcribed', error: note })
+  assert.equal(meta.text, '未听到人声')
+  assert.equal(meta.dot, 'warn')
+  assert.equal(meta.title, note)
+  assert.equal(recordStatusMeta({ status: 'transcribed', error: '网络错误' }), null)
+})

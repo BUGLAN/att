@@ -61,6 +61,20 @@ test('完成态：空文本与降级', () => {
   assert.equal(degraded.toast, '识别中断，已保存已识别内容：x')
 })
 
+test('完成态：没听到人声时清空实时区并给出检查麦克风提示', () => {
+  const noVoice = deriveNativeSessionPatch({
+    phase: 'completed', mode: 'streaming', text: '', raw_text: 'Clean.',
+    message: '没有听到声音，检查麦克风', record: { id: 'r1' }, no_voice: true
+  })
+  assert.equal(noVoice.resetTranscript, true)
+  assert.equal(noVoice.transcript, '')
+  assert.equal(noVoice.statusText, '没有听到声音，检查麦克风')
+  assert.equal(noVoice.toast, '没有听到声音，检查麦克风')
+
+  const fallback = deriveNativeSessionPatch({ phase: 'completed', mode: 'single', text: '', no_voice: true })
+  assert.equal(fallback.toast, '没有听到声音，检查麦克风')
+})
+
 test('错误与取消：复位标志并提示', () => {
   const error = deriveNativeSessionPatch({ phase: 'error', message: '未配置 Token' })
   assert.equal(error.recording, false)

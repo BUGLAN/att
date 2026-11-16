@@ -42,8 +42,8 @@ function startDurationClock() {
   }, 1000)
 }
 
-function updateStreamingTranscript(text) {
-  if (!text && liveTranscript.value) {
+function updateStreamingTranscript(text, { clear = false } = {}) {
+  if (!text && !clear && liveTranscript.value) {
     return
   }
   liveTranscript.value = text || ''
@@ -87,7 +87,7 @@ function applyNativeSessionState(payload) {
   const { tray } = useElectron()
 
   if (patch.resetTranscript) {
-    liveTranscript.value = ''
+    updateStreamingTranscript('', { clear: true })
   }
   if (patch.clock === 'start') {
     startDurationClock()

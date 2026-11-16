@@ -14,6 +14,8 @@
 
 import { deriveCompletionToast } from './statusCopy.mjs'
 
+const NO_VOICE_TOAST = '没有听到声音，检查麦克风'
+
 export const NATIVE_PHASES = Object.freeze([
   'idle',
   'connecting',
@@ -105,7 +107,9 @@ export function deriveNativeSessionPatch(payload = {}) {
             : null
       let toast
       let toastTone
-      if (!text) {
+      if (payload.no_voice && !text) {
+        toast = message || NO_VOICE_TOAST
+      } else if (!text) {
         toast = message || '没有识别到语音内容'
       } else if (optimization === 'fail') {
         // 自动优化失败兜底粘贴原文，保证「总有输出」；已流式输入部分优化文时由后端说明去向（copy_error）。
@@ -131,6 +135,8 @@ export function deriveNativeSessionPatch(payload = {}) {
         transcribing: false,
         clock: 'stop',
         transcript: text,
+        // 没听到人声时后端把 text 留空；实时区必须显式清空，否则会留着中间识别结果
+        resetTranscript: payload.no_voice === true,
         record: payload.record || null,
         toast,
         toastTone,

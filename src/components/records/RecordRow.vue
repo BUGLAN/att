@@ -24,7 +24,7 @@
       <p class="record-row-text" :class="{ 'ui-clamp-2': !expanded, 'is-pending': !hasText }">
         {{ displayText }}<span v-if="showTypingCursor" class="typing-cursor" aria-hidden="true"></span>
       </p>
-      <span v-if="statusMeta" class="ui-meta record-row-status">
+      <span v-if="statusMeta" class="ui-meta record-row-status" :title="statusMeta.title || null">
         <span class="ui-dot" :class="statusMeta.dot"></span>{{ statusMeta.text }}
       </span>
 
