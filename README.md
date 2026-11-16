@@ -79,7 +79,9 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 | `ATT_UPDATE_URL` | 检查更新的地址 |
 | `ATT_FORCE_MIGRATION=1` | 重跑一次性数据迁移 |
 | `DOUBAO_ASR_API_KEY` | 豆包密钥兜底（设置页填写的优先） |
-| `TRANSCRIBE_FILE_API_TOKEN` | 非空时文件转写接口要求请求头 `X-ATT-Token` |
+
+数据面令牌由应用每次启动随机生成并注入前端，文件转写接口默认要求请求头 `X-ATT-Token`；
+可转写的文件也只接受在界面里选择 / 拖入 / 手动确认过的路径（精确白名单），HTTP 调用不能自行扩大范围。
 
 发布：版本号写在 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`（及对应 lock 文件），
 用 `npm run version:bump -- 2.8.0` 一次改齐（`node scripts/bump-version.mjs --check` 只校验，Node 测试里也会校验）；

@@ -21,11 +21,13 @@ const SHADOW_EDGE: f64 = 16.0;
 static PREVIOUS_APP: Mutex<Option<platform::AppRef>> = Mutex::new(None);
 
 /// 预创建隐藏的悬浮框（首次唤起不等页面加载）。
-pub fn create(app: &AppHandle, backend_port: u16) -> tauri::Result<()> {
+pub fn create(app: &AppHandle, backend_port: u16, backend_token: &str) -> tauri::Result<()> {
     if app.get_webview_window(LABEL).is_some() {
         return Ok(());
     }
-    let init_script = format!("window.__ATT_BACKEND_PORT__ = {backend_port}; window.__ATT_IS_DESKTOP__ = true;");
+    let init_script = format!(
+        "window.__ATT_BACKEND_PORT__ = {backend_port}; window.__ATT_BACKEND_TOKEN__ = \"{backend_token}\"; window.__ATT_IS_DESKTOP__ = true;"
+    );
     tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("clipboard-panel.html".into()))
         .title("ATT 剪贴板")
         .inner_size(960.0, 276.0)

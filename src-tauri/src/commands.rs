@@ -17,6 +17,12 @@ pub fn get_backend_port(state: State<'_, AppState>) -> u16 {
     state.backend_port
 }
 
+/// 数据面令牌：与端口一样优先走 initialization_script 注入，这里是注入失败时的兜底。
+#[tauri::command]
+pub fn get_backend_token(state: State<'_, AppState>) -> String {
+    state.backend_token.clone()
+}
+
 /// 平台字符串沿用 Electron 命名（win32/darwin/linux），前端零改动。
 #[tauri::command]
 pub fn get_platform() -> String {
@@ -371,6 +377,16 @@ pub async fn open_media_file(app: AppHandle) -> Option<String> {
     .ok()
     .flatten()?;
     picked.into_path().ok().map(|path| path.to_string_lossy().into_owned())
+}
+
+/// 允许转写一个本机文件：用户在界面里选择 / 拖入 / 手动确认路径后由前端调用。
+///
+/// 这是 HTTP 转写接口的精确白名单入口；外部网页与进程无法调用 Tauri 命令，
+/// 即使拿到数据面地址也不能自行扩大可读文件范围。
+#[tauri::command]
+pub fn allow_transcribe_path(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let resolved = state.core.allow_transcribe_file(std::path::Path::new(&path))?;
+    Ok(resolved.to_string_lossy().into_owned())
 }
 
 // ---------------- 设置页：权限 / 诊断 ----------------

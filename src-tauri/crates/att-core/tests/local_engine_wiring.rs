@@ -52,6 +52,7 @@ fn request(path: String, engine: &str) -> TranscribeRequest {
 async fn run(name: &str, provider: &str) {
     let wav = std::env::var("ATT_TEST_WAV").expect("请用 ATT_TEST_WAV 指定测试音频（wav/mp3/mp4 均可）");
     let core = prepare(name, provider);
+    core.allow_transcribe_file(Path::new(&wav)).expect("测试音频应能登记进转写白名单");
     let outcome = transcribe::handle(core.clone(), request(wav.clone(), provider))
         .await
         .unwrap_or_else(|error| panic!("转写应成功，实际 {}：{}", error.status, error.message));

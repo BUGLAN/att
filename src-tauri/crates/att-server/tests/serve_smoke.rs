@@ -20,7 +20,7 @@ fn temp_state(tag: &str) -> Arc<ServerState> {
             ..Default::default()
         })
         .unwrap();
-    Arc::new(ServerState { core: Arc::new(core) })
+    Arc::new(ServerState { core: Arc::new(core), token: "test-token".into() })
 }
 
 /// 起真实服务 → 裸 TCP 自检 → 路由可访问。

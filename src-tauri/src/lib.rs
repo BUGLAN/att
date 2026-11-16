@@ -32,6 +32,8 @@ use tauri::Manager;
 pub struct AppState {
     pub core: Arc<CoreState>,
     pub backend_port: u16,
+    /// 本次启动生成的数据面令牌（前端经注入或命令获取，敏感 HTTP 端点要求带上）
+    pub backend_token: String,
     /// 数据面停机信号发送端。
     ///
     /// **必须随应用存活**（由 `app.manage` 持有）：watch 通道的全部发送端被 drop
@@ -122,7 +124,9 @@ pub fn run() {
 
             // 数据面：先用同步 bind 占住端口（优先固定端口，占用则回退随机），
             // 再把 accept 循环显式 spawn 到 Tauri 的运行时里。
-            let server_state = Arc::new(att_server::ServerState { core: core.clone() });
+            // 每次启动生成新的数据面令牌：外部网页 / 进程拿不到，转写等敏感端点默认拒绝无 token 请求
+            let backend_token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+            let server_state = Arc::new(att_server::ServerState { core: core.clone(), token: backend_token.clone() });
             // 注意：发送端必须存活到应用退出（否则 watch 通道关闭 → 优雅关闭数据面，
             // 见 AppState::shutdown_tx 注释），这里先创建、随 AppState 交给 Tauri 托管。
             let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -175,6 +179,7 @@ pub fn run() {
             app.manage(AppState {
                 core,
                 backend_port: port,
+                backend_token: backend_token.clone(),
                 shutdown_tx,
                 recorder,
                 hotkey_error: std::sync::Mutex::new(hotkey_error),
@@ -185,7 +190,7 @@ pub fn run() {
             // 前端 getBackendPort() 首选的 window.__ATT_BACKEND_PORT__ 因此永远可用，
             // 不再依赖 invoke 是否成功（早期实机验收时 invoke 路径曾失败导致回退 8000）。
             let init_script = format!(
-                "window.__ATT_BACKEND_PORT__ = {port}; window.__ATT_IS_DESKTOP__ = true;"
+                "window.__ATT_BACKEND_PORT__ = {port}; window.__ATT_BACKEND_TOKEN__ = \"{backend_token}\"; window.__ATT_IS_DESKTOP__ = true;"
             );
             let main = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
                 .title("落墨")
@@ -204,7 +209,7 @@ pub fn run() {
                 tracing::warn!("创建悬浮窗失败（不影响录音）: {error}");
             }
             // 剪贴板悬浮框：预创建隐藏，由全局快捷键唤起
-            if let Err(error) = clipboard_panel::create(app.handle(), port) {
+            if let Err(error) = clipboard_panel::create(app.handle(), port, &backend_token) {
                 tracing::warn!("创建剪贴板悬浮框失败: {error}");
             }
             // 托盘（四态图标 + 最近记录菜单）与剪贴板后台监控
@@ -219,6 +224,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_backend_port,
+            commands::get_backend_token,
             commands::get_platform,
             commands::window_minimize,
             commands::window_toggle_maximize,
@@ -255,6 +261,7 @@ pub fn run() {
             commands::get_floating_state,
             commands::open_main_settings,
             commands::open_media_file,
+            commands::allow_transcribe_path,
             commands::get_permission_status,
             commands::open_permission_settings,
             commands::get_app_info,

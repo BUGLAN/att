@@ -8,6 +8,9 @@ let backendPort = null
 // Tauri 注入的端口是「本次启动的权威值」：网络错误后重解析时优先复用，
 // 避免把正确端口丢掉、退回到探测默认值（Rust 回退随机端口时探测必然失败）。
 let injectedPortCache = null
+// 数据面令牌：Tauri 每次启动生成并通过 initialization_script 注入；注入缺失时走 invoke 兜底。
+let backendToken = null
+let injectedTokenCache = null
 
 // Rust 数据面的首选固定端口（app 侧同值）；被占用时 Rust 会回退随机端口，
 // 此时以注入值为准。这里保留探测兜底，避免「注入失败 + invoke 失败」时整站瘫痪。
@@ -77,6 +80,38 @@ export async function getBackendPort() {
   return backendPort
 }
 
+export async function getBackendToken() {
+  if (backendToken) {
+    return backendToken
+  }
+
+  if (!injectedTokenCache && typeof window !== 'undefined') {
+    const injected = window.__ATT_BACKEND_TOKEN__
+    if (typeof injected === 'string' && injected) {
+      injectedTokenCache = injected
+    }
+  }
+  if (injectedTokenCache) {
+    backendToken = injectedTokenCache
+    return backendToken
+  }
+
+  if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const token = await invoke('get_backend_token')
+      if (typeof token === 'string' && token) {
+        backendToken = token
+        return backendToken
+      }
+    } catch (error) {
+      console.warn('[API] 通过 invoke 获取数据面令牌失败:', error)
+    }
+  }
+
+  return ''
+}
+
 export async function getBaseUrl() {
   const port = await getBackendPort()
   return `http://127.0.0.1:${port}/api`
@@ -136,6 +171,7 @@ function extractErrorMessage(errorData, response) {
 
 async function request(method, endpoint, options = {}) {
   const baseUrl = await getBaseUrl()
+  const token = await getBackendToken()
   const url = `${baseUrl}${endpoint}`
   const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS
   const controller = new AbortController()
@@ -145,7 +181,8 @@ async function request(method, endpoint, options = {}) {
     method,
     headers: {
       'Content-Type': 'application/json',
-      ...options.headers
+      ...options.headers,
+      ...(token ? { 'X-ATT-Token': token } : {})
     },
     signal: controller.signal
   }
@@ -199,6 +236,7 @@ async function request(method, endpoint, options = {}) {
  */
 async function streamNdjson(endpoint, options = {}) {
   const baseUrl = await getBaseUrl()
+  const token = await getBackendToken()
   const url = `${baseUrl}${endpoint}`
   const timeout = options.timeout ?? SLOW_TIMEOUT_MS
   const controller = new AbortController()
@@ -233,7 +271,8 @@ async function streamNdjson(endpoint, options = {}) {
       method: options.method || 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...options.headers
+        ...options.headers,
+        ...(token ? { 'X-ATT-Token': token } : {})
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
       signal: controller.signal

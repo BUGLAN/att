@@ -33,6 +33,8 @@ use std::sync::Arc;
 
 pub struct ServerState {
     pub core: Arc<CoreState>,
+    /// 本次启动生成的数据面令牌：敏感端点（文件转写等）要求请求头 `X-ATT-Token` 匹配。
+    pub token: String,
 }
 
 // ---------------- 路由 ----------------
@@ -730,7 +732,7 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        Arc::new(ServerState { core: Arc::new(core) })
+        Arc::new(ServerState { core: Arc::new(core), token: "test-token".into() })
     }
 
     async fn get_json(state: &Arc<ServerState>, uri: &str) -> (StatusCode, Value) {
@@ -773,7 +775,7 @@ mod tests {
         std::fs::write(root.join("prompts/程序员模式.txt"), "程序员模板").unwrap();
         let mut core = CoreState::init(&root.join("data"), att_core::Platform::Macos).unwrap();
         core.prompts_dir = root.join("prompts");
-        let state = Arc::new(ServerState { core: Arc::new(core) });
+        let state = Arc::new(ServerState { core: Arc::new(core), token: "test-token".into() });
 
         // 旧数据没有 custom_prompts.json：只有内置
         let (status, list) = get_json(&state, "/api/prompts").await;
@@ -841,7 +843,7 @@ mod tests {
         let mut core = CoreState::init(&dir, att_core::Platform::Macos).unwrap();
         core.updater = std::sync::Arc::new(att_core::update::Updater::with_url(&dir, format!("{base}/latest")));
         core.app_version = "2.5.1".into();
-        let state = Arc::new(ServerState { core: Arc::new(core) });
+        let state = Arc::new(ServerState { core: Arc::new(core), token: "test-token".into() });
 
         let (status, body) = get_json(&state, "/api/update").await;
         assert_eq!(status, StatusCode::OK);

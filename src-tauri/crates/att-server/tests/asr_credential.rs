@@ -13,7 +13,7 @@ fn temp_state(tag: &str) -> Arc<ServerState> {
     let dir = std::env::temp_dir().join(format!("att-asr-credential-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let core = CoreState::init(&dir, att_core::Platform::current()).unwrap();
-    Arc::new(ServerState { core: Arc::new(core) })
+    Arc::new(ServerState { core: Arc::new(core), token: "test-token".into() })
 }
 
 async fn call(state: &Arc<ServerState>, method: &str, uri: &str, body: Option<Value>) -> (u16, Value) {

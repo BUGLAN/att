@@ -25,7 +25,7 @@ function sleep(ms) {
 }
 
 export function useFileTranscribe() {
-  const { openMediaFile, filePathForFile, clipboard } = useElectron()
+  const { openMediaFile, allowTranscribePath, isDesktop, filePathForFile, clipboard } = useElectron()
   const settingsStore = useSettingsStore()
 
   const filePath = ref('')
@@ -190,6 +190,16 @@ export function useFileTranscribe() {
     if (!isSupportedMediaPath(request.path)) {
       error.value = '暂不支持该文件类型：请选择音视频文件（mp4 / flv / webm / wav / mp3 / m4a 等）'
       return
+    }
+
+    // 数据面只接受本机用户确认过的文件：选择 / 拖入 / 手动输入的路径在发起请求前登记
+    if (isDesktop) {
+      try {
+        await allowTranscribePath(request.path)
+      } catch (err) {
+        error.value = `无法转写该文件：${err?.message || err}`
+        return
+      }
     }
 
     const currentRun = ++runSeq

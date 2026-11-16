@@ -8,6 +8,7 @@ use crate::records::RecordRepo;
 use crate::settings::{self, UserSettings};
 use crate::storage::crypto::Crypto;
 use crate::Platform;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -35,6 +36,8 @@ pub struct CoreState {
     pub optimizer: OptimizationHub,
     /// 本地文件转写（任务表 / 单并发闸门 / 结果缓存）
     pub transcriber: crate::transcribe::FileTranscriber,
+    /// 本机用户确认过、允许文件转写的精确路径白名单（只在内存里）
+    pub transcribe_allowed: Mutex<HashSet<PathBuf>>,
     /// 本地引擎常驻池（faster-whisper / Qwen3-ASR）
     pub local_models: crate::stt::local::LocalModels,
     /// 在线引擎最近一次凭据验证结果（按凭据指纹失效，只在内存里）
@@ -65,7 +68,7 @@ pub fn resolve_models_dir(data_dir: &Path) -> PathBuf {
 }
 
 /// 规范化路径：去掉 `..` 段（Windows 的 `\\?\` 前缀也一并去掉，便于日志与错误提示可读）。
-fn tidy(path: PathBuf) -> PathBuf {
+pub(crate) fn tidy(path: PathBuf) -> PathBuf {
     let resolved = std::fs::canonicalize(&path).unwrap_or(path);
     #[cfg(windows)]
     {
@@ -102,6 +105,7 @@ impl CoreState {
             clipboard: ClipboardRepo::new(data_dir),
             optimizer: OptimizationHub::default(),
             transcriber: Default::default(),
+            transcribe_allowed: Mutex::new(HashSet::new()),
             local_models: Default::default(),
             credential_checks: Default::default(),
             prompts_dir: crate::prompts::resolve_dir(data_dir, None),
@@ -141,6 +145,28 @@ impl CoreState {
     /// GET /api/settings：脱敏公共视图。
     pub fn public_settings(&self) -> serde_json::Value {
         self.settings().public_view(self.platform)
+    }
+
+    /// 登记一个允许转写的文件（精确白名单）。
+    ///
+    /// 只接受本机用户在界面里选择 / 拖入 / 手动确认过的路径。返回 canonicalize 后的路径，
+    /// 与转写校验使用同一形态（Windows 去掉 `\\?\` 前缀）。
+    pub fn allow_transcribe_file(&self, path: &Path) -> Result<PathBuf, String> {
+        // 与 HTTP 侧一致：容忍首尾空白与「复制为路径」带的引号
+        let raw = path.to_string_lossy();
+        let raw = raw.trim().trim_matches('"');
+        let resolved = std::fs::canonicalize(raw).map_err(|_| format!("文件不存在或无法访问：{raw}"))?;
+        if !resolved.is_file() {
+            return Err(format!("不是文件：{raw}"));
+        }
+        let resolved = tidy(resolved);
+        self.transcribe_allowed.lock().unwrap_or_else(|e| e.into_inner()).insert(resolved.clone());
+        Ok(resolved)
+    }
+
+    /// 该路径是否已经由本机用户登记为可转写。
+    pub fn is_transcribe_allowed(&self, path: &Path) -> bool {
+        self.transcribe_allowed.lock().unwrap_or_else(|e| e.into_inner()).contains(path)
     }
 
     /// 提示词预设库：内置 `prompts_dir` + 自定义 `data/custom_prompts.json`。

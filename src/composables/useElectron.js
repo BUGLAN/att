@@ -314,6 +314,12 @@ export function useElectron() {
     return invoke('open_media_file')
   }
 
+  // 「转文字」页：把用户选择 / 拖入 / 手动确认的本地文件登记进转写白名单（HTTP 接口只接受登记过的文件）
+  async function allowTranscribePath(path) {
+    if (!isDesktop) return ''
+    return invoke('allow_transcribe_path', { path })
+  }
+
   // WebView 拿不到拖入 File 的本地路径：桌面端改由 onFileDrop（原生拖放事件）直接给路径
   function filePathForFile() {
     return ''
@@ -366,6 +372,7 @@ export function useElectron() {
     getDesktopSettings,
     saveDesktopSettings,
     openMediaFile,
+    allowTranscribePath,
     filePathForFile,
     getPlatform,
     platform: detectPlatformSync(),
