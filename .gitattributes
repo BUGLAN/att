@@ -1,0 +1,27 @@
+# 换行统一：文本文件在索引和工作区都用 LF，不随各平台的 core.autocrlf 变化。
+# 这样 Windows 上按行匹配文本文件（版本号、锁文件检查等）的脚本与测试，行为才和 macOS / Linux / CI 一致。
+* text=auto eol=lf
+
+# 锁文件必须 LF：Cargo.lock 与 package-lock.json 常被脚本按行读取。
+*.lock text eol=lf
+**/package-lock.json text eol=lf
+
+# 二进制文件不做换行转换，避免被误判为文本后改写内容。
+*.png binary
+*.ico binary
+*.icns binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.onnx binary
+*.bin binary
+*.wav binary
+*.flac binary
+*.mp3 binary
+*.zip binary
+*.pdf binary
