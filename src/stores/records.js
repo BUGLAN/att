@@ -107,9 +107,12 @@ export const useRecordsStore = defineStore('records', () => {
       const result = await api.optimizeRecord(id)
       const index = records.value.findIndex((record) => record.id === id)
       if (index !== -1) {
+        // 非流式接口的 processing_time 是优化耗时，不是记录的处理耗时
+        const optimizeTime = Number.isFinite(result?.processing_time) ? result.processing_time : null
         records.value[index] = {
           ...records.value[index],
-          ...result,
+          optimized_text: result?.optimized_text ?? records.value[index].optimized_text,
+          optimize_time: optimizeTime,
           status: 'optimized'
         }
         syncTrayMenu()

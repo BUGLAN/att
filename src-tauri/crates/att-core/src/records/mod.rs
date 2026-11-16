@@ -37,7 +37,7 @@ impl RecordStatus {
     }
 }
 
-/// 转写记录（13 字段，字段名与 Python 版逐一对齐）。
+/// 转写记录（字段名与 Python 版逐一对齐；`optimize_time` 为可选扩展，旧数据缺字段按 None 读）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Record {
@@ -49,7 +49,11 @@ pub struct Record {
     pub raw_text: Option<String>,
     pub optimized_text: Option<String>,
     pub status: RecordStatus,
+    /// 停止录音 → 识别结果落地；之后的优化不再改动这个值
     pub processing_time: Option<f64>,
+    /// 优化耗时，与识别阶段的 `processing_time` 分开记录
+    #[serde(default)]
+    pub optimize_time: Option<f64>,
     pub is_modified: bool,
     pub is_favorite: bool,
     pub error: Option<String>,
@@ -68,6 +72,7 @@ impl Default for Record {
             optimized_text: None,
             status: RecordStatus::Pending,
             processing_time: None,
+            optimize_time: None,
             is_modified: false,
             is_favorite: false,
             error: None,
@@ -86,6 +91,7 @@ impl Record {
             "optimized_text": self.optimized_text,
             "duration": self.duration,
             "processing_time": self.processing_time,
+            "optimize_time": self.optimize_time,
             "is_favorite": self.is_favorite,
         })
     }
@@ -521,6 +527,8 @@ mod tests {
         ).unwrap();
         let record = repo.get("rec-old").unwrap();
         assert_eq!(record.raw_text.as_deref(), Some("旧文本"));
+        assert_eq!(record.processing_time, Some(1.1));
+        assert_eq!(record.optimize_time, None, "旧记录没有 optimize_time 时按 None 读");
         assert!(record.error.is_none());
         assert_eq!(record.revision, 0);
         let _ = std::fs::remove_dir_all(&dir);

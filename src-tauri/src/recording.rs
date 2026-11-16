@@ -1062,7 +1062,8 @@ fn no_voice_state(raw_text: &str, record: Value) -> Value {
 }
 
 /// 记录里的「处理耗时」：从停止录音（按住模式是真实松开那一刻，松开缓冲算在处理里；多段模式最后一段也在这时送出）
-/// 到拿到识别结果，三种模式同一口径，不含录音本身。没经过停止就结束的（麦克风中途断开）记 0，界面不显示。
+/// 到拿到识别结果，三种模式同一口径，不含录音本身。自动 / 手动优化只写 optimize_time，不重新计算这个值。
+/// 没经过停止就结束的（麦克风中途断开）记 0，界面不显示。
 fn processing_seconds(stopped_at: Option<Instant>, done_at: Instant) -> f64 {
     stopped_at.map(|at| done_at.saturating_duration_since(at).as_secs_f64()).unwrap_or(0.0)
 }

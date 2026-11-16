@@ -32,6 +32,7 @@ pub enum OptimizeEvent {
 #[derive(Debug, Clone)]
 pub struct OptimizeSuccess {
     pub optimized_text: String,
+    /// 本次优化耗时；记录里另存为 `optimize_time`，不要写进 `processing_time`
     pub processing_time: f64,
     pub tokens_used: i64,
     pub truncated: bool,
@@ -130,6 +131,7 @@ pub async fn optimize_record_with_preset(
         Some(Ok(success)) => {
             let saved = core.records.patch(record_id, |record| {
                 record.optimized_text = Some(success.optimized_text.clone());
+                record.optimize_time = Some((success.processing_time * 100.0).round() / 100.0);
                 record.status = RecordStatus::Optimized;
                 record.error = None;
             });
@@ -277,7 +279,13 @@ mod tests {
         let core = CoreState::init(&data_dir, crate::Platform::Macos).unwrap();
         core.update_settings(|s| s.default_preset_id = Some("preset-程序员模式".into())).unwrap();
         core.records
-            .insert(Record { id: "rec-1".into(), raw_text: Some("嗯那个明天开会".into()), status: RecordStatus::Transcribed, ..Default::default() })
+            .insert(Record {
+                id: "rec-1".into(),
+                raw_text: Some("嗯那个明天开会".into()),
+                status: RecordStatus::Transcribed,
+                processing_time: Some(0.6),
+                ..Default::default()
+            })
             .unwrap();
         let profile = core
             .llm
@@ -331,6 +339,26 @@ mod tests {
         assert!(request.contains("<transcript>"), "正文进信封");
         assert!(request.contains(r#""model":"m""#));
         assert!(!core.optimizer.is_active("rec-1"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn 优化完成_只写优化耗时_不改识别处理耗时() {
+        let (base, _requests) = stub_routes(vec![StubRoute::sse(
+            "POST /v1/chat/completions",
+            &[r#"{"choices":[{"delta":{"content":"明天开会。"},"finish_reason":"stop"}]}"#],
+        )])
+        .await;
+        let (core, root) = setup(&base, "processing-time");
+        let before = core.records.get("rec-1").unwrap();
+        assert_eq!(before.processing_time, Some(0.6), "识别阶段耗时由录音链路写入");
+
+        let outcome = optimize_record(&core, "rec-1", "嗯那个明天开会", |_| {}).await;
+        assert!(matches!(outcome, OptimizeOutcome::Completed(_)), "{outcome:?}");
+
+        let after = core.records.get("rec-1").unwrap();
+        assert_eq!(after.processing_time, Some(0.6), "自动优化共用这条链路，不能把优化时长写进处理耗时");
+        assert!(after.optimize_time.is_some(), "优化耗时另存 optimize_time");
         let _ = std::fs::remove_dir_all(&root);
     }
 

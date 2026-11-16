@@ -108,10 +108,11 @@ export function useRecords() {
       }
 
       optimizationStream.finish(doneEvent.optimized_text || '')
+      // doneEvent.processing_time 是本次优化耗时，只写 optimize_time，不能覆盖识别阶段的处理耗时
       patchOptimizationResult(id, {
         status: 'optimized',
         optimized_text: doneEvent.optimized_text || '',
-        processing_time: doneEvent.processing_time
+        optimize_time: Number.isFinite(doneEvent.processing_time) ? doneEvent.processing_time : null
       })
 
       if (doneEvent.degraded) {
