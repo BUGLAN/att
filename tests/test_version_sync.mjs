@@ -12,6 +12,31 @@ test('仓库里各处版本号一致', () => {
   assert.equal(versions.packageLock.length, 2, 'package-lock.json 顶层与 packages[""] 各一处')
 })
 
+test('readVersions / applyVersion：CRLF 文本与 LF 行为一致且保留 CRLF', () => {
+  const lfTexts = loadTexts()
+  const crlfTexts = Object.fromEntries(
+    Object.entries(lfTexts).map(([key, text]) => [key, text.replace(/\r?\n/g, '\r\n')])
+  )
+
+  assert.deepEqual(readVersions(crlfTexts), readVersions(lfTexts))
+
+  const next = applyVersion(crlfTexts, '9.9.9')
+  assert.deepEqual([...new Set(Object.values(readVersions(next)).flat())], ['9.9.9'])
+
+  for (const key of Object.keys(crlfTexts)) {
+    const before = crlfTexts[key].split('\n')
+    const after = next[key].split('\n')
+    assert.equal(after.length, before.length, `${key} 行数不应变化`)
+    assert.equal(
+      (next[key].match(/\r\n/g) ?? []).length,
+      (next[key].match(/\n/g) ?? []).length,
+      `${key} 换行应保持 CRLF`
+    )
+    const changed = before.filter((line, index) => line !== after[index])
+    assert.ok(changed.every((line) => /version/.test(line)), `${key} 只应改版本号所在行：${changed.join(' | ')}`)
+  }
+})
+
 test('applyVersion：只替换本应用的版本号，其余内容原样保留', () => {
   const texts = loadTexts()
   const next = applyVersion(texts, '9.9.9')

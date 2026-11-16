@@ -26,15 +26,15 @@ const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 // 每个文件里「属于本应用的版本号」位置：正则的第 1、3 组是前后文，第 2 组是版本号
 const PATTERNS = Object.freeze({
   // 顶层第一个 version 字段
-  packageJson: [/^(\{[\s\S]*?\n  "version": ")([^"]+)(")/],
+  packageJson: [/^(\{[\s\S]*?\r?\n  "version": ")([^"]+)(")/],
   packageLock: [
-    /^(\{[\s\S]*?\n  "version": ")([^"]+)(")/,
+    /^(\{[\s\S]*?\r?\n  "version": ")([^"]+)(")/,
     /("packages": \{\s*"": \{[^}]*?"version": ")([^"]+)(")/
   ],
-  cargoToml: [/(\[workspace\.package\][^[]*?\nversion = ")([^"]+)(")/],
-  tauriConf: [/^(\{[\s\S]*?\n  "version": ")([^"]+)(")/],
+  cargoToml: [/(\[workspace\.package\][^[]*?\r?\nversion = ")([^"]+)(")/],
+  tauriConf: [/^(\{[\s\S]*?\r?\n  "version": ")([^"]+)(")/],
   // 工作区成员都叫 att-*，与第三方包不重名
-  cargoLock: [/(\[\[package\]\]\nname = "att-[a-z-]+"\nversion = ")([^"]+)(")/g]
+  cargoLock: [/(\[\[package\]\]\r?\nname = "att-[a-z-]+"\r?\nversion = ")([^"]+)(")/g]
 })
 
 /** 读出各文件里的本应用版本号：{ key: [版本号…] }。 */
