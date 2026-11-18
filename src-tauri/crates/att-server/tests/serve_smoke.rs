@@ -76,6 +76,7 @@ async fn cors_放行回环来源_拒绝外部来源() {
             axum::http::Request::builder()
                 .uri("/api/health")
                 .header("Origin", "http://127.0.0.1:8090")
+                .header("host", "127.0.0.1")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -94,6 +95,7 @@ async fn cors_放行回环来源_拒绝外部来源() {
             axum::http::Request::builder()
                 .uri("/api/health")
                 .header("Origin", "https://evil.example.com")
+                .header("host", "127.0.0.1")
                 .body(Body::empty())
                 .unwrap(),
         )

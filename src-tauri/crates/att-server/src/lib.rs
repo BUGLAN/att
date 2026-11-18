@@ -2,7 +2,8 @@
 //!
 //! 鉴权：每次启动生成随机 token；除 `/api/health` 外所有端点要求 `X-ATT-Token`
 //! （`<audio>` / `<img>` / 下载等带不了请求头的 GET 用 `?token=`）。来源按协议 + 主机名
-//! 精确匹配本地页面与 Tauri 自定义来源，Host 只允许 `127.0.0.1` / `localhost`（挡住 DNS rebinding）。
+//! 精确匹配本地页面与 Tauri 自定义来源，Host 只允许 `127.0.0.1` / `localhost`（挡住 DNS rebinding）；
+//! `/api/health` 虽不要求令牌，也必须通过回环 Host 校验。
 //!
 //! 端点一览：
 //! - GET /api/health（前端 runtimeStatus：model_service_* 与 streaming_*）
@@ -62,7 +63,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .allow_headers(tower_http::cors::Any);
 
     // 令牌校验在 CORS 内侧：预检由 CORS 层直接应答，不会要求 X-ATT-Token。
-    // 除 /api/health 外所有端点都必须带本次启动的令牌。
+    // 除 /api/health 外所有端点都必须带本次启动的令牌；health 仍校验回环 Host。
     let guard_token = state.token.clone();
     Router::new()
         .route("/", get(root))
@@ -118,11 +119,27 @@ fn token_from_query(query: &str) -> Option<&str> {
 
 /// 数据面统一鉴权 / Host 校验。
 ///
-/// - `/api/health` 与 CORS 预检放行（探活与浏览器预检不需要令牌）；
+/// - `/api/health` 不需要令牌，但仍须回环 Host；CORS 预检直接放行（浏览器预检不带令牌）；
 /// - 其余请求必须带 `X-ATT-Token`；GET/HEAD（录音回放、图片、导出）也接受 `?token=`；
-/// - Host 只能是 `127.0.0.1[:端口]` / `localhost[:端口]`，挡住 DNS rebinding。
+/// - 除预检外的请求 Host 只能是 `127.0.0.1[:端口]` / `localhost[:端口]`，挡住 DNS rebinding。
 async fn data_plane_guard(token: String, req: axum::extract::Request, next: Next) -> axum::response::Response {
-    if req.method() == Method::OPTIONS || req.uri().path() == "/api/health" {
+    if req.method() == Method::OPTIONS {
+        return next.run(req).await;
+    }
+
+    let host_ok = {
+        let host = req
+            .headers()
+            .get(header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .or_else(|| req.uri().authority().map(|authority| authority.as_str()))
+            .unwrap_or("");
+        is_allowed_host(host)
+    };
+    if req.uri().path() == "/api/health" {
+        if !host_ok {
+            return (StatusCode::FORBIDDEN, Json(json!({ "detail": "Host 不被允许" }))).into_response();
+        }
         return next.run(req).await;
     }
 
@@ -135,15 +152,6 @@ async fn data_plane_guard(token: String, req: axum::extract::Request, next: Next
         return (StatusCode::UNAUTHORIZED, Json(json!({ "detail": "缺少或错误的 X-ATT-Token" }))).into_response();
     }
 
-    let host_ok = {
-        let host = req
-            .headers()
-            .get(header::HOST)
-            .and_then(|value| value.to_str().ok())
-            .or_else(|| req.uri().authority().map(|authority| authority.as_str()))
-            .unwrap_or("");
-        is_allowed_host(host)
-    };
     if !host_ok {
         return (StatusCode::FORBIDDEN, Json(json!({ "detail": "Host 不被允许" }))).into_response();
     }
@@ -914,14 +922,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 全局鉴权_除health外都要求token与回环host() {
+    async fn 全局鉴权_health只校验host_其余要求token与回环host() {
         let state = test_state("guard").await;
         let app = router(state);
 
-        // health 不需要 token / Host
+        // health 不需要 token，但非回环 Host 仍拒绝
         let response = app
             .clone()
-            .oneshot(axum::http::Request::builder().uri("/api/health").body(Body::empty()).unwrap())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/health")
+                    .header("host", "evil.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let _ = response.into_body().collect().await;
+
+        // health + 回环 Host、不带 token → 200
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/health")
+                    .header("host", "127.0.0.1:17890")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
