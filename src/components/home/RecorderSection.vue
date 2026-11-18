@@ -109,6 +109,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRecorder } from '@/composables/useRecorder'
 import { deriveStreamingProviderLabel } from '@/composables/recorder/streamingProvider.mjs'
+import { deriveRecorderEngineStatus } from '@/composables/recorder/engineStatus.mjs'
+import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useOptimizationStreamStore } from '@/stores/optimizationStream'
@@ -117,6 +119,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import { ACTION_GLYPHS, SEALS, recorderSealState } from '@/components/common/glyphs.mjs'
 import { FAILURE_HOLD_MS, SUCCESS_HOLD_MS } from '@/components/floating/floatingView.mjs'
 import { hintSummary, providerLabel } from '@/components/settings/asrEngineStatus.mjs'
+import { isOnlineProvider } from '@/components/settings/onlineEngineStatus.mjs'
 import { recordHotkeySummary } from '@/components/settings/settingsHotkeys.mjs'
 
 const {
@@ -134,6 +137,7 @@ const {
 } = useRecorder()
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
+const credential = useAsrCredentialCheck()
 const optimizationStream = useOptimizationStreamStore()
 const liveScroll = ref(null)
 const autoScrollEnabled = ref(true)
@@ -154,6 +158,10 @@ const streamingNeedsCredentials = computed(() => (
   !streamingAvailable.value &&
   settingsStore.runtimeStatus.model_service_mode === 'online'
 ))
+const currentCredentialCheck = computed(() => {
+  const provider = settingsStore.settings.asr_provider
+  return isOnlineProvider(provider) ? credential.checks[provider] || null : null
+})
 const recordingButtonDisabled = computed(() => (
   !isRecording.value &&
   (!serviceReady.value || (isStreamingModeEnabled.value && !streamingAvailable.value))
@@ -325,14 +333,13 @@ const flowColor = computed(() => {
 const MODE_LABELS = { single: '单段', multi: '多段', streaming: '流式' }
 
 const engineStatus = computed(() => {
-  const text = `${providerLabel(settingsStore.settings.asr_provider)} · ${MODE_LABELS[settingsStore.settings.recording_mode] || '单段'}`
-  if (serviceLoading.value) {
-    return { text: `${text} · 模型加载中`, dot: 'gold pulse', title: '模型加载中' }
-  }
-  if (recordingButtonDisabled.value) {
-    return { text, dot: 'warn', title: buttonText.value }
-  }
-  return { text, dot: 'ok', title: '识别引擎已就绪' }
+  return deriveRecorderEngineStatus({
+    engineText: `${providerLabel(settingsStore.settings.asr_provider)} · ${MODE_LABELS[settingsStore.settings.recording_mode] || '单段'}`,
+    serviceLoading: serviceLoading.value,
+    buttonDisabled: recordingButtonDisabled.value,
+    disabledTitle: buttonText.value,
+    credentialCheck: currentCredentialCheck.value
+  })
 })
 
 const optimizeStatus = computed(() => {
