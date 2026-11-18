@@ -73,21 +73,21 @@ impl ChatGptConfig {
     }
 }
 
-/// 上游 HTTP 状态 → 可执行的中文提示（不回显完整 body）。
+/// 上游 HTTP 状态 → 可执行的中文提示。除 403 的 HTML 判定外不看响应体：
+/// 上游或用户代理可能把访问令牌原样写进错误体，响应体会进入记录与前端。
 fn classify_status(status: u16, body: &str) -> String {
     let is_html = body.trim_start().starts_with('<');
     match status {
         401 => "ChatGPT 访问令牌无效或已过期（HTTP 401），请重新获取令牌后更新设置".into(),
+        402 => "ChatGPT 账户额度不足（HTTP 402），请检查订阅或稍后重试".into(),
         403 if is_html => "请求被 ChatGPT 风控拦截（HTTP 403），请稍后重试；频繁出现请更换网络环境或重新登录获取新令牌".into(),
         403 => "ChatGPT 拒绝了该请求（HTTP 403），令牌可能缺少听写权限，请重新获取".into(),
         404 => "听写端点不存在（HTTP 404），请检查端点地址设置".into(),
         413 => "音频文件过大，被听写接口拒绝（HTTP 413）".into(),
+        422 => "听写请求无法处理（HTTP 422），请检查音频格式与请求参数".into(),
         429 => "听写请求被限流（HTTP 429），请稍后重试".into(),
         500..=599 => format!("听写服务故障（HTTP {status}），请稍后重试"),
-        _ => {
-            let detail: String = body.trim().chars().take(200).collect();
-            if detail.is_empty() { format!("听写请求失败（HTTP {status}）") } else { format!("听写请求失败（HTTP {status}）：{detail}") }
-        }
+        _ => format!("听写请求失败（HTTP {status}），请稍后重试"),
     }
 }
 
@@ -186,5 +186,30 @@ mod tests {
         assert!(request.contains("name=\"language\""));
         assert!(classify_status(403, "<html>").contains("风控"));
         assert!(classify_status(401, "").contains("过期"));
+    }
+
+    #[tokio::test]
+    async fn 未知状态与_422_不透传响应体里的令牌() {
+        let secret = "sk-leak-7c3e9d11";
+        let body = format!(
+            r#"{{"error":"bad audio","detail":"Authorization: Bearer {secret}","echo":"{secret}"}}"#
+        );
+        // 422 是已知状态，418 走未知状态兜底：两条路径都不能把响应体拼进文案。
+        for status in [422, 418] {
+            let (base, _) = stub_routes(vec![StubRoute::json("POST /transcribe", status, body.clone())]).await;
+            let config = ChatGptConfig {
+                api_key: secret.into(),
+                endpoint: format!("{base}/transcribe"),
+                timeout: Duration::from_secs(5),
+            };
+            let error = transcribe_wav_detailed(&config, b"RIFF".to_vec(), "zh").await.unwrap_err();
+            assert_eq!(error.status, Some(status));
+            assert!(!error.message.contains(secret), "{status}: {}", error.message);
+            assert!(!error.message.contains("Authorization"), "{status}: {}", error.message);
+            assert!(!error.message.contains("bad audio"), "{status}: {}", error.message);
+            // 记录与 HTTP 错误响应消费的是这条纯文案，同样不能带密钥。
+            let message = transcribe_wav(&config, b"RIFF".to_vec(), "zh").await.unwrap_err();
+            assert!(!message.contains(secret), "{status}: {message}");
+        }
     }
 }

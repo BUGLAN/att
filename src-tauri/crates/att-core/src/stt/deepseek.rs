@@ -58,27 +58,23 @@ impl DeepSeekConfig {
     }
 }
 
-/// 上游 HTTP 状态 → 可执行的中文提示（不回显完整 body）。
-fn classify_status(status: u16, body: &str) -> String {
+/// 上游 HTTP 状态 → 可执行的中文提示。任何状态都不回显响应体：
+/// 上游或用户代理可能把 `Authorization` 原样写进错误体，响应体会进入记录与前端。
+fn classify_status(status: u16) -> String {
     match status {
         400 => "DeepSeek 拒绝了音频格式（HTTP 400）：需要 16 位 PCM WAV 或 Ogg Opus".into(),
         401 => "DeepSeek API Key 无效或已过期（HTTP 401），请重新填写".into(),
+        402 => "DeepSeek 账户余额不足（HTTP 402），请充值后重试".into(),
         403 => "DeepSeek 拒绝了该请求（HTTP 403），请确认 API Key 有语音识别权限".into(),
         404 => "DeepSeek 语音识别端点不存在（HTTP 404），请检查端点地址设置".into(),
         408 => "音频上传超时（HTTP 408），请检查网络后重试".into(),
         413 => "音频超过 8 MiB 上限（HTTP 413），请缩短录音".into(),
+        422 => "DeepSeek 无法处理该请求（HTTP 422），请检查音频格式与请求参数".into(),
         429 => "DeepSeek 并发请求数超过上限（HTTP 429），请稍后重试".into(),
         503 => "DeepSeek 服务繁忙（HTTP 503），请稍后重试".into(),
         504 => "DeepSeek 识别超时（HTTP 504），请缩短音频或稍后重试".into(),
         500..=599 => format!("DeepSeek 服务故障（HTTP {status}），请稍后重试"),
-        _ => {
-            let detail: String = body.trim().chars().take(200).collect();
-            if detail.is_empty() {
-                format!("DeepSeek 语音识别失败（HTTP {status}）")
-            } else {
-                format!("DeepSeek 语音识别失败（HTTP {status}）：{detail}")
-            }
-        }
+        _ => format!("DeepSeek 语音识别失败（HTTP {status}），请稍后重试"),
     }
 }
 
@@ -132,7 +128,7 @@ pub async fn transcribe_wav_detailed(config: &DeepSeekConfig, wav: Vec<u8>) -> R
     let status = response.status().as_u16();
     let body = response.text().await.unwrap_or_default();
     if status != 200 {
-        return Err(DeepSeekError { status: Some(status), message: classify_status(status, &body) });
+        return Err(DeepSeekError { status: Some(status), message: classify_status(status) });
     }
     let value: serde_json::Value = serde_json::from_str(&body)
         .map_err(|_| DeepSeekError { status: Some(status), message: "DeepSeek 返回了无法解析的响应（非 JSON）".into() })?;
@@ -188,7 +184,9 @@ mod tests {
 
     #[tokio::test]
     async fn 状态归类_错误文案不回显密钥() {
-        for (status, expect) in [(401, "无效"), (403, "权限"), (413, "8 MiB"), (429, "并发"), (503, "繁忙"), (504, "超时")] {
+        for (status, expect) in
+            [(401, "无效"), (402, "余额"), (403, "权限"), (413, "8 MiB"), (422, "无法处理"), (429, "并发"), (503, "繁忙"), (504, "超时")]
+        {
             let (base, _) = stub_routes(vec![StubRoute::json("POST /v1/tools/asr", status, r#"{"error":"x"}"#)]).await;
             let config = DeepSeekConfig {
                 api_key: "sk-secret-987654".into(),
@@ -199,6 +197,31 @@ mod tests {
             assert_eq!(error.status, Some(status));
             assert!(error.message.contains(expect), "{status}: {}", error.message);
             assert!(!error.message.contains("sk-secret-987654"));
+        }
+    }
+
+    #[tokio::test]
+    async fn 未知状态与_422_不透传响应体里的密钥() {
+        let secret = "sk-leak-4f9a2b7c";
+        let body = format!(
+            r#"{{"error":"bad audio","detail":"Authorization: Bearer {secret}","echo":"{secret}"}}"#
+        );
+        // 422 是已知状态，418 走未知状态兜底：两条路径都不能把响应体拼进文案。
+        for status in [422, 418] {
+            let (base, _) = stub_routes(vec![StubRoute::json("POST /v1/tools/asr", status, body.clone())]).await;
+            let config = DeepSeekConfig {
+                api_key: secret.into(),
+                endpoint: format!("{base}/v1/tools/asr"),
+                timeout: Duration::from_secs(5),
+            };
+            let error = transcribe_wav_detailed(&config, b"RIFF".to_vec()).await.unwrap_err();
+            assert_eq!(error.status, Some(status));
+            assert!(!error.message.contains(secret), "{status}: {}", error.message);
+            assert!(!error.message.contains("Authorization"), "{status}: {}", error.message);
+            assert!(!error.message.contains("bad audio"), "{status}: {}", error.message);
+            // 记录与 HTTP 错误响应消费的是这条纯文案，同样不能带密钥。
+            let message = transcribe_wav(&config, b"RIFF".to_vec()).await.unwrap_err();
+            assert!(!message.contains(secret), "{status}: {message}");
         }
     }
 }
