@@ -699,7 +699,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("att-update-{}", uuid::Uuid::new_v4()));
         let (base, _rx) = stub_routes(vec![
             StubRoute::json("GET /missing ", 404, r#"{"message":"Not Found"}"#),
-            StubRoute { request_line: "GET /pkg.dmg ", body_contains: None, status: 200, content_type: "application/octet-stream", body: "PKGDATA".into() },
+            StubRoute {
+                request_line: "GET /pkg.dmg ",
+                body_contains: None,
+                status: 200,
+                content_type: "application/octet-stream",
+                body: "PKGDATA".into(),
+                delay: Duration::ZERO,
+            },
         ])
         .await;
         // 发布信息里的下载地址要指向上面的桩，所以发布 JSON 由第二个桩提供

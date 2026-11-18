@@ -80,7 +80,7 @@ pub fn deepseek_config(core: &CoreState) -> deepseek::DeepSeekConfig {
     deepseek::DeepSeekConfig {
         api_key,
         endpoint: if endpoint.is_empty() { deepseek::DEFAULT_ENDPOINT.into() } else { endpoint.to_string() },
-        timeout: std::time::Duration::from_secs(settings.deepseek_asr_timeout_seconds.clamp(10, 600) as u64),
+        timeout: std::time::Duration::from_secs(deepseek::request_timeout_seconds(settings.deepseek_asr_timeout_seconds)),
     }
 }
 

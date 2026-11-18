@@ -1,5 +1,6 @@
 //! 测试支撑：本地 HTTP 桩（模拟 LLM 上游），供 att-core 与 att-server 的测试共用。
 
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// 桩响应：请求行（及可选的请求体片段）匹配时返回的状态码、Content-Type 与响应体。
@@ -11,20 +12,42 @@ pub struct StubRoute {
     pub status: u16,
     pub content_type: &'static str,
     pub body: String,
+    /// 返回响应前等这么久：模拟上游排队 / 单块识别接近超时。
+    pub delay: Duration,
 }
 
 impl StubRoute {
     pub fn json(request_line: &'static str, status: u16, body: impl Into<String>) -> Self {
-        Self { request_line, body_contains: None, status, content_type: "application/json", body: body.into() }
+        Self {
+            request_line,
+            body_contains: None,
+            status,
+            content_type: "application/json",
+            body: body.into(),
+            delay: Duration::ZERO,
+        }
     }
 
     pub fn sse(request_line: &'static str, events: &[&str]) -> Self {
         let body = events.iter().map(|e| format!("data: {e}\n\n")).collect::<String>() + "data: [DONE]\n\n";
-        Self { request_line, body_contains: Some(r#""stream":true"#), status: 200, content_type: "text/event-stream", body }
+        Self {
+            request_line,
+            body_contains: Some(r#""stream":true"#),
+            status: 200,
+            content_type: "text/event-stream",
+            body,
+            delay: Duration::ZERO,
+        }
     }
 
     pub fn when_body(mut self, fragment: &'static str) -> Self {
         self.body_contains = Some(fragment);
+        self
+    }
+
+    /// 响应前等待 `delay`（测试里用毫秒级延迟模拟慢上游）。
+    pub fn after(mut self, delay: Duration) -> Self {
+        self.delay = delay;
         self
     }
 }
@@ -45,34 +68,47 @@ pub async fn stub_routes(routes: Vec<StubRoute>) -> (String, tokio::sync::mpsc::
             let routes = routes.clone();
             let tx = tx.clone();
             tokio::spawn(async move {
-                let mut buffer = vec![0u8; 1 << 20];
-                let mut read = 0;
-                // 读到请求头结束 + Content-Length 指定的请求体
+                let mut buffer = Vec::with_capacity(64 * 1024);
+                // (请求体起点, Content-Length)：DeepSeek 单块 WAV 约 3.7 MiB，缓冲区按需增长
+                let mut body: Option<(usize, usize)> = None;
                 loop {
-                    let n = socket.read(&mut buffer[read..]).await.unwrap_or(0);
-                    if n == 0 {
-                        break;
+                    if body.is_none() {
+                        if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&buffer[..pos + 4]).to_string();
+                            let length = head
+                                .lines()
+                                .find_map(|l| {
+                                    l.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                                })
+                                .unwrap_or(0);
+                            body = Some((pos + 4, length));
+                        }
                     }
-                    read += n;
-                    let text = String::from_utf8_lossy(&buffer[..read]).to_string();
-                    if let Some(header_end) = text.find("\r\n\r\n") {
-                        let length = text
-                            .lines()
-                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
-                            .unwrap_or(0);
-                        if read >= header_end + 4 + length {
+                    if let Some((start, length)) = body {
+                        if buffer.len() >= start + length {
                             break;
                         }
                     }
+                    let mut chunk = [0u8; 64 * 1024];
+                    let n = socket.read(&mut chunk).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..n]);
                 }
-                let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+                let request = String::from_utf8_lossy(&buffer).to_string();
                 let line = request.lines().next().unwrap_or("").to_string();
                 let route = routes
                     .iter()
                     .find(|r| line.contains(r.request_line) && r.body_contains.map(|f| request.contains(f)).unwrap_or(true));
-                let (status, content_type, body) = route
-                    .map(|r| (r.status, r.content_type, r.body.clone()))
-                    .unwrap_or((404, "application/json", "{}".into()));
+                let (status, content_type, body, delay) = route
+                    .map(|r| (r.status, r.content_type, r.body.clone(), r.delay))
+                    .unwrap_or((404, "application/json", "{}".into(), Duration::ZERO));
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
                 let _ = tx.send(request);
                 let reply = format!(
                     "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

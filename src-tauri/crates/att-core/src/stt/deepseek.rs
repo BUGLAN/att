@@ -18,6 +18,22 @@ pub const MAX_CHUNK_SECONDS: usize = 115;
 pub const SAMPLE_RATE: usize = 16_000;
 pub const MAX_CHUNK_SAMPLES: usize = MAX_CHUNK_SECONDS * SAMPLE_RATE;
 
+/// 按 16k 单声道样本数算需要几次串行上传，与 [`transcribe_pcm`] 的切块一致（空音频为 0 块）。
+pub fn chunk_count(samples: usize) -> usize {
+    samples.div_ceil(MAX_CHUNK_SAMPLES)
+}
+
+/// 按录音时长估算切块数（收尾看门狗用）；不足一块也算一块。
+pub fn chunk_count_for_duration(recorded: Duration) -> usize {
+    let samples = (recorded.as_secs_f64() * SAMPLE_RATE as f64).ceil() as usize;
+    chunk_count(samples).max(1)
+}
+
+/// 单块请求实际使用的超时：设置值限制在 10～600 秒（与 [`crate::stt::deepseek_config`] 共用）。
+pub fn request_timeout_seconds(configured: i64) -> u64 {
+    configured.clamp(10, 600) as u64
+}
+
 #[derive(Clone)]
 pub struct DeepSeekConfig {
     pub api_key: String,
@@ -158,6 +174,28 @@ mod tests {
         assert_eq!(MAX_CHUNK_SECONDS, 115);
         assert!(MAX_CHUNK_SAMPLES / SAMPLE_RATE < 120);
         assert!(MAX_CHUNK_SAMPLES * 2 < 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn 切块数与串行上传次数一致() {
+        assert_eq!(chunk_count(0), 0);
+        assert_eq!(chunk_count(MAX_CHUNK_SAMPLES), 1);
+        assert_eq!(chunk_count(MAX_CHUNK_SAMPLES + 1), 2);
+
+        assert_eq!(chunk_count_for_duration(Duration::from_secs(115)), 1);
+        assert_eq!(chunk_count_for_duration(Duration::from_secs(116)), 2);
+        assert_eq!(chunk_count_for_duration(Duration::from_secs(600)), 6);
+        assert_eq!(chunk_count_for_duration(Duration::from_secs(1800)), 16);
+        assert_eq!(chunk_count_for_duration(Duration::from_secs(7200)), 63);
+        // 空录音也按一块算，避免收尾预算退化成 0
+        assert_eq!(chunk_count_for_duration(Duration::ZERO), 1);
+    }
+
+    #[test]
+    fn 单块超时与配置范围一致() {
+        assert_eq!(request_timeout_seconds(0), 10);
+        assert_eq!(request_timeout_seconds(120), 120);
+        assert_eq!(request_timeout_seconds(900), 600);
     }
 
     #[test]

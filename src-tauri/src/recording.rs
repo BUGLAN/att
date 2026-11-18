@@ -45,7 +45,7 @@ use att_core::settings::hotkey::HotkeyAction;
 use att_core::state::CoreState;
 use att_core::llm::cleaning;
 use att_core::llm::optimizer::{self, OptimizeEvent, OptimizeOutcome};
-use att_core::stt::{self, doubao};
+use att_core::stt::{self, deepseek, doubao};
 use att_hotkey::KeyPhase;
 use crate::typing::StreamTyping;
 use serde_json::{json, Value};
@@ -100,6 +100,15 @@ impl Mode {
             Mode::Multi => "multi",
         }
     }
+}
+
+/// 批量识别的请求形态：决定收尾预算怎么算。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BatchPlan {
+    /// 一次请求识别整段（ChatGPT 听写 / 豆包批量）。
+    Single,
+    /// DeepSeek：超过 115 秒按块串行请求，每块各受一次单块超时约束。
+    DeepSeek { chunks: usize },
 }
 
 /// 多段模式：全部分段识别结束的等待上限（每段自身另有建连/收尾超时）。
@@ -648,14 +657,13 @@ impl Actor {
 
     fn finalize_budget(&self, mode: Mode, recorded: Duration) -> Duration {
         let settings = self.core.settings();
-        // 批量在线引擎共用单段收尾预算：取当前引擎自己的超时，避免 DeepSeek 设了更长的超时却被
-        // ChatGPT 的预算提前取消
-        let batch_timeout = if settings.asr_provider == "deepseek_asr" {
-            settings.deepseek_asr_timeout_seconds
-        } else {
-            settings.chatgpt_asr_timeout_seconds
-        };
-        finalize_budget(mode, recorded, batch_timeout)
+        let (batch_timeout, plan) = batch_plan(
+            &settings.asr_provider,
+            recorded,
+            settings.deepseek_asr_timeout_seconds,
+            settings.chatgpt_asr_timeout_seconds,
+        );
+        finalize_budget(mode, recorded, batch_timeout, plan)
     }
 
     /// 看门狗到点仍在收尾：先取消会话任务（它会带着已收到的音频与文字回来）；
@@ -1097,14 +1105,37 @@ fn quiet_end_reason(recorded: Duration, heard: bool) -> Option<&'static str> {
     }
 }
 
+/// 批量引擎的收尾预算参数：单次请求超时 + 请求形态。
+fn batch_plan(
+    provider: &str,
+    recorded: Duration,
+    deepseek_timeout_seconds: i64,
+    chatgpt_timeout_seconds: i64,
+) -> (Duration, BatchPlan) {
+    if provider == "deepseek_asr" {
+        // 按住模式松开后还会多收一小段尾音（不算进 recorded），估算块数时补上，避免边界上少算一块
+        let chunks = deepseek::chunk_count_for_duration(recorded + HOLD_RELEASE_GRACE);
+        let timeout = Duration::from_secs(deepseek::request_timeout_seconds(deepseek_timeout_seconds));
+        (timeout, BatchPlan::DeepSeek { chunks })
+    } else {
+        (Duration::from_secs(chatgpt_timeout_seconds.max(0) as u64), BatchPlan::Single)
+    }
+}
+
 /// 收尾看门狗的上限：各引擎自身超时之和再加余量。正常收尾远早于它，只兜卡死。
-fn finalize_budget(mode: Mode, recorded: Duration, chatgpt_timeout_seconds: i64) -> Duration {
+///
+/// DeepSeek 长录音是「115 秒一块、顺序 await」：每块各给一次 `batch_timeout`，预算必须按块数放大，
+/// 不能沿用 `recorded / 2`——600 秒录音有 6 块，最坏 6 × 120 秒，旧算法只给 318 秒。
+fn finalize_budget(mode: Mode, recorded: Duration, batch_timeout: Duration, plan: BatchPlan) -> Duration {
     // 豆包：建连 + 末包等待（批量另按音频时长加时）+ 关闭
     let doubao = doubao::CONNECT_TIMEOUT + doubao::FINISH_TIMEOUT + Duration::from_secs(2);
     let engine = match mode {
         Mode::Streaming => doubao,
         Mode::Multi => MULTI_DRAIN_TIMEOUT,
-        Mode::Batch => Duration::from_secs(chatgpt_timeout_seconds.max(0) as u64).max(doubao + recorded / 2),
+        Mode::Batch => match plan {
+            BatchPlan::Single => batch_timeout.max(doubao + recorded / 2),
+            BatchPlan::DeepSeek { chunks } => batch_timeout * chunks.max(1) as u32,
+        },
     };
     engine + WATCHDOG_SLACK
 }
@@ -1425,9 +1456,9 @@ async fn multi_task(
 #[cfg(test)]
 mod tests {
     use super::{
-        counts_as_timeout, finalize_budget, missing_voice, no_voice_state, processing_seconds, quiet_end_reason,
-        record_hotkey_step, recorded_until, Mode, Phase, RecordHotkeyStep, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS,
-        NO_VOICE_MESSAGE,
+        batch_plan, counts_as_timeout, finalize_budget, missing_voice, no_voice_state, processing_seconds,
+        quiet_end_reason, record_hotkey_step, recorded_until, BatchPlan, Mode, Phase, RecordHotkeyStep,
+        HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
     };
     use serde_json::{json, Value};
     use att_core::settings::hotkey::HotkeyAction::{ClipboardPanel, Record, RecordToggle};
@@ -1500,13 +1531,82 @@ mod tests {
 
     #[test]
     fn 收尾看门狗上限_覆盖各引擎自身超时() {
+        let timeout = Duration::from_secs(120);
         // 流式：建连 10 + 末包 6 + 关闭 2 + 余量 15
-        assert_eq!(finalize_budget(Mode::Streaming, Duration::from_secs(30), 120), Duration::from_secs(33));
+        assert_eq!(finalize_budget(Mode::Streaming, Duration::from_secs(30), timeout, BatchPlan::Single), Duration::from_secs(33));
         // 多段：分段总等待 120 + 余量
-        assert_eq!(finalize_budget(Mode::Multi, Duration::from_secs(30), 120), Duration::from_secs(135));
+        assert_eq!(finalize_budget(Mode::Multi, Duration::from_secs(30), timeout, BatchPlan::Single), Duration::from_secs(135));
         // 单段：ChatGPT 的超时设置与豆包按时长加时取大
-        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(30), 120), Duration::from_secs(135));
-        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(600), 120), Duration::from_secs(333));
+        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, BatchPlan::Single), Duration::from_secs(135));
+        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(600), timeout, BatchPlan::Single), Duration::from_secs(333));
+    }
+
+    #[test]
+    fn 收尾看门狗_deepseek长录音按串行块数放大预算() {
+        // 600 / 1800 / 7200 秒分别切成 6 / 16 / 63 块，最坏每块都要等满 120 秒
+        for (seconds, chunks) in [(600u64, 6usize), (1800, 16), (7200, 63)] {
+            let recorded = Duration::from_secs(seconds);
+            let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 120);
+            assert_eq!(timeout, Duration::from_secs(120), "{seconds} 秒");
+            assert_eq!(plan, BatchPlan::DeepSeek { chunks }, "{seconds} 秒");
+            let budget = finalize_budget(Mode::Batch, recorded, timeout, plan);
+            assert_eq!(budget, Duration::from_secs(chunks as u64 * 120) + WATCHDOG_SLACK);
+            assert!(budget >= timeout * chunks as u32 + WATCHDOG_SLACK);
+        }
+        // 旧公式（max(单块超时, 豆包开销 + recorded/2)）600 秒只有 333 秒，挡不住 6 块串行
+        assert_eq!(
+            finalize_budget(Mode::Batch, Duration::from_secs(600), Duration::from_secs(120), BatchPlan::Single),
+            Duration::from_secs(333)
+        );
+    }
+
+    #[test]
+    fn 收尾看门狗_deepseek短录音与其他引擎预算不变() {
+        let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 120, 120);
+        assert_eq!(timeout, Duration::from_secs(120));
+        assert_eq!(plan, BatchPlan::DeepSeek { chunks: 1 });
+        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, plan), Duration::from_secs(135));
+
+        // 单块超时按 deepseek_config 的实际范围（10～600 秒）取，预算不能跟着越界设置无限放大
+        let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 900, 120);
+        assert_eq!(timeout, Duration::from_secs(600));
+        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, plan), Duration::from_secs(615));
+    }
+
+    #[tokio::test]
+    async fn deepseek长录音_可控延迟桩内完成且不被收尾预算提前取消() {
+        use att_core::llm::testing::{stub_routes, StubRoute};
+        use att_core::stt::{deepseek, Engine};
+
+        let (base, mut requests) = stub_routes(vec![
+            StubRoute::json("POST /v1/tools/asr", 200, r#"{"text":"片段"}"#).after(Duration::from_millis(30)),
+        ])
+        .await;
+        let recorded = Duration::from_secs(600);
+        let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 120);
+        assert_eq!(plan, BatchPlan::DeepSeek { chunks: 6 });
+        let budget = finalize_budget(Mode::Batch, recorded, timeout, plan);
+        assert_eq!(budget, Duration::from_secs(735));
+
+        let config = deepseek::DeepSeekConfig {
+            api_key: "sk-test-123456".into(),
+            endpoint: format!("{base}/v1/tools/asr"),
+            timeout,
+        };
+        // 600 秒 16k 单声道 → 6 块；桩每块延迟 30ms，按块串行应远早于看门狗预算完成
+        let samples = vec![0i16; 600 * deepseek::SAMPLE_RATE];
+        let text = tokio::time::timeout(budget, Engine::DeepSeek(config).transcribe_pcm("zh", &samples))
+            .await
+            .expect("长录音被收尾预算提前取消")
+            .expect("DeepSeek 桩识别失败");
+        assert_eq!(text.lines().count(), 6, "应按块顺序拼接 6 段文本");
+
+        // 桩依次收到 6 个请求：块与块之间是 await 串行的，不是并发
+        let mut count = 0;
+        while requests.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 6);
     }
 
     #[test]
