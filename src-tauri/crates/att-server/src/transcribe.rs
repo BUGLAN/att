@@ -157,4 +157,14 @@ mod tests {
         assert_ne!(post_transcribe(&app, Some("test-token")).await, StatusCode::UNAUTHORIZED);
         assert_eq!(get_job(&app, Some("test-token")).await, StatusCode::NOT_FOUND);
     }
+
+    #[tokio::test]
+    async fn 省略engine_只配_deepseek_时不再返回409() {
+        let state = test_state();
+        state.core.apply_settings_update(&json!({ "deepseek_asr_api_key": "sk-test" })).unwrap();
+        let app = router(state);
+        // 默认 engine=auto 应已解析到 DeepSeek；随后路径不存在 → 404，而不是引擎不可用 409
+        let status = post_body(&app, Some("test-token"), r#"{"path":"C:\\not-registered\\a.mp3"}"#).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "auto 没有回落到已配置凭据的 DeepSeek");
+    }
 }

@@ -100,7 +100,7 @@ fn variant_key(model_id: Option<&str>) -> String {
     format!("{}@{}", model_id.unwrap_or("default"), proofread::PROMPT_VERSION)
 }
 
-/// 引擎解析：显式 > auto（本地优先）；本地模型/推理库缺失、豆包凭据缺失 → 409。
+/// 引擎解析：显式 > auto（本地优先，其次豆包、DeepSeek）；本地模型/推理库缺失、在线凭据缺失 → 409。
 ///
 /// 本地引擎只做**文件是否就位**的探测，不触发模型加载（加载发生在真正转写时）。
 fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, TranscribeError> {
@@ -117,7 +117,8 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
     };
 
     match requested.trim().to_lowercase().as_str() {
-        // 与 Python 版一致：auto = 本地优先（配置指向本地引擎就用它，否则回落本地 Whisper，最后才用在线引擎）
+        // 与 Python 版一致：auto = 本地优先（配置指向本地引擎就用它，否则回落本地 Whisper / Qwen，
+        // 最后才用在线引擎：豆包 → DeepSeek）
         "auto" | "" => {
             if let Some(kind) = crate::stt::local_kind(&core.settings().asr_provider) {
                 let ready = if kind == LocalKind::Whisper { whisper.available } else { qwen.available };
@@ -131,10 +132,12 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
                 Ok("qwen_asr")
             } else if doubao_ready {
                 Ok("doubao_asr")
+            } else if deepseek_ready {
+                Ok("deepseek_asr")
             } else {
                 Err(TranscribeError::new(
                     409,
-                    "当前没有可用的转写引擎：本地 Whisper / Qwen3-ASR 模型未就位，豆包凭据也未配置",
+                    "当前没有可用的转写引擎：本地 Whisper / Qwen3-ASR 模型未就位，豆包、DeepSeek 凭据也未配置",
                 ))
             }
         }
@@ -660,6 +663,26 @@ mod tests {
         assert_eq!(resolve_engine(&core, "doubao_asr").unwrap_err().status, 409, "新数据目录没有豆包凭据");
         assert_eq!(resolve_engine(&core, "chatgpt_asr").unwrap_err().status, 422, "文件转写不支持 ChatGPT 听写");
         assert_eq!(resolve_engine(&core, "deepseek_asr").unwrap_err().status, 409, "新数据目录没有 DeepSeek 凭据");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 引擎解析_auto_只配_deepseek_时回落到_deepseek() {
+        let dir = std::env::temp_dir().join(format!("att-ft-auto-{}", uuid::Uuid::new_v4()));
+        let core = CoreState::init(&dir, crate::Platform::Macos).unwrap();
+
+        // 没有本地模型、也没有在线凭据：409 文案同时提到本地、豆包与 DeepSeek
+        let error = resolve_engine(&core, "auto").unwrap_err();
+        assert_eq!(error.status, 409);
+        for word in ["本地", "豆包", "DeepSeek"] {
+            assert!(error.message.contains(word), "缺少「{word}」：{}", error.message);
+        }
+
+        // 只配置 DeepSeek：auto 与省略 engine 都回落到它
+        core.apply_settings_update(&json!({ "deepseek_asr_api_key": "sk-test" })).unwrap();
+        assert_eq!(resolve_engine(&core, "auto").unwrap(), "deepseek_asr");
+        assert_eq!(resolve_engine(&core, "").unwrap(), "deepseek_asr");
+        assert_eq!(resolve_engine(&core, "deepseek_asr").unwrap(), "deepseek_asr");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
