@@ -3,7 +3,7 @@
 //! 启动顺序（与旧 Electron 版 whenReady 链一致）：
 //! 1. 解析数据目录（env > 开发态仓库 data/ > 应用数据目录）
 //! 2. 一次性迁移（幂等）
-//! 3. CoreState 初始化 + axum 数据面（127.0.0.1 随机端口）
+//! 3. CoreState 初始化 + axum 数据面（127.0.0.1，优先固定端口，占用时依次 +1）
 //! 4. 单实例锁（二次启动唤起已有窗口）
 
 // 注意：Tauri generate_handler 需要命令模块公开可见（__cmd__ 宏重导出）
@@ -122,7 +122,7 @@ pub fn run() {
             core.app_version = app.package_info().version.to_string();
             let core = Arc::new(core);
 
-            // 数据面：先用同步 bind 占住端口（优先固定端口，占用则回退随机），
+            // 数据面：先用同步 bind 占住端口（优先固定端口，占用时依次 +1，仍失败才回退随机），
             // 再把 accept 循环显式 spawn 到 Tauri 的运行时里。
             // 每次启动生成新的数据面令牌：外部网页 / 进程拿不到，转写等敏感端点默认拒绝无 token 请求
             let backend_token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());

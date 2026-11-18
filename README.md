@@ -75,7 +75,7 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 | `ATT_QWEN_THREADS` | Qwen 推理线程数（默认 2） |
 | `ATT_FFMPEG_DIR` | ffmpeg 所在目录（文件转写；默认查 PATH 与 Homebrew 常见路径） |
 | `ATT_PROMPTS_DIR` | 内置提示词目录 |
-| `ATT_BACKEND_PORT` | 数据面优先端口（默认 17890，被占用时随机） |
+| `ATT_BACKEND_PORT` | 数据面优先端口（默认 17890；被占用时依次 +1 重试，上限内都不行才随机） |
 | `ATT_UPDATE_URL` | 检查更新的地址 |
 | `ATT_FORCE_MIGRATION=1` | 重跑一次性数据迁移 |
 | `DOUBAO_ASR_API_KEY` | 豆包密钥兜底（设置页填写的优先） |

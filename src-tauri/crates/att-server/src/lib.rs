@@ -1,4 +1,4 @@
-//! 内嵌数据面 API（axum，仅绑定 127.0.0.1，随机端口）。
+//! 内嵌数据面 API（axum，仅绑定 127.0.0.1，优先固定端口，占用时依次 +1）。
 //!
 //! 鉴权：每次启动生成随机 token；除 `/api/health` 外所有端点要求 `X-ATT-Token`
 //! （`<audio>` / `<img>` / 下载等带不了请求头的 GET 用 `?token=`）。来源按协议 + 主机名
@@ -156,19 +156,48 @@ async fn data_plane_guard(token: String, req: axum::extract::Request, next: Next
     next.run(req).await
 }
 
-/// 同步绑定监听端口：优先 preferred 列表（固定端口，便于前端兜底探测），
-/// 全部被占用时回退随机端口。
+/// 每个首选端口尝试的端口数（含首选端口本身）。
+const PORT_BIND_MAX_ATTEMPTS: u16 = 10;
+
+/// 同步绑定监听端口：按 preferred 顺序尝试固定端口（便于前端兜底探测）。
+/// 每个首选端口被占用时依次 +1，最多尝试 [`PORT_BIND_MAX_ATTEMPTS`] 个；
+/// 所有首选端口都不可用时才回退随机端口。
 ///
 /// 注意：绑定与 accept 循环**分开**——绑定是同步的，accept 循环由调用方
 /// 在自己确认可用的运行时里 spawn。这样不会出现「block_on 内 spawn 的任务
 /// 在运行时退出后不再被驱动」的隐蔽故障（TCP 可连但无响应）。
 pub fn bind_local(preferred: &[u16]) -> std::io::Result<(std::net::TcpListener, u16)> {
-    for port in preferred {
-        match std::net::TcpListener::bind(("127.0.0.1", *port)) {
-            Ok(listener) => return finalize_listener(listener),
-            Err(error) => tracing::warn!("端口 {port} 不可用（{error}），尝试下一个"),
+    for &start in preferred {
+        for offset in 0..PORT_BIND_MAX_ATTEMPTS {
+            let Some(port) = start.checked_add(offset) else {
+                tracing::warn!("首选端口 {start} 递增超过 65535，回退随机端口");
+                return bind_random_local();
+            };
+            match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                Ok(listener) => return finalize_listener(listener),
+                Err(error) => {
+                    let has_retry = offset + 1 < PORT_BIND_MAX_ATTEMPTS;
+                    match (has_retry, port.checked_add(1)) {
+                        (true, Some(next)) => {
+                            tracing::warn!("端口 {port} 不可用（{error}），尝试 {next}");
+                        }
+                        (true, None) => {
+                            tracing::warn!("端口 {port} 不可用（{error}），65535 后无法继续递增，回退随机端口");
+                            return bind_random_local();
+                        }
+                        (false, _) => {
+                            tracing::warn!("端口 {port} 不可用（{error}），已到 {PORT_BIND_MAX_ATTEMPTS} 次重试上限");
+                        }
+                    }
+                }
+            }
         }
     }
+    tracing::warn!("全部首选端口不可用，回退随机端口");
+    bind_random_local()
+}
+
+fn bind_random_local() -> std::io::Result<(std::net::TcpListener, u16)> {
     finalize_listener(std::net::TcpListener::bind("127.0.0.1:0")?)
 }
 
@@ -810,7 +839,74 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use http_body_util::BodyExt;
+    use std::net::TcpListener;
+    use std::sync::Mutex;
     use tower::ServiceExt;
+
+    static PORT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 占住一个随机端口，并确认它的下一个端口当前可用。
+    fn occupied_port_with_free_successor() -> (TcpListener, u16) {
+        loop {
+            let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = occupied.local_addr().unwrap().port();
+            let Some(next) = port.checked_add(1) else {
+                continue;
+            };
+            if port.checked_add(PORT_BIND_MAX_ATTEMPTS).is_none() {
+                continue;
+            }
+            if TcpListener::bind(("127.0.0.1", next)).is_ok() {
+                return (occupied, port);
+            }
+        }
+    }
+
+    /// 找一段连续的可用端口并全部占住，用于验证重试上限。
+    fn occupy_consecutive_ports(count: u16) -> (u16, Vec<TcpListener>) {
+        for start in (30_000..=60_000).step_by(count as usize) {
+            let mut listeners = Vec::with_capacity(count as usize);
+            for offset in 0..count {
+                match TcpListener::bind(("127.0.0.1", start + offset)) {
+                    Ok(listener) => listeners.push(listener),
+                    Err(_) => break,
+                }
+            }
+            if listeners.len() == count as usize {
+                return (start, listeners);
+            }
+        }
+        panic!("找不到 {count} 个连续可用端口");
+    }
+
+    #[test]
+    fn 首选端口被占用时绑定下一个端口() {
+        let _guard = PORT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let (_occupied, start) = occupied_port_with_free_successor();
+        let (listener, port) = bind_local(&[start]).unwrap();
+        assert_eq!(port, start + 1);
+        drop(listener);
+    }
+
+    #[test]
+    fn 首选端口被占用时返回值在递增范围内且不是被占用端口() {
+        let _guard = PORT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let (_occupied, start) = occupied_port_with_free_successor();
+        let (listener, port) = bind_local(&[start]).unwrap();
+        assert!(port > start);
+        assert!(port < start + PORT_BIND_MAX_ATTEMPTS);
+        drop(listener);
+    }
+
+    #[test]
+    fn 连续端口都不可用时回退随机端口() {
+        let _guard = PORT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let (start, _occupied) = occupy_consecutive_ports(PORT_BIND_MAX_ATTEMPTS);
+        let range_end = start + PORT_BIND_MAX_ATTEMPTS - 1;
+        let (listener, port) = bind_local(&[start]).unwrap();
+        assert!(!(start..=range_end).contains(&port));
+        drop(listener);
+    }
 
     async fn test_state(tag: &str) -> Arc<ServerState> {
         let dir = std::env::temp_dir().join(format!("att-server-{tag}-{}", std::process::id()));
