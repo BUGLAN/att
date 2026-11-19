@@ -56,3 +56,56 @@ export const SERVER_OWNED_FIELDS = Object.freeze([
 export function serverOwnedPatch(serverSettings) {
   return Object.fromEntries(SERVER_OWNED_FIELDS.map((key) => [key, Boolean(serverSettings?.[key])]))
 }
+
+/**
+ * 只存在于表单草稿、不进「已保存快照」的凭据字段。
+ * 保存成功后要清掉明文 / 清除标记，否则下一次保存会把同一份 Token 再提交一遍。
+ */
+export const TRANSIENT_CREDENTIAL_FIELDS = Object.freeze([
+  'doubao_asr_api_key',
+  'doubao_asr_api_key_clear',
+  'chatgpt_asr_api_key',
+  'chatgpt_asr_api_key_clear',
+  'deepseek_asr_api_key',
+  'deepseek_asr_api_key_clear'
+])
+
+/**
+ * 把「这次实际提交的载荷」转成已保存快照。
+ *
+ * 不能保存成功后再用当前表单重算：保存期间用户继续修改时，当前表单已经包含
+ * 下一笔尚未提交的改动，重算会把它们误标成「已保存」，随后补存又被判成无变化。
+ *
+ * @param {object} payload 本次提交给后端的设置载荷
+ * @returns {string} 用于与最新表单比较的序列化快照
+ */
+export function serializeSavedSettingsPayload(payload) {
+  const saved = { ...(payload || {}) }
+  for (const field of TRANSIENT_CREDENTIAL_FIELDS) {
+    delete saved[field]
+  }
+  return JSON.stringify(saved)
+}
+
+/**
+ * 保存请求返回后清掉本次已提交的凭据草稿。
+ *
+ * 只清「值仍等于提交时」的字段：如果用户在慢保存期间又输入了新 Token /
+ * 重新勾了清除，这些新值必须保留给补存，不能一并被清空。
+ *
+ * @param {object} current 当前表单值
+ * @param {object} submitted 提交时的凭据字段值
+ * @returns {Record<string, string | boolean>} 需要合并回表单的清理补丁
+ */
+export function submittedCredentialClearPatch(current, submitted) {
+  const patch = {}
+
+  for (const field of TRANSIENT_CREDENTIAL_FIELDS) {
+    if (current?.[field] !== submitted?.[field]) {
+      continue
+    }
+    patch[field] = field.endsWith('_clear') ? false : ''
+  }
+
+  return patch
+}

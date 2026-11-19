@@ -6,7 +6,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { SERVER_OWNED_FIELDS, hasPendingSettingsEdits, serverOwnedPatch } from '../src/components/settings/settingsFormSync.mjs'
+import {
+  SERVER_OWNED_FIELDS,
+  TRANSIENT_CREDENTIAL_FIELDS,
+  hasPendingSettingsEdits,
+  serializeSavedSettingsPayload,
+  serverOwnedPatch,
+  submittedCredentialClearPatch
+} from '../src/components/settings/settingsFormSync.mjs'
 
 test('初始化完成前一律允许对齐（表单尚未与服务端对齐，快照无意义）', () => {
   assert.equal(
@@ -69,4 +76,41 @@ test('serverOwnedPatch 缺字段 / 空值按「未保存」处理，且只返回
     deepseek_asr_api_key_set: false
   })
   assert.deepEqual(Object.keys(serverOwnedPatch({ hotkey: {}, doubao_asr_api_key_set: true })).sort(), [...SERVER_OWNED_FIELDS].sort())
+})
+
+test('保存快照剔除明文凭据，保留其它设置字段', () => {
+  const payload = {
+    asr_provider: 'deepseek_asr',
+    deepseek_asr_api_key: 'sk-draft',
+    deepseek_asr_api_key_clear: true,
+    auto_optimize: true
+  }
+  assert.deepEqual(JSON.parse(serializeSavedSettingsPayload(payload)), {
+    asr_provider: 'deepseek_asr',
+    auto_optimize: true
+  })
+  assert.equal(TRANSIENT_CREDENTIAL_FIELDS.length, 6)
+})
+
+test('保存返回只清本次提交且未被用户改写的凭据字段', () => {
+  const submitted = {
+    doubao_asr_api_key: 'sk-old',
+    doubao_asr_api_key_clear: false,
+    chatgpt_asr_api_key: '',
+    chatgpt_asr_api_key_clear: false,
+    deepseek_asr_api_key: 'sk-ds',
+    deepseek_asr_api_key_clear: false
+  }
+  const current = {
+    ...submitted,
+    doubao_asr_api_key: 'sk-new',
+    deepseek_asr_api_key_clear: true
+  }
+
+  assert.deepEqual(submittedCredentialClearPatch(current, submitted), {
+    doubao_asr_api_key_clear: false,
+    chatgpt_asr_api_key: '',
+    chatgpt_asr_api_key_clear: false,
+    deepseek_asr_api_key: ''
+  })
 })

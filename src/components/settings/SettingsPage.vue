@@ -63,7 +63,14 @@ import { useSettingsStore } from '@/stores/settings'
 import { useSettings, usePresets } from '@/composables/useSettings'
 import { resolveDefaultPresetId, resolveRewritePresetId, suggestNewName } from './presetLogic.mjs'
 import { useElectron } from '@/composables/useElectron'
-import { hasPendingSettingsEdits, serverOwnedPatch } from './settingsFormSync.mjs'
+import {
+  TRANSIENT_CREDENTIAL_FIELDS,
+  hasPendingSettingsEdits,
+  serializeSavedSettingsPayload,
+  serverOwnedPatch,
+  submittedCredentialClearPatch
+} from './settingsFormSync.mjs'
+import { createLatestSaveQueue } from './settingsSaveQueue.mjs'
 import { isOnlineProvider, needsCredentialCheck } from './onlineEngineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
@@ -128,9 +135,9 @@ function writeStoredSection(id) {
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
-const { settings, saveSettings } = useSettings()
+const { settings } = useSettings()
 const credential = useAsrCredentialCheck()
-const { presets, defaultPresetId, loadPresets, setDefaultPreset } = usePresets()
+const { presets, defaultPresetId, loadPresets } = usePresets()
 const { syncDesktopSettings, syncInputSettings, platform, isDesktop, listAudioDevices } = useElectron()
 
 const form = ref({})
@@ -594,7 +601,7 @@ function handleHotkeyKeydown(event) {
 }
 
 async function handleSave() {
-  if (!isInitialized.value || isSyncing.value || isSavingSettings.value) {
+  if (!isInitialized.value || isSyncing.value) {
     return
   }
 
@@ -606,22 +613,22 @@ async function handleSave() {
   }
 
   isSavingSettings.value = true
+  // 本次提交时表单里的凭据草稿：保存期间用户若输入了新 Token / 重新勾了清除，
+  // 只能清掉仍等于提交值的字段，不能把新值一并清空
+  const submittedCredentials = Object.fromEntries(
+    TRANSIENT_CREDENTIAL_FIELDS.map((field) => [field, form.value[field]])
+  )
   // 保存前的服务端设置：用来判断这次是否换了在线引擎的凭据（换了就重新验证）
   const previous = { ...settings.value }
 
   try {
-    await saveSettings(payload, { silent: true })
+    await settingsStore.saveSettings(payload)
 
-    // 提交后立刻清掉表单里的明文 Token，并重算快照：
-    // 否则下一次保存会把「带 Token 的快照」与「已清空的表单」判成变更，反复提交。
-    form.value.doubao_asr_api_key = ''
-    form.value.doubao_asr_api_key_clear = false
-    form.value.chatgpt_asr_api_key = ''
-    form.value.chatgpt_asr_api_key_clear = false
-    form.value.deepseek_asr_api_key = ''
-    form.value.deepseek_asr_api_key_clear = false
+    // 提交后清掉本次已提交的凭据草稿；快照按「本次实际提交的载荷」建立，
+    // 不能按当前表单重算——保存期间的新改动属于下一笔待保存内容。
+    Object.assign(form.value, submittedCredentialClearPatch(form.value, submittedCredentials))
     Object.assign(form.value, serverOwnedPatch(settings.value))
-    lastSavedSettingsSnapshot.value = serializeSettingsPayload(buildSettingsPayload())
+    lastSavedSettingsSnapshot.value = serializeSavedSettingsPayload(payload)
 
     // 填了新 Token、改了 Resource ID / 接入点或换了在线引擎：后台做一次真实验证，不阻塞保存
     if (needsCredentialCheck(payload, previous) && serverOwnedPatch(settings.value)[`${payload.asr_provider}_api_key_set`]) {
@@ -644,7 +651,7 @@ async function handleSave() {
 }
 
 async function handleDefaultPresetSave() {
-  if (!isInitialized.value || isSyncing.value || isSavingPreset.value) {
+  if (!isInitialized.value || isSyncing.value) {
     return
   }
 
@@ -660,7 +667,7 @@ async function handleDefaultPresetSave() {
   isSavingPreset.value = true
 
   try {
-    await setDefaultPreset(selectedPresetId.value, { silent: true })
+    await settingsStore.setDefaultPreset(selectedPresetId.value)
     lastSavedPresetId.value = selectedPresetId.value
   } finally {
     isSavingPreset.value = false
@@ -675,8 +682,26 @@ function debounce(fn, delay) {
   }
 }
 
-const debouncedSaveSettings = debounce(handleSave, 500)
-const debouncedSavePreset = debounce(handleDefaultPresetSave, 500)
+function showSaveError(prefix, error) {
+  const detail = error?.message || String(error || '')
+  appStore.showToast(detail ? `${prefix}：${detail}` : prefix, { tone: 'error' })
+}
+
+const settingsSaveQueue = createLatestSaveQueue(handleSave, {
+  onError: (error) => {
+    console.error('[Settings] 自动保存失败:', error)
+    showSaveError('保存设置失败', error)
+  }
+})
+const presetSaveQueue = createLatestSaveQueue(handleDefaultPresetSave, {
+  onError: (error) => {
+    console.error('[Settings] 默认预设保存失败:', error)
+    showSaveError('设置默认预设失败', error)
+  }
+})
+
+const debouncedSaveSettings = debounce(() => settingsSaveQueue.request(), 500)
+const debouncedSavePreset = debounce(() => presetSaveQueue.request(), 500)
 
 watch(settings, (value) => {
   runSyncUpdate(() => {
@@ -797,6 +822,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  settingsSaveQueue.dispose()
+  presetSaveQueue.dispose()
   window.removeEventListener('keydown', handleHotkeyKeydown, true)
 })
 </script>
