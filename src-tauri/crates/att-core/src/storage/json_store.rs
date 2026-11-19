@@ -66,10 +66,9 @@ pub fn write_json_atomic_locked<T: Serialize>(path: &Path, value: &T) -> std::io
 
 /// 同目录临时文件路径：`settings.json` → `settings.json.tmp`。
 fn sibling_tmp_path(path: &Path) -> PathBuf {
-    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "data.json".to_string());
-    path.parent().unwrap_or_else(|| Path::new("."))
-        .join(format!("{file_name}.tmp"))
+    let file_name =
+        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "data.json".to_string());
+    path.parent().unwrap_or_else(|| Path::new(".")).join(format!("{file_name}.tmp"))
 }
 
 /// 宽容读：文件不存在 / 内容损坏 → 一律返回默认值。

@@ -148,7 +148,9 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
         "doubao_asr" if doubao_ready => Ok("doubao_asr"),
         "doubao_asr" => Err(TranscribeError::new(409, "豆包语音未配置 Access Token，请在「设置 → 识别引擎」中填写")),
         "deepseek_asr" if deepseek_ready => Ok("deepseek_asr"),
-        "deepseek_asr" => Err(TranscribeError::new(409, "DeepSeek 语音识别未配置 API Key，请在「设置 → 识别引擎」中填写")),
+        "deepseek_asr" => {
+            Err(TranscribeError::new(409, "DeepSeek 语音识别未配置 API Key，请在「设置 → 识别引擎」中填写"))
+        }
         other => Err(TranscribeError::new(
             422,
             format!("不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr/deepseek_asr）"),
@@ -176,7 +178,8 @@ fn validate_path(core: &CoreState, raw: &str) -> Result<PathBuf, TranscribeError
         return Err(TranscribeError::new(404, format!("文件不存在：{raw}")));
     }
     if !media::is_supported_extension(&path) {
-        let suffix = path.extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_else(|| "无后缀".into());
+        let suffix =
+            path.extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_else(|| "无后缀".into());
         return Err(TranscribeError::new(415, format!("无法解码：不支持的文件类型「{suffix}」")));
     }
     if !core.is_transcribe_allowed(&path) {
@@ -228,7 +231,9 @@ fn shape_payload(entry: &Value, want_segments: bool, cached: bool, variant: Opti
         if let Some(text) = variant.get("text").and_then(Value::as_str).filter(|t| !t.is_empty()) {
             payload["text"] = json!(text);
         }
-        if let Some(variant_segments) = variant.get("segments").filter(|s| s.as_array().map(|a| !a.is_empty()).unwrap_or(false)) {
+        if let Some(variant_segments) =
+            variant.get("segments").filter(|s| s.as_array().map(|a| !a.is_empty()).unwrap_or(false))
+        {
             segments = variant_segments.clone();
         }
         payload["proofread"] = json!({
@@ -254,10 +259,11 @@ impl FileTranscriber {
 
     fn with_cache<T>(&self, core: &CoreState, f: impl FnOnce(&mut Map<String, Value>) -> T) -> T {
         let mut guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        let cache = guard.get_or_insert_with(|| match json_store::read_json_lenient::<Value>(&Self::cache_path(core)) {
-            Value::Object(map) => map.into_iter().filter(|(_, v)| v.is_object()).collect(),
-            _ => Map::new(),
-        });
+        let cache =
+            guard.get_or_insert_with(|| match json_store::read_json_lenient::<Value>(&Self::cache_path(core)) {
+                Value::Object(map) => map.into_iter().filter(|(_, v)| v.is_object()).collect(),
+                _ => Map::new(),
+            });
         f(cache)
     }
 
@@ -292,10 +298,8 @@ impl FileTranscriber {
             entry["engines"][engine] = bucket;
             entry["_last_used"] = json!(now_secs());
             while cache.len() > CACHE_SIZE {
-                let oldest = cache
-                    .iter()
-                    .min_by(|a, b| last_used(a.1).total_cmp(&last_used(b.1)))
-                    .map(|(k, _)| k.clone());
+                let oldest =
+                    cache.iter().min_by(|a, b| last_used(a.1).total_cmp(&last_used(b.1))).map(|(k, _)| k.clone());
                 match oldest {
                     Some(key) => cache.remove(&key),
                     None => break,
@@ -305,9 +309,19 @@ impl FileTranscriber {
         });
     }
 
-    fn store_proofread_variant(&self, core: &CoreState, hash: &str, engine: &str, model_id: Option<&str>, result: &proofread::ProofreadResult) {
+    fn store_proofread_variant(
+        &self,
+        core: &CoreState,
+        hash: &str,
+        engine: &str,
+        model_id: Option<&str>,
+        result: &proofread::ProofreadResult,
+    ) {
         self.with_cache(core, |cache| {
-            let Some(bucket) = cache.get_mut(hash).and_then(|e| e.get_mut("engines")).and_then(|e| e.get_mut(engine)) else { return };
+            let Some(bucket) = cache.get_mut(hash).and_then(|e| e.get_mut("engines")).and_then(|e| e.get_mut(engine))
+            else {
+                return;
+            };
             if !bucket.get("proofread").map(Value::is_object).unwrap_or(false) {
                 bucket["proofread"] = json!({});
             }
@@ -354,7 +368,9 @@ fn last_used(entry: &Value) -> f64 {
         entry
             .get("engines")
             .and_then(Value::as_object)
-            .map(|engines| engines.values().filter_map(|b| b.get("cached_at").and_then(Value::as_f64)).fold(0.0, f64::max))
+            .map(|engines| {
+                engines.values().filter_map(|b| b.get("cached_at").and_then(Value::as_f64)).fold(0.0, f64::max)
+            })
             .unwrap_or(0.0)
     })
 }
@@ -369,7 +385,10 @@ pub async fn handle(core: Arc<CoreState>, request: TranscribeRequest) -> Result<
     let engine = resolve_engine(&core, &request.engine)?;
     if request.proofread {
         if let Err(error) = core.llm.resolve_runtime(request.proofread_model_id.as_deref()) {
-            return Err(TranscribeError::new(409, format!("LLM 校对不可用：{}。请先在设置页配置 LLM，或关闭校对", error.user_message)));
+            return Err(TranscribeError::new(
+                409,
+                format!("LLM 校对不可用：{}。请先在设置页配置 LLM，或关闭校对", error.user_message),
+            ));
         }
     }
     let path = validate_path(&core, &request.path)?;
@@ -379,7 +398,9 @@ pub async fn handle(core: Arc<CoreState>, request: TranscribeRequest) -> Result<
     if let Some(cached) = transcriber.cache_lookup(&core, &hash, engine) {
         let variant = request
             .proofread
-            .then(|| cached.get("proofread").and_then(|p| p.get(variant_key(request.proofread_model_id.as_deref()))).cloned())
+            .then(|| {
+                cached.get("proofread").and_then(|p| p.get(variant_key(request.proofread_model_id.as_deref()))).cloned()
+            })
             .flatten();
         if !request.proofread || variant.is_some() {
             tracing::info!("文件转写缓存命中: {}（{engine}）", path.display());
@@ -478,7 +499,8 @@ async fn run_doubao(
         "segments": segments,
     });
     if billing_ms > 0 {
-        payload["billing"] = json!({ "audio_duration_seconds": (billing_ms as f64 / 1000.0 * 1000.0).round() / 1000.0 });
+        payload["billing"] =
+            json!({ "audio_duration_seconds": (billing_ms as f64 / 1000.0 * 1000.0).round() / 1000.0 });
     }
     Ok(payload)
 }
@@ -506,7 +528,14 @@ async fn run_deepseek(core: &CoreState, samples: &[i16], duration: f64) -> Resul
     Ok(payload)
 }
 
-fn start_job(core: Arc<CoreState>, request: TranscribeRequest, path: PathBuf, hash: String, duration: f64, engine: &'static str) -> Result<String, TranscribeError> {
+fn start_job(
+    core: Arc<CoreState>,
+    request: TranscribeRequest,
+    path: PathBuf,
+    hash: String,
+    duration: f64,
+    engine: &'static str,
+) -> Result<String, TranscribeError> {
     if core.transcriber.busy.try_lock().is_err() {
         return Err(TranscribeError::busy("转写引擎忙，请稍后重试"));
     }
@@ -519,7 +548,14 @@ fn start_job(core: Arc<CoreState>, request: TranscribeRequest, path: PathBuf, ha
         }
         jobs.insert(
             job_id.clone(),
-            Job { status: "running", stage: "asr", progress: None, result: None, error: String::new(), created_at: now_secs() },
+            Job {
+                status: "running",
+                stage: "asr",
+                progress: None,
+                result: None,
+                error: String::new(),
+                created_at: now_secs(),
+            },
         );
     }
     tracing::info!("转写任务已受理 {job_id}（{engine}，校对={}，{duration:.0}s）", request.proofread);
@@ -561,17 +597,26 @@ async fn execute_job(
         let options = proofread::ProofreadOptions::from_request(request.proofread_options.as_ref());
         let progress_core = core.clone();
         let progress_id = job_id.to_string();
-        let result = proofread::run(core, request.proofread_model_id.as_deref(), options, segments, move |done, total| {
-            progress_core.transcriber.update_job(&progress_id, |job| job.progress = Some(json!({ "window_done": done, "window_total": total })));
-        })
-        .await
-        .map_err(|e| TranscribeError::new(409, format!("LLM 校对不可用：{}", e.user_message)))?;
+        let result =
+            proofread::run(core, request.proofread_model_id.as_deref(), options, segments, move |done, total| {
+                progress_core.transcriber.update_job(&progress_id, |job| {
+                    job.progress = Some(json!({ "window_done": done, "window_total": total }))
+                });
+            })
+            .await
+            .map_err(|e| TranscribeError::new(409, format!("LLM 校对不可用：{}", e.user_message)))?;
         payload["raw_text"] = payload.get("text").cloned().unwrap_or_else(|| json!(""));
         if result.applied {
             payload["text"] = json!(result.text);
             payload["segments"] = json!(result.segments);
             // 校对成功才写缓存变体（降级不写，下次可重试校对）
-            core.transcriber.store_proofread_variant(core, hash, engine, request.proofread_model_id.as_deref(), &result);
+            core.transcriber.store_proofread_variant(
+                core,
+                hash,
+                engine,
+                request.proofread_model_id.as_deref(),
+                &result,
+            );
         }
         payload["proofread"] = result.meta();
     }

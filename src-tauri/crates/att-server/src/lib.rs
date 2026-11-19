@@ -53,10 +53,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
     let cors = tower_http::cors::CorsLayer::new()
         .allow_origin(tower_http::cors::AllowOrigin::predicate(
             |origin: &axum::http::HeaderValue, _parts: &axum::http::request::Parts| {
-                origin
-                    .to_str()
-                    .map(is_allowed_origin)
-                    .unwrap_or(false)
+                origin.to_str().map(is_allowed_origin).unwrap_or(false)
             },
         ))
         .allow_methods(tower_http::cors::Any)
@@ -287,19 +284,14 @@ pub fn self_check_health(port: u16) -> Result<String, String> {
     use std::net::{SocketAddr, TcpStream};
     use std::time::Duration;
 
-    let addr: SocketAddr = format!("127.0.0.1:{port}")
-        .parse()
-        .map_err(|e| format!("非法地址: {e}"))?;
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))
-        .map_err(|e| format!("连接失败: {e}"))?;
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().map_err(|e| format!("非法地址: {e}"))?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).map_err(|e| format!("连接失败: {e}"))?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     stream
         .write_all(b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
         .map_err(|e| format!("发送失败: {e}"))?;
     let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|e| format!("读取失败: {e}"))?;
+    stream.read_to_string(&mut response).map_err(|e| format!("读取失败: {e}"))?;
     Ok(response.lines().next().unwrap_or("(空响应)").to_string())
 }
 
@@ -320,10 +312,7 @@ fn map_record_error(error: RecordError) -> impl IntoResponse {
 }
 
 fn parse_usize(params: &HashMap<String, String>, key: &str, default: usize, max: usize) -> usize {
-    params.get(key)
-        .and_then(|v| v.parse::<usize>().ok())
-        .map(|v| v.clamp(1, max))
-        .unwrap_or(default)
+    params.get(key).and_then(|v| v.parse::<usize>().ok()).map(|v| v.clamp(1, max)).unwrap_or(default)
 }
 
 // ---------------- 处理器 ----------------
@@ -531,7 +520,9 @@ async fn records_search(
     let page_size = parse_usize(&params, "page_size", 100, 200);
 
     let (items, total) =
-        blocking(move || state.core.records.search(&query, &search_type, favorite_only, page, page_size)).await.unwrap_or_default();
+        blocking(move || state.core.records.search(&query, &search_type, favorite_only, page, page_size))
+            .await
+            .unwrap_or_default();
     let total_pages = if total == 0 { 0 } else { (total + page_size - 1) / page_size };
     Json(json!({
         "items": serde_json::to_value(items).unwrap_or_default(),
@@ -593,10 +584,7 @@ async fn records_delete(
 }
 
 /// 音频播放：完整文件回传（Content-Length 齐备即可供 <audio> 播放）。
-async fn records_audio(
-    State(state): State<Arc<ServerState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+async fn records_audio(State(state): State<Arc<ServerState>>, Path(id): Path<String>) -> impl IntoResponse {
     match state.core.records.audio_file(&id) {
         Ok(Some(path)) => match tokio::fs::read(&path).await {
             Ok(bytes) => {
@@ -623,8 +611,7 @@ async fn records_export(
         Ok(record) => record,
         Err(e) => return map_record_error(e).into_response(),
     };
-    let prefer_opt = use_optimized
-        && record.optimized_text.as_deref().map(|t| !t.is_empty()).unwrap_or(false);
+    let prefer_opt = use_optimized && record.optimized_text.as_deref().map(|t| !t.is_empty()).unwrap_or(false);
     let text = if prefer_opt {
         record.optimized_text.clone().unwrap_or_default()
     } else {
@@ -659,10 +646,8 @@ fn model_service_payload(core: &CoreState) -> Value {
     let settings = core.settings();
     let engine = engine_status(core);
     let local = att_core::stt::local_kind(&settings.asr_provider).map(|kind| core.local_models.status(core, kind));
-    let local_model_dir = local
-        .as_ref()
-        .and_then(|status| status.model_dir.as_ref())
-        .map(|path| path.display().to_string());
+    let local_model_dir =
+        local.as_ref().and_then(|status| status.model_dir.as_ref()).map(|path| path.display().to_string());
     let model_name = match &local {
         Some(status) => status
             .model_dir
@@ -781,10 +766,7 @@ async fn prompts_update(
 }
 
 /// 删除自定义预设；正被选用时设置会回退（见 `CoreState::delete_custom_preset`），回报回退后的值。
-async fn prompts_delete(
-    State(state): State<Arc<ServerState>>,
-    Path(id): Path<String>,
-) -> axum::response::Response {
+async fn prompts_delete(State(state): State<Arc<ServerState>>, Path(id): Path<String>) -> axum::response::Response {
     match state.core.delete_custom_preset(&id) {
         Ok(fallback) => Json(json!({
             "status": "deleted",
@@ -862,12 +844,7 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
-    async fn request_with_body(
-        state: &Arc<ServerState>,
-        method: &str,
-        uri: &str,
-        body: Value,
-    ) -> (StatusCode, Value) {
+    async fn request_with_body(state: &Arc<ServerState>, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
         let response = router(state.clone())
             .oneshot(
                 axum::http::Request::builder()
@@ -1032,7 +1009,11 @@ mod tests {
 
     #[tokio::test]
     async fn 提示词_自定义预设增改删_删除被选用者回退() {
-        let root = std::env::temp_dir().join(format!("att-server-prompts-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let root = std::env::temp_dir().join(format!(
+            "att-server-prompts-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
         std::fs::create_dir_all(root.join("prompts")).unwrap();
         std::fs::write(root.join("prompts/通用优化.txt"), "通用模板").unwrap();
         std::fs::write(root.join("prompts/程序员模式.txt"), "程序员模板").unwrap();
@@ -1047,17 +1028,26 @@ mod tests {
         assert_eq!(list["default_preset_id"], json!("preset-通用优化"));
 
         // 新建
-        let (status, created) = request_with_body(&state, "POST", "/api/prompts", json!({
-            "name": "周报", "prompt_template": "整理成周报"
-        })).await;
+        let (status, created) = request_with_body(
+            &state,
+            "POST",
+            "/api/prompts",
+            json!({
+                "name": "周报", "prompt_template": "整理成周报"
+            }),
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED, "{created}");
         assert_eq!(created["is_builtin"], json!(false));
         let id = created["id"].as_str().unwrap().to_string();
-        let (status, body) = request_with_body(&state, "POST", "/api/prompts", json!({"name": "通用优化", "prompt_template": "x"})).await;
+        let (status, body) =
+            request_with_body(&state, "POST", "/api/prompts", json!({"name": "通用优化", "prompt_template": "x"}))
+                .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "与内置重名：{body}");
 
         // 修改
-        let (status, updated) = request_with_body(&state, "PUT", &format!("/api/prompts/{id}"), json!({"prompt_template": "新正文"})).await;
+        let (status, updated) =
+            request_with_body(&state, "PUT", &format!("/api/prompts/{id}"), json!({"prompt_template": "新正文"})).await;
         assert_eq!(status, StatusCode::OK, "{updated}");
         assert_eq!((updated["name"].as_str(), updated["prompt_template"].as_str()), (Some("周报"), Some("新正文")));
         // 内置只读（id 含中文，按 URL 编码传）
@@ -1075,7 +1065,11 @@ mod tests {
         let (_, list) = get_json(&state, "/api/prompts").await;
         assert_eq!(list["default_preset_id"], json!(id));
         assert_eq!(
-            state.core.prompt_library().resolve_template(&[state.core.settings().rewrite_preset_id.as_deref()]).as_deref(),
+            state
+                .core
+                .prompt_library()
+                .resolve_template(&[state.core.settings().rewrite_preset_id.as_deref()])
+                .as_deref(),
             Some("新正文")
         );
 
@@ -1124,7 +1118,8 @@ mod tests {
         assert_eq!(body["check"]["status"], json!("error"));
         assert!(body["check"]["error"].as_str().unwrap().contains("HTTP 404"));
 
-        let (status, _) = request_with_body(&state, "PUT", "/api/settings", json!({"auto_download_updates": true})).await;
+        let (status, _) =
+            request_with_body(&state, "PUT", "/api/settings", json!({"auto_download_updates": true})).await;
         assert_eq!(status, StatusCode::OK);
         let (_, body) = get_json(&state, "/api/update").await;
         assert_eq!(body["auto_download"], json!(true));
@@ -1138,17 +1133,29 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(catalog["providers"].as_array().unwrap().len(), 14, "默认服务商目录不能为空");
 
-        let (status, profile) = request_with_body(&state, "POST", "/api/llm/profiles", json!({
-            "provider": "deepseek", "name": "DS", "api_key": "sk-secret-123456"
-        })).await;
+        let (status, profile) = request_with_body(
+            &state,
+            "POST",
+            "/api/llm/profiles",
+            json!({
+                "provider": "deepseek", "name": "DS", "api_key": "sk-secret-123456"
+            }),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{profile}");
         assert!(profile.get("api_key_encrypted").is_none());
         assert_eq!(profile["api_key_hint"], json!("sk-****3456"));
         let profile_id = profile["id"].as_str().unwrap().to_string();
 
-        let (status, created) = request_with_body(&state, "POST", "/api/llm/models", json!({
-            "items": [{"profile_id": profile_id, "model": "deepseek-chat"}]
-        })).await;
+        let (status, created) = request_with_body(
+            &state,
+            "POST",
+            "/api/llm/models",
+            json!({
+                "items": [{"profile_id": profile_id, "model": "deepseek-chat"}]
+            }),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{created}");
         let model_id = created["created"][0]["id"].as_str().unwrap().to_string();
         assert_eq!(created["created"][0]["model"], json!("deepseek/deepseek-chat"));
@@ -1159,25 +1166,34 @@ mod tests {
         assert!(!overview.to_string().contains("api_key_encrypted"));
 
         // 默认模型所在档案不能删
-        let (status, _) = request_with_body(&state, "DELETE", &format!("/api/llm/profiles/{profile_id}"), json!({})).await;
+        let (status, _) =
+            request_with_body(&state, "DELETE", &format!("/api/llm/profiles/{profile_id}"), json!({})).await;
         assert_eq!(status, StatusCode::CONFLICT);
         // fallback 显式 null = 清除；指向不存在的模型 404
-        let (status, body) = request_with_body(&state, "PUT", "/api/llm/settings", json!({"fallback_model_id": null})).await;
+        let (status, body) =
+            request_with_body(&state, "PUT", "/api/llm/settings", json!({"fallback_model_id": null})).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["fallback_model_id"], Value::Null);
-        let (status, _) = request_with_body(&state, "PUT", "/api/llm/settings", json!({"fallback_model_id": "nope"})).await;
+        let (status, _) =
+            request_with_body(&state, "PUT", "/api/llm/settings", json!({"fallback_model_id": "nope"})).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         // 校验错误：缺必填字段 422、custom 无端点 400
         let (status, _) = request_with_body(&state, "POST", "/api/llm/profiles", json!({"name": "x"})).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-        let (status, error) = request_with_body(&state, "POST", "/api/llm/profiles", json!({"provider": "custom", "name": "x"})).await;
+        let (status, error) =
+            request_with_body(&state, "POST", "/api/llm/profiles", json!({"provider": "custom", "name": "x"})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(error["detail"].as_str().unwrap().contains("API Base"));
         // 不支持列取的服务商：409 + manual_only
-        let (_, anthropic) = request_with_body(&state, "POST", "/api/llm/profiles", json!({"provider": "anthropic", "name": "A"})).await;
+        let (_, anthropic) =
+            request_with_body(&state, "POST", "/api/llm/profiles", json!({"provider": "anthropic", "name": "A"})).await;
         let (status, error) = request_with_body(
-            &state, "POST", &format!("/api/llm/profiles/{}/remote-models", anthropic["id"].as_str().unwrap()), json!({})
-        ).await;
+            &state,
+            "POST",
+            &format!("/api/llm/profiles/{}/remote-models", anthropic["id"].as_str().unwrap()),
+            json!({}),
+        )
+        .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(error["detail"]["manual_only"], json!(true));
     }
@@ -1187,7 +1203,9 @@ mod tests {
         let state = test_state("clip-thumb").await;
         let clipboard = &state.core.clipboard;
         std::fs::create_dir_all(clipboard.images_dir()).unwrap();
-        image::RgbaImage::from_pixel(1600, 900, image::Rgba([200, 10, 10, 255])).save(clipboard.images_dir().join("shot.png")).unwrap();
+        image::RgbaImage::from_pixel(1600, 900, image::Rgba([200, 10, 10, 255]))
+            .save(clipboard.images_dir().join("shot.png"))
+            .unwrap();
         let item = clipboard
             .capture(att_core::clipboard::CaptureRequest {
                 content: "image:shot".into(),
@@ -1292,14 +1310,26 @@ mod tests {
     #[tokio::test]
     async fn records_更新与乐观锁409() {
         let state = test_state("put").await;
-        let (status, _) = request_with_body(&state, "PUT", "/api/records/rec-x", json!({
-            "raw_text": "新文本", "revision": 0
-        })).await;
+        let (status, _) = request_with_body(
+            &state,
+            "PUT",
+            "/api/records/rec-x",
+            json!({
+                "raw_text": "新文本", "revision": 0
+            }),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
 
-        let (status, error) = request_with_body(&state, "PUT", "/api/records/rec-x", json!({
-            "raw_text": "冲突写", "revision": 0
-        })).await;
+        let (status, error) = request_with_body(
+            &state,
+            "PUT",
+            "/api/records/rec-x",
+            json!({
+                "raw_text": "冲突写", "revision": 0
+            }),
+        )
+        .await;
         assert_eq!(status, StatusCode::CONFLICT, "过期 revision 必须 409");
         assert!(error["detail"].as_str().unwrap().contains("其他端"));
 
@@ -1313,8 +1343,15 @@ mod tests {
         let (status, body) = get_json(&state, "/api/health").await;
         assert_eq!(status, StatusCode::OK);
         for field in [
-            "model_service_ready", "model_service_error", "model_service_mode", "model_service_loading",
-            "streaming_available", "streaming_backend", "streaming_error", "recording_mode", "local_engine",
+            "model_service_ready",
+            "model_service_error",
+            "model_service_mode",
+            "model_service_loading",
+            "streaming_available",
+            "streaming_backend",
+            "streaming_error",
+            "recording_mode",
+            "local_engine",
         ] {
             assert!(body.get(field).is_some(), "health 缺字段 {field}");
         }

@@ -71,10 +71,7 @@ pub fn run_with_legacy(
     platform: Platform,
     legacy_desktop: Option<serde_json::Value>,
 ) -> MigrationReport {
-    let mut report = MigrationReport {
-        migrated_at: crate::now_rfc3339(),
-        ..Default::default()
-    };
+    let mut report = MigrationReport { migrated_at: crate::now_rfc3339(), ..Default::default() };
 
     // ---- 1. 设置归一化 + 热键合并 ----
     let settings_path = data_dir.join("settings.json");
@@ -96,15 +93,10 @@ pub fn run_with_legacy(
         }
 
         // 旧 hotkey → hotkeys[]（若新版不存在）
-        let has_new = map
-            .get("hotkeys")
-            .and_then(|h| h.as_array())
-            .is_some_and(|a| !a.is_empty());
+        let has_new = map.get("hotkeys").and_then(|h| h.as_array()).is_some_and(|a| !a.is_empty());
         if !has_new {
-            let legacy_value = legacy_desktop
-                .as_ref()
-                .and_then(|d| d.get("hotkey").cloned())
-                .or_else(|| map.get("hotkey").cloned());
+            let legacy_value =
+                legacy_desktop.as_ref().and_then(|d| d.get("hotkey").cloned()).or_else(|| map.get("hotkey").cloned());
             let binding = match &legacy_value {
                 Some(v) => settings::hotkey::binding_from_legacy(platform, v),
                 None => settings::hotkey::HotkeyBinding::default_binding(platform),
@@ -145,12 +137,9 @@ pub fn run_with_legacy(
 }
 
 /// 合并默认值后返回可持久化的完整对象。
-fn merge_defaults(
-    mut object: serde_json::Map<String, serde_json::Value>,
-    platform: Platform,
-) -> serde_json::Value {
-    let defaults = serde_json::to_value(UserSettings::with_platform(platform))
-        .unwrap_or_else(|_| serde_json::json!({}));
+fn merge_defaults(mut object: serde_json::Map<String, serde_json::Value>, platform: Platform) -> serde_json::Value {
+    let defaults =
+        serde_json::to_value(UserSettings::with_platform(platform)).unwrap_or_else(|_| serde_json::json!({}));
     if let Some(default_map) = defaults.as_object() {
         for (key, value) in default_map {
             object.entry(key.clone()).or_insert_with(|| value.clone());
@@ -246,8 +235,7 @@ fn repair_audio_mismatch(data_dir: &Path, report: &mut MigrationReport) {
         .collect();
 
     for record in repo.load_all().0 {
-        let source_exists = !record.audio_path.is_empty()
-            && repo.resolve_audio_path(&record.audio_path).is_file();
+        let source_exists = !record.audio_path.is_empty() && repo.resolve_audio_path(&record.audio_path).is_file();
         if source_exists {
             continue;
         }
@@ -260,11 +248,7 @@ fn repair_audio_mismatch(data_dir: &Path, report: &mut MigrationReport) {
         // 找时长唯一匹配（±0.1s 容差，多候选视为不可判定，宁缺勿错）
         let candidates: Vec<String> = unclaimed
             .iter()
-            .filter(|entry| {
-                wav_duration_seconds(&entry.1)
-                    .map(|d| (d - record.duration).abs() <= 0.1)
-                    .unwrap_or(false)
-            })
+            .filter(|entry| wav_duration_seconds(&entry.1).map(|d| (d - record.duration).abs() <= 0.1).unwrap_or(false))
             .map(|entry| entry.0.clone())
             .collect();
         if candidates.len() == 1 {
@@ -381,8 +365,10 @@ mod tests {
                 "asr_provider": "doubao_asr",
                 "selection_toolbar_enabled": true,
                 "hotkey": {"modifiers": ["ctrl", "shift"], "key": "r", "display": "Ctrl+Shift+R"}
-            }).to_string(),
-        ).unwrap();
+            })
+            .to_string(),
+        )
+        .unwrap();
         // 注入一个无 hotkey 键的 legacy 桌面设置（模拟旧机但热键真相在 settings.json）
         let report = run_with_legacy(&dir, Platform::Linux, Some(json!({"pause_audio_on_recording": true})));
         assert_eq!(report.hotkey_source, "settings-legacy");
@@ -410,7 +396,8 @@ mod tests {
             audio_path: "uuid-a.wav".into(),
             duration: 2.0,
             ..Default::default()
-        }).unwrap();
+        })
+        .unwrap();
 
         // 记录 B：audio_path 悬空，但目录里有一个 3.05s 的未认领 wav
         write_wav(&audio.join("uuid-b.wav"), 3.05);
@@ -419,7 +406,8 @@ mod tests {
             audio_path: "gone.wav".into(),
             duration: 3.0,
             ..Default::default()
-        }).unwrap();
+        })
+        .unwrap();
 
         // 纯孤儿：无任何记录引用
         write_wav(&audio.join("orphan-1.wav"), 9.0);
@@ -454,7 +442,8 @@ mod tests {
             audio_path: "data\\audio\\records\\uuid-c.wav".into(),
             duration: 1.5,
             ..Default::default()
-        }).unwrap();
+        })
+        .unwrap();
 
         let report = run_with_legacy(&dir, Platform::Windows, None);
         assert!(
@@ -483,7 +472,8 @@ mod tests {
             audio_path: "uuid-d.flac".into(),
             duration: 0.1,
             ..Default::default()
-        }).unwrap();
+        })
+        .unwrap();
 
         let report = run_with_legacy(&dir, Platform::Windows, None);
         assert!(report.renamed_audio.contains(&"rec-d.flac".to_string()), "改名: {:?}", report.renamed_audio);

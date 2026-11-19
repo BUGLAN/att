@@ -96,7 +96,12 @@ pub fn has_default_model(core: &CoreState) -> bool {
 }
 
 /// 优化一条记录的原文（用默认预设），并按结果落盘。`on_event` 在调用方任务内同步回调。
-pub async fn optimize_record(core: &CoreState, record_id: &str, text: &str, on_event: impl FnMut(OptimizeEvent)) -> OptimizeOutcome {
+pub async fn optimize_record(
+    core: &CoreState,
+    record_id: &str,
+    text: &str,
+    on_event: impl FnMut(OptimizeEvent),
+) -> OptimizeOutcome {
     optimize_record_with_preset(core, record_id, text, None, on_event).await
 }
 
@@ -189,9 +194,11 @@ async fn run(
     let messages = prompt::build_messages(text, &template, &settings.asr_hotwords);
 
     let target = core.llm.resolve_runtime(None)?;
-    let spec = registry::get(&target.profile.provider)
-        .ok_or_else(|| LlmError::plain(CODE_UNSUPPORTED_PROVIDER, format!("未知服务商：{}", target.profile.provider)))?;
-    let endpoint = Endpoint::resolve(spec, target.profile.api_base.as_deref(), &target.api_key, &target.profile.extra_headers)?;
+    let spec = registry::get(&target.profile.provider).ok_or_else(|| {
+        LlmError::plain(CODE_UNSUPPORTED_PROVIDER, format!("未知服务商：{}", target.profile.provider))
+    })?;
+    let endpoint =
+        Endpoint::resolve(spec, target.profile.api_base.as_deref(), &target.api_key, &target.profile.extra_headers)?;
     let params = &target.model.params;
     let budget = timeouts::derive(params.timeout_s, text.chars().count());
     let options = ChatOptions {
@@ -253,7 +260,10 @@ async fn run(
 /// 截断判定 + 输出清洗：正文为空且被截断 → 不可重试；清洗后为空 → 失败可见（不把空文本写进记录）。
 fn finalize(result: gateway::ChatResult, max_tokens: i64) -> Result<(String, gateway::ChatResult), LlmError> {
     if result.text.trim().is_empty() && result.truncated() {
-        return Err(LlmError::new(CODE_OUTPUT_TRUNCATED, format!("模型的思考 token 占满了 max_tokens={max_tokens}，正文为空")));
+        return Err(LlmError::new(
+            CODE_OUTPUT_TRUNCATED,
+            format!("模型的思考 token 占满了 max_tokens={max_tokens}，正文为空"),
+        ));
     }
     let cleaned = clean_output(&result.text);
     if cleaned.is_empty() {
@@ -299,7 +309,13 @@ mod tests {
             })
             .unwrap();
         core.llm
-            .create_models(vec![ModelItemCreate { profile_id: profile.id, model: "m".into(), display_name: String::new(), params: None, set_default: true }])
+            .create_models(vec![ModelItemCreate {
+                profile_id: profile.id,
+                model: "m".into(),
+                display_name: String::new(),
+                params: None,
+                set_default: true,
+            }])
             .unwrap();
         (core, root)
     }
@@ -371,7 +387,8 @@ mod tests {
         .await;
         let (core, root) = setup(&base, "preset");
         std::fs::write(root.join("prompts").join("Agent 提示词.txt"), "你是提示词改写器").unwrap();
-        let outcome = optimize_record_with_preset(&core, "rec-1", "嗯那个明天开会", Some("preset-Agent 提示词"), |_| {}).await;
+        let outcome =
+            optimize_record_with_preset(&core, "rec-1", "嗯那个明天开会", Some("preset-Agent 提示词"), |_| {}).await;
         assert!(matches!(outcome, OptimizeOutcome::Completed(_)), "{outcome:?}");
         let request = requests.recv().await.unwrap();
         assert!(request.contains("你是提示词改写器") && !request.contains("你是程序员助手"), "用指定预设");
@@ -385,13 +402,19 @@ mod tests {
     #[tokio::test]
     async fn 流式首字前失败_回退非流式() {
         let (base, _requests) = stub_routes(vec![
-            StubRoute::json("POST /v1/chat/completions", 400, r#"{"error":{"message":"stream not supported"}}"#).when_body(r#""stream":true"#),
-            StubRoute::json("POST /v1/chat/completions", 200, r#"{"choices":[{"message":{"content":"明天开会。"},"finish_reason":"stop"}]}"#),
+            StubRoute::json("POST /v1/chat/completions", 400, r#"{"error":{"message":"stream not supported"}}"#)
+                .when_body(r#""stream":true"#),
+            StubRoute::json(
+                "POST /v1/chat/completions",
+                200,
+                r#"{"choices":[{"message":{"content":"明天开会。"},"finish_reason":"stop"}]}"#,
+            ),
         ])
         .await;
         let (core, root) = setup(&base, "fallback");
         let (deltas, on_event) = collect();
-        let OptimizeOutcome::Completed(success) = optimize_record(&core, "rec-1", "嗯那个明天开会", on_event).await else {
+        let OptimizeOutcome::Completed(success) = optimize_record(&core, "rec-1", "嗯那个明天开会", on_event).await
+        else {
             panic!("应回退成功")
         };
         assert!(success.degraded);

@@ -47,11 +47,41 @@ pub fn physical_modifiers() -> Option<ModSet> {
 /// ANSI 虚拟键码 → 字母数字（仅用于映射到 HID 主键；其余键只参与「有无其他键」判断）。
 fn char_from_keycode(code: i64) -> Option<char> {
     const TABLE: &[(i64, char)] = &[
-        (0x00, 'a'), (0x01, 's'), (0x02, 'd'), (0x03, 'f'), (0x04, 'h'), (0x05, 'g'), (0x06, 'z'),
-        (0x07, 'x'), (0x08, 'c'), (0x09, 'v'), (0x0B, 'b'), (0x0C, 'q'), (0x0D, 'w'), (0x0E, 'e'),
-        (0x0F, 'r'), (0x10, 'y'), (0x11, 't'), (0x12, '1'), (0x13, '2'), (0x14, '3'), (0x15, '4'),
-        (0x16, '6'), (0x17, '5'), (0x19, '9'), (0x1A, '7'), (0x1C, '8'), (0x1D, '0'), (0x1F, 'o'),
-        (0x20, 'u'), (0x22, 'i'), (0x23, 'p'), (0x25, 'l'), (0x26, 'j'), (0x28, 'k'), (0x2D, 'n'),
+        (0x00, 'a'),
+        (0x01, 's'),
+        (0x02, 'd'),
+        (0x03, 'f'),
+        (0x04, 'h'),
+        (0x05, 'g'),
+        (0x06, 'z'),
+        (0x07, 'x'),
+        (0x08, 'c'),
+        (0x09, 'v'),
+        (0x0B, 'b'),
+        (0x0C, 'q'),
+        (0x0D, 'w'),
+        (0x0E, 'e'),
+        (0x0F, 'r'),
+        (0x10, 'y'),
+        (0x11, 't'),
+        (0x12, '1'),
+        (0x13, '2'),
+        (0x14, '3'),
+        (0x15, '4'),
+        (0x16, '6'),
+        (0x17, '5'),
+        (0x19, '9'),
+        (0x1A, '7'),
+        (0x1C, '8'),
+        (0x1D, '0'),
+        (0x1F, 'o'),
+        (0x20, 'u'),
+        (0x22, 'i'),
+        (0x23, 'p'),
+        (0x25, 'l'),
+        (0x26, 'j'),
+        (0x28, 'k'),
+        (0x2D, 'n'),
         (0x2E, 'm'),
     ];
     TABLE.iter().find(|(k, _)| *k == code).map(|(_, c)| *c)
@@ -143,7 +173,5 @@ pub fn spawn(shared: Arc<Shared>) -> Result<(), String> {
             CFRunLoop::run_current();
         })
         .map_err(|e| format!("无法启动热键线程: {e}"))?;
-    ready_rx
-        .recv_timeout(std::time::Duration::from_secs(3))
-        .unwrap_or_else(|_| Err("键盘监听启动超时".into()))
+    ready_rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or_else(|_| Err("键盘监听启动超时".into()))
 }

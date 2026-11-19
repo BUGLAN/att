@@ -9,9 +9,9 @@
 //! - Linux Wayland：XDG portal GlobalShortcuts（activated/deactivated 双信号）
 
 pub mod listener;
-pub mod matcher;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod matcher;
 #[cfg(windows)]
 mod windows;
 
@@ -40,11 +40,7 @@ pub struct HotkeySpec {
 
 impl HotkeySpec {
     pub fn from_binding(binding: &HotkeyBinding) -> Self {
-        Self {
-            action: binding.action,
-            modifiers: binding.modifiers,
-            hid_key: binding.hid_key,
-        }
+        Self { action: binding.action, modifiers: binding.modifiers, hid_key: binding.hid_key }
     }
 }
 
@@ -156,10 +152,12 @@ mod tests {
     fn 空实现_探测为不支持() {
         let mut backend = NoopBackend::default();
         assert!(!backend.probe().supported);
-        assert!(backend.register(HotkeySpec {
-            action: HotkeyAction::Record,
-            modifiers: ModSet::new(true, false, false, false),
-            hid_key: None,
-        }).is_err());
+        assert!(backend
+            .register(HotkeySpec {
+                action: HotkeyAction::Record,
+                modifiers: ModSet::new(true, false, false, false),
+                hid_key: None,
+            })
+            .is_err());
     }
 }

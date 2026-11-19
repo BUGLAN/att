@@ -30,7 +30,12 @@ pub fn write_wav_16k(path: &Path, samples: &[i16]) -> std::io::Result<()> {
 
 /// 编码 16k 单声道 PCM16 WAV 到内存（上传类引擎用，不落临时文件）。
 pub fn wav_bytes_16k(samples: &[i16]) -> std::io::Result<Vec<u8>> {
-    let spec = hound::WavSpec { channels: 1, sample_rate: TARGET_RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: TARGET_RATE,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
     let mut cursor = std::io::Cursor::new(Vec::with_capacity(samples.len() * 2 + 44));
     {
         let mut writer = hound::WavWriter::new(&mut cursor, spec).map_err(std::io::Error::other)?;
@@ -127,10 +132,8 @@ pub fn read_wav_16k_mono(path: &Path) -> std::io::Result<Vec<i16>> {
 
 /// 交错的 [-1, 1] 浮点样本 → 16k 单声道 i16（多声道取均值；非 16k 线性重采样）。
 fn to_16k_mono(interleaved: &[f32], channels: usize, sample_rate: u32) -> Vec<i16> {
-    let mono: Vec<f32> = interleaved
-        .chunks(channels.max(1))
-        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
-        .collect();
+    let mono: Vec<f32> =
+        interleaved.chunks(channels.max(1)).map(|frame| frame.iter().sum::<f32>() / frame.len() as f32).collect();
     let mut resampler = LinearResampler::new(sample_rate, TARGET_RATE);
     let mut out = Vec::with_capacity(mono.len() * TARGET_RATE as usize / sample_rate.max(1) as usize + 1);
     resampler.process(&mono, &mut out);
@@ -200,7 +203,11 @@ pub fn chunk_db(chunk: &[i16]) -> f64 {
     }
     let sum: f64 = chunk.iter().map(|s| (*s as f64 / 32768.0).powi(2)).sum();
     let rms = (sum / chunk.len() as f64).sqrt();
-    if rms > 0.0 { 20.0 * rms.log10() } else { -120.0 }
+    if rms > 0.0 {
+        20.0 * rms.log10()
+    } else {
+        -120.0
+    }
 }
 
 /// 人声估计的分析帧：20ms 一帧。
@@ -250,12 +257,17 @@ impl SpeechActivity {
     pub fn heard_voice(&self) -> bool {
         self.clear_seconds >= CLEAR_MIN_SECONDS
             || self.faint_seconds >= FAINT_MIN_SECONDS
-            || (self.clear_seconds >= SHORT_CLEAR_MIN_SECONDS && self.clear_seconds >= self.total_seconds * SHORT_CLEAR_MIN_RATIO)
+            || (self.clear_seconds >= SHORT_CLEAR_MIN_SECONDS
+                && self.clear_seconds >= self.total_seconds * SHORT_CLEAR_MIN_RATIO)
     }
 }
 
 fn power_db(power: f64) -> f64 {
-    if power > 0.0 { 10.0 * power.log10() } else { -120.0 }
+    if power > 0.0 {
+        10.0 * power.log10()
+    } else {
+        -120.0
+    }
 }
 
 /// 按短帧能量估计一段 16k 录音里有多少「像人声」的声音：底噪自适应（取安静帧的电平），
@@ -342,7 +354,8 @@ impl Segmenter {
         }
         self.current.extend_from_slice(chunk);
         let duration = Self::seconds(self.current.len());
-        let pause = self.current_has_speech && self.silence_run >= self.silence_samples && duration >= MIN_SEGMENT_SECONDS;
+        let pause =
+            self.current_has_speech && self.silence_run >= self.silence_samples && duration >= MIN_SEGMENT_SECONDS;
         if pause || duration >= MAX_SEGMENT_SECONDS {
             return self.take(false);
         }
@@ -503,7 +516,11 @@ mod tests {
                 let tone = w.sin() + 0.5 * (2.0 * w).sin() + 0.25 * (3.0 * w).sin();
                 let envelope = if syllables {
                     let p = t % 0.25;
-                    if p >= 0.18 { 0.0 } else { (p / 0.02).min((0.18 - p) / 0.02).min(1.0) }
+                    if p >= 0.18 {
+                        0.0
+                    } else {
+                        (p / 0.02).min((0.18 - p) / 0.02).min(1.0)
+                    }
                 } else {
                     1.0
                 };

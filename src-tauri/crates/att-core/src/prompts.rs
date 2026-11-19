@@ -37,11 +37,8 @@ pub struct Preset {
 
 impl Preset {
     pub fn to_json(&self) -> Value {
-        let description = if self.is_builtin {
-            format!("来自 prompts/{}.txt", self.name)
-        } else {
-            "自定义预设".to_string()
-        };
+        let description =
+            if self.is_builtin { format!("来自 prompts/{}.txt", self.name) } else { "自定义预设".to_string() };
         json!({
             "id": self.id,
             "name": self.name,
@@ -64,15 +61,8 @@ pub fn resolve_dir(data_dir: &Path, resource_dir: Option<&Path>) -> PathBuf {
     if let Ok(dir) = std::env::var("ATT_PROMPTS_DIR") {
         return PathBuf::from(dir);
     }
-    let candidates = [
-        data_dir.parent().map(|p| p.join("prompts")),
-        resource_dir.map(|p| p.join("prompts")),
-    ];
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|dir| dir.is_dir())
-        .unwrap_or_else(|| PathBuf::from("prompts"))
+    let candidates = [data_dir.parent().map(|p| p.join("prompts")), resource_dir.map(|p| p.join("prompts"))];
+    candidates.into_iter().flatten().find(|dir| dir.is_dir()).unwrap_or_else(|| PathBuf::from("prompts"))
 }
 
 /// 读取全部内置预设（空文件跳过），按名称排序。每次调用都读盘：改文件即时生效。
@@ -394,7 +384,8 @@ mod tests {
             .update(&created.id, &PresetDraft { name: Some("周报".into()), prompt_template: Some("新正文".into()) })
             .unwrap();
         assert_eq!((updated.name.as_str(), updated.template.as_str()), ("周报", "新正文"));
-        let renamed = lib.update(&created.id, &PresetDraft { name: Some("周报 v2".into()), prompt_template: None }).unwrap();
+        let renamed =
+            lib.update(&created.id, &PresetDraft { name: Some("周报 v2".into()), prompt_template: None }).unwrap();
         assert_eq!((renamed.name.as_str(), renamed.template.as_str()), ("周报 v2", "新正文"));
         assert_eq!(renamed.id, created.id, "改名不改 id");
 

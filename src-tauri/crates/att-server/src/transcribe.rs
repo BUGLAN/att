@@ -19,9 +19,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub fn routes() -> Router<Arc<ServerState>> {
-    Router::new()
-        .route("/api/transcribe", post(transcribe_file))
-        .route("/api/transcribe/jobs/{job_id}", get(job))
+    Router::new().route("/api/transcribe", post(transcribe_file)).route("/api/transcribe/jobs/{job_id}", get(job))
 }
 
 fn error_response(error: TranscribeError) -> Response {
@@ -63,7 +61,8 @@ async fn transcribe_file(State(state): State<Arc<ServerState>>, body: Bytes) -> 
     let body: Body = match serde_json::from_slice(&body) {
         Ok(body) => body,
         Err(error) => {
-            return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "detail": format!("请求参数不合法：{error}") }))).into_response()
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "detail": format!("请求参数不合法：{error}") })))
+                .into_response()
         }
     };
     let request = TranscribeRequest {
@@ -119,11 +118,7 @@ mod tests {
         if let Some(token) = token {
             builder = builder.header("x-att-token", token);
         }
-        app.clone()
-            .oneshot(builder.body(Body::from(body)).unwrap())
-            .await
-            .unwrap()
-            .status()
+        app.clone().oneshot(builder.body(Body::from(body)).unwrap()).await.unwrap().status()
     }
 
     async fn get_job(app: &Router, token: Option<&str>) -> StatusCode {

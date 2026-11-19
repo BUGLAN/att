@@ -71,10 +71,7 @@ pub fn get_desktop_settings(state: State<'_, AppState>) -> Value {
 
 /// 保存桌面设置（hotkey 旧形状 + 静音策略），写回唯一真相源。
 #[tauri::command]
-pub fn save_desktop_settings(
-    state: State<'_, AppState>,
-    payload: Value,
-) -> Result<Value, String> {
+pub fn save_desktop_settings(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
     let result = state.core.update_settings(|settings| {
         if let Some(hotkey) = payload.get("hotkey").filter(|h| h.is_object()) {
             settings.update_record_binding_from_legacy(state.core.platform, hotkey);
@@ -202,9 +199,7 @@ pub fn resolve_clipboard_image_path(data_dir: &std::path::Path, raw_path: &str) 
 /// 模拟「粘贴」到焦点窗口（Cmd/Ctrl+V）。
 #[tauri::command]
 pub async fn paste_active() -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(crate::desktop::paste_active)
-        .await
-        .map_err(|e| err(e.to_string()))??;
+    tauri::async_runtime::spawn_blocking(crate::desktop::paste_active).await.map_err(|e| err(e.to_string()))??;
     Ok(json!({ "success": true }))
 }
 
@@ -251,9 +246,7 @@ pub fn clipboard_panel_reset_position(app: AppHandle) {
 pub async fn clipboard_panel_finish(app: AppHandle, paste: bool) -> Result<Value, String> {
     crate::clipboard_panel::hide(&app, true);
     if paste {
-        tauri::async_runtime::spawn_blocking(crate::desktop::paste_active)
-            .await
-            .map_err(|e| err(e.to_string()))??;
+        tauri::async_runtime::spawn_blocking(crate::desktop::paste_active).await.map_err(|e| err(e.to_string()))??;
     }
     Ok(json!({ "success": true }))
 }
@@ -283,9 +276,7 @@ pub fn recording_get_state(state: State<'_, AppState>) -> Value {
 /// 麦克风列表（设置页下拉框；Tauri 下不再走 getUserMedia 枚举）。
 #[tauri::command]
 pub async fn list_audio_devices() -> Vec<String> {
-    tauri::async_runtime::spawn_blocking(att_audio::list_input_devices)
-        .await
-        .unwrap_or_default()
+    tauri::async_runtime::spawn_blocking(att_audio::list_input_devices).await.unwrap_or_default()
 }
 
 /// 全局快捷键状态：{ enabled, error }（error 为权限缺失等引导文案）。
@@ -322,10 +313,7 @@ pub fn hide_floating_window(app: AppHandle) {
 
 #[tauri::command]
 pub fn toggle_floating_window(app: AppHandle) {
-    let visible = app
-        .get_webview_window(crate::floating::LABEL)
-        .and_then(|w| w.is_visible().ok())
-        .unwrap_or(false);
+    let visible = app.get_webview_window(crate::floating::LABEL).and_then(|w| w.is_visible().ok()).unwrap_or(false);
     if visible {
         crate::floating::hide(&app);
     } else {
@@ -371,7 +359,11 @@ pub async fn open_media_file(app: AppHandle) -> Option<String> {
         .copied()
         .collect();
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog().file().set_title("选择要转写的音视频文件").add_filter("音视频文件", &extensions).blocking_pick_file()
+        app.dialog()
+            .file()
+            .set_title("选择要转写的音视频文件")
+            .add_filter("音视频文件", &extensions)
+            .blocking_pick_file()
     })
     .await
     .ok()

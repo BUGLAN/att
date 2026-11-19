@@ -34,7 +34,13 @@ const RETRY_INTERVAL: Duration = Duration::from_millis(40);
 
 /// 把一张 RGBA 图片写进系统剪贴板。`rgba` 必须是 `width * height * 4` 字节。
 /// `png`：手上已有的同一张图的 PNG 字节（如剪贴板历史里的原图文件），有就直接用，省掉一次整图编码。
-pub fn write_rgba(app: &tauri::AppHandle, rgba: &[u8], width: u32, height: u32, png: Option<&[u8]>) -> Result<(), String> {
+pub fn write_rgba(
+    app: &tauri::AppHandle,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    png: Option<&[u8]>,
+) -> Result<(), String> {
     if width == 0 || height == 0 {
         return Err("图片尺寸为 0".into());
     }
@@ -149,9 +155,7 @@ mod platform {
         CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, OpenClipboard,
         RegisterClipboardFormatW, SetClipboardData,
     };
-    use windows_sys::Win32::System::Memory::{
-        GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
-    };
+    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
 
     /// 已打开的剪贴板：`Drop` 时关闭，任何一步失败都不会把剪贴板锁住。
     struct Opened;
@@ -275,7 +279,13 @@ mod platform {
         std::ptr::null_mut()
     }
 
-    pub fn write(app: &tauri::AppHandle, rgba: &[u8], width: u32, height: u32, png: Option<&[u8]>) -> Result<(), String> {
+    pub fn write(
+        app: &tauri::AppHandle,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        png: Option<&[u8]>,
+    ) -> Result<(), String> {
         write_with_owner(owner(app), rgba, width, height, png)
     }
 
@@ -383,7 +393,13 @@ mod platform {
     }
 
     /// 真正落剪贴板的实现；`hwnd` 为 NULL 时由当前线程「充当」owner（仅用于测试）。
-    pub fn write_with_owner(hwnd: HWND, rgba: &[u8], width: u32, height: u32, png: Option<&[u8]>) -> Result<(), String> {
+    pub fn write_with_owner(
+        hwnd: HWND,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        png: Option<&[u8]>,
+    ) -> Result<(), String> {
         // 先编码好，真正动剪贴板的时间越短越好（打开剪贴板期间全系统都写不了）。
         // 已有原图 PNG 就直接用：2K~4K 截图重新编码一遍要几百毫秒
         let dib = super::dib24(rgba, width, height);
@@ -403,10 +419,8 @@ mod platform {
             Prepared::new(png_id, &png)?,
         ];
         // 失败时要写回的旧内容也提前装好，恢复路径里不再有可失败的内存分配
-        let mut restore: Vec<Prepared> = snapshot
-            .into_iter()
-            .filter_map(|(format, bytes)| Prepared::new(format, &bytes).ok())
-            .collect();
+        let mut restore: Vec<Prepared> =
+            snapshot.into_iter().filter_map(|(format, bytes)| Prepared::new(format, &bytes).ok()).collect();
 
         write_prepared(&mut SystemOps, hwnd, &mut prepared, &mut restore)
     }
@@ -543,11 +557,8 @@ mod platform {
             // CF_DIB 成功、CF_DIBV5 失败：失败发生在 EmptyClipboard 之后
             ops.fail_set_at = 2;
 
-            let mut new = vec![
-                prepared(CF_DIB, b"new dib"),
-                prepared(CF_DIBV5, b"new dibv5"),
-                prepared(0xC000, b"new png"),
-            ];
+            let mut new =
+                vec![prepared(CF_DIB, b"new dib"), prepared(CF_DIBV5, b"new dibv5"), prepared(0xC000, b"new png")];
             let mut restore = vec![prepared(13, b"old text")];
             let error = write_prepared(&mut ops, std::ptr::null_mut(), &mut new, &mut restore).expect_err("应当失败");
 
@@ -561,11 +572,8 @@ mod platform {
         #[test]
         fn 三种格式都成功时不需要恢复() {
             let mut ops = FakeOps::new();
-            let mut new = vec![
-                prepared(CF_DIB, b"new dib"),
-                prepared(CF_DIBV5, b"new dibv5"),
-                prepared(0xC000, b"new png"),
-            ];
+            let mut new =
+                vec![prepared(CF_DIB, b"new dib"), prepared(CF_DIBV5, b"new dibv5"), prepared(0xC000, b"new png")];
             let mut restore = Vec::new();
 
             write_prepared(&mut ops, std::ptr::null_mut(), &mut new, &mut restore).expect("写入失败");

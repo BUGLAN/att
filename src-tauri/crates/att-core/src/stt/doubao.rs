@@ -152,7 +152,9 @@ impl TranscriptState {
             detail.push('）');
             return SttError::new(
                 ErrorKind::Network,
-                format!("流式连接被服务端关闭{detail}；录音较久可能是静音超时，刚建连就断请检查「强制断句静音时长」等设置"),
+                format!(
+                    "流式连接被服务端关闭{detail}；录音较久可能是静音超时，刚建连就断请检查「强制断句静音时长」等设置"
+                ),
                 true,
                 "重新开始录音",
             );
@@ -219,11 +221,9 @@ impl DoubaoSession {
     ) -> Result<Self, SttError> {
         config.ensure()?;
         let connect_id = uuid::Uuid::new_v4().to_string();
-        let mut request = config
-            .endpoint
-            .as_str()
-            .into_client_request()
-            .map_err(|e| SttError::new(ErrorKind::Protocol, format!("接入点地址无效（{e}）"), false, "检查 WebSocket 接入点地址"))?;
+        let mut request = config.endpoint.as_str().into_client_request().map_err(|e| {
+            SttError::new(ErrorKind::Protocol, format!("接入点地址无效（{e}）"), false, "检查 WebSocket 接入点地址")
+        })?;
         let headers = request.headers_mut();
         let header = |value: &str| {
             HeaderValue::from_str(value.trim()).map_err(|_| {
@@ -255,16 +255,16 @@ impl DoubaoSession {
                 });
             }
             Ok(Err(error)) => {
-                return Err(SttError::new(ErrorKind::Network, format!("无法连接豆包语音服务（{error}）"), true, "检查网络后重试"));
+                return Err(SttError::new(
+                    ErrorKind::Network,
+                    format!("无法连接豆包语音服务（{error}）"),
+                    true,
+                    "检查网络后重试",
+                ));
             }
             Ok(Ok(pair)) => pair,
         };
-        let log_id = response
-            .headers()
-            .get("x-tt-logid")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
+        let log_id = response.headers().get("x-tt-logid").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
 
         tracing::info!(connect_id = %connect_id, "豆包流式握手完成（{:?}）", handshake_started.elapsed());
         let (mut writer, mut read) = stream.split();
@@ -310,7 +310,15 @@ impl DoubaoSession {
             reader_shared.notify.notify_waiters();
         });
 
-        Ok(Self { writer, shared, reader, buffer: Vec::new(), frame_samples: sauc::STREAM_CHUNK_SAMPLES, connect_id, log_id })
+        Ok(Self {
+            writer,
+            shared,
+            reader,
+            buffer: Vec::new(),
+            frame_samples: sauc::STREAM_CHUNK_SAMPLES,
+            connect_id,
+            log_id,
+        })
     }
 
     /// 当前状态下是否已不可继续推流（错误帧/断连）。
@@ -519,8 +527,14 @@ mod tests {
                 false,
             )
         };
-        assert_eq!(handle_frame(&shared, &frame(false), "t"), Some(Partial { text: "你好世界".into(), pending_chars: 2 }));
-        assert_eq!(handle_frame(&shared, &frame(true), "t"), Some(Partial { text: "你好世界".into(), pending_chars: 0 }));
+        assert_eq!(
+            handle_frame(&shared, &frame(false), "t"),
+            Some(Partial { text: "你好世界".into(), pending_chars: 2 })
+        );
+        assert_eq!(
+            handle_frame(&shared, &frame(true), "t"),
+            Some(Partial { text: "你好世界".into(), pending_chars: 0 })
+        );
     }
 
     #[test]

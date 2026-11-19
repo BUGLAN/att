@@ -79,7 +79,16 @@ pub struct DownloadState {
 
 impl Default for DownloadState {
     fn default() -> Self {
-        Self { status: "idle", mode: MODE_INSTALLER, version: None, file_name: None, path: None, received: 0, total: None, error: None }
+        Self {
+            status: "idle",
+            mode: MODE_INSTALLER,
+            version: None,
+            file_name: None,
+            path: None,
+            received: 0,
+            total: None,
+            error: None,
+        }
     }
 }
 
@@ -166,7 +175,8 @@ impl Updater {
     /// 应用内下载占位；返回 false 表示已在下载或同一版本已下好（不重复下载）。
     fn begin_in_app(&self) -> Result<bool, String> {
         let mut state = self.lock();
-        let check = state.last_check.clone().filter(|c| c.status == "available").ok_or("没有可下载的新版本，请先检查更新")?;
+        let check =
+            state.last_check.clone().filter(|c| c.status == "available").ok_or("没有可下载的新版本，请先检查更新")?;
         let download = &state.download;
         if download.status == "downloading" || download.status == "installing" {
             return Ok(false);
@@ -271,16 +281,14 @@ impl Updater {
     /// 正在下载、或同一版本已下载完成且文件还在时返回 None（不重复下载）；不能下载时返回原因。
     pub fn begin_download(&self) -> Result<Option<PendingDownload>, String> {
         let mut state = self.lock();
-        let check = state.last_check.clone().filter(|c| c.status == "available").ok_or("没有可下载的新版本，请先检查更新")?;
+        let check =
+            state.last_check.clone().filter(|c| c.status == "available").ok_or("没有可下载的新版本，请先检查更新")?;
         let asset = check.asset.clone().ok_or("发布里没有适合本机的安装包，请到发布页手动下载")?;
         if state.download.status == "downloading" {
             return Ok(None);
         }
         let target = self.download_dir.join(sanitize_file_name(&asset.name));
-        if state.download.status == "done"
-            && state.download.version == check.latest_version
-            && target.is_file()
-        {
+        if state.download.status == "done" && state.download.version == check.latest_version && target.is_file() {
             return Ok(None);
         }
         state.download = DownloadState {
@@ -339,10 +347,8 @@ impl Updater {
             self.lock().download.total = Some(total);
         }
         // 先写 .part，完整后再改名：中途失败不会留下一个看起来完整的安装包
-        let partial = target.with_extension(format!(
-            "{}.part",
-            target.extension().and_then(|e| e.to_str()).unwrap_or("bin")
-        ));
+        let partial =
+            target.with_extension(format!("{}.part", target.extension().and_then(|e| e.to_str()).unwrap_or("bin")));
         let result = async {
             let mut file = tokio::fs::File::create(&partial).await.map_err(|e| format!("无法写入安装包：{e}"))?;
             while let Some(chunk) = response.chunk().await.map_err(|e| describe_request_error(&e))? {
@@ -570,12 +576,14 @@ pub fn pick_asset(assets: &[ReleaseAsset], os: &str, arch: &str) -> Option<Relea
 
 /// 下载文件名只保留安全字符，防止发布资产名里带路径分隔符。
 fn sanitize_file_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
-        .collect();
+    let cleaned: String =
+        name.chars().map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' }).collect();
     let cleaned = cleaned.trim_start_matches('.').to_string();
-    if cleaned.is_empty() { "update.bin".into() } else { cleaned }
+    if cleaned.is_empty() {
+        "update.bin".into()
+    } else {
+        cleaned
+    }
 }
 
 #[cfg(test)]
@@ -645,12 +653,8 @@ mod tests {
     async fn 应用内更新_下载占位_进度_完成后可安装_失败可退回安装包() {
         use std::sync::atomic::Ordering::SeqCst;
         let dir = std::env::temp_dir().join(format!("att-update-inapp-{}", uuid::Uuid::new_v4()));
-        let (base, _rx) = stub_routes(vec![StubRoute::json(
-            "GET /latest ",
-            200,
-            r#"{"tag_name":"v9.9.9","assets":[]}"#,
-        )])
-        .await;
+        let (base, _rx) =
+            stub_routes(vec![StubRoute::json("GET /latest ", 200, r#"{"tag_name":"v9.9.9","assets":[]}"#)]).await;
         let updater = Arc::new(Updater::with_url(&dir, format!("{base}/latest")));
         assert!(updater.start_download(false).is_err(), "没检查过不能下载");
         assert!(updater.install().is_err(), "没有应用内更新器时不能安装");

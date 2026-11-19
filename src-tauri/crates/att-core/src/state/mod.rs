@@ -87,8 +87,8 @@ impl CoreState {
         for dir in ["audio/temp", "audio/permanent", "clipboard/images", "sessions"] {
             std::fs::create_dir_all(data_dir.join(dir))?;
         }
-        let crypto = Crypto::load_or_create(data_dir)
-            .map_err(|e| CoreError::Io(std::io::Error::other(e.to_string())))?;
+        let crypto =
+            Crypto::load_or_create(data_dir).map_err(|e| CoreError::Io(std::io::Error::other(e.to_string())))?;
         let crypto = Arc::new(crypto);
         let llm = LlmStore::load(data_dir, crypto.clone());
         let settings_path = data_dir.join("settings.json");
@@ -121,10 +121,7 @@ impl CoreState {
     }
 
     /// 在锁内修改设置并落盘（原子写）。
-    pub fn update_settings<T>(
-        &self,
-        mutate: impl FnOnce(&mut UserSettings) -> T,
-    ) -> Result<T, CoreError> {
+    pub fn update_settings<T>(&self, mutate: impl FnOnce(&mut UserSettings) -> T) -> Result<T, CoreError> {
         let mut guard = self.settings.lock().unwrap_or_else(|e| e.into_inner());
         let outcome = mutate(&mut guard);
         guard.save(&self.settings_path)?;
@@ -132,14 +129,9 @@ impl CoreState {
     }
 
     /// PUT /api/settings：在设置锁内应用白名单更新并持久化。
-    pub fn apply_settings_update(
-        &self,
-        body: &serde_json::Value,
-    ) -> Result<settings::SettingsUpdate, String> {
-        self.update_settings(|current| {
-            settings::apply_settings_update(current, body, self.platform, &self.crypto)
-        })
-        .map_err(|e| e.to_string())?
+    pub fn apply_settings_update(&self, body: &serde_json::Value) -> Result<settings::SettingsUpdate, String> {
+        self.update_settings(|current| settings::apply_settings_update(current, body, self.platform, &self.crypto))
+            .map_err(|e| e.to_string())?
     }
 
     /// GET /api/settings：脱敏公共视图。

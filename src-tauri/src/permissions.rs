@@ -42,11 +42,19 @@ mod platform {
     }
 
     pub fn input_monitoring() -> &'static str {
-        if unsafe { CGPreflightListenEventAccess() } { "granted" } else { "denied" }
+        if unsafe { CGPreflightListenEventAccess() } {
+            "granted"
+        } else {
+            "denied"
+        }
     }
 
     pub fn accessibility() -> &'static str {
-        if unsafe { AXIsProcessTrusted() } { "granted" } else { "denied" }
+        if unsafe { AXIsProcessTrusted() } {
+            "granted"
+        } else {
+            "denied"
+        }
     }
 
     pub fn settings_url(id: &str) -> Option<&'static str> {
@@ -91,7 +99,10 @@ pub fn open_settings(id: &str) -> Result<(), String> {
         if id != "microphone" {
             return Err("Windows 无需为该能力单独授权".into());
         }
-        std::process::Command::new("explorer").arg("ms-settings:privacy-microphone").spawn().map_err(|e| e.to_string())?;
+        std::process::Command::new("explorer")
+            .arg("ms-settings:privacy-microphone")
+            .spawn()
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
     #[cfg(not(any(target_os = "macos", windows)))]

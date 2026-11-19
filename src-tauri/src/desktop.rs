@@ -69,7 +69,9 @@ fn read_clipboard_text() -> Option<String> {
 pub fn copy_selection() -> Result<Option<String>, String> {
     platform::ensure_typing_ready().map_err(|e| e.replace("自动输入", "优化选中文本"))?;
     let released_by = Instant::now() + MODIFIER_RELEASE_TIMEOUT;
-    while att_hotkey::listener::physical_modifiers().is_some_and(|mods| !mods.is_empty()) && Instant::now() < released_by {
+    while att_hotkey::listener::physical_modifiers().is_some_and(|mods| !mods.is_empty())
+        && Instant::now() < released_by
+    {
         std::thread::sleep(COPY_POLL);
     }
     let before = platform::clipboard_change_count().ok_or("当前平台暂不支持读取选中文本")?;
@@ -169,9 +171,11 @@ mod platform {
 
     /// 发一次 ⌘ + 指定键（只带 ⌘：用户仍按着的其他修饰键不掺进来）。
     fn command_shortcut(key: u16) -> Result<(), String> {
-        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| "创建键盘事件源失败".to_string())?;
+        let source =
+            CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| "创建键盘事件源失败".to_string())?;
         for down in [true, false] {
-            let event = CGEvent::new_keyboard_event(source.clone(), key, down).map_err(|_| "创建键盘事件失败".to_string())?;
+            let event =
+                CGEvent::new_keyboard_event(source.clone(), key, down).map_err(|_| "创建键盘事件失败".to_string())?;
             event.set_flags(CGEventFlags::CGEventFlagCommand);
             post(&event);
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -246,7 +250,8 @@ mod platform {
         let source = event_source()?;
         for _ in 0..count {
             for down in [true, false] {
-                let event = CGEvent::new_keyboard_event(source.clone(), KEY_DELETE, down).map_err(|_| "创建键盘事件失败".to_string())?;
+                let event = CGEvent::new_keyboard_event(source.clone(), KEY_DELETE, down)
+                    .map_err(|_| "创建键盘事件失败".to_string())?;
                 event.set_flags(CGEventFlags::CGEventFlagNull);
                 post(&event);
             }
@@ -348,7 +353,8 @@ mod platform {
     }
 
     pub fn type_unicode(text: &str) -> Result<(), String> {
-        let inputs: Vec<INPUT> = text.encode_utf16().flat_map(|unit| [unicode(unit, false), unicode(unit, true)]).collect();
+        let inputs: Vec<INPUT> =
+            text.encode_utf16().flat_map(|unit| [unicode(unit, false), unicode(unit, true)]).collect();
         send(&inputs)
     }
 

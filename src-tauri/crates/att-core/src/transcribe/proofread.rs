@@ -104,7 +104,9 @@ pub fn split_windows(texts: &[String], options: &ProofreadOptions) -> Vec<Vec<us
     let mut current_chars = 0;
     for (index, text) in texts.iter().enumerate() {
         let length = text.chars().count();
-        if !current.is_empty() && (current.len() >= options.batch_segments || current_chars + length > options.batch_chars) {
+        if !current.is_empty()
+            && (current.len() >= options.batch_segments || current_chars + length > options.batch_chars)
+        {
             windows.push(std::mem::take(&mut current));
             current_chars = 0;
         }
@@ -162,7 +164,10 @@ fn matching_chars(a: &[char], b: &[char]) -> usize {
 }
 
 /// 验证一窗结果：键集合完全相等 + 逐条相似度不越阈。返回 Err(反馈文案) 喂回 LLM 重试。
-pub fn validate_window(original: &BTreeMap<usize, String>, corrected: &Map<String, Value>) -> Result<BTreeMap<usize, String>, String> {
+pub fn validate_window(
+    original: &BTreeMap<usize, String>,
+    corrected: &Map<String, Value>,
+) -> Result<BTreeMap<usize, String>, String> {
     let expected: BTreeSet<String> = original.keys().map(|k| k.to_string()).collect();
     let actual: BTreeSet<String> = corrected.keys().cloned().collect();
     if expected != actual {
@@ -181,7 +186,8 @@ pub fn validate_window(original: &BTreeMap<usize, String>, corrected: &Map<Strin
     for (key, raw) in original {
         let value = &corrected[&key.to_string()];
         let text = value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
-        let threshold = if clean_for_similarity(raw).len() <= SHORT_TEXT_CHARS { SIMILARITY_SHORT } else { SIMILARITY_DEFAULT };
+        let threshold =
+            if clean_for_similarity(raw).len() <= SHORT_TEXT_CHARS { SIMILARITY_SHORT } else { SIMILARITY_DEFAULT };
         if similarity(raw, &text) < threshold {
             return Err(format!("键 {key} 改动过大（相似度低于 {threshold}）：请只纠错，不要改写句式或替换同义词。"));
         }
@@ -237,11 +243,18 @@ pub async fn run(
     on_progress: impl Fn(usize, usize) + Send + Sync,
 ) -> Result<ProofreadResult, LlmError> {
     let target = core.llm.resolve_runtime(model_id)?;
-    let spec = registry::get(&target.profile.provider)
-        .ok_or_else(|| LlmError::plain(CODE_UNSUPPORTED_PROVIDER, format!("未知服务商：{}", target.profile.provider)))?;
-    let endpoint = Endpoint::resolve(spec, target.profile.api_base.as_deref(), &target.api_key, &target.profile.extra_headers)?;
-    let label = if target.model.display_name.is_empty() { target.model.model.clone() } else { target.model.display_name.clone() };
-    let texts: Vec<String> = segments.iter().map(|s| s.get("text").and_then(Value::as_str).unwrap_or("").to_string()).collect();
+    let spec = registry::get(&target.profile.provider).ok_or_else(|| {
+        LlmError::plain(CODE_UNSUPPORTED_PROVIDER, format!("未知服务商：{}", target.profile.provider))
+    })?;
+    let endpoint =
+        Endpoint::resolve(spec, target.profile.api_base.as_deref(), &target.api_key, &target.profile.extra_headers)?;
+    let label = if target.model.display_name.is_empty() {
+        target.model.model.clone()
+    } else {
+        target.model.display_name.clone()
+    };
+    let texts: Vec<String> =
+        segments.iter().map(|s| s.get("text").and_then(Value::as_str).unwrap_or("").to_string()).collect();
     let joined: String = texts.iter().filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join(" ");
     let base = ProofreadResult {
         applied: false,
@@ -277,7 +290,8 @@ pub async fn run(
     let model = target.model.model.clone();
     // 用户词表（设置 asr_hotwords）追加在 system 末尾：专有名词纠错时按词表写法
     let glossary = glossary_block(&core.settings().asr_hotwords);
-    let system_prompt = if glossary.is_empty() { SYSTEM_PROMPT.to_string() } else { format!("{SYSTEM_PROMPT}\n\n{glossary}") };
+    let system_prompt =
+        if glossary.is_empty() { SYSTEM_PROMPT.to_string() } else { format!("{SYSTEM_PROMPT}\n\n{glossary}") };
     let semaphore = Arc::new(tokio::sync::Semaphore::new(CONCURRENCY));
     let done = AtomicUsize::new(0);
     let window_total = windows.len();
@@ -296,8 +310,10 @@ pub async fn run(
             (&endpoint, &model, &chat_options, &done, &on_progress, &system_prompt);
         async move {
             let _permit = semaphore.acquire().await.expect("信号量未关闭");
-            let mut messages =
-                vec![ChatMessage::new("system", system_prompt.as_str()), ChatMessage::new("user", build_user_prompt(&original, &context_tail))];
+            let mut messages = vec![
+                ChatMessage::new("system", system_prompt.as_str()),
+                ChatMessage::new("user", build_user_prompt(&original, &context_tail)),
+            ];
             let mut requests = 0;
             let mut outcome: Result<Option<BTreeMap<usize, String>>, String> = Ok(None);
             for _ in 0..MAX_STEPS {
@@ -320,7 +336,10 @@ pub async fn run(
                     },
                 };
                 messages.push(ChatMessage::new("assistant", reply.text));
-                messages.push(ChatMessage::new("user", format!("校验失败：{feedback}\n请修正后只输出完整的 JSON 对象本体。")));
+                messages.push(ChatMessage::new(
+                    "user",
+                    format!("校验失败：{feedback}\n请修正后只输出完整的 JSON 对象本体。"),
+                ));
             }
             let finished = done.fetch_add(1, Ordering::SeqCst) + 1;
             on_progress(finished, window_total);
@@ -346,7 +365,13 @@ pub async fn run(
     }
     if !fatal.is_empty() && fatal.len() == windows.len() {
         tracing::warn!("LLM 校对整体不可用，降级交付 ASR 原文: {}", fatal[0]);
-        return Ok(ProofreadResult { text: joined, windows: windows.len(), requests, error: fatal.swap_remove(0), ..base });
+        return Ok(ProofreadResult {
+            text: joined,
+            windows: windows.len(),
+            requests,
+            error: fatal.swap_remove(0),
+            ..base
+        });
     }
     let mut new_segments = Vec::with_capacity(segments.len());
     let mut parts = Vec::new();
@@ -382,7 +407,8 @@ mod tests {
     #[test]
     fn 切窗_双上限_单段超长独立成窗() {
         let options = ProofreadOptions { batch_segments: 2, batch_chars: 10, context_chars: 0 };
-        let texts: Vec<String> = ["一二三", "四五六", "七", "超长超长超长超长超长超长"].iter().map(|s| s.to_string()).collect();
+        let texts: Vec<String> =
+            ["一二三", "四五六", "七", "超长超长超长超长超长超长"].iter().map(|s| s.to_string()).collect();
         assert_eq!(split_windows(&texts, &options), vec![vec![0, 1], vec![2], vec![3]]);
     }
 
@@ -397,14 +423,19 @@ mod tests {
 
     #[test]
     fn 验证_键集合与改动幅度() {
-        let original = BTreeMap::from([(0, "今天天气很好我们去公园散步吧好不好呀朋友们".to_string()), (1, "嗯".to_string())]);
-        let ok: Map<String, Value> = serde_json::from_value(json!({"0": "今天天气很好，我们去公园散步吧，好不好呀朋友们", "1": ""})).unwrap();
+        let original =
+            BTreeMap::from([(0, "今天天气很好我们去公园散步吧好不好呀朋友们".to_string()), (1, "嗯".to_string())]);
+        let ok: Map<String, Value> =
+            serde_json::from_value(json!({"0": "今天天气很好，我们去公园散步吧，好不好呀朋友们", "1": ""})).unwrap();
         assert!(validate_window(&original, &ok).is_err(), "短文本改成空串相似度为 0");
-        let ok: Map<String, Value> = serde_json::from_value(json!({"0": "今天天气很好，我们去公园散步吧，好不好呀朋友们", "1": "嗯。"})).unwrap();
+        let ok: Map<String, Value> =
+            serde_json::from_value(json!({"0": "今天天气很好，我们去公园散步吧，好不好呀朋友们", "1": "嗯。"}))
+                .unwrap();
         assert_eq!(validate_window(&original, &ok).unwrap()[&1], "嗯。");
         let missing: Map<String, Value> = serde_json::from_value(json!({"0": "x"})).unwrap();
         assert!(validate_window(&original, &missing).unwrap_err().contains("缺少键"));
-        let rewritten: Map<String, Value> = serde_json::from_value(json!({"0": "完全不同的一句话内容在这里出现了", "1": "嗯"})).unwrap();
+        let rewritten: Map<String, Value> =
+            serde_json::from_value(json!({"0": "完全不同的一句话内容在这里出现了", "1": "嗯"})).unwrap();
         assert!(validate_window(&original, &rewritten).unwrap_err().contains("改动过大"));
     }
 

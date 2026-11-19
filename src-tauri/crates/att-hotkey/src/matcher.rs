@@ -112,11 +112,8 @@ impl Matcher {
             }
             return None;
         }
-        let modifier_only_still_held = self
-            .spec
-            .as_ref()
-            .map(|spec| spec.hid_key.is_none() && self.mods == spec.modifiers)
-            .unwrap_or(false);
+        let modifier_only_still_held =
+            self.spec.as_ref().map(|spec| spec.hid_key.is_none() && self.mods == spec.modifiers).unwrap_or(false);
         if self.latched && modifier_only_still_held {
             return None;
         }

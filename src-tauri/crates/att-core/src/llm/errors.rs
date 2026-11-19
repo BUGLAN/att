@@ -91,7 +91,8 @@ pub fn redact_secrets(text: &str, secrets: &[&str]) -> String {
             result = result.replace(secret, MASK);
         }
     }
-    let result = KEY_VALUE.replace_all(&result, |caps: &regex::Captures| format!("{}{}{}{MASK}", &caps[1], &caps[2], &caps[3]));
+    let result =
+        KEY_VALUE.replace_all(&result, |caps: &regex::Captures| format!("{}{}{}{MASK}", &caps[1], &caps[2], &caps[3]));
     let result = BEARER.replace_all(&result, |caps: &regex::Captures| format!("{} {MASK}", &caps[1]));
     BARE_KEY.replace_all(&result, MASK).into_owned()
 }
@@ -114,7 +115,11 @@ pub fn classify_http(status: u16, body: &str) -> LlmError {
         _ => CODE_PROVIDER,
     };
     let summary = summarize_body(body);
-    let message = if summary.is_empty() { format!("上游返回 HTTP {status}") } else { format!("上游返回 HTTP {status}：{summary}") };
+    let message = if summary.is_empty() {
+        format!("上游返回 HTTP {status}")
+    } else {
+        format!("上游返回 HTTP {status}：{summary}")
+    };
     LlmError::new(code, message)
 }
 
@@ -173,9 +178,13 @@ mod tests {
 
     #[test]
     fn 脱敏_字面量与常见模式() {
-        let text = "Authentication Fails, Your api key: sk-abcdef123456 is invalid; Bearer abcdefghijk; raw sk-zzzz9999";
+        let text =
+            "Authentication Fails, Your api key: sk-abcdef123456 is invalid; Bearer abcdefghijk; raw sk-zzzz9999";
         let safe = redact_secrets(text, &[]);
-        assert!(!safe.contains("abcdef123456") && !safe.contains("abcdefghijk") && !safe.contains("zzzz9999"), "{safe}");
+        assert!(
+            !safe.contains("abcdef123456") && !safe.contains("abcdefghijk") && !safe.contains("zzzz9999"),
+            "{safe}"
+        );
         assert_eq!(redact_secrets("token XYZ-SECRET here", &["XYZ-SECRET"]), "token *** here");
         // 普通短语不误伤
         assert_eq!(redact_secrets("authorization failed", &[]), "authorization failed");

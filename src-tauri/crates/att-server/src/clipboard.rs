@@ -79,12 +79,13 @@ async fn stats(State(state): Shared) -> Json<Value> {
 }
 
 async fn create(State(state): Shared, Json(body): Json<Value>) -> Result<Json<Value>, Response> {
-    let request: CaptureRequest =
-        serde_json::from_value(body).map_err(|e| detail(StatusCode::UNPROCESSABLE_ENTITY, &format!("请求参数不合法：{e}")))?;
+    let request: CaptureRequest = serde_json::from_value(body)
+        .map_err(|e| detail(StatusCode::UNPROCESSABLE_ENTITY, &format!("请求参数不合法：{e}")))?;
     if request.content.is_empty() {
         return Err(detail(StatusCode::UNPROCESSABLE_ENTITY, "content 不能为空"));
     }
-    let item = state.core.clipboard.capture(request).map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+    let item =
+        state.core.clipboard.capture(request).map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
     state.core.events.publish(AppEvent::ClipboardCaptured { item_id: item.id.clone() });
     Ok(Json(json!(item)))
 }
@@ -93,9 +94,13 @@ async fn item(State(state): Shared, Path(id): Path<String>) -> Result<Json<Value
     state.core.clipboard.get(&id).map(|i| Json(json!(i))).ok_or_else(|| detail(StatusCode::NOT_FOUND, NOT_FOUND))
 }
 
-async fn update(State(state): Shared, Path(id): Path<String>, Json(body): Json<Value>) -> Result<Json<Value>, Response> {
-    let request: UpdateRequest =
-        serde_json::from_value(body).map_err(|e| detail(StatusCode::UNPROCESSABLE_ENTITY, &format!("请求参数不合法：{e}")))?;
+async fn update(
+    State(state): Shared,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, Response> {
+    let request: UpdateRequest = serde_json::from_value(body)
+        .map_err(|e| detail(StatusCode::UNPROCESSABLE_ENTITY, &format!("请求参数不合法：{e}")))?;
     match state.core.clipboard.update(&id, request) {
         Ok(Some(item)) => Ok(Json(json!(item))),
         Ok(None) => Err(detail(StatusCode::NOT_FOUND, NOT_FOUND)),

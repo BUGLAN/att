@@ -13,7 +13,8 @@ use att_core::llm::gateway::{self, Endpoint, VerifyOutcome};
 use att_core::llm::optimizer::{self, OptimizeEvent, OptimizeOutcome, OptimizeSuccess};
 use att_core::llm::registry;
 use att_core::llm::store::{
-    model_public, profile_public, DraftVerify, ModelItemCreate, ModelUpdate, ProfileCreate, ProfileUpdate, StoreError, VerifyStatus,
+    model_public, profile_public, DraftVerify, ModelItemCreate, ModelUpdate, ProfileCreate, ProfileUpdate, StoreError,
+    VerifyStatus,
 };
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -118,11 +119,10 @@ async fn profile_delete(State(state): Shared, Path(id): Path<String>) -> Reply {
 async fn profile_verify(State(state): Shared, Path(id): Path<String>) -> Reply {
     let store = &state.core.llm;
     let profile = store.get_profile(&id).ok_or_else(|| detail(StatusCode::NOT_FOUND, PROFILE_NOT_FOUND))?;
-    let endpoint = spec_of(&profile.provider)
-        .and_then(|spec| {
-            let key = store.decrypt_key(&profile)?;
-            Endpoint::resolve(spec, profile.api_base.as_deref(), &key, &profile.extra_headers)
-        });
+    let endpoint = spec_of(&profile.provider).and_then(|spec| {
+        let key = store.decrypt_key(&profile)?;
+        Endpoint::resolve(spec, profile.api_base.as_deref(), &key, &profile.extra_headers)
+    });
     let outcome = match endpoint {
         Ok(endpoint) => gateway::verify_profile(&endpoint).await,
         Err(error) => VerifyOutcome::failed(&error),
@@ -193,7 +193,8 @@ async fn models_create(State(state): Shared, Json(body): Json<Value>) -> Reply {
     if request.items.is_empty() || request.items.len() > 50 {
         return Err(detail(StatusCode::UNPROCESSABLE_ENTITY, "一次需添加 1~50 个模型"));
     }
-    let (created, skipped) = state.core.llm.create_models(request.items).map_err(|e| store_error(e, PROFILE_NOT_FOUND, ""))?;
+    let (created, skipped) =
+        state.core.llm.create_models(request.items).map_err(|e| store_error(e, PROFILE_NOT_FOUND, ""))?;
     let created: Vec<Value> = created.iter().map(model_public).collect();
     Ok(Json(json!({ "created": created, "skipped": skipped })))
 }
@@ -218,7 +219,12 @@ async fn model_verify(State(state): Shared, Path(id): Path<String>) -> Reply {
     let store = &state.core.llm;
     let target = store.resolve_runtime(Some(&id)).and_then(|target| {
         let spec = spec_of(&target.profile.provider)?;
-        let endpoint = Endpoint::resolve(spec, target.profile.api_base.as_deref(), &target.api_key, &target.profile.extra_headers)?;
+        let endpoint = Endpoint::resolve(
+            spec,
+            target.profile.api_base.as_deref(),
+            &target.api_key,
+            &target.profile.extra_headers,
+        )?;
         Ok((endpoint, target.model.model))
     });
     let outcome = match target {
@@ -332,10 +338,7 @@ async fn record_optimize_stream(State(state): Shared, Path(id): Path<String>) ->
         Some((Ok::<_, std::convert::Infallible>(format!("{event}\n")), rx))
     });
     Ok((
-        [
-            (axum::http::header::CONTENT_TYPE, "application/x-ndjson"),
-            (axum::http::header::CACHE_CONTROL, "no-cache"),
-        ],
+        [(axum::http::header::CONTENT_TYPE, "application/x-ndjson"), (axum::http::header::CACHE_CONTROL, "no-cache")],
         axum::body::Body::from_stream(lines),
     )
         .into_response())

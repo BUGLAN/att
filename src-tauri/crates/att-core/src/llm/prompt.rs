@@ -135,7 +135,11 @@ fn build_user_prompt(text: &str, output_cue: &str) -> String {
         sanitize_for_envelope(text)
     );
     let cue = output_cue.trim();
-    if cue.is_empty() { prompt } else { format!("{prompt}\n\n{cue}") }
+    if cue.is_empty() {
+        prompt
+    } else {
+        format!("{prompt}\n\n{cue}")
+    }
 }
 
 /// 按 `{text}` 拆成 (system 正文, 正文之后的旧式输出引导)；不含 `{text}` 时整段都是 system。

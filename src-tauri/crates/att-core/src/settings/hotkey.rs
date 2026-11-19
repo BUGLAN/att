@@ -156,13 +156,7 @@ impl HotkeyBinding {
             Platform::Macos => (ModSet::new(false, false, true, true), hid_from_char('r')),
             Platform::Linux => (ModSet::new(true, false, true, false), hid_from_char('r')),
         };
-        Self {
-            action: HotkeyAction::Record,
-            trigger: TriggerMode::Hold,
-            modifiers,
-            hid_key,
-            enabled: true,
-        }
+        Self { action: HotkeyAction::Record, trigger: TriggerMode::Hold, modifiers, hid_key, enabled: true }
     }
 
     /// 各动作的平台默认绑定。剪贴板悬浮框默认 `⌃⌥V` / `Ctrl+Alt+V`：
@@ -186,12 +180,9 @@ impl HotkeyBinding {
                 enabled: true,
             },
             // 点按录音默认不启用（快捷键为空）：组合与按住录音的默认值相同，用户录入新键后才启用
-            HotkeyAction::RecordToggle => Self {
-                action,
-                trigger: TriggerMode::Toggle,
-                enabled: false,
-                ..Self::default_binding(platform)
-            },
+            HotkeyAction::RecordToggle => {
+                Self { action, trigger: TriggerMode::Toggle, enabled: false, ..Self::default_binding(platform) }
+            }
             _ => Self { action, ..Self::default_binding(platform) },
         }
     }
@@ -323,23 +314,12 @@ pub fn binding_from_legacy(platform: Platform, value: &serde_json::Value) -> Hot
 
 /// 旧版 `{modifiers, key}` → 组合键；不合法（单修饰键且无主键等）返回 None。
 pub fn combo_from_legacy(value: &serde_json::Value) -> Option<(ModSet, Option<u16>)> {
-    let modifiers = value
-        .get("modifiers")
-        .and_then(|m| m.as_array())
-        .map(|arr| ModSet::from_legacy_names(arr))
-        .unwrap_or_default();
-    let hid_key = value
-        .get("key")
-        .and_then(|k| k.as_str())
-        .and_then(|s| s.chars().next())
-        .and_then(hid_from_char);
+    let modifiers =
+        value.get("modifiers").and_then(|m| m.as_array()).map(|arr| ModSet::from_legacy_names(arr)).unwrap_or_default();
+    let hid_key = value.get("key").and_then(|k| k.as_str()).and_then(|s| s.chars().next()).and_then(hid_from_char);
 
     // 旧版规则：无主键时至少 2 个修饰键，否则视为非法
-    let valid = if hid_key.is_some() {
-        !modifiers.is_empty()
-    } else {
-        modifiers.len() >= 2
-    };
+    let valid = if hid_key.is_some() { !modifiers.is_empty() } else { modifiers.len() >= 2 };
     valid.then_some((modifiers, hid_key))
 }
 

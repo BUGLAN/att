@@ -7,7 +7,8 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 /// `<think …>…</think>` 成对才剥；`<thinking>` 与未闭合的 `<think>` 不动。
-static THINK_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<think\b[^>]*>.*?</think\s*>").expect("正则合法"));
+static THINK_BLOCK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<think\b[^>]*>.*?</think\s*>").expect("正则合法"));
 
 /// 只收「模型自述行为」的措辞（按长度降序匹配，长前缀优先）。
 const BOILERPLATE_PREFIXES: &[&str] = &[
@@ -53,7 +54,11 @@ pub fn strip_markdown_fences(text: &str) -> String {
         return text.to_string();
     };
     let body = inner[..close].trim_matches('\n');
-    if body.is_empty() { text.to_string() } else { body.to_string() }
+    if body.is_empty() {
+        text.to_string()
+    } else {
+        body.to_string()
+    }
 }
 
 /// 循环剥开头自述套话，剥到第一个边界符（含）为止；找不到边界或剥完为空则停。
@@ -101,9 +106,7 @@ pub fn stable_prefix(raw: &str) -> String {
         return String::new();
     }
     let stripped = strip_leading_boilerplate(trimmed);
-    let undecided = BOILERPLATE_PREFIXES
-        .iter()
-        .any(|p| p.starts_with(stripped.as_str()) || stripped.starts_with(p));
+    let undecided = BOILERPLATE_PREFIXES.iter().any(|p| p.starts_with(stripped.as_str()) || stripped.starts_with(p));
     if undecided {
         return String::new();
     }

@@ -118,7 +118,8 @@ pub fn model_candidates(model: &str, models_dir: &Path) -> Vec<PathBuf> {
         }
         let snapshot_root = root.join(format!("models--Systran--faster-whisper-{short}")).join("snapshots");
         if let Ok(entries) = std::fs::read_dir(&snapshot_root) {
-            let mut dirs: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect();
+            let mut dirs: Vec<PathBuf> =
+                entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect();
             dirs.sort();
             dirs.reverse();
             candidates.extend(dirs);
@@ -205,7 +206,10 @@ pub fn ensure_preprocessor_config(model_dir: &Path) -> Result<(), String> {
     let body = serde_json::to_string_pretty(&body).unwrap_or_default();
     std::fs::write(&path, body)
         .map_err(|error| format!("模型目录缺少 {PREPROCESSOR_CONFIG}，自动补写失败（{}）：{error}", path.display()))?;
-    tracing::info!("本地 Whisper：模型目录缺少 {PREPROCESSOR_CONFIG}，已按默认值补写（{feature_size} 维 mel）：{}", path.display());
+    tracing::info!(
+        "本地 Whisper：模型目录缺少 {PREPROCESSOR_CONFIG}，已按默认值补写（{feature_size} 维 mel）：{}",
+        path.display()
+    );
     Ok(())
 }
 
@@ -220,7 +224,11 @@ fn default_mel_bins(model_dir: &Path) -> usize {
         Some(_) => 80,
         None => {
             let name = model_dir.to_string_lossy().to_lowercase();
-            if name.contains("large-v3") || name.contains("turbo") { 128 } else { 80 }
+            if name.contains("large-v3") || name.contains("turbo") {
+                128
+            } else {
+                80
+            }
         }
     }
 }
@@ -238,7 +246,11 @@ pub fn resolve_precision(device: &str, compute_type: &str, cuda_built: bool) -> 
     };
     let compute = compute_type.trim().to_lowercase();
     let compute = if compute.is_empty() || compute == "auto" {
-        if want_cuda { "float16".to_string() } else { "int8".to_string() }
+        if want_cuda {
+            "float16".to_string()
+        } else {
+            "int8".to_string()
+        }
     } else {
         compute
     };
@@ -301,10 +313,7 @@ pub struct LocalWhisper {
 
 impl std::fmt::Debug for LocalWhisper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LocalWhisper")
-            .field("model_dir", &self.model_dir)
-            .field("device", &self.device)
-            .finish()
+        f.debug_struct("LocalWhisper").field("model_dir", &self.model_dir).field("device", &self.device).finish()
     }
 }
 
@@ -322,16 +331,12 @@ impl LocalWhisper {
         let whisper = match build(device, compute) {
             Ok(whisper) => whisper,
             Err(error) if device == Device::CUDA => {
-                tracing::warn!(
-                    "本地 Whisper CUDA 加载失败（{error}），回退 CPU + int8：{}",
-                    model_dir.display()
-                );
+                tracing::warn!("本地 Whisper CUDA 加载失败（{error}），回退 CPU + int8：{}", model_dir.display());
                 device = Device::CPU;
                 compute = ComputeType::INT8;
                 label = "cpu";
-                build(device, compute).map_err(|error| {
-                    format!("加载本地 Whisper 模型失败（{}）：{error}", model_dir.display())
-                })?
+                build(device, compute)
+                    .map_err(|error| format!("加载本地 Whisper 模型失败（{}）：{error}", model_dir.display()))?
             }
             Err(error) => {
                 return Err(format!("加载本地 Whisper 模型失败（{}）：{error}", model_dir.display()));
@@ -354,7 +359,13 @@ impl LocalWhisper {
             ComputeType::INT16 => "int16",
             _ => "default",
         };
-        Ok(Self { whisper, device: format!("{label}:{compute_label}"), sampling_rate, model_dir, gate: std::sync::Mutex::new(()) })
+        Ok(Self {
+            whisper,
+            device: format!("{label}:{compute_label}"),
+            sampling_rate,
+            model_dir,
+            gate: std::sync::Mutex::new(()),
+        })
     }
 
     /// 生效设备描述（`cuda:float16` / `cpu:int8`）。
@@ -396,11 +407,23 @@ impl LocalWhisper {
         let started = Instant::now();
         let duration = samples.len() as f64 / SAMPLE_RATE as f64;
         if samples.is_empty() {
-            return Ok(Transcript { text: String::new(), segments: Vec::new(), duration: 0.0, device: self.device.clone(), elapsed: 0.0 });
+            return Ok(Transcript {
+                text: String::new(),
+                segments: Vec::new(),
+                duration: 0.0,
+                device: self.device.clone(),
+                elapsed: 0.0,
+            });
         }
         let Some((start, end)) = trim_silence(samples, SAMPLE_RATE) else {
             tracing::info!("本地 Whisper：音频无有效语音（{}），跳过推理", self.model_dir.display());
-            return Ok(Transcript { text: String::new(), segments: Vec::new(), duration, device: self.device.clone(), elapsed: 0.0 });
+            return Ok(Transcript {
+                text: String::new(),
+                segments: Vec::new(),
+                duration,
+                device: self.device.clone(),
+                elapsed: 0.0,
+            });
         };
         let offset = start as f64 / SAMPLE_RATE as f64;
         let mono: Vec<f32> = samples[start..end].iter().map(|&s| s as f32 / 32768.0).collect();
@@ -561,7 +584,8 @@ mod tests {
         let root = temp_dir("preprocessor");
         let old = root.join("medium");
         std::fs::create_dir_all(&old).unwrap();
-        std::fs::write(old.join("config.json"), format!("{{\"lang_ids\": {:?}}}", (0..99).collect::<Vec<_>>())).unwrap();
+        std::fs::write(old.join("config.json"), format!("{{\"lang_ids\": {:?}}}", (0..99).collect::<Vec<_>>()))
+            .unwrap();
         ensure_preprocessor_config(&old).unwrap();
         let text = std::fs::read_to_string(old.join(PREPROCESSOR_CONFIG)).unwrap();
         let written: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -570,9 +594,11 @@ mod tests {
 
         let v3 = root.join("v3");
         std::fs::create_dir_all(&v3).unwrap();
-        std::fs::write(v3.join("config.json"), format!("{{\"lang_ids\": {:?}}}", (0..100).collect::<Vec<_>>())).unwrap();
+        std::fs::write(v3.join("config.json"), format!("{{\"lang_ids\": {:?}}}", (0..100).collect::<Vec<_>>()))
+            .unwrap();
         ensure_preprocessor_config(&v3).unwrap();
-        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(v3.join(PREPROCESSOR_CONFIG)).unwrap()).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(v3.join(PREPROCESSOR_CONFIG)).unwrap()).unwrap();
         assert_eq!(written["feature_size"], 128);
 
         // 已有文件不覆盖

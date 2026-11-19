@@ -69,18 +69,24 @@ async fn llm_glossary_ab() {
 
     let repo_prompts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../prompts");
     let wanted = [settings.default_preset_id.as_deref()];
-    let template = core.prompt_library().resolve_template(&wanted)
+    let template = core
+        .prompt_library()
+        .resolve_template(&wanted)
         .or_else(|| att_core::prompts::PromptLibrary::new(&repo_prompts, &sandbox).resolve_template(&wanted))
         .unwrap_or_else(|| prompt::DEFAULT_PROMPT.to_string());
 
     let target = core.llm.resolve_runtime(None).expect("默认 LLM 模型");
     let spec = registry::get(&target.profile.provider).expect("服务商");
-    let endpoint = Endpoint::resolve(spec, target.profile.api_base.as_deref(), &target.api_key, &target.profile.extra_headers)
-        .expect("接入点");
+    let endpoint =
+        Endpoint::resolve(spec, target.profile.api_base.as_deref(), &target.api_key, &target.profile.extra_headers)
+            .expect("接入点");
     let options = ChatOptions {
         max_tokens: target.model.params.max_tokens,
         temperature: Some(
-            std::env::var("ATT_AB_TEMPERATURE").ok().and_then(|v| v.parse().ok()).unwrap_or(target.model.params.temperature),
+            std::env::var("ATT_AB_TEMPERATURE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(target.model.params.temperature),
         ),
         timeout: Duration::from_secs(target.model.params.timeout_s.max(30) as u64),
         retries: 1,

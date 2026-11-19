@@ -47,7 +47,10 @@ pub fn find_tool(name: &'static str) -> Result<PathBuf, MediaError> {
     for extra in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/usr/bin"] {
         dirs.push(PathBuf::from(extra));
     }
-    dirs.into_iter().map(|dir| dir.join(&file)).find(|candidate| candidate.is_file()).ok_or(MediaError::ToolMissing(name))
+    dirs.into_iter()
+        .map(|dir| dir.join(&file))
+        .find(|candidate| candidate.is_file())
+        .ok_or(MediaError::ToolMissing(name))
 }
 
 fn command(tool: &Path) -> tokio::process::Command {

@@ -5,9 +5,9 @@
 //! - 旧数据缺 `error`/`revision` 字段可读（serde 默认兜底）
 //! - revision 乐观锁：PUT 冲突返回 [`RecordError::Conflict`]（HTTP 409）
 
+use crate::now_rfc3339;
 use crate::storage::dir_index::DirIndex;
 use crate::storage::json_store;
-use crate::now_rfc3339;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -98,9 +98,7 @@ impl Record {
 
     /// 时间排序键：优先解析 RFC3339，失败退化字符串比较（兼容旧格式时间戳）。
     fn sort_key(&self) -> (i64, String) {
-        let parsed = chrono::DateTime::parse_from_rfc3339(&self.created_at)
-            .map(|t| t.timestamp_micros())
-            .unwrap_or(0);
+        let parsed = chrono::DateTime::parse_from_rfc3339(&self.created_at).map(|t| t.timestamp_micros()).unwrap_or(0);
         (parsed, self.created_at.clone())
     }
 }
@@ -117,9 +115,7 @@ pub enum RecordError {
 
 /// 非法标识符防护：只允许字母/数字/`-`/`_`（对应 Python is_safe_identifier）。
 pub fn is_safe_identifier(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 128
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// 归一化历史 audio_path 为「相对 audio_dir 的扁平文件名」。
@@ -288,11 +284,8 @@ impl RecordRepo {
     pub fn list_page(&self, status: Option<&str>, limit: usize, offset: usize) -> (Vec<Record>, usize) {
         let mut index = self.guard();
         index.refresh(scan_records);
-        let matched: Vec<&Record> = index
-            .items()
-            .iter()
-            .filter(|r| status.map(|s| r.status.as_str() == s).unwrap_or(true))
-            .collect();
+        let matched: Vec<&Record> =
+            index.items().iter().filter(|r| status.map(|s| r.status.as_str() == s).unwrap_or(true)).collect();
         let total = matched.len();
         let items = matched.into_iter().skip(offset).take(limit).cloned().collect();
         (items, total)
@@ -349,8 +342,7 @@ impl RecordRepo {
     pub fn update(&self, id: &str, update: RecordUpdate) -> Result<Record, RecordError> {
         let mut index = self.guard();
         let path = self.record_path(id);
-        let mut record: Record =
-            json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
+        let mut record: Record = json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
 
         if let Some(expected) = update.revision {
             if expected != record.revision {
@@ -398,8 +390,7 @@ impl RecordRepo {
         }
         let mut index = self.guard();
         let path = self.record_path(id);
-        let record: Record =
-            json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
+        let record: Record = json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
         if !record.audio_path.is_empty() {
             let audio = self.resolve_audio_path(&record.audio_path);
             if audio.starts_with(&self.audio_dir) && audio.is_file() {
@@ -430,8 +421,7 @@ impl RecordRepo {
     pub fn set_audio_path(&self, id: &str, audio_file_name: &str) -> Result<(), RecordError> {
         let mut index = self.guard();
         let path = self.record_path(id);
-        let mut record: Record =
-            json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
+        let mut record: Record = json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
         record.audio_path = audio_file_name.to_string();
         record.revision += 1;
         record.updated_at = now_rfc3339();
@@ -442,9 +432,7 @@ impl RecordRepo {
 /// 生成新记录 id（时间前缀 + 随机后缀，无 uuid 依赖）。
 pub fn new_record_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let millis = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+    let millis = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     // 简单 xorshift：避免引入 uuid 依赖，id 只需唯一即可
     let mut state = millis as u64 ^ 0x9E3779B97F4A7C15;
     let mut rand = || {
@@ -470,11 +458,7 @@ mod tests {
     }
 
     fn sample(id: &str, text: &str) -> Record {
-        Record {
-            id: id.into(),
-            raw_text: Some(text.into()),
-            ..Record::default()
-        }
+        Record { id: id.into(), raw_text: Some(text.into()), ..Record::default() }
     }
 
     #[test]
@@ -487,28 +471,27 @@ mod tests {
         assert_eq!(got.revision, 0);
 
         // 更新（带正确 revision）
-        let updated = repo.update("rec-1", RecordUpdate {
-            optimized_text: Some("你好，世界".into()),
-            is_favorite: Some(true),
-            revision: Some(0),
-            ..Default::default()
-        }).unwrap();
+        let updated = repo
+            .update(
+                "rec-1",
+                RecordUpdate {
+                    optimized_text: Some("你好，世界".into()),
+                    is_favorite: Some(true),
+                    revision: Some(0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert_eq!(updated.revision, 1);
         assert!(updated.is_favorite);
 
         // 过期 revision → 冲突
-        let conflict = repo.update("rec-1", RecordUpdate {
-            raw_text: Some("x".into()),
-            revision: Some(0),
-            ..Default::default()
-        });
+        let conflict =
+            repo.update("rec-1", RecordUpdate { raw_text: Some("x".into()), revision: Some(0), ..Default::default() });
         assert!(matches!(conflict, Err(RecordError::Conflict)));
 
         // 不带 revision 的更新直接生效
-        repo.update("rec-1", RecordUpdate {
-            raw_text: Some("新原文".into()),
-            ..Default::default()
-        }).unwrap();
+        repo.update("rec-1", RecordUpdate { raw_text: Some("新原文".into()), ..Default::default() }).unwrap();
 
         assert!(matches!(repo.get("missing"), Err(RecordError::NotFound)));
         repo.delete("rec-1").unwrap();
@@ -539,20 +522,9 @@ mod tests {
     #[test]
     fn 音频路径归一化_历史前缀形态可解析() {
         assert_eq!(normalize_audio_rel("uuid-x.wav"), "uuid-x.wav");
-        assert_eq!(
-            normalize_audio_rel("data\\audio\\records\\uuid-x.wav"),
-            "uuid-x.wav",
-            "Python 版相对仓库根形态"
-        );
-        assert_eq!(
-            normalize_audio_rel("data/audio/records/uuid-x.wav"),
-            "uuid-x.wav"
-        );
-        assert_eq!(
-            normalize_audio_rel("/app/data/audio/records/uuid-x.wav"),
-            "uuid-x.wav",
-            "docker 部署时代形态"
-        );
+        assert_eq!(normalize_audio_rel("data\\audio\\records\\uuid-x.wav"), "uuid-x.wav", "Python 版相对仓库根形态");
+        assert_eq!(normalize_audio_rel("data/audio/records/uuid-x.wav"), "uuid-x.wav");
+        assert_eq!(normalize_audio_rel("/app/data/audio/records/uuid-x.wav"), "uuid-x.wav", "docker 部署时代形态");
         assert_eq!(normalize_audio_rel("test/path.wav"), "path.wav");
 
         // 端到端：带前缀 audio_path 的记录能拿到音频文件
@@ -563,7 +535,8 @@ mod tests {
             id: "rec-y".into(),
             audio_path: "data\\audio\\records\\uuid-y.wav".into(),
             ..Default::default()
-        }).unwrap();
+        })
+        .unwrap();
         let audio = repo.audio_file("rec-y").unwrap().expect("带前缀路径必须解析到文件");
         assert!(audio.ends_with("uuid-y.wav"));
         let _ = std::fs::remove_dir_all(&dir);

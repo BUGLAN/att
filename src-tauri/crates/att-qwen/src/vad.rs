@@ -89,10 +89,12 @@ impl SileroVad {
     /// 加载 VAD（需要推理库目录；`lib_dir` 为 `None` 时按 [`crate::resolve_lib_dir`] 探测）。
     pub fn load(models_dir: &Path, lib_dir: Option<&Path>) -> Result<Self, String> {
         let model = resolve_vad_model(models_dir)?;
-        let config = crate::QwenConfig { lib_dir: lib_dir.map(Path::to_path_buf), ..crate::QwenConfig::new("", models_dir) };
+        let config =
+            crate::QwenConfig { lib_dir: lib_dir.map(Path::to_path_buf), ..crate::QwenConfig::new("", models_dir) };
         let lib = resolve_lib_dir(&config)?;
         let lib_c = CString::new(lib.to_string_lossy().to_string()).map_err(|_| "推理库路径含非法字符".to_string())?;
-        let model_c = CString::new(model.to_string_lossy().to_string()).map_err(|_| "VAD 模型路径含非法字符".to_string())?;
+        let model_c =
+            CString::new(model.to_string_lossy().to_string()).map_err(|_| "VAD 模型路径含非法字符".to_string())?;
         let mut err = [0 as c_char; ERR_LEN];
         let handle = unsafe {
             att_vad_create(
@@ -108,7 +110,11 @@ impl SileroVad {
         };
         if handle.is_null() {
             let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
-            return Err(if reason.trim().is_empty() { "加载 Silero VAD 失败（未知原因）".into() } else { reason });
+            return Err(if reason.trim().is_empty() {
+                "加载 Silero VAD 失败（未知原因）".into()
+            } else {
+                reason
+            });
         }
         tracing::info!("Silero VAD 已加载：{}", model.display());
         Ok(Self { handle, model, gate: Mutex::new(()) })
@@ -135,7 +141,8 @@ impl SileroVad {
         }
         let json = unsafe { CStr::from_ptr(json_ptr) }.to_string_lossy().to_string();
         unsafe { crate::att_qwen_free_text(json_ptr) };
-        let raw: Vec<RawRange> = serde_json::from_str(&json).map_err(|error| format!("解析 VAD 结果失败：{error}（{json}）"))?;
+        let raw: Vec<RawRange> =
+            serde_json::from_str(&json).map_err(|error| format!("解析 VAD 结果失败：{error}（{json}）"))?;
         let ranges: Vec<(usize, usize)> = raw
             .into_iter()
             .filter(|range| range.1 > range.0 && range.0 >= 0)

@@ -124,7 +124,11 @@ pub fn start(core: Arc<CoreState>) {
                 continue;
             }
             let captured = match observation.content {
-                Content::Text(text) => core.clipboard.capture(CaptureRequest { content: text, source: SOURCE.into(), ..Default::default() }),
+                Content::Text(text) => core.clipboard.capture(CaptureRequest {
+                    content: text,
+                    source: SOURCE.into(),
+                    ..Default::default()
+                }),
                 Content::Image { width, height, rgba } => capture_image(&core, width, height, rgba),
             };
             match captured {
@@ -181,12 +185,16 @@ fn observe(clipboard: &mut Option<arboard::Clipboard>) -> Option<Observation> {
 }
 
 /// 编码 PNG → 按 PNG 字节哈希落盘 → 入库（元数据形状与旧版一致，剪贴板页据此显示尺寸与预览）。
-fn capture_image(core: &CoreState, width: usize, height: usize, rgba: Vec<u8>) -> std::io::Result<att_core::clipboard::ClipboardItem> {
-    let buffer = image::RgbaImage::from_raw(width as u32, height as u32, rgba).ok_or_else(|| std::io::Error::other("剪贴板图片尺寸与数据不符"))?;
+fn capture_image(
+    core: &CoreState,
+    width: usize,
+    height: usize,
+    rgba: Vec<u8>,
+) -> std::io::Result<att_core::clipboard::ClipboardItem> {
+    let buffer = image::RgbaImage::from_raw(width as u32, height as u32, rgba)
+        .ok_or_else(|| std::io::Error::other("剪贴板图片尺寸与数据不符"))?;
     let mut png = Vec::new();
-    buffer
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(std::io::Error::other)?;
+    buffer.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(std::io::Error::other)?;
     let image_hash = hex(&Sha256::digest(&png));
     let file_name = format!("{image_hash}.png");
     let path = core.clipboard.images_dir().join(&file_name);

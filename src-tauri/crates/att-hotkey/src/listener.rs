@@ -53,7 +53,11 @@ fn mods_label(mods: ModSet) -> String {
         .iter()
         .filter_map(|(on, symbol)| on.then_some(*symbol))
         .collect();
-    if label.is_empty() { "无".into() } else { label }
+    if label.is_empty() {
+        "无".into()
+    } else {
+        label
+    }
 }
 
 pub type BindingSource = Arc<dyn Fn() -> Vec<HotkeySpec> + Send + Sync>;
@@ -68,7 +72,12 @@ pub struct Shared {
 
 impl Shared {
     /// 推进全部匹配器并派发触发；返回 `owns_hid` 这个主键是否归某个绑定（处理前或处理后锁存着它）。
-    fn with_matchers(&self, source: Source, owns_hid: Option<u16>, step: impl Fn(&mut Matcher) -> Option<KeyPhase>) -> bool {
+    fn with_matchers(
+        &self,
+        source: Source,
+        owns_hid: Option<u16>,
+        step: impl Fn(&mut Matcher) -> Option<KeyPhase>,
+    ) -> bool {
         let specs = (self.bindings)();
         let mut fired = Vec::new();
         let mut owned = false;
@@ -176,10 +185,12 @@ mod tests {
         let sink_log = fired.clone();
         let shared = Shared {
             matchers: Mutex::new(BTreeMap::new()),
-            bindings: Arc::new(|| vec![
-                spec(HotkeyAction::Record, ModSet::new(false, true, false, true), None),
-                spec(HotkeyAction::ClipboardPanel, ModSet::new(true, true, false, false), Some('v')),
-            ]),
+            bindings: Arc::new(|| {
+                vec![
+                    spec(HotkeyAction::Record, ModSet::new(false, true, false, true), None),
+                    spec(HotkeyAction::ClipboardPanel, ModSet::new(true, true, false, false), Some('v')),
+                ]
+            }),
             sink: Arc::new(move |action, phase| sink_log.lock().unwrap().push((action, phase))),
         };
         const KEY_V: u32 = 9;

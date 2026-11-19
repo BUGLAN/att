@@ -28,9 +28,7 @@ impl Crypto {
     pub fn load_or_create(data_dir: &Path) -> Result<Self, CryptoError> {
         let key_path = data_dir.join(".encryption_key");
         let key = if key_path.exists() {
-            std::fs::read_to_string(&key_path)?
-                .trim()
-                .to_string()
+            std::fs::read_to_string(&key_path)?.trim().to_string()
         } else {
             let key = Fernet::generate_key();
             if let Some(parent) = key_path.parent() {
@@ -41,8 +39,7 @@ impl Crypto {
             key
         };
 
-        let fernet = Fernet::new(&key)
-            .ok_or_else(|| CryptoError::InvalidKey(key_path.display().to_string()))?;
+        let fernet = Fernet::new(&key).ok_or_else(|| CryptoError::InvalidKey(key_path.display().to_string()))?;
         Ok(Self { fernet, key_path })
     }
 
@@ -57,10 +54,7 @@ impl Crypto {
 
     /// 解密 Fernet token → 明文。token 损坏/密钥不符时返回 None（调用方按「未配置」处理）。
     pub fn decrypt(&self, token: &str) -> Option<String> {
-        self.fernet
-            .decrypt(token)
-            .ok()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
+        self.fernet.decrypt(token).ok().and_then(|bytes| String::from_utf8(bytes).ok())
     }
 }
 
@@ -68,10 +62,7 @@ impl Crypto {
 #[cfg(test)]
 impl Crypto {
     fn from_key(key: &str) -> Self {
-        Self {
-            fernet: Fernet::new(key).expect("测试密钥必须合法"),
-            key_path: PathBuf::from(".encryption_key"),
-        }
+        Self { fernet: Fernet::new(key).expect("测试密钥必须合法"), key_path: PathBuf::from(".encryption_key") }
     }
 }
 
@@ -116,8 +107,7 @@ mod tests {
     /// （见 tests/fixtures/python_fernet.json 的生成命令），避免手抄密文出错。
     #[test]
     fn python_互操作_可解_python_生成的密钥与密文() {
-        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/python_fernet.json");
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/python_fernet.json");
         let raw = std::fs::read_to_string(&fixture_path).expect("fixture 必须存在");
         let fixture: serde_json::Value = serde_json::from_str(&raw).unwrap();
 

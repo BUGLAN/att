@@ -41,7 +41,11 @@ fn key_hint(plain_key: &str) -> String {
     }
     let chars: Vec<char> = key.chars().collect();
     let tail: String = if chars.len() >= 8 { chars[chars.len() - 4..].iter().collect() } else { "****".into() };
-    if key.starts_with("sk-") { format!("sk-****{tail}") } else { format!("****{tail}") }
+    if key.starts_with("sk-") {
+        format!("sk-****{tail}")
+    } else {
+        format!("****{tail}")
+    }
 }
 
 fn non_empty(value: Option<&str>) -> Option<String> {
@@ -325,7 +329,9 @@ impl LlmStore {
     fn load_v2(&self) {
         let raw = json_store::ensure_object(json_store::read_json_lenient::<Value>(&self.file));
         let mut skipped = Vec::new();
-        let label = |item: &Value, idx: usize| item.get("id").and_then(Value::as_str).map(str::to_string).unwrap_or(idx.to_string());
+        let label = |item: &Value, idx: usize| {
+            item.get("id").and_then(Value::as_str).map(str::to_string).unwrap_or(idx.to_string())
+        };
 
         let mut profiles = Vec::new();
         for (idx, item) in raw.get("profiles").and_then(Value::as_array).into_iter().flatten().enumerate() {
@@ -445,7 +451,8 @@ impl LlmStore {
     // ==================== 档案 ====================
 
     pub fn create_profile(&self, request: ProfileCreate) -> Result<ProviderProfile, StoreError> {
-        let spec = registry::get(&request.provider).ok_or_else(|| StoreError::Invalid(format!("未知服务商：{}", request.provider)))?;
+        let spec = registry::get(&request.provider)
+            .ok_or_else(|| StoreError::Invalid(format!("未知服务商：{}", request.provider)))?;
         let name = request.name.trim().to_string();
         if name.is_empty() {
             return Err(StoreError::Invalid("档案名称不能为空".into()));
@@ -458,7 +465,11 @@ impl LlmStore {
             id: new_id("prof"),
             provider: request.provider,
             name,
-            api_key_encrypted: if request.api_key.is_empty() { String::new() } else { self.crypto.encrypt(&request.api_key) },
+            api_key_encrypted: if request.api_key.is_empty() {
+                String::new()
+            } else {
+                self.crypto.encrypt(&request.api_key)
+            },
             api_key_hint: key_hint(&request.api_key),
             api_base,
             extra_headers: request.extra_headers,
@@ -517,7 +528,8 @@ impl LlmStore {
             if !data.profiles.iter().any(|p| p.id == id) {
                 return Err(StoreError::NotFound);
             }
-            let model_ids: Vec<String> = data.models.iter().filter(|m| m.profile_id == id).map(|m| m.id.clone()).collect();
+            let model_ids: Vec<String> =
+                data.models.iter().filter(|m| m.profile_id == id).map(|m| m.id.clone()).collect();
             if data.default_model_id.as_ref().map(|d| model_ids.contains(d)).unwrap_or(false) {
                 return Err(StoreError::ConflictDefault);
             }
@@ -562,13 +574,14 @@ impl LlmStore {
                 skipped.push(json!({ "model": item.model, "reason": format!("档案不存在：{}", item.profile_id) }));
                 continue;
             };
-            let model_string = match registry::compose_model_string(&profile.provider, &item.model, profile.api_base.as_deref()) {
-                Ok(model) => model,
-                Err(reason) => {
-                    skipped.push(json!({ "model": item.model, "reason": reason }));
-                    continue;
-                }
-            };
+            let model_string =
+                match registry::compose_model_string(&profile.provider, &item.model, profile.api_base.as_deref()) {
+                    Ok(model) => model,
+                    Err(reason) => {
+                        skipped.push(json!({ "model": item.model, "reason": reason }));
+                        continue;
+                    }
+                };
             if draft.models.iter().any(|m| m.profile_id == profile.id && m.model == model_string) {
                 skipped.push(json!({ "model": item.model, "reason": "该档案下已存在同名模型" }));
                 continue;
@@ -681,9 +694,9 @@ impl LlmStore {
             .as_deref()
             .and_then(|id| self.get_model(id))
             .ok_or_else(|| LlmError::plain(CODE_MODEL_NOT_FOUND, "尚未配置可用的 LLM 模型，请在设置页添加"))?;
-        let profile = self
-            .get_profile(&model.profile_id)
-            .ok_or_else(|| LlmError::plain(CODE_MODEL_NOT_FOUND, format!("模型所属的供应商档案不存在：{}", model.profile_id)))?;
+        let profile = self.get_profile(&model.profile_id).ok_or_else(|| {
+            LlmError::plain(CODE_MODEL_NOT_FOUND, format!("模型所属的供应商档案不存在：{}", model.profile_id))
+        })?;
         let api_key = self.decrypt_key(&profile)?;
         Ok(RuntimeTarget { model, profile, api_key })
     }
@@ -704,7 +717,8 @@ pub fn model_public(entry: &ModelEntry) -> Value {
 
 /// 自愈：custom 档案下未带 openai/ 前缀的历史模型串补齐前缀。
 fn heal_custom_model_strings(data: &mut StoreData) -> bool {
-    let custom_ids: Vec<String> = data.profiles.iter().filter(|p| p.provider == "custom").map(|p| p.id.clone()).collect();
+    let custom_ids: Vec<String> =
+        data.profiles.iter().filter(|p| p.provider == "custom").map(|p| p.id.clone()).collect();
     let mut changed = false;
     for entry in data.models.iter_mut().filter(|m| custom_ids.contains(&m.profile_id)) {
         if !entry.model.starts_with("openai/") {
@@ -829,7 +843,8 @@ fn migrate_v1(raw: &Value, crypto: &Crypto) -> (StoreData, Vec<String>) {
             use_cases: default_use_cases(),
             status: VerifyStatus::default(),
         };
-        let was_default = object.get("is_default").and_then(Value::as_bool).unwrap_or(false) || v1_default == Some(config_id.as_str());
+        let was_default = object.get("is_default").and_then(Value::as_bool).unwrap_or(false)
+            || v1_default == Some(config_id.as_str());
         if was_default && data.default_model_id.is_none() {
             data.default_model_id = Some(entry.id.clone());
         }
@@ -874,8 +889,20 @@ mod tests {
 
         let (created, skipped) = store
             .create_models(vec![
-                ModelItemCreate { profile_id: profile.id.clone(), model: "deepseek-chat".into(), display_name: String::new(), params: None, set_default: false },
-                ModelItemCreate { profile_id: profile.id.clone(), model: "deepseek-chat".into(), display_name: String::new(), params: None, set_default: false },
+                ModelItemCreate {
+                    profile_id: profile.id.clone(),
+                    model: "deepseek-chat".into(),
+                    display_name: String::new(),
+                    params: None,
+                    set_default: false,
+                },
+                ModelItemCreate {
+                    profile_id: profile.id.clone(),
+                    model: "deepseek-chat".into(),
+                    display_name: String::new(),
+                    params: None,
+                    set_default: false,
+                },
             ])
             .unwrap();
         assert_eq!(created.len(), 1);
@@ -893,7 +920,10 @@ mod tests {
         assert_eq!(target.api_key, "sk-1234567890abcd");
 
         let updated = reloaded
-            .update_profile(&profile.id, ProfileUpdate { api_key: Some(String::new()), name: Some("新名".into()), ..Default::default() })
+            .update_profile(
+                &profile.id,
+                ProfileUpdate { api_key: Some(String::new()), name: Some("新名".into()), ..Default::default() },
+            )
             .unwrap();
         assert_eq!(updated.name, "新名");
         assert_eq!(reloaded.decrypt_key(&updated).unwrap(), "sk-1234567890abcd", "空串密钥 = 保持原值");
@@ -915,7 +945,13 @@ mod tests {
         assert!(matches!(store.create_profile(request(Some("  "))), Err(StoreError::Invalid(_))));
         let profile = store.create_profile(request(Some("http://127.0.0.1:3000/v1"))).unwrap();
         let (created, _) = store
-            .create_models(vec![ModelItemCreate { profile_id: profile.id, model: "group/x".into(), display_name: String::new(), params: None, set_default: true }])
+            .create_models(vec![ModelItemCreate {
+                profile_id: profile.id,
+                model: "group/x".into(),
+                display_name: String::new(),
+                params: None,
+                set_default: true,
+            }])
             .unwrap();
         assert_eq!(created[0].model, "openai/group/x");
         let _ = std::fs::remove_dir_all(&dir);

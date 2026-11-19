@@ -46,7 +46,9 @@ pub fn account_id_from_access_token(token: &str) -> String {
     };
     serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
-        .and_then(|claims| claims.pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")?.as_str().map(str::to_string))
+        .and_then(|claims| {
+            claims.pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")?.as_str().map(str::to_string)
+        })
         .unwrap_or_default()
 }
 
@@ -80,7 +82,9 @@ fn classify_status(status: u16, body: &str) -> String {
     match status {
         401 => "ChatGPT 访问令牌无效或已过期（HTTP 401），请重新获取令牌后更新设置".into(),
         402 => "ChatGPT 账户额度不足（HTTP 402），请检查订阅或稍后重试".into(),
-        403 if is_html => "请求被 ChatGPT 风控拦截（HTTP 403），请稍后重试；频繁出现请更换网络环境或重新登录获取新令牌".into(),
+        403 if is_html => {
+            "请求被 ChatGPT 风控拦截（HTTP 403），请稍后重试；频繁出现请更换网络环境或重新登录获取新令牌".into()
+        }
         403 => "ChatGPT 拒绝了该请求（HTTP 403），令牌可能缺少听写权限，请重新获取".into(),
         404 => "听写端点不存在（HTTP 404），请检查端点地址设置".into(),
         413 => "音频文件过大，被听写接口拒绝（HTTP 413）".into(),
@@ -112,7 +116,11 @@ pub async fn transcribe_wav(config: &ChatGptConfig, wav: Vec<u8>, language: &str
 }
 
 /// 同 [`transcribe_wav`]，失败时保留 HTTP 状态（凭据验证据此区分「令牌无效」与「暂时失败」）。
-pub async fn transcribe_wav_detailed(config: &ChatGptConfig, wav: Vec<u8>, language: &str) -> Result<String, ChatGptError> {
+pub async fn transcribe_wav_detailed(
+    config: &ChatGptConfig,
+    wav: Vec<u8>,
+    language: &str,
+) -> Result<String, ChatGptError> {
     config.ensure().map_err(ChatGptError::local)?;
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -154,8 +162,11 @@ pub async fn transcribe_wav_detailed(config: &ChatGptConfig, wav: Vec<u8>, langu
         let html = body.trim_start().starts_with('<');
         return Err(ChatGptError { status: Some(status), html, message: classify_status(status, &body) });
     }
-    let value: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| ChatGptError { status: Some(status), html: false, message: "听写接口返回了无法解析的响应（非 JSON）".into() })?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| ChatGptError {
+        status: Some(status),
+        html: false,
+        message: "听写接口返回了无法解析的响应（非 JSON）".into(),
+    })?;
     Ok(value.get("text").and_then(serde_json::Value::as_str).unwrap_or("").trim().to_string())
 }
 
@@ -176,8 +187,13 @@ mod tests {
 
     #[tokio::test]
     async fn 上传_四件套鉴权头与状态归类() {
-        let (base, mut requests) = stub_routes(vec![StubRoute::json("POST /transcribe", 200, r#"{"text":" 你好 "}"#)]).await;
-        let config = ChatGptConfig { api_key: "tok-123456".into(), endpoint: format!("{base}/transcribe"), timeout: Duration::from_secs(5) };
+        let (base, mut requests) =
+            stub_routes(vec![StubRoute::json("POST /transcribe", 200, r#"{"text":" 你好 "}"#)]).await;
+        let config = ChatGptConfig {
+            api_key: "tok-123456".into(),
+            endpoint: format!("{base}/transcribe"),
+            timeout: Duration::from_secs(5),
+        };
         assert_eq!(transcribe_wav(&config, b"RIFF".to_vec(), "zh").await.unwrap(), "你好");
         let request = requests.recv().await.unwrap().to_lowercase();
         assert!(request.contains("authorization: bearer tok-123456"));
@@ -191,9 +207,7 @@ mod tests {
     #[tokio::test]
     async fn 未知状态与_422_不透传响应体里的令牌() {
         let secret = "sk-leak-7c3e9d11";
-        let body = format!(
-            r#"{{"error":"bad audio","detail":"Authorization: Bearer {secret}","echo":"{secret}"}}"#
-        );
+        let body = format!(r#"{{"error":"bad audio","detail":"Authorization: Bearer {secret}","echo":"{secret}"}}"#);
         // 422 是已知状态，418 走未知状态兜底：两条路径都不能把响应体拼进文案。
         for status in [422, 418] {
             let (base, _) = stub_routes(vec![StubRoute::json("POST /transcribe", status, body.clone())]).await;

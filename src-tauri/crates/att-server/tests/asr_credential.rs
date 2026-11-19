@@ -57,7 +57,12 @@ async fn 验证确定失败时_health_不报就绪_并给出原因() {
     assert_eq!(health["model_service_ready"], json!(true));
 
     // 确定失败：不就绪，原因可读
-    verify::record_for_test(&state.core, "doubao_asr", CheckStatus::Invalid, "鉴权失败：Access Token 无效或已过期（401）");
+    verify::record_for_test(
+        &state.core,
+        "doubao_asr",
+        CheckStatus::Invalid,
+        "鉴权失败：Access Token 无效或已过期（401）",
+    );
     let (_, health) = call(&state, "GET", "/api/health", None).await;
     assert_eq!(health["model_service_ready"], json!(false));
     let error = health["model_service_error"].as_str().unwrap();
@@ -75,7 +80,8 @@ async fn 验证确定失败时_health_不报就绪_并给出原因() {
 async fn 未配置凭据与本地引擎_不做验证() {
     let state = temp_state("reject");
     // 豆包没填 Token：409 + 去填写的提示
-    let (status, body) = call(&state, "POST", "/api/asr/credential-check", Some(json!({ "provider": "doubao_asr" }))).await;
+    let (status, body) =
+        call(&state, "POST", "/api/asr/credential-check", Some(json!({ "provider": "doubao_asr" }))).await;
     assert_eq!(status, 409);
     assert!(body["detail"].as_str().unwrap().contains("Access Token"));
     // 本地引擎：422

@@ -100,7 +100,13 @@ impl LocalEngine {
     }
 
     fn qwen(engine: Arc<LocalQwen>) -> Self {
-        Self { kind: LocalKind::Qwen, model_dir: engine.model_dir().to_path_buf(), whisper: None, qwen: Some(engine), vad: None }
+        Self {
+            kind: LocalKind::Qwen,
+            model_dir: engine.model_dir().to_path_buf(),
+            whisper: None,
+            qwen: Some(engine),
+            vad: None,
+        }
     }
 
     pub fn kind(&self) -> LocalKind {
@@ -235,10 +241,7 @@ fn transcribe_whisper(
         }
     }
     let text = segments.iter().map(|segment| segment.text.as_str()).collect::<Vec<_>>().join(" ");
-    tracing::info!(
-        "本地 Whisper（VAD 分段）完成：{} 段文本，音频 {duration:.1}s，推理 {elapsed:.2}s",
-        segments.len()
-    );
+    tracing::info!("本地 Whisper（VAD 分段）完成：{} 段文本，音频 {duration:.1}s，推理 {elapsed:.2}s", segments.len());
     Ok(LocalTranscript { text, segments, duration, elapsed, device: whisper.device().to_string() })
 }
 
@@ -560,12 +563,9 @@ impl LocalModels {
                 .unwrap_or_else(|error| error.into_inner())
                 .as_ref()
                 .map(|cached| cached.engine.device().to_string()),
-            LocalKind::Qwen => self
-                .qwen
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .as_ref()
-                .map(|_| "cpu:onnx".to_string()),
+            LocalKind::Qwen => {
+                self.qwen.lock().unwrap_or_else(|error| error.into_inner()).as_ref().map(|_| "cpu:onnx".to_string())
+            }
         }
     }
 }

@@ -6,7 +6,8 @@
 //! - 走系统代理（与 Python httpx/LiteLLM 读代理的行为一致；豆包 ASR 是直连，不经这里）。
 
 use super::errors::{
-    classify_http, classify_transport, redact_secrets, LlmError, CODE_MODEL_NOT_FOUND, CODE_NETWORK, CODE_PROVIDER, CODE_TIMEOUT,
+    classify_http, classify_transport, redact_secrets, LlmError, CODE_MODEL_NOT_FOUND, CODE_NETWORK, CODE_PROVIDER,
+    CODE_TIMEOUT,
 };
 use super::registry::{self, Protocol, ProviderSpec};
 use serde_json::{json, Value};
@@ -58,7 +59,12 @@ impl Endpoint {
         if base.is_empty() {
             return Err(LlmError::plain(CODE_NETWORK, "未配置 API Base，请在档案里填写端点地址"));
         }
-        Ok(Self { spec, base: base.to_string(), api_key: api_key.trim().to_string(), extra_headers: extra_headers.clone() })
+        Ok(Self {
+            spec,
+            base: base.to_string(),
+            api_key: api_key.trim().to_string(),
+            extra_headers: extra_headers.clone(),
+        })
     }
 
     /// OpenAI 兼容根路径（Ollama 的兼容接口挂在 /v1 下）。
@@ -71,7 +77,11 @@ impl Endpoint {
     }
 
     fn secrets(&self) -> Vec<&str> {
-        if self.api_key.is_empty() { Vec::new() } else { vec![self.api_key.as_str()] }
+        if self.api_key.is_empty() {
+            Vec::new()
+        } else {
+            vec![self.api_key.as_str()]
+        }
     }
 
     fn request(&self, method: reqwest::Method, url: String, timeout: Duration) -> reqwest::RequestBuilder {
@@ -142,7 +152,12 @@ pub struct StreamBudget {
 }
 
 /// 非流式补全。`model_string` 为存储里的完整模型串，发出前按服务商剥掉前缀。
-pub async fn chat(endpoint: &Endpoint, model_string: &str, messages: &[ChatMessage], options: &ChatOptions) -> Result<ChatResult, LlmError> {
+pub async fn chat(
+    endpoint: &Endpoint,
+    model_string: &str,
+    messages: &[ChatMessage],
+    options: &ChatOptions,
+) -> Result<ChatResult, LlmError> {
     let mut attempt = 0;
     loop {
         let started = Instant::now();
@@ -181,11 +196,20 @@ fn log_success(model_string: &str, result: &ChatResult, options: &ChatOptions) {
         "LLM 调用成功"
     );
     if result.truncated() {
-        tracing::warn!(model = model_string, max_tokens = options.max_tokens, "LLM 输出达到 max_tokens 上限被截断（思考 token 也计入）");
+        tracing::warn!(
+            model = model_string,
+            max_tokens = options.max_tokens,
+            "LLM 输出达到 max_tokens 上限被截断（思考 token 也计入）"
+        );
     }
 }
 
-async fn chat_once(endpoint: &Endpoint, model_string: &str, messages: &[ChatMessage], options: &ChatOptions) -> Result<ChatResult, LlmError> {
+async fn chat_once(
+    endpoint: &Endpoint,
+    model_string: &str,
+    messages: &[ChatMessage],
+    options: &ChatOptions,
+) -> Result<ChatResult, LlmError> {
     let (url, body) = request_body(endpoint, model_string, messages, options, false);
     let response = open(endpoint, &url, body, options.timeout).await?;
     let text = response.text().await.map_err(|e| classify_transport(&e, &endpoint.secrets()))?;
@@ -193,7 +217,9 @@ async fn chat_once(endpoint: &Endpoint, model_string: &str, messages: &[ChatMess
         .map_err(|_| LlmError::new(CODE_PROVIDER, "上游返回了无法解析的响应结构"))?;
     match endpoint.spec.protocol {
         Protocol::OpenAiCompat => {
-            let choice = value.pointer("/choices/0").ok_or_else(|| LlmError::new(CODE_PROVIDER, "上游返回了无法解析的响应结构"))?;
+            let choice = value
+                .pointer("/choices/0")
+                .ok_or_else(|| LlmError::new(CODE_PROVIDER, "上游返回了无法解析的响应结构"))?;
             let usage = |key: &str| value.pointer(&format!("/usage/{key}")).and_then(Value::as_i64).unwrap_or(0);
             Ok(ChatResult {
                 text: choice.pointer("/message/content").and_then(Value::as_str).unwrap_or("").to_string(),
@@ -224,11 +250,21 @@ async fn chat_once(endpoint: &Endpoint, model_string: &str, messages: &[ChatMess
 }
 
 fn anthropic_finish(stop_reason: Option<&str>) -> &'static str {
-    if stop_reason == Some("max_tokens") { "length" } else { "stop" }
+    if stop_reason == Some("max_tokens") {
+        "length"
+    } else {
+        "stop"
+    }
 }
 
 /// 组装请求 URL 与请求体（OpenAI 兼容 / Anthropic）。
-fn request_body(endpoint: &Endpoint, model_string: &str, messages: &[ChatMessage], options: &ChatOptions, stream: bool) -> (String, Value) {
+fn request_body(
+    endpoint: &Endpoint,
+    model_string: &str,
+    messages: &[ChatMessage],
+    options: &ChatOptions,
+    stream: bool,
+) -> (String, Value) {
     let model = registry::wire_model_name(endpoint.spec, model_string);
     match endpoint.spec.protocol {
         Protocol::OpenAiCompat => {
@@ -245,7 +281,8 @@ fn request_body(endpoint: &Endpoint, model_string: &str, messages: &[ChatMessage
             (format!("{}/chat/completions", endpoint.openai_root()), body)
         }
         Protocol::Anthropic => {
-            let system: Vec<&str> = messages.iter().filter(|m| m.role == "system").map(|m| m.content.as_str()).collect();
+            let system: Vec<&str> =
+                messages.iter().filter(|m| m.role == "system").map(|m| m.content.as_str()).collect();
             let mut body = json!({
                 "model": model,
                 "max_tokens": options.max_tokens,
@@ -262,7 +299,11 @@ fn request_body(endpoint: &Endpoint, model_string: &str, messages: &[ChatMessage
             if let Some(temperature) = options.temperature {
                 body["temperature"] = json!(temperature);
             }
-            let url = if endpoint.base.ends_with("/v1") { format!("{}/messages", endpoint.base) } else { format!("{}/v1/messages", endpoint.base) };
+            let url = if endpoint.base.ends_with("/v1") {
+                format!("{}/messages", endpoint.base)
+            } else {
+                format!("{}/v1/messages", endpoint.base)
+            };
             (url, body)
         }
     }
@@ -283,15 +324,29 @@ fn apply_reasoning_effort(body: &mut Value, spec: &ProviderSpec, effort: &str) {
 fn rejects_param(message: &str, param: &str) -> bool {
     let lowered = message.to_lowercase();
     lowered.contains(param)
-        && ["unsupported", "unknown", "unrecognized", "not support", "does not support", "invalid", "not allowed", "extra"]
-            .iter()
-            .any(|marker| lowered.contains(marker))
+        && [
+            "unsupported",
+            "unknown",
+            "unrecognized",
+            "not support",
+            "does not support",
+            "invalid",
+            "not allowed",
+            "extra",
+        ]
+        .iter()
+        .any(|marker| lowered.contains(marker))
 }
 
 /// 发起请求并确认成功状态；上游拒绝可选参数时调整后重试：
 /// - `max_tokens` → `max_completion_tokens`（OpenAI 新一代推理模型）；
 /// - 去掉 `reasoning_effort` / `thinking`（性能开关绝不能把原本可用的模型变成不可用）。
-async fn open(endpoint: &Endpoint, url: &str, mut body: Value, timeout: Duration) -> Result<reqwest::Response, LlmError> {
+async fn open(
+    endpoint: &Endpoint,
+    url: &str,
+    mut body: Value,
+    timeout: Duration,
+) -> Result<reqwest::Response, LlmError> {
     for _ in 0..3 {
         let response = endpoint
             .request(reqwest::Method::POST, url.to_string(), timeout)
@@ -311,7 +366,9 @@ async fn open(endpoint: &Endpoint, url: &str, mut body: Value, timeout: Duration
             object.insert("max_completion_tokens".into(), max_tokens);
             continue;
         }
-        let reasoning = ["reasoning_effort", "thinking"].into_iter().find(|p| object.contains_key(*p) && rejects_param(&error.message, p));
+        let reasoning = ["reasoning_effort", "thinking"]
+            .into_iter()
+            .find(|p| object.contains_key(*p) && rejects_param(&error.message, p));
         if let Some(param) = reasoning {
             tracing::info!("上游不支持 {param}，已去掉该参数重试");
             object.remove(param);
@@ -347,9 +404,17 @@ pub async fn chat_stream(
         let now = Instant::now();
         let chunk = match tokio::time::timeout(deadline.saturating_duration_since(now), response.chunk()).await {
             Err(_) if got_text => {
-                return Err(LlmError::new(CODE_TIMEOUT, format!("流式输出中断（超过 {} 秒没有新内容）", budget.chunk_idle.as_secs())))
+                return Err(LlmError::new(
+                    CODE_TIMEOUT,
+                    format!("流式输出中断（超过 {} 秒没有新内容）", budget.chunk_idle.as_secs()),
+                ))
             }
-            Err(_) => return Err(LlmError::new(CODE_TIMEOUT, format!("等待首个输出超时（{} 秒）", budget.first_token.as_secs()))),
+            Err(_) => {
+                return Err(LlmError::new(
+                    CODE_TIMEOUT,
+                    format!("等待首个输出超时（{} 秒）", budget.first_token.as_secs()),
+                ))
+            }
             Ok(Err(error)) => return Err(classify_transport(&error, &endpoint.secrets())),
             Ok(Ok(None)) => break,
             Ok(Ok(Some(bytes))) => bytes,
@@ -365,7 +430,11 @@ pub async fn chat_stream(
             }
             let Ok(event) = serde_json::from_str::<Value>(payload) else { continue };
             if let Some(message) = event.get("error").filter(|e| !e.is_null()) {
-                let text = message.get("message").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| message.to_string());
+                let text = message
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| message.to_string());
                 return Err(LlmError::new(CODE_PROVIDER, redact_secrets(&text, &endpoint.secrets())));
             }
             let delta = parse_stream_event(endpoint.spec.protocol, &event, &mut result);
@@ -374,7 +443,9 @@ pub async fn chat_stream(
                 on_delta(&text);
                 got_text = true;
             }
-            if endpoint.spec.protocol == Protocol::Anthropic && event.get("type").and_then(Value::as_str) == Some("message_stop") {
+            if endpoint.spec.protocol == Protocol::Anthropic
+                && event.get("type").and_then(Value::as_str) == Some("message_stop")
+            {
                 done = true;
                 break;
             }
@@ -418,11 +489,14 @@ fn parse_stream_event(protocol: Protocol, event: &Value, result: &mut ChatResult
                 result.prompt_tokens = number("/message/usage/input_tokens").unwrap_or(0);
                 None
             }
-            Some("content_block_delta") if event.pointer("/delta/type").and_then(Value::as_str) == Some("text_delta") => {
+            Some("content_block_delta")
+                if event.pointer("/delta/type").and_then(Value::as_str) == Some("text_delta") =>
+            {
                 event.pointer("/delta/text").and_then(Value::as_str).map(str::to_string)
             }
             Some("message_delta") => {
-                result.finish_reason = anthropic_finish(event.pointer("/delta/stop_reason").and_then(Value::as_str)).to_string();
+                result.finish_reason =
+                    anthropic_finish(event.pointer("/delta/stop_reason").and_then(Value::as_str)).to_string();
                 result.completion_tokens = number("/usage/output_tokens").unwrap_or(result.completion_tokens);
                 None
             }
@@ -445,7 +519,12 @@ pub struct VerifyOutcome {
 
 impl VerifyOutcome {
     pub fn failed(error: &LlmError) -> Self {
-        Self { ok: false, error_code: Some(error.code.to_string()), message: Some(error.user_message.clone()), ..Default::default() }
+        Self {
+            ok: false,
+            error_code: Some(error.code.to_string()),
+            message: Some(error.user_message.clone()),
+            ..Default::default()
+        }
     }
 
     pub fn to_json(&self) -> Value {
@@ -464,7 +543,13 @@ impl VerifyOutcome {
 /// 不传温度、不重试，并强制关闭思考：5 token 的预算必然被思考吃光，既拖慢「测试」按钮
 /// 又会刷假的截断告警；上游不认关闭参数时 [`open`] 会自动去掉重试。这里只关心连通性与鉴权。
 pub async fn verify_model(endpoint: &Endpoint, model_string: &str) -> VerifyOutcome {
-    let options = ChatOptions { max_tokens: 5, temperature: None, timeout: VERIFY_TIMEOUT, retries: 0, reasoning_effort: "none".into() };
+    let options = ChatOptions {
+        max_tokens: 5,
+        temperature: None,
+        timeout: VERIFY_TIMEOUT,
+        retries: 0,
+        reasoning_effort: "none".into(),
+    };
     match chat(endpoint, model_string, &[ChatMessage::new("user", "Hi")], &options).await {
         Ok(result) => VerifyOutcome { ok: true, latency_ms: Some(result.latency_ms), ..Default::default() },
         Err(error) => VerifyOutcome::failed(&error),
@@ -538,7 +623,11 @@ mod tests {
     #[tokio::test]
     async fn 档案验证_鉴权通过并列出模型() {
         let (base, mut requests) = stub_server(vec![
-            ("POST /v1/chat/completions", 200, r#"{"choices":[{"message":{"content":"Hi"},"finish_reason":"length"}]}"#.into()),
+            (
+                "POST /v1/chat/completions",
+                200,
+                r#"{"choices":[{"message":{"content":"Hi"},"finish_reason":"length"}]}"#.into(),
+            ),
             ("GET /v1/models", 200, r#"{"data":[{"id":"b"},{"id":"a"},{"id":"a"}]}"#.into()),
         ])
         .await;
@@ -547,7 +636,10 @@ mod tests {
         assert_eq!(outcome.remote_models, vec!["a", "b"]);
         let chat_request = requests.recv().await.unwrap();
         assert!(chat_request.to_lowercase().contains("authorization: bearer sk-test-123456"));
-        assert!(chat_request.contains(r#""model":"gpt-3.5-turbo""#), "custom 探测模型剥掉 openai/ 前缀: {chat_request}");
+        assert!(
+            chat_request.contains(r#""model":"gpt-3.5-turbo""#),
+            "custom 探测模型剥掉 openai/ 前缀: {chat_request}"
+        );
     }
 
     #[tokio::test]

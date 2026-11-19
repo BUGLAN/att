@@ -79,7 +79,8 @@ fn cursor_in_window(window: &tauri::WebviewWindow, primary_scale: f64) -> Option
     let scale = window.scale_factor().ok()?;
     // macOS：tao 的光标按主显示器缩放、窗口位置按窗口所在屏缩放各自放大成物理像素，先各自除回点（= CSS px）
     #[cfg(target_os = "macos")]
-    let point = (cursor.x / primary_scale - origin.x as f64 / scale, cursor.y / primary_scale - origin.y as f64 / scale);
+    let point =
+        (cursor.x / primary_scale - origin.x as f64 / scale, cursor.y / primary_scale - origin.y as f64 / scale);
     // Windows：两者都是全局物理像素，相减后按窗口缩放换成 CSS px
     #[cfg(not(target_os = "macos"))]
     let point = {
@@ -119,7 +120,9 @@ async fn click_through_loop(app: AppHandle) {
 
 /// 放到鼠标所在显示器的底部居中（多屏时跟着用户正在看的那块屏），取不到再退回主显示器。
 fn position_bottom_center(window: &tauri::WebviewWindow) {
-    let Some(monitor) = monitor_under_cursor(window).or_else(|| window.primary_monitor().ok().flatten()) else { return };
+    let Some(monitor) = monitor_under_cursor(window).or_else(|| window.primary_monitor().ok().flatten()) else {
+        return;
+    };
     // 先在该显示器的物理像素里算好（窗口的物理尺寸按它落到的那块屏的缩放算）
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
@@ -283,7 +286,9 @@ pub fn from_recording_state(payload: &Value) -> Option<(Value, bool)> {
         "completed" if payload["optimization_cancelled"].as_bool() == Some(true) => None,
         "completed" => {
             let text = payload["text"].as_str().unwrap_or("");
-            let problem = ["optimize_error", "copy_error"].iter().find_map(|key| payload[*key].as_str().filter(|e| !e.is_empty()));
+            let problem = ["optimize_error", "copy_error"]
+                .iter()
+                .find_map(|key| payload[*key].as_str().filter(|e| !e.is_empty()));
             let ok = !text.is_empty() && problem.is_none();
             let shown = if ok { text } else { problem.unwrap_or(message) };
             let mut complete = state("complete", shown);
@@ -314,7 +319,8 @@ mod tests {
         assert_eq!(fresh["text"], "");
 
         // 带字的中间结果照常覆盖
-        let partial = carry_live_text(json!({ "phase": "recording", "mode": "streaming", "text": "你好" }), Some(&last));
+        let partial =
+            carry_live_text(json!({ "phase": "recording", "mode": "streaming", "text": "你好" }), Some(&last));
         assert_eq!(partial["text"], "你好");
     }
 
@@ -344,7 +350,9 @@ mod tests {
 
     #[test]
     fn 完成态_有结果且无错为成_否则敗并带原因() {
-        let ok = complete(json!({ "phase": "completed", "mode": "streaming", "text": "优化文", "message": "录音已完成，已优化" }));
+        let ok = complete(
+            json!({ "phase": "completed", "mode": "streaming", "text": "优化文", "message": "录音已完成，已优化" }),
+        );
         assert_eq!(ok["phase"], "complete");
         assert_eq!(ok["ok"], true);
         assert_eq!(ok["text"], "优化文");
@@ -353,18 +361,23 @@ mod tests {
         assert_eq!(empty["ok"], false);
         assert_eq!(empty["text"], "没有识别到语音内容");
 
-        let optimize = complete(json!({ "phase": "completed", "text": "原文", "optimize_error": "鉴权失败", "message": "优化失败" }));
+        let optimize = complete(
+            json!({ "phase": "completed", "text": "原文", "optimize_error": "鉴权失败", "message": "优化失败" }),
+        );
         assert_eq!(optimize["ok"], false);
         assert_eq!(optimize["text"], "鉴权失败");
 
-        let output = complete(json!({ "phase": "completed", "text": "原文", "copy_error": "自动输入需要「辅助功能」权限", "optimize_error": null }));
+        let output = complete(
+            json!({ "phase": "completed", "text": "原文", "copy_error": "自动输入需要「辅助功能」权限", "optimize_error": null }),
+        );
         assert_eq!(output["ok"], false);
         assert_eq!(output["text"], "自动输入需要「辅助功能」权限");
     }
 
     #[test]
     fn 进入优化_原文作为草稿_不当成优化结果() {
-        let (state, show) = from_recording_state(&json!({ "phase": "optimizing", "mode": "streaming", "text": "原文" })).unwrap();
+        let (state, show) =
+            from_recording_state(&json!({ "phase": "optimizing", "mode": "streaming", "text": "原文" })).unwrap();
         assert!(show);
         assert_eq!(state["phase"], "optimizing");
         assert_eq!(state["text"], "");
@@ -376,7 +389,13 @@ mod tests {
         assert!(from_recording_state(&json!({ "phase": "cancelled" })).is_none());
         let cancelled_optimize = json!({ "phase": "completed", "text": "原文", "optimization_cancelled": true, "message": "已取消优化，保留原始文本" });
         assert!(from_recording_state(&cancelled_optimize).is_none());
-        assert!(from_recording_state(&json!({ "phase": "completed", "text": "", "message": "没有检测到说话", "silent": true })).is_none());
-        assert!(from_recording_state(&json!({ "phase": "completed", "text": "", "message": "录音时间过短", "silent": true })).is_none());
+        assert!(from_recording_state(
+            &json!({ "phase": "completed", "text": "", "message": "没有检测到说话", "silent": true })
+        )
+        .is_none());
+        assert!(from_recording_state(
+            &json!({ "phase": "completed", "text": "", "message": "录音时间过短", "silent": true })
+        )
+        .is_none());
     }
 }

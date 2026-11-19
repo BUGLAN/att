@@ -5,10 +5,10 @@
 
 pub mod hotkey;
 
-use crate::storage::json_store;
-use crate::Platform;
 #[cfg(test)]
 use crate::now_rfc3339;
+use crate::storage::json_store;
+use crate::Platform;
 use hotkey::binding_from_legacy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -75,10 +75,7 @@ impl EnvSettings {
     pub fn from_env() -> Self {
         let data_dir = std::env::var("ATT_DATA_DIR").unwrap_or_else(|_| "data".into());
         let models_dir = std::env::var("ATT_MODELS_DIR").unwrap_or_else(|_| "models".into());
-        Self {
-            data_dir: PathBuf::from(data_dir),
-            models_dir: PathBuf::from(models_dir),
-        }
+        Self { data_dir: PathBuf::from(data_dir), models_dir: PathBuf::from(models_dir) }
     }
 }
 
@@ -90,15 +87,15 @@ impl EnvSettings {
 #[serde(default)]
 pub struct UserSettings {
     // ---- ASR 基础 ----
-    pub asr_provider: String,          // whisper | qwen_asr | doubao_asr | chatgpt_asr | deepseek_asr
-    pub asr_language: String,          // zh | en | ja | ko
+    pub asr_provider: String, // whisper | qwen_asr | doubao_asr | chatgpt_asr | deepseek_asr
+    pub asr_language: String, // zh | en | ja | ko
     /// 个人词表（热词）：与引擎无关地保存，目前只有豆包会发送（见 `stt::hotwords`）。
     /// 宽容读：结构异常只丢这一项，不能拖垮整份设置
     #[serde(default, deserialize_with = "deserialize_hotwords_lenient")]
     pub asr_hotwords: Vec<String>,
     // ---- Whisper ----
     pub whisper_model: String,
-    pub whisper_device: String,        // auto | cuda | cpu
+    pub whisper_device: String, // auto | cuda | cpu
     // ---- Qwen3-ASR ----
     pub qwen_asr_model: String,
     pub qwen_asr_device: String,
@@ -150,10 +147,10 @@ pub struct UserSettings {
     /// 透明透传键：仅存在于 PUT 白名单（与 Python 行为一致），UI 选择后原样保存。
     pub audio_input_device: Option<String>,
     // ---- 录音 ----
-    pub recording_mode: String,        // single | multi | streaming
-    pub silence_threshold: f64,        // 秒
+    pub recording_mode: String, // single | multi | streaming
+    pub silence_threshold: f64, // 秒
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
-    pub silence_level: i64,            // dB
+    pub silence_level: i64, // dB
     // ---- 提示词 ----
     pub default_preset_id: Option<String>,
     pub last_used_preset_id: Option<String>,
@@ -254,10 +251,8 @@ impl UserSettings {
         // 点按录音拆成独立动作之前，录音只有一条绑定、靠 trigger 二选一：
         // 手动设成点按的旧数据挪成「点按录音」，按住录音留空（未启用），行为不变
         if self.binding_of(HotkeyAction::RecordToggle).is_none() {
-            if let Some(record) = self
-                .hotkeys
-                .iter_mut()
-                .find(|b| b.action == HotkeyAction::Record && b.trigger == TriggerMode::Toggle)
+            if let Some(record) =
+                self.hotkeys.iter_mut().find(|b| b.action == HotkeyAction::Record && b.trigger == TriggerMode::Toggle)
             {
                 record.action = HotkeyAction::RecordToggle;
                 let hold = HotkeyBinding { enabled: false, ..HotkeyBinding::default_binding(platform) };
@@ -302,10 +297,8 @@ impl UserSettings {
 
     /// 用旧版 `{modifiers, key}` 更新某个动作的组合键：触发模式与开关保持不变，不合法时回落该动作的默认组合。
     pub fn update_binding_from_legacy(&mut self, action: HotkeyAction, platform: Platform, value: &Value) {
-        let mut binding = self
-            .binding_of(action)
-            .cloned()
-            .unwrap_or_else(|| HotkeyBinding::default_for(action, platform));
+        let mut binding =
+            self.binding_of(action).cloned().unwrap_or_else(|| HotkeyBinding::default_for(action, platform));
         let (modifiers, hid_key) = hotkey::combo_from_legacy(value).unwrap_or_else(|| {
             let fallback = HotkeyBinding::default_for(action, platform);
             (fallback.modifiers, fallback.hid_key)
@@ -352,9 +345,7 @@ impl UserSettings {
 
     /// 指定动作的绑定；还没有时给平台默认值。
     fn binding_or_default(&self, action: HotkeyAction, platform: Platform) -> HotkeyBinding {
-        self.binding_of(action)
-            .cloned()
-            .unwrap_or_else(|| HotkeyBinding::default_for(action, platform))
+        self.binding_of(action).cloned().unwrap_or_else(|| HotkeyBinding::default_for(action, platform))
     }
 
     /// GET /api/settings 响应视图：脱敏（密文 → *_set 布尔）+ 旧 hotkey 兼容字段。
@@ -421,8 +412,8 @@ pub fn apply_settings_update(
     // 整组绑定先落：前端常把 GET 回来的 hotkeys 原样带回，
     // 若按键名顺序在 hotkey / clipboard_panel_* 之后处理，会把同一请求里的改键覆盖回旧值
     if let Some(value) = map.get("hotkeys").filter(|v| !v.is_null()) {
-        let parsed: Vec<HotkeyBinding> = serde_json::from_value(value.clone())
-            .map_err(|e| format!("字段 hotkeys 结构非法: {e}"))?;
+        let parsed: Vec<HotkeyBinding> =
+            serde_json::from_value(value.clone()).map_err(|e| format!("字段 hotkeys 结构非法: {e}"))?;
         settings.hotkeys = parsed;
         settings.ensure_default_bindings(platform);
         outcome.restart_hotkey_backend = true;
@@ -455,8 +446,7 @@ pub fn apply_settings_update(
         match key.as_str() {
             // ---- 密钥类（明文入口，只写不读）----
             "doubao_asr_api_key" => {
-                let plain = value.as_str().filter(|s| !s.trim().is_empty())
-                    .ok_or_else(|| type_error("字符串"))?;
+                let plain = value.as_str().filter(|s| !s.trim().is_empty()).ok_or_else(|| type_error("字符串"))?;
                 settings.doubao_asr_api_key_encrypted = Some(crypto.encrypt(plain.trim()));
             }
             "doubao_asr_api_key_clear" => {
@@ -465,8 +455,7 @@ pub fn apply_settings_update(
                 }
             }
             "chatgpt_asr_api_key" => {
-                let plain = value.as_str().filter(|s| !s.trim().is_empty())
-                    .ok_or_else(|| type_error("字符串"))?;
+                let plain = value.as_str().filter(|s| !s.trim().is_empty()).ok_or_else(|| type_error("字符串"))?;
                 settings.chatgpt_asr_api_key_encrypted = Some(crypto.encrypt(plain.trim()));
             }
             "chatgpt_asr_api_key_clear" => {
@@ -475,8 +464,7 @@ pub fn apply_settings_update(
                 }
             }
             "deepseek_asr_api_key" => {
-                let plain = value.as_str().filter(|s| !s.trim().is_empty())
-                    .ok_or_else(|| type_error("字符串"))?;
+                let plain = value.as_str().filter(|s| !s.trim().is_empty()).ok_or_else(|| type_error("字符串"))?;
                 settings.deepseek_asr_api_key_encrypted = Some(crypto.encrypt(plain.trim()));
             }
             "deepseek_asr_api_key_clear" => {
@@ -509,18 +497,10 @@ pub fn apply_settings_update(
             "qwen_asr_forced_aligner_model" => {
                 set_string(&mut settings.qwen_asr_forced_aligner_model, key, value, &type_error)?
             }
-            "doubao_asr_resource_id" => {
-                set_string(&mut settings.doubao_asr_resource_id, key, value, &type_error)?
-            }
-            "doubao_asr_endpoint" => {
-                set_string(&mut settings.doubao_asr_endpoint, key, value, &type_error)?
-            }
-            "chatgpt_asr_endpoint" => {
-                set_string(&mut settings.chatgpt_asr_endpoint, key, value, &type_error)?
-            }
-            "deepseek_asr_endpoint" => {
-                set_string(&mut settings.deepseek_asr_endpoint, key, value, &type_error)?
-            }
+            "doubao_asr_resource_id" => set_string(&mut settings.doubao_asr_resource_id, key, value, &type_error)?,
+            "doubao_asr_endpoint" => set_string(&mut settings.doubao_asr_endpoint, key, value, &type_error)?,
+            "chatgpt_asr_endpoint" => set_string(&mut settings.chatgpt_asr_endpoint, key, value, &type_error)?,
+            "deepseek_asr_endpoint" => set_string(&mut settings.deepseek_asr_endpoint, key, value, &type_error)?,
             "recording_mode" => {
                 let mode = value.as_str().ok_or_else(|| type_error("字符串"))?;
                 if !matches!(mode, "single" | "multi" | "streaming") {
@@ -553,8 +533,12 @@ pub fn apply_settings_update(
             "qwen_asr_max_new_tokens" => set_i64(&mut settings.qwen_asr_max_new_tokens, key, value, &type_error)?,
             "qwen_asr_max_audio_seconds" => set_i64(&mut settings.qwen_asr_max_audio_seconds, key, value, &type_error)?,
             "doubao_asr_end_window_size" => set_i64(&mut settings.doubao_asr_end_window_size, key, value, &type_error)?,
-            "chatgpt_asr_timeout_seconds" => set_i64(&mut settings.chatgpt_asr_timeout_seconds, key, value, &type_error)?,
-            "deepseek_asr_timeout_seconds" => set_i64(&mut settings.deepseek_asr_timeout_seconds, key, value, &type_error)?,
+            "chatgpt_asr_timeout_seconds" => {
+                set_i64(&mut settings.chatgpt_asr_timeout_seconds, key, value, &type_error)?
+            }
+            "deepseek_asr_timeout_seconds" => {
+                set_i64(&mut settings.deepseek_asr_timeout_seconds, key, value, &type_error)?
+            }
             "silence_level" => set_i64(&mut settings.silence_level, key, value, &type_error)?,
 
             // ---- 浮点键 ----
@@ -564,8 +548,12 @@ pub fn apply_settings_update(
             }
 
             // ---- 布尔键 ----
-            "qwen_asr_return_timestamps" => set_bool(&mut settings.qwen_asr_return_timestamps, key, value, &type_error)?,
-            "qwen_asr_use_forced_aligner" => set_bool(&mut settings.qwen_asr_use_forced_aligner, key, value, &type_error)?,
+            "qwen_asr_return_timestamps" => {
+                set_bool(&mut settings.qwen_asr_return_timestamps, key, value, &type_error)?
+            }
+            "qwen_asr_use_forced_aligner" => {
+                set_bool(&mut settings.qwen_asr_use_forced_aligner, key, value, &type_error)?
+            }
             "pause_audio_on_recording" => set_bool(&mut settings.pause_audio_on_recording, key, value, &type_error)?,
             "auto_optimize" => set_bool(&mut settings.auto_optimize, key, value, &type_error)?,
             "auto_copy_to_clipboard" => set_bool(&mut settings.auto_copy_to_clipboard, key, value, &type_error)?,
@@ -576,9 +564,9 @@ pub fn apply_settings_update(
         }
 
         if MODEL_RUNTIME_KEYS.contains(&key.as_str()) {
-            outcome.runtime_keys_changed.push(
-                MODEL_RUNTIME_KEYS.iter().find(|k| **k == key.as_str()).copied().unwrap_or(""),
-            );
+            outcome
+                .runtime_keys_changed
+                .push(MODEL_RUNTIME_KEYS.iter().find(|k| **k == key.as_str()).copied().unwrap_or(""));
         }
     }
 
@@ -596,32 +584,20 @@ pub fn apply_settings_update(
     Ok(outcome)
 }
 
-fn set_string(
-    slot: &mut String, key: &str, value: &Value,
-    type_error: &dyn Fn(&str) -> String,
-) -> Result<(), String> {
+fn set_string(slot: &mut String, key: &str, value: &Value, type_error: &dyn Fn(&str) -> String) -> Result<(), String> {
     let _ = key;
     *slot = value.as_str().ok_or_else(|| type_error("字符串"))?.to_string();
     Ok(())
 }
 
-fn set_i64(
-    slot: &mut i64, key: &str, value: &Value,
-    type_error: &dyn Fn(&str) -> String,
-) -> Result<(), String> {
+fn set_i64(slot: &mut i64, key: &str, value: &Value, type_error: &dyn Fn(&str) -> String) -> Result<(), String> {
     let _ = key;
     // 与反序列化同策略：接受浮点数（取整），兼容前端滑杆/Python 侧写出的 -40.0
-    *slot = value
-        .as_i64()
-        .or_else(|| value.as_f64().map(|f| f.round() as i64))
-        .ok_or_else(|| type_error("整数"))?;
+    *slot = value.as_i64().or_else(|| value.as_f64().map(|f| f.round() as i64)).ok_or_else(|| type_error("整数"))?;
     Ok(())
 }
 
-fn set_bool(
-    slot: &mut bool, key: &str, value: &Value,
-    type_error: &dyn Fn(&str) -> String,
-) -> Result<(), String> {
+fn set_bool(slot: &mut bool, key: &str, value: &Value, type_error: &dyn Fn(&str) -> String) -> Result<(), String> {
     let _ = key;
     *slot = value.as_bool().ok_or_else(|| type_error("布尔值"))?;
     Ok(())
@@ -639,9 +615,7 @@ where
     value
         .as_i64()
         .or_else(|| value.as_f64().map(|f| f.round() as i64))
-        .ok_or_else(|| {
-            serde::de::Error::custom("期望整数（或可取整的数字）")
-        })
+        .ok_or_else(|| serde::de::Error::custom("期望整数（或可取整的数字）"))
 }
 
 /// 热键宽容反序列化：逐条解析，认不出的条目（未知动作、结构异常）跳过。
@@ -715,8 +689,7 @@ pub(crate) fn upgrade_legacy_defaults(object: &mut serde_json::Map<String, Value
 
 /// 默认值合并进 JSON 对象（等价 Python `{**DEFAULT_SETTINGS, **payload}`）。
 fn merge_defaults_into(object: &mut serde_json::Map<String, Value>, platform: Platform) {
-    let defaults = serde_json::to_value(UserSettings::with_platform(platform))
-        .unwrap_or_else(|_| json!({}));
+    let defaults = serde_json::to_value(UserSettings::with_platform(platform)).unwrap_or_else(|_| json!({}));
     if let Some(default_map) = defaults.as_object() {
         for (key, value) in default_map {
             object.entry(key.clone()).or_insert_with(|| value.clone());
@@ -740,13 +713,18 @@ mod tests {
     fn 加载_退役键剥离_旧热键迁移_默认值兜底() {
         let dir = temp_dir("load");
         let path = dir.join("settings.json");
-        std::fs::write(&path, serde_json::json!({
-            "asr_provider": "doubao_asr",
-            "selection_toolbar_enabled": true,           // 退役键
-            "clipboard_overlay_trigger": "x",            // 退役键
-            "hotkey": {"modifiers": ["ctrl", "shift"], "key": "r", "display": "Ctrl+Shift+R"},
-            "auto_optimize": true
-        }).to_string()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "asr_provider": "doubao_asr",
+                "selection_toolbar_enabled": true,           // 退役键
+                "clipboard_overlay_trigger": "x",            // 退役键
+                "hotkey": {"modifiers": ["ctrl", "shift"], "key": "r", "display": "Ctrl+Shift+R"},
+                "auto_optimize": true
+            })
+            .to_string(),
+        )
+        .unwrap();
 
         let settings = UserSettings::load(&path, Platform::Windows);
         assert_eq!(settings.asr_provider, "doubao_asr");
@@ -780,11 +758,15 @@ mod tests {
     fn 加载_豆包旧默认接入点升级_自定义的不动() {
         let dir = temp_dir("endpoint");
         let path = dir.join("settings.json");
-        std::fs::write(&path, json!({ "doubao_asr_endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel" }).to_string())
-            .unwrap();
+        std::fs::write(
+            &path,
+            json!({ "doubao_asr_endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel" }).to_string(),
+        )
+        .unwrap();
         assert_eq!(UserSettings::load(&path, Platform::Macos).doubao_asr_endpoint, crate::stt::sauc::DEFAULT_ENDPOINT);
 
-        std::fs::write(&path, json!({ "doubao_asr_endpoint": "wss://proxy.example/sauc/bigmodel" }).to_string()).unwrap();
+        std::fs::write(&path, json!({ "doubao_asr_endpoint": "wss://proxy.example/sauc/bigmodel" }).to_string())
+            .unwrap();
         assert_eq!(UserSettings::load(&path, Platform::Macos).doubao_asr_endpoint, "wss://proxy.example/sauc/bigmodel");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -861,7 +843,8 @@ mod tests {
         assert!(view.get("deepseek_asr_api_key_encrypted").is_none());
 
         // 清除
-        apply_settings_update(&mut settings, &json!({"deepseek_asr_api_key_clear": true}), Platform::Windows, &crypto).unwrap();
+        apply_settings_update(&mut settings, &json!({"deepseek_asr_api_key_clear": true}), Platform::Windows, &crypto)
+            .unwrap();
         assert!(settings.deepseek_asr_api_key_encrypted.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -963,7 +946,11 @@ mod tests {
         let settings = UserSettings::load(&path, Platform::Macos);
         assert!(settings.clipboard_panel_enabled());
         assert_eq!(settings.clipboard_panel_enter_action, "paste");
-        assert_eq!((settings.clipboard_panel_height, settings.clipboard_panel_max_width), (244, 1280), "旧数据补默认尺寸");
+        assert_eq!(
+            (settings.clipboard_panel_height, settings.clipboard_panel_max_width),
+            (244, 1280),
+            "旧数据补默认尺寸"
+        );
         let view = settings.public_view(Platform::Macos);
         assert_eq!(view["clipboard_panel_enabled"], true);
         assert_eq!(view["clipboard_panel_hotkey"]["display"], "⌃⌥V");
@@ -1071,10 +1058,15 @@ mod tests {
         assert!(err.contains("先清空"), "{err}");
 
         // 同键、清空按住录音：放行，只剩点按
-        let switch = serde_json::json!({"record_toggle_hotkey": {"modifiers": ["cmd", "alt"]}, "hotkey_enabled": false});
+        let switch =
+            serde_json::json!({"record_toggle_hotkey": {"modifiers": ["cmd", "alt"]}, "hotkey_enabled": false});
         apply_settings_update(&mut settings, &switch, Platform::Macos, &crypto).unwrap();
         assert!(!settings.binding_of(HotkeyAction::Record).unwrap().enabled);
-        assert_eq!(settings.binding_of(HotkeyAction::Record).unwrap().display(Platform::Macos), "⌘⌥", "清空只关开关，组合保留");
+        assert_eq!(
+            settings.binding_of(HotkeyAction::Record).unwrap().display(Platform::Macos),
+            "⌘⌥",
+            "清空只关开关，组合保留"
+        );
         assert_eq!(settings.public_view(Platform::Macos)["hotkey_enabled"], false);
         settings.save(&path).unwrap();
         let reloaded = UserSettings::load(&path, Platform::Macos);
@@ -1104,13 +1096,18 @@ mod tests {
     fn 优化选中文本_旧数据补默认绑定_改键开关预设_撞键拒绝() {
         let dir = temp_dir("rewrite");
         let path = dir.join("settings.json");
-        std::fs::write(&path, serde_json::json!({
-            "asr_provider": "doubao_asr",
-            "hotkeys": [
-                {"action": "record", "trigger": "hold", "modifiers": {"alt": true, "meta": true}, "enabled": true},
-                {"action": "future_action", "trigger": "toggle", "modifiers": {"ctrl": true}, "enabled": true}
-            ]
-        }).to_string()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "asr_provider": "doubao_asr",
+                "hotkeys": [
+                    {"action": "record", "trigger": "hold", "modifiers": {"alt": true, "meta": true}, "enabled": true},
+                    {"action": "future_action", "trigger": "toggle", "modifiers": {"ctrl": true}, "enabled": true}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
         let mut settings = UserSettings::load(&path, Platform::Macos);
         assert_eq!(settings.asr_provider, "doubao_asr", "认不出的绑定不拖垮整份设置");
         assert_eq!(settings.binding_of(HotkeyAction::Record).unwrap().display(Platform::Macos), "⌘⌥");
@@ -1134,20 +1131,38 @@ mod tests {
         assert_eq!(binding.trigger, TriggerMode::Toggle);
         assert!(!binding.enabled);
         assert_eq!(settings.rewrite_preset_id.as_deref(), Some("preset-程序员模式"));
-        apply_settings_update(&mut settings, &serde_json::json!({"rewrite_preset_id": ""}), Platform::Macos, &crypto).unwrap();
+        apply_settings_update(&mut settings, &serde_json::json!({"rewrite_preset_id": ""}), Platform::Macos, &crypto)
+            .unwrap();
         assert!(settings.rewrite_preset_id.is_none(), "空串 = 跟随默认");
 
         // 自动下载更新：布尔键，保存后重新读取仍保持
-        apply_settings_update(&mut settings, &serde_json::json!({"auto_download_updates": true}), Platform::Macos, &crypto).unwrap();
+        apply_settings_update(
+            &mut settings,
+            &serde_json::json!({"auto_download_updates": true}),
+            Platform::Macos,
+            &crypto,
+        )
+        .unwrap();
         settings.save(&path).unwrap();
         assert!(UserSettings::load(&path, Platform::Macos).auto_download_updates);
-        assert!(apply_settings_update(&mut settings, &serde_json::json!({"auto_download_updates": "yes"}), Platform::Macos, &crypto).is_err());
+        assert!(apply_settings_update(
+            &mut settings,
+            &serde_json::json!({"auto_download_updates": "yes"}),
+            Platform::Macos,
+            &crypto
+        )
+        .is_err());
 
         // 关着的时候可以和剪贴板悬浮框同键；打开就拒绝
         let same = serde_json::json!({"rewrite_hotkey": {"modifiers": ["ctrl", "alt"], "key": "v"}});
         apply_settings_update(&mut settings, &same, Platform::Macos, &crypto).unwrap();
-        let err = apply_settings_update(&mut settings, &serde_json::json!({"rewrite_enabled": true}), Platform::Macos, &crypto)
-            .unwrap_err();
+        let err = apply_settings_update(
+            &mut settings,
+            &serde_json::json!({"rewrite_enabled": true}),
+            Platform::Macos,
+            &crypto,
+        )
+        .unwrap_err();
         assert_eq!(err, "优化选中文本的快捷键与剪贴板悬浮框快捷键相同，请换一个");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1160,7 +1175,13 @@ mod tests {
         let update = serde_json::json!({"asr_hotwords": [" Tauri ", "tauri", "", 3, "落地页"]});
         apply_settings_update(&mut settings, &update, Platform::Macos, &crypto).unwrap();
         assert_eq!(settings.asr_hotwords, vec!["Tauri".to_string(), "落地页".into()]);
-        assert!(apply_settings_update(&mut settings, &serde_json::json!({"asr_hotwords": "Tauri"}), Platform::Macos, &crypto).is_err());
+        assert!(apply_settings_update(
+            &mut settings,
+            &serde_json::json!({"asr_hotwords": "Tauri"}),
+            Platform::Macos,
+            &crypto
+        )
+        .is_err());
 
         let path = dir.join("settings.json");
         std::fs::write(&path, r#"{"asr_provider": "doubao_asr", "asr_hotwords": "不是数组"}"#).unwrap();

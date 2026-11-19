@@ -37,11 +37,14 @@ async fn main() {
             if !partial.text.trim().is_empty() && mark.set(started.elapsed()).is_ok() {
                 println!("  首字耗时 {:?}", started.elapsed());
             }
-            println!("  [{:>5}ms] partial（末尾 {} 字未确认）: {}", started.elapsed().as_millis(), partial.pending_chars, partial.text);
+            println!(
+                "  [{:>5}ms] partial（末尾 {} 字未确认）: {}",
+                started.elapsed().as_millis(),
+                partial.pending_chars,
+                partial.text
+            );
         });
-        let mut session = doubao::DoubaoSession::connect(&config, "zh", "", Some(on_partial))
-            .await
-            .expect("建连失败");
+        let mut session = doubao::DoubaoSession::connect(&config, "zh", "", Some(on_partial)).await.expect("建连失败");
         println!("建连耗时 {:?}，logid={}", started.elapsed(), session.log_id);
         for chunk in samples.chunks(1600) {
             session.push(chunk).await.expect("推流失败");
@@ -52,7 +55,9 @@ async fn main() {
         doubao::transcribe_pcm(&config, "zh", "", &samples).await
     };
     match result {
-        Ok(outcome) => println!("结果（{:?}，计费 {}ms）: {}", started.elapsed(), outcome.audio_duration_ms, outcome.text),
+        Ok(outcome) => {
+            println!("结果（{:?}，计费 {}ms）: {}", started.elapsed(), outcome.audio_duration_ms, outcome.text)
+        }
         Err(error) => println!("失败: {error}"),
     }
 }

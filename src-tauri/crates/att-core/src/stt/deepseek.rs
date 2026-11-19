@@ -158,28 +158,27 @@ pub async fn transcribe_wav_detailed(config: &DeepSeekConfig, wav: Vec<u8>) -> R
         .map_err(|e| DeepSeekError::local(e.to_string()))?;
     let form = reqwest::multipart::Form::new().part("file", file);
     tracing::info!(endpoint = %config.endpoint, "调用 DeepSeek 语音识别接口");
-    let response = client
-        .post(config.endpoint.trim())
-        .bearer_auth(&config.api_key)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|error| {
-            DeepSeekError::local(if error.is_timeout() {
-                "DeepSeek 识别请求超时，请稍后重试".to_string()
-            } else if error.is_connect() {
-                format!("无法连接 DeepSeek 语音识别服务（{}），请检查网络或代理设置", config.endpoint)
-            } else {
-                "DeepSeek 识别请求失败，请稍后重试".to_string()
-            })
-        })?;
+    let response =
+        client.post(config.endpoint.trim()).bearer_auth(&config.api_key).multipart(form).send().await.map_err(
+            |error| {
+                DeepSeekError::local(if error.is_timeout() {
+                    "DeepSeek 识别请求超时，请稍后重试".to_string()
+                } else if error.is_connect() {
+                    format!("无法连接 DeepSeek 语音识别服务（{}），请检查网络或代理设置", config.endpoint)
+                } else {
+                    "DeepSeek 识别请求失败，请稍后重试".to_string()
+                })
+            },
+        )?;
     let status = response.status().as_u16();
     let body = response.text().await.unwrap_or_default();
     if status != 200 {
         return Err(DeepSeekError { status: Some(status), message: classify_status(status) });
     }
-    let value: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| DeepSeekError { status: Some(status), message: "DeepSeek 返回了无法解析的响应（非 JSON）".into() })?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| DeepSeekError {
+        status: Some(status),
+        message: "DeepSeek 返回了无法解析的响应（非 JSON）".into(),
+    })?;
     Ok(value.get("text").and_then(serde_json::Value::as_str).unwrap_or("").trim().to_string())
 }
 
@@ -202,10 +201,7 @@ fn plan_chunks(samples_len: usize, chunk_samples: usize, min_tail_samples: usize
     if tail >= min_tail_samples {
         used += tail;
     }
-    let ranges = (0..used)
-        .step_by(chunk_samples)
-        .map(|start| start..(start + chunk_samples).min(used))
-        .collect();
+    let ranges = (0..used).step_by(chunk_samples).map(|start| start..(start + chunk_samples).min(used)).collect();
     ChunkPlan { ranges, skipped_tail: samples_len - used }
 }
 
@@ -356,7 +352,14 @@ mod tests {
         // 空录音也按一块算，避免收尾预算退化成 0
         assert_eq!(chunk_count_for_duration(Duration::ZERO), 1);
 
-        for samples in [0, 1, MAX_CHUNK_SAMPLES, MAX_CHUNK_SAMPLES + 1, MAX_CHUNK_SAMPLES + SAMPLE_RATE, MAX_CHUNK_SAMPLES * 2 + 1_600] {
+        for samples in [
+            0,
+            1,
+            MAX_CHUNK_SAMPLES,
+            MAX_CHUNK_SAMPLES + 1,
+            MAX_CHUNK_SAMPLES + SAMPLE_RATE,
+            MAX_CHUNK_SAMPLES * 2 + 1_600,
+        ] {
             assert_eq!(chunk_count(samples), chunk_ranges(samples).len(), "{samples} 样本");
         }
     }
@@ -408,7 +411,8 @@ mod tests {
     #[tokio::test]
     async fn 上传_鉴权头与文本解析() {
         let (base, mut requests) =
-            stub_routes(vec![StubRoute::json("POST /v1/tools/asr", 200, r#"{"text":" 你好 ","duration_ms":3200}"#)]).await;
+            stub_routes(vec![StubRoute::json("POST /v1/tools/asr", 200, r#"{"text":" 你好 ","duration_ms":3200}"#)])
+                .await;
         let config = DeepSeekConfig {
             api_key: "sk-test-123456".into(),
             endpoint: format!("{base}/v1/tools/asr"),
@@ -458,12 +462,8 @@ mod tests {
 
     #[tokio::test]
     async fn 单块_400_直接失败不重试() {
-        let (base, mut requests) = stub_routes(vec![StubRoute::json(
-            "POST /v1/tools/asr",
-            400,
-            r#"{"error":"bad"}"#,
-        )])
-        .await;
+        let (base, mut requests) =
+            stub_routes(vec![StubRoute::json("POST /v1/tools/asr", 400, r#"{"error":"bad"}"#)]).await;
 
         let error = transcribe_pcm_with_limits(&config(&base), &[0x4141; 4], 4, 2).await.unwrap_err();
         assert!(error.contains("HTTP 400"), "{error}");
@@ -472,9 +472,16 @@ mod tests {
 
     #[tokio::test]
     async fn 状态归类_错误文案不回显密钥() {
-        for (status, expect) in
-            [(401, "无效"), (402, "余额"), (403, "权限"), (413, "8 MiB"), (422, "无法处理"), (429, "并发"), (503, "繁忙"), (504, "超时")]
-        {
+        for (status, expect) in [
+            (401, "无效"),
+            (402, "余额"),
+            (403, "权限"),
+            (413, "8 MiB"),
+            (422, "无法处理"),
+            (429, "并发"),
+            (503, "繁忙"),
+            (504, "超时"),
+        ] {
             let (base, _) = stub_routes(vec![StubRoute::json("POST /v1/tools/asr", status, r#"{"error":"x"}"#)]).await;
             let config = DeepSeekConfig {
                 api_key: "sk-secret-987654".into(),
@@ -491,9 +498,7 @@ mod tests {
     #[tokio::test]
     async fn 未知状态与_422_不透传响应体里的密钥() {
         let secret = "sk-leak-4f9a2b7c";
-        let body = format!(
-            r#"{{"error":"bad audio","detail":"Authorization: Bearer {secret}","echo":"{secret}"}}"#
-        );
+        let body = format!(r#"{{"error":"bad audio","detail":"Authorization: Bearer {secret}","echo":"{secret}"}}"#);
         // 422 是已知状态，418 走未知状态兜底：两条路径都不能把响应体拼进文案。
         for status in [422, 418] {
             let (base, _) = stub_routes(vec![StubRoute::json("POST /v1/tools/asr", status, body.clone())]).await;

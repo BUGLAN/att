@@ -51,7 +51,8 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use windows_sys::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_ROUND, DWM_WINDOW_CORNER_PREFERENCE,
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_ROUND,
+        DWM_WINDOW_CORNER_PREFERENCE,
     };
 
     pub fn round(window: &tauri::Window, radius: f64) {

@@ -14,11 +14,7 @@ fn temp_state(tag: &str) -> Arc<ServerState> {
     let _ = std::fs::remove_dir_all(&dir);
     let core = CoreState::init(&dir, att_core::Platform::Windows).unwrap();
     core.records
-        .insert(Record {
-            id: "rec-smoke".into(),
-            raw_text: Some("冒烟".into()),
-            ..Default::default()
-        })
+        .insert(Record { id: "rec-smoke".into(), raw_text: Some("冒烟".into()), ..Default::default() })
         .unwrap();
     Arc::new(ServerState { core: Arc::new(core), token: "test-token".into() })
 }
@@ -32,10 +28,7 @@ async fn 真监听自检_health_可访问() {
     assert!(port > 0);
 
     let status_line = self_check_health(port).expect("裸 TCP 必须能连上自检");
-    assert!(
-        status_line.contains("200"),
-        "自检应返回 200，实际: {status_line}"
-    );
+    assert!(status_line.contains("200"), "自检应返回 200，实际: {status_line}");
 }
 
 /// 回归锁：数据面必须**持续在线**（只要停机信号发送端仍存活）。
@@ -57,10 +50,7 @@ async fn 发送端存活期间_数据面持续在线() {
     // 显式停机信号后端口应释放（语义自查）
     tx.send(true).unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(
-        self_check_health(port).is_err(),
-        "发送 true 停机信号后端口应关闭"
-    );
+    assert!(self_check_health(port).is_err(), "发送 true 停机信号后端口应关闭");
 }
 
 /// CORS：dev 页面来源（127.0.0.1:任意端口）必须被放行，
@@ -101,8 +91,5 @@ async fn cors_放行回环来源_拒绝外部来源() {
         )
         .await
         .unwrap();
-    assert!(
-        blocked.headers().get("access-control-allow-origin").is_none(),
-        "外部来源不得下发 ACAO"
-    );
+    assert!(blocked.headers().get("access-control-allow-origin").is_none(), "外部来源不得下发 ACAO");
 }

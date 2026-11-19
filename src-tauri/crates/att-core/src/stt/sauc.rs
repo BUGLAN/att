@@ -73,8 +73,14 @@ pub struct ResultFrame {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerFrame {
-    Result { is_last: bool, result: ResultFrame },
-    Error { code: u32, message: String },
+    Result {
+        is_last: bool,
+        result: ResultFrame,
+    },
+    Error {
+        code: u32,
+        message: String,
+    },
     /// 结构异常或空载荷：调用方必须静默忽略，不能因此断流
     Unknown,
 }
@@ -226,10 +232,7 @@ fn frame(header: [u8; 4], body: &[u8]) -> Vec<u8> {
 /// 全量客户端请求帧：JSON 序列化，不压缩。
 pub fn build_full_client_request(payload: &Value) -> Vec<u8> {
     let body = payload.to_string().into_bytes();
-    frame(
-        build_header(MSG_FULL_CLIENT_REQUEST, FLAG_NO_SEQUENCE, SERIALIZATION_JSON, COMPRESSION_NONE),
-        &body,
-    )
+    frame(build_header(MSG_FULL_CLIENT_REQUEST, FLAG_NO_SEQUENCE, SERIALIZATION_JSON, COMPRESSION_NONE), &body)
 }
 
 /// 音频帧：RAW 序列化；末包 flags=0b0010（末包无序号）。
@@ -386,11 +389,8 @@ pub fn advance_definite_prefix(committed: &[String], utterances: &[Utterance]) -
         return Advance { committed: committed.to_vec(), pending: String::new() };
     }
     let prefix = utterances.iter().take_while(|u| u.definite).count();
-    let mut kept: Vec<String> = if prefix < committed.len() {
-        committed[..prefix].to_vec()
-    } else {
-        committed.to_vec()
-    };
+    let mut kept: Vec<String> =
+        if prefix < committed.len() { committed[..prefix].to_vec() } else { committed.to_vec() };
     for utterance in &utterances[kept.len().min(prefix)..prefix] {
         if !utterance.text.is_empty() {
             kept.push(utterance.text.clone());
@@ -416,13 +416,22 @@ pub fn classify_sauc_error(code: u32, message: &str) -> ErrorInfo {
     let detail = if message.is_empty() { String::new() } else { format!("：{message}") };
     match code {
         20_000_000 => ErrorInfo::new(ErrorKind::None, "成功", false, ""),
-        45_000_001 => ErrorInfo::new(ErrorKind::Protocol, format!("请求参数无效{detail}"), false, "检查服务商参数后重新测试连接"),
+        45_000_001 => {
+            ErrorInfo::new(ErrorKind::Protocol, format!("请求参数无效{detail}"), false, "检查服务商参数后重新测试连接")
+        }
         45_000_002 => ErrorInfo::new(ErrorKind::Input, "音频为空", false, "检查音频格式（16kHz 单声道 16bit）"),
         45_000_081 => ErrorInfo::new(ErrorKind::Network, "服务端等包超时", true, "立即重试"),
         45_000_151 => ErrorInfo::new(ErrorKind::Input, "音频格式不正确", false, "检查音频格式（16kHz 单声道 16bit）"),
         55_000_031 => ErrorInfo::new(ErrorKind::Quota, "服务端过载", true, "稍后重试，或检查并发配额"),
-        55_000_000..=55_999_999 => ErrorInfo::new(ErrorKind::Server, format!("服务端内部错误（{code}）{detail}"), true, "立即重试"),
-        _ => ErrorInfo::new(ErrorKind::Protocol, format!("服务端返回未知错误（{code}）{detail}"), false, "切换服务商或稍后重试"),
+        55_000_000..=55_999_999 => {
+            ErrorInfo::new(ErrorKind::Server, format!("服务端内部错误（{code}）{detail}"), true, "立即重试")
+        }
+        _ => ErrorInfo::new(
+            ErrorKind::Protocol,
+            format!("服务端返回未知错误（{code}）{detail}"),
+            false,
+            "切换服务商或稍后重试",
+        ),
     }
 }
 
@@ -461,7 +470,12 @@ pub fn classify_handshake_status(status: u16, reason: &str) -> ErrorInfo {
             false,
             "ASR 1.0 用 volc.bigasr.sauc.*，ASR 2.0 用 volc.seedasr.sauc.*，逐个确认",
         ),
-        404 => ErrorInfo::new(ErrorKind::Protocol, format!("接入点不存在（404{detail}）"), false, "检查 WebSocket 接入点地址"),
+        404 => ErrorInfo::new(
+            ErrorKind::Protocol,
+            format!("接入点不存在（404{detail}）"),
+            false,
+            "检查 WebSocket 接入点地址",
+        ),
         429 => ErrorInfo::new(ErrorKind::Quota, format!("请求过于频繁（429{detail}）"), true, "稍后重试"),
         500..=599 => ErrorInfo::new(ErrorKind::Server, format!("服务端异常（{status}{detail}）"), true, "立即重试"),
         _ => ErrorInfo::new(ErrorKind::Network, format!("握手失败（{status}{detail}）"), true, "立即重试"),

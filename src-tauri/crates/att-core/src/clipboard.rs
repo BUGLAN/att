@@ -43,7 +43,10 @@ pub fn make_thumbnail(image: &image::RgbaImage) -> Option<image::RgbaImage> {
 /// 写 PNG：同目录临时文件 + 改名（并发生成同一张缩略图时互不踩踏，读到的总是完整文件）。
 fn write_png_atomic(path: &Path, image: &image::RgbaImage) -> std::io::Result<()> {
     let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
-    let result = image.save_with_format(&tmp, image::ImageFormat::Png).map_err(std::io::Error::other).and_then(|()| std::fs::rename(&tmp, path));
+    let result = image
+        .save_with_format(&tmp, image::ImageFormat::Png)
+        .map_err(std::io::Error::other)
+        .and_then(|()| std::fs::rename(&tmp, path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -56,9 +59,9 @@ fn now_iso() -> String {
 }
 
 fn parse_time(value: &str) -> Option<chrono::NaiveDateTime> {
-    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
-        .ok()
-        .or_else(|| chrono::DateTime::parse_from_rfc3339(value).ok().map(|t| t.with_timezone(&chrono::Local).naive_local()))
+    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok().or_else(|| {
+        chrono::DateTime::parse_from_rfc3339(value).ok().map(|t| t.with_timezone(&chrono::Local).naive_local())
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,7 +187,11 @@ fn build_title(item_type: &str, content: &str) -> String {
         "link" => take(72),
         "file" => {
             let name = first_line.rsplit(['/', '\\']).next().unwrap_or("");
-            if name.is_empty() { take(72) } else { name.to_string() }
+            if name.is_empty() {
+                take(72)
+            } else {
+                name.to_string()
+            }
         }
         _ => take(36),
     }
@@ -274,7 +281,8 @@ impl ClipboardRepo {
             }
         };
         let Some(thumbnail) = thumbnail else { return Some(original) };
-        let written = std::fs::create_dir_all(self.thumbnails_dir()).and_then(|()| write_png_atomic(&cached, &thumbnail));
+        let written =
+            std::fs::create_dir_all(self.thumbnails_dir()).and_then(|()| write_png_atomic(&cached, &thumbnail));
         match written {
             Ok(()) => Some(cached),
             Err(error) => {
@@ -322,7 +330,8 @@ impl ClipboardRepo {
                 .items()
                 .iter()
                 .find(|item| {
-                    (item.content_hash.is_empty() || item.content_hash == hash) && normalize_text(&item.content) == normalized
+                    (item.content_hash.is_empty() || item.content_hash == hash)
+                        && normalize_text(&item.content) == normalized
                 })
                 .cloned();
             if let Some(mut item) = duplicate {
@@ -348,8 +357,16 @@ impl ClipboardRepo {
             id: uuid::Uuid::new_v4().to_string(),
             created_at: now.clone(),
             updated_at: now,
-            title: request.title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| build_title(&item_type, &normalized)),
-            summary: request.summary.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| build_summary(&normalized)),
+            title: request
+                .title
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| build_title(&item_type, &normalized)),
+            summary: request
+                .summary
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| build_summary(&normalized)),
             item_type,
             content_size: normalized.chars().count() as i64,
             content: normalized,
@@ -517,12 +534,21 @@ mod tests {
     #[test]
     fn 捕获去重_列表排序_更新与统计() {
         let (repo, dir) = repo("crud");
-        let first = repo.capture(CaptureRequest { content: "你好\r\n世界 ".into(), source: "monitor".into(), ..Default::default() }).unwrap();
+        let first = repo
+            .capture(CaptureRequest {
+                content: "你好\r\n世界 ".into(), source: "monitor".into(), ..Default::default()
+            })
+            .unwrap();
         assert_eq!(first.content, "你好\n世界");
-        let again = repo.capture(CaptureRequest { content: "你好\n世界".into(), source: "monitor".into(), ..Default::default() }).unwrap();
+        let again = repo
+            .capture(CaptureRequest {
+                content: "你好\n世界".into(), source: "monitor".into(), ..Default::default()
+            })
+            .unwrap();
         assert_eq!(again.id, first.id);
         assert_eq!(again.duplicate_count, 2);
-        let link = repo.capture(CaptureRequest { content: "https://example.com".into(), ..Default::default() }).unwrap();
+        let link =
+            repo.capture(CaptureRequest { content: "https://example.com".into(), ..Default::default() }).unwrap();
         assert_eq!(link.item_type, "link");
         repo.update(&first.id, UpdateRequest { is_pinned: Some(true), ..Default::default() }).unwrap();
         let items = repo.list(&ListQuery { limit: 100, ..Default::default() });
@@ -538,8 +564,12 @@ mod tests {
         assert_ne!(first[0].id, second.first().map(|i| i.id.clone()).unwrap_or_default());
         let (beyond, _) = repo.list_page(&ListQuery { offset: total, limit: 10, ..Default::default() });
         assert!(beyond.is_empty());
-        let (_, link_or_text) = repo.list_page(&ListQuery { item_type: Some("link, text".into()), limit: 10, ..Default::default() });
-        let singles = ["link", "text"].iter().map(|t| repo.list(&ListQuery { item_type: Some((*t).into()), limit: 100, ..Default::default() }).len()).sum::<usize>();
+        let (_, link_or_text) =
+            repo.list_page(&ListQuery { item_type: Some("link, text".into()), limit: 10, ..Default::default() });
+        let singles = ["link", "text"]
+            .iter()
+            .map(|t| repo.list(&ListQuery { item_type: Some((*t).into()), limit: 100, ..Default::default() }).len())
+            .sum::<usize>();
         assert_eq!(link_or_text, singles);
         let stats = repo.stats();
         assert_eq!(stats["total"], 2);
@@ -567,7 +597,9 @@ mod tests {
         image::RgbaImage::from_pixel(1200, 720, image::Rgba([10, 20, 30, 255]))
             .save(repo.images_dir().join("big.png"))
             .unwrap();
-        image::RgbaImage::from_pixel(300, 200, image::Rgba([1, 2, 3, 255])).save(repo.images_dir().join("small.png")).unwrap();
+        image::RgbaImage::from_pixel(300, 200, image::Rgba([1, 2, 3, 255]))
+            .save(repo.images_dir().join("small.png"))
+            .unwrap();
         std::fs::write(repo.images_dir().join("broken.png"), b"not a png").unwrap();
 
         let big = image_item(&repo, "big.png");
@@ -589,7 +621,11 @@ mod tests {
         assert_eq!(image::image_dimensions(repo.thumbnails_dir().join("wide.png")).unwrap(), (560, 28));
         assert!(repo.save_thumbnail("../escape.png", &wide).is_err());
         assert!(make_thumbnail(&image::RgbaImage::new(THUMBNAIL_MAX, 100)).is_none(), "正好等于上限不缩");
-        let leftovers = std::fs::read_dir(repo.thumbnails_dir()).unwrap().flatten().filter(|e| e.path().to_string_lossy().contains(".tmp")).count();
+        let leftovers = std::fs::read_dir(repo.thumbnails_dir())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().to_string_lossy().contains(".tmp"))
+            .count();
         assert_eq!(leftovers, 0, "不留临时文件");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -603,7 +639,10 @@ mod tests {
             .capture(CaptureRequest {
                 content: "image:abc".into(),
                 item_type: Some("image".into()),
-                metadata: Some(serde_json::from_value(json!({"image_path": "/old/machine/data/clipboard/images/abc.png"})).unwrap()),
+                metadata: Some(
+                    serde_json::from_value(json!({"image_path": "/old/machine/data/clipboard/images/abc.png"}))
+                        .unwrap(),
+                ),
                 ..Default::default()
             })
             .unwrap();

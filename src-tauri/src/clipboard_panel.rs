@@ -183,7 +183,11 @@ struct SavedLayout {
 impl SavedLayout {
     /// 布局用的宽度：铺满时交给 layout 按屏幕宽度夹取
     fn width(&self) -> f64 {
-        if self.max_width > 0.0 { self.max_width } else { f64::INFINITY }
+        if self.max_width > 0.0 {
+            self.max_width
+        } else {
+            f64::INFINITY
+        }
     }
 }
 
@@ -235,10 +239,17 @@ fn cursor_monitor(app: &AppHandle, window: &tauri::WebviewWindow) -> Option<taur
 
 /// 面板水平居中、离屏幕底边 `bottom_offset`；宽高与离底距离都夹到允许范围与屏幕之内。
 /// 返回实际的（面板宽，面板高，离底距离）。
-fn layout(window: &tauri::WebviewWindow, screen: &Screen, width: f64, height: f64, bottom_offset: f64) -> (f64, f64, f64) {
+fn layout(
+    window: &tauri::WebviewWindow,
+    screen: &Screen,
+    width: f64,
+    height: f64,
+    bottom_offset: f64,
+) -> (f64, f64, f64) {
     use att_core::settings::{CLIPBOARD_PANEL_HEIGHT_RANGE, CLIPBOARD_PANEL_WIDTH_RANGE};
     let available = screen.available_width();
-    let panel_w = width.clamp(CLIPBOARD_PANEL_WIDTH_RANGE.0 as f64, CLIPBOARD_PANEL_WIDTH_RANGE.1 as f64).min(available);
+    let panel_w =
+        width.clamp(CLIPBOARD_PANEL_WIDTH_RANGE.0 as f64, CLIPBOARD_PANEL_WIDTH_RANGE.1 as f64).min(available);
     let panel_h = height
         .clamp(CLIPBOARD_PANEL_HEIGHT_RANGE.0 as f64, CLIPBOARD_PANEL_HEIGHT_RANGE.1 as f64)
         .min(screen.height - 2.0 * SCREEN_GAP);

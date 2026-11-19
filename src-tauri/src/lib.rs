@@ -309,10 +309,7 @@ fn init_logging(data_dir: &std::path::Path) {
     match file {
         Ok(file) => {
             let file = std::sync::Arc::new(file);
-            let _ = tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_writer(std::io::stdout.and(file))
-                .try_init();
+            let _ = tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stdout.and(file)).try_init();
         }
         Err(_) => {
             let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
@@ -345,10 +342,7 @@ fn resolve_data_dir(app: &tauri::App) -> PathBuf {
             return repo_data;
         }
     }
-    app.path()
-        .app_data_dir()
-        .expect("无法解析应用数据目录")
-        .join("data")
+    app.path().app_data_dir().expect("无法解析应用数据目录").join("data")
 }
 
 /// 启动全局键盘监听：按键匹配当前启用的绑定 → 录音与优化选中文本交给录音 Actor，剪贴板悬浮框直接切换显示。

@@ -84,7 +84,8 @@ fn collect_samples(data: &Path, limit: usize, all: bool, ids: &[String]) -> Vec<
                 optimized_text: text_of(&record, "optimized_text"),
             };
             let mixed = has_english_word(&sample.raw_text) || has_english_word(&sample.optimized_text);
-            let wanted = if ids.is_empty() { all || mixed } else { ids.iter().any(|id| sample.id.starts_with(id.as_str())) };
+            let wanted =
+                if ids.is_empty() { all || mixed } else { ids.iter().any(|id| sample.id.starts_with(id.as_str())) };
             (sample.wav.is_file() && wanted).then_some(sample)
         })
         .collect();
@@ -169,7 +170,13 @@ async fn doubao_ab() {
     println!("共 {} 条，两种结果不同的 {} 条", samples.len(), differ);
 
     if let Ok(out) = std::env::var("ATT_AB_OUT") {
-        let header = format!("# 豆包 {} vs {}\n\n共 {} 条，结果不同的 {} 条（下表只列不同的）。\n\n", labels[0], labels[1], samples.len(), differ);
+        let header = format!(
+            "# 豆包 {} vs {}\n\n共 {} 条，结果不同的 {} 条（下表只列不同的）。\n\n",
+            labels[0],
+            labels[1],
+            samples.len(),
+            differ
+        );
         std::fs::write(&out, header + &report).expect("写出对比报告");
         println!("报告：{out}");
     }

@@ -75,8 +75,7 @@ fn pick_device(host: &cpal::Host, preferred: Option<&str>) -> Result<cpal::Devic
         }
         tracing::warn!("未找到麦克风「{name}」，改用系统默认输入设备");
     }
-    host.default_input_device()
-        .ok_or_else(|| "未检测到可用的麦克风，请检查系统输入设备".to_string())
+    host.default_input_device().ok_or_else(|| "未检测到可用的麦克风，请检查系统输入设备".to_string())
 }
 
 /// 启动采集。设备打开失败（无设备/无权限/格式不支持）同步返回错误。
@@ -92,7 +91,9 @@ pub fn start_capture(device: Option<String>, on_chunk: ChunkCallback) -> Result<
         .map_err(|e| format!("无法启动采集线程: {e}"))?;
 
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(Ok((device_name, device_rate))) => Ok(CaptureHandle { stop, thread: Some(thread), device_error, device_name, device_rate }),
+        Ok(Ok((device_name, device_rate))) => {
+            Ok(CaptureHandle { stop, thread: Some(thread), device_error, device_name, device_rate })
+        }
         Ok(Err(message)) => {
             let _ = thread.join();
             Err(message)

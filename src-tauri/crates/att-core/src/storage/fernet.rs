@@ -59,13 +59,10 @@ impl Fernet {
     pub fn encrypt(&self, plaintext: &[u8]) -> String {
         let mut iv = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut iv);
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
 
-        let ciphertext = Aes128CbcEnc::new(&self.encryption_key.into(), &iv.into())
-            .encrypt_padded_vec::<Pkcs7>(plaintext);
+        let ciphertext =
+            Aes128CbcEnc::new(&self.encryption_key.into(), &iv.into()).encrypt_padded_vec::<Pkcs7>(plaintext);
 
         let mut signed_part = Vec::with_capacity(1 + 8 + 16 + ciphertext.len());
         signed_part.push(FERNET_VERSION);

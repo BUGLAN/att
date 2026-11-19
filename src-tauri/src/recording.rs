@@ -40,14 +40,14 @@
 //! 前端事件：`recording:state`（相位 + 文本 + 记录）、`recording:partial`（实时文本）、
 //! `recording:level`（音量 0..1）。
 
+use crate::typing::StreamTyping;
+use att_core::llm::cleaning;
+use att_core::llm::optimizer::{self, OptimizeEvent, OptimizeOutcome};
 use att_core::records::{Record, RecordStatus};
 use att_core::settings::hotkey::HotkeyAction;
 use att_core::state::CoreState;
-use att_core::llm::cleaning;
-use att_core::llm::optimizer::{self, OptimizeEvent, OptimizeOutcome};
 use att_core::stt::{self, deepseek, doubao};
 use att_hotkey::KeyPhase;
-use crate::typing::StreamTyping;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -209,7 +209,9 @@ struct Active {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecordHotkeyStep {
     /// 开始新录音；`held` = 由按住录音键开始（松开时收尾）
-    Start { held: bool },
+    Start {
+        held: bool,
+    },
     /// 按住键按下：在松开缓冲里就接着录，否则当普通按下（开始 / 录音中的自动重复被吞）
     ResumeOrStart,
     Stop,
@@ -324,7 +326,9 @@ impl Actor {
                         self.finish(outcome).await;
                     }
                 }
-                Cmd::Optimized(id, record_id, outcome, typing) => self.on_optimized(id, record_id, outcome, typing).await,
+                Cmd::Optimized(id, record_id, outcome, typing) => {
+                    self.on_optimized(id, record_id, outcome, typing).await
+                }
                 Cmd::FinalizeTimeout(id, hard) => self.on_finalize_timeout(id, hard).await,
                 Cmd::ReleaseGrace(id, token) => self.on_release_grace(id, token),
             }
@@ -436,14 +440,18 @@ impl Actor {
             );
         }
         if !optimizer::has_default_model(&self.core) {
-            return self.emit_state("error", json!({ "message": "优化选中文本需要 LLM 模型：请先在 设置 → LLM 服务 中添加" }));
+            return self
+                .emit_state("error", json!({ "message": "优化选中文本需要 LLM 模型：请先在 设置 → LLM 服务 中添加" }));
         }
         let selection = tokio::task::spawn_blocking(crate::desktop::copy_selection)
             .await
             .unwrap_or_else(|error| Err(error.to_string()));
         let text = match selection {
             Ok(Some(text)) => text,
-            Ok(None) => return self.emit_state("error", json!({ "message": "没有读到选中的文字：先选中要优化的文本再按快捷键" })),
+            Ok(None) => {
+                return self
+                    .emit_state("error", json!({ "message": "没有读到选中的文字：先选中要优化的文本再按快捷键" }))
+            }
             Err(message) => {
                 tracing::warn!("读取选中文本失败: {message}");
                 return self.emit_state("error", json!({ "message": message }));
@@ -506,7 +514,8 @@ impl Actor {
         let streaming_config = match (&engine, mode) {
             (stt::Engine::Doubao(config), Mode::Streaming) => Some(config.clone()),
             (_, Mode::Streaming) => {
-                return self.fail_start(format!("{}暂不支持流式录音，请在设置中改用单段或多段录音模式", engine.label()));
+                return self
+                    .fail_start(format!("{}暂不支持流式录音，请在设置中改用单段或多段录音模式", engine.label()));
             }
             _ => None,
         };
@@ -539,7 +548,11 @@ impl Actor {
         let device = settings.audio_input_device.clone();
         // 按下即亮「聽」：打开麦克风可能要几百毫秒（蓝牙耳机切换通话模式更久），别让用户干等没有反馈。
         // 打不开时 fail_start 推「敗」接上；之后的 connecting / recording 映射成同一状态，胶囊不会重播
-        crate::floating::update(&self.app, json!({ "phase": "recording", "mode": mode.as_str(), "text": "", "duration": 0 }), true);
+        crate::floating::update(
+            &self.app,
+            json!({ "phase": "recording", "mode": mode.as_str(), "text": "", "duration": 0 }),
+            true,
+        );
         let opened = tokio::task::spawn_blocking(move || att_audio::start_capture(device, on_chunk)).await;
         let capture = match opened {
             Ok(Ok(capture)) => capture,
@@ -573,7 +586,9 @@ impl Actor {
                 self.emit_state("connecting", json!({ "message": "正在连接豆包语音服务" }));
                 let app = self.app.clone();
                 let config = streaming_config.expect("流式模式已校验为豆包");
-                tauri::async_runtime::spawn(streaming_task(id, config, language, audio_rx, cancel_rx, heard, live, app, tx));
+                tauri::async_runtime::spawn(streaming_task(
+                    id, config, language, audio_rx, cancel_rx, heard, live, app, tx,
+                ));
             }
             Mode::Batch => {
                 self.phase = Phase::Recording;
@@ -583,9 +598,12 @@ impl Actor {
             Mode::Multi => {
                 self.phase = Phase::Recording;
                 self.emit_state("recording", json!({ "message": "静音切段监听中" }));
-                let segmenter = att_core::audio::Segmenter::new(settings.silence_level as f64, settings.silence_threshold);
+                let segmenter =
+                    att_core::audio::Segmenter::new(settings.silence_level as f64, settings.silence_threshold);
                 let app = self.app.clone();
-                tauri::async_runtime::spawn(multi_task(id, engine, language, audio_rx, cancel_rx, segmenter, live, app, tx));
+                tauri::async_runtime::spawn(multi_task(
+                    id, engine, language, audio_rx, cancel_rx, segmenter, live, app, tx,
+                ));
             }
         }
 
@@ -681,8 +699,7 @@ impl Actor {
             }
             return;
         }
-        self.finish(SessionOutcome { samples: Vec::new(), text: String::new(), error: None, cancelled: true })
-            .await;
+        self.finish(SessionOutcome { samples: Vec::new(), text: String::new(), error: None, cancelled: true }).await;
     }
 
     fn cancel(&mut self) {
@@ -756,7 +773,8 @@ impl Actor {
             match outcome.error {
                 // 识别失败且没有任何文本：音频落盘并建失败记录，避免录音丢失
                 Some(error) => {
-                    let record = self.save_record(&outcome.samples, duration, None, Some(error.clone()), processing_time).await;
+                    let record =
+                        self.save_record(&outcome.samples, duration, None, Some(error.clone()), processing_time).await;
                     self.emit_state("error", json!({ "message": error, "record": record }));
                 }
                 None => self.emit_state("completed", json!({ "message": "没有识别到语音内容", "text": "" })),
@@ -777,17 +795,32 @@ impl Actor {
                 Some(error) => format!("{NO_VOICE_NOTE}；{error}"),
                 None => NO_VOICE_NOTE.to_string(),
             };
-            let record = self.save_record(&outcome.samples, duration, Some(outcome.text.clone()), Some(note), processing_time).await;
+            let record = self
+                .save_record(&outcome.samples, duration, Some(outcome.text.clone()), Some(note), processing_time)
+                .await;
             self.emit_state("completed", no_voice_state(&outcome.text, record));
         } else {
             let record = self
-                .save_record(&outcome.samples, duration, Some(outcome.text.clone()), outcome.error.clone(), processing_time)
+                .save_record(
+                    &outcome.samples,
+                    duration,
+                    Some(outcome.text.clone()),
+                    outcome.error.clone(),
+                    processing_time,
+                )
                 .await;
             let record_id = record.get("id").and_then(Value::as_str).map(str::to_string);
             let auto_optimize = self.core.settings().auto_optimize && optimizer::has_default_model(&self.core);
             if let (true, Some(record_id)) = (auto_optimize, record_id) {
                 // 自动优化：本次不在转写阶段粘贴，优化结果流式打进输入框（否则原文、优化文各出一遍）
-                self.begin_optimization(mode, record_id, outcome.text.clone(), outcome.error.clone(), record, OptimizeSource::Recording);
+                self.begin_optimization(
+                    mode,
+                    record_id,
+                    outcome.text.clone(),
+                    outcome.error.clone(),
+                    record,
+                    OptimizeSource::Recording,
+                );
                 self.active = None;
                 return;
             }
@@ -809,12 +842,7 @@ impl Actor {
                 }),
             );
         }
-        tracing::info!(
-            "录音会话结束（{}，{:.2}s，识别 {} 字）",
-            mode.as_str(),
-            duration,
-            outcome.text.chars().count()
-        );
+        tracing::info!("录音会话结束（{}，{:.2}s，识别 {} 字）", mode.as_str(), duration, outcome.text.chars().count());
         self.active = None;
     }
 
@@ -865,25 +893,33 @@ impl Actor {
         tauri::async_runtime::spawn(async move {
             let mut accumulated = String::new();
             let delta_record = record_id.clone();
-            let outcome = optimizer::optimize_record_with_preset(&core, &record_id, &raw_text, preset_id.as_deref(), |event| {
-                let OptimizeEvent::Delta(chunk) = event else { return };
-                accumulated.push_str(&chunk);
-                // 输入框只出「收尾清洗不会剥掉」的部分（套话 / 思考块不上屏）。
-                // 悬浮窗不回填优化稿：它停留很短，一闪而过反而突兀，「轉」期间一直显示识别稿
-                let stable = cleaning::stable_prefix(&accumulated);
-                if let Some(typing) = typing.as_mut() {
-                    typing.advance(&stable);
-                }
-                let _ = app.emit("recording:optimization", json!({ "record_id": &delta_record, "text": chunk }));
-            })
-            .await;
+            let outcome =
+                optimizer::optimize_record_with_preset(&core, &record_id, &raw_text, preset_id.as_deref(), |event| {
+                    let OptimizeEvent::Delta(chunk) = event else { return };
+                    accumulated.push_str(&chunk);
+                    // 输入框只出「收尾清洗不会剥掉」的部分（套话 / 思考块不上屏）。
+                    // 悬浮窗不回填优化稿：它停留很短，一闪而过反而突兀，「轉」期间一直显示识别稿
+                    let stable = cleaning::stable_prefix(&accumulated);
+                    if let Some(typing) = typing.as_mut() {
+                        typing.advance(&stable);
+                    }
+                    let _ = app.emit("recording:optimization", json!({ "record_id": &delta_record, "text": chunk }));
+                })
+                .await;
             let _ = tx.send(Cmd::Optimized(session_id, delta_record, outcome, typing));
         });
     }
 
     /// 自动优化结束：补齐流式输入（失败且没打出字时粘贴原文）；已转后台的只同步记录、不输出。
-    async fn on_optimized(&mut self, session_id: u64, record_id: String, outcome: OptimizeOutcome, typing: Option<StreamTyping>) {
-        let record = self.core.records.get(&record_id).ok().and_then(|r| serde_json::to_value(r).ok()).unwrap_or(Value::Null);
+    async fn on_optimized(
+        &mut self,
+        session_id: u64,
+        record_id: String,
+        outcome: OptimizeOutcome,
+        typing: Option<StreamTyping>,
+    ) {
+        let record =
+            self.core.records.get(&record_id).ok().and_then(|r| serde_json::to_value(r).ok()).unwrap_or(Value::Null);
         let Some(pending) = self.optimizing.take_if(|p| p.session_id == session_id) else {
             // 已被更新的一段录音（及其优化）取代：只同步记录，不粘贴、不动当前会话
             abort_typing(typing).await;
@@ -894,11 +930,21 @@ impl Actor {
         crate::tray::refresh(&self.app);
         let selection = pending.source == OptimizeSource::Selection;
         let (final_text, optimized, optimize_error, base_message) = match (&outcome, selection) {
-            (OptimizeOutcome::Completed(success), false) => (success.optimized_text.clone(), true, None, "录音已完成，已优化".to_string()),
-            (OptimizeOutcome::Completed(success), true) => (success.optimized_text.clone(), true, None, "选中文本已优化".to_string()),
-            (OptimizeOutcome::Failed(error), false) => (pending.raw_text.clone(), false, Some(error.clone()), format!("优化失败，已保留转写原文：{error}")),
-            (OptimizeOutcome::Failed(error), true) => (pending.raw_text.clone(), false, Some(error.clone()), format!("优化失败，选中的文字没有改动：{error}")),
-            (OptimizeOutcome::Cancelled, _) => (pending.raw_text.clone(), false, None, "已取消优化，保留原始文本".to_string()),
+            (OptimizeOutcome::Completed(success), false) => {
+                (success.optimized_text.clone(), true, None, "录音已完成，已优化".to_string())
+            }
+            (OptimizeOutcome::Completed(success), true) => {
+                (success.optimized_text.clone(), true, None, "选中文本已优化".to_string())
+            }
+            (OptimizeOutcome::Failed(error), false) => {
+                (pending.raw_text.clone(), false, Some(error.clone()), format!("优化失败，已保留转写原文：{error}"))
+            }
+            (OptimizeOutcome::Failed(error), true) => {
+                (pending.raw_text.clone(), false, Some(error.clone()), format!("优化失败，选中的文字没有改动：{error}"))
+            }
+            (OptimizeOutcome::Cancelled, _) => {
+                (pending.raw_text.clone(), false, None, "已取消优化，保留原始文本".to_string())
+            }
         };
         let truncated = matches!(&outcome, OptimizeOutcome::Completed(s) if s.truncated);
         let cancelled = matches!(outcome, OptimizeOutcome::Cancelled);
@@ -975,7 +1021,8 @@ impl Actor {
         let audio_ok = !samples.is_empty() && {
             let audio_path = self.core.records.audio_dir().join(&audio_name);
             let samples = samples.to_vec();
-            let wrote = tokio::task::spawn_blocking(move || att_core::audio::write_recording_16k(&audio_path, &samples)).await;
+            let wrote =
+                tokio::task::spawn_blocking(move || att_core::audio::write_recording_16k(&audio_path, &samples)).await;
             if !matches!(wrote, Ok(Ok(()))) {
                 tracing::error!("录音落盘失败: {wrote:?}");
             }
@@ -997,18 +1044,19 @@ impl Actor {
             return Value::Null;
         }
         crate::tray::refresh(&self.app);
-        self.core
-            .records
-            .get(&id)
-            .ok()
-            .and_then(|r| serde_json::to_value(r).ok())
-            .unwrap_or(Value::Null)
+        self.core.records.get(&id).ok().and_then(|r| serde_json::to_value(r).ok()).unwrap_or(Value::Null)
     }
 
     /// 输出优化收尾的文本。流式输入打出过内容：成功则补齐到最终文本，失败则停在已打出的部分；
     /// 两种情况都把最终文本（失败时为原文）放进剪贴板。一个字都没打出（未授权 / 失败在首字前）：退回整段粘贴。
     /// 优化选中文本不看自动粘贴开关（输回原处就是这个功能本身）；失败且一个字没打出时什么都不做，选区原样留着。
-    async fn deliver(&self, final_text: &str, optimized: bool, typing: Option<StreamTyping>, source: OptimizeSource) -> (bool, bool, Option<String>) {
+    async fn deliver(
+        &self,
+        final_text: &str,
+        optimized: bool,
+        typing: Option<StreamTyping>,
+        source: OptimizeSource,
+    ) -> (bool, bool, Option<String>) {
         let force = source == OptimizeSource::Selection;
         let Some(typing) = typing else { return self.auto_copy(final_text, force).await };
         let typed_any = !typing.typed().is_empty();
@@ -1027,7 +1075,9 @@ impl Actor {
         .await;
         match result {
             Ok((Ok(()), copied)) if optimized => (copied, true, None),
-            Ok((Ok(()), copied)) => (copied, false, Some("优化中断：输入框里是部分优化结果，原文已复制到剪贴板".into())),
+            Ok((Ok(()), copied)) => {
+                (copied, false, Some("优化中断：输入框里是部分优化结果，原文已复制到剪贴板".into()))
+            }
             Ok((Err(error), _)) if !typed_any => {
                 tracing::warn!("流式输入不可用，改为整段粘贴: {error}");
                 self.auto_copy(final_text, force).await
@@ -1135,9 +1185,7 @@ fn finalize_budget(mode: Mode, recorded: Duration, batch_timeout: Duration, plan
         Mode::Multi => MULTI_DRAIN_TIMEOUT,
         Mode::Batch => match plan {
             BatchPlan::Single => batch_timeout.max(doubao + recorded / 2),
-            BatchPlan::DeepSeek { chunks } => {
-                batch_timeout * (chunks.max(1) * deepseek::MAX_ATTEMPTS_PER_CHUNK) as u32
-            }
+            BatchPlan::DeepSeek { chunks } => batch_timeout * (chunks.max(1) * deepseek::MAX_ATTEMPTS_PER_CHUNK) as u32,
         },
     };
     engine + WATCHDOG_SLACK
@@ -1303,12 +1351,7 @@ async fn streaming_task(
         ms(Some(released_at)),
         ms(Some(started.elapsed() - released_at)),
     );
-    let _ = tx.send(Cmd::Done(id, SessionOutcome {
-        samples: all,
-        text,
-        error,
-        cancelled,
-    }));
+    let _ = tx.send(Cmd::Done(id, SessionOutcome { samples: all, text, error, cancelled }));
 }
 
 /// 单段会话：录完整段后一次性批量识别。
@@ -1347,12 +1390,7 @@ async fn batch_task(
             _ = &mut cancel_rx => (String::new(), None, true),
         }
     };
-    let _ = tx.send(Cmd::Done(id, SessionOutcome {
-        samples: all,
-        text,
-        error,
-        cancelled,
-    }));
+    let _ = tx.send(Cmd::Done(id, SessionOutcome { samples: all, text, error, cancelled }));
 }
 
 /// 多段会话：静音切段 → 每段立即并发送批量识别 → 按段序实时拼接推给前端与悬浮窗。
@@ -1381,11 +1419,20 @@ async fn multi_task(
         });
     };
     let joined = |texts: &[Option<Result<String, String>>]| {
-        texts.iter().filter_map(|t| t.as_ref().and_then(|r| r.as_ref().ok())).filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join("\n\n")
+        texts
+            .iter()
+            .filter_map(|t| t.as_ref().and_then(|r| r.as_ref().ok()))
+            .filter(|t| !t.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n")
     };
     let emit_partial = |text: &str| {
         if live.load(Ordering::SeqCst) {
-            crate::floating::update_partial(&app, json!({ "phase": "recording", "mode": "multi", "text": text, "duration": 0 }));
+            crate::floating::update_partial(
+                &app,
+                json!({ "phase": "recording", "mode": "multi", "text": text, "duration": 0 }),
+            );
         }
         let _ = app.emit("recording:partial", json!({ "text": text }));
     };
@@ -1448,12 +1495,7 @@ async fn multi_task(
         .iter()
         .find_map(|t| t.as_ref().and_then(|r| r.as_ref().err()).cloned())
         .or_else(|| (pending > 0).then(|| format!("{pending} 个分段识别超时")));
-    let _ = tx.send(Cmd::Done(id, SessionOutcome {
-        samples: all,
-        text,
-        error,
-        cancelled: false,
-    }));
+    let _ = tx.send(Cmd::Done(id, SessionOutcome { samples: all, text, error, cancelled: false }));
 }
 
 #[cfg(test)]
@@ -1463,27 +1505,37 @@ mod tests {
         quiet_end_reason, record_hotkey_step, recorded_until, BatchPlan, Mode, Phase, RecordHotkeyStep,
         HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
     };
-    use serde_json::{json, Value};
     use att_core::settings::hotkey::HotkeyAction::{ClipboardPanel, Record, RecordToggle};
     use att_hotkey::KeyPhase::{Pressed, Released};
+    use serde_json::{json, Value};
     use std::time::{Duration, Instant};
 
     #[test]
     fn 按住录音_按下开始_松开收尾() {
         assert_eq!(record_hotkey_step(Record, Pressed, Phase::Idle, false), RecordHotkeyStep::ResumeOrStart);
-        assert_eq!(record_hotkey_step(Record, Pressed, Phase::Recording, true), RecordHotkeyStep::ResumeOrStart, "缓冲里重新按下 / 自动重复");
+        assert_eq!(
+            record_hotkey_step(Record, Pressed, Phase::Recording, true),
+            RecordHotkeyStep::ResumeOrStart,
+            "缓冲里重新按下 / 自动重复"
+        );
         assert_eq!(record_hotkey_step(Record, Released, Phase::Recording, true), RecordHotkeyStep::Release);
         assert_eq!(record_hotkey_step(Record, Released, Phase::Connecting, true), RecordHotkeyStep::Release);
     }
 
     #[test]
     fn 点按录音_按一下开始_再按一下结束_松开不管() {
-        assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Idle, false), RecordHotkeyStep::Start { held: false });
+        assert_eq!(
+            record_hotkey_step(RecordToggle, Pressed, Phase::Idle, false),
+            RecordHotkeyStep::Start { held: false }
+        );
         assert_eq!(record_hotkey_step(RecordToggle, Released, Phase::Recording, false), RecordHotkeyStep::Ignore);
         assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Recording, false), RecordHotkeyStep::Stop);
         assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Connecting, false), RecordHotkeyStep::Stop);
         assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Finalizing, false), RecordHotkeyStep::Nudge);
-        assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Optimizing, false), RecordHotkeyStep::Start { held: false });
+        assert_eq!(
+            record_hotkey_step(RecordToggle, Pressed, Phase::Optimizing, false),
+            RecordHotkeyStep::Start { held: false }
+        );
     }
 
     #[test]
@@ -1536,12 +1588,24 @@ mod tests {
     fn 收尾看门狗上限_覆盖各引擎自身超时() {
         let timeout = Duration::from_secs(120);
         // 流式：建连 10 + 末包 6 + 关闭 2 + 余量 15
-        assert_eq!(finalize_budget(Mode::Streaming, Duration::from_secs(30), timeout, BatchPlan::Single), Duration::from_secs(33));
+        assert_eq!(
+            finalize_budget(Mode::Streaming, Duration::from_secs(30), timeout, BatchPlan::Single),
+            Duration::from_secs(33)
+        );
         // 多段：分段总等待 120 + 余量
-        assert_eq!(finalize_budget(Mode::Multi, Duration::from_secs(30), timeout, BatchPlan::Single), Duration::from_secs(135));
+        assert_eq!(
+            finalize_budget(Mode::Multi, Duration::from_secs(30), timeout, BatchPlan::Single),
+            Duration::from_secs(135)
+        );
         // 单段：ChatGPT 的超时设置与豆包按时长加时取大
-        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, BatchPlan::Single), Duration::from_secs(135));
-        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(600), timeout, BatchPlan::Single), Duration::from_secs(333));
+        assert_eq!(
+            finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, BatchPlan::Single),
+            Duration::from_secs(135)
+        );
+        assert_eq!(
+            finalize_budget(Mode::Batch, Duration::from_secs(600), timeout, BatchPlan::Single),
+            Duration::from_secs(333)
+        );
     }
 
     #[test]
@@ -1590,7 +1654,7 @@ mod tests {
         use att_core::stt::{deepseek, Engine};
 
         let (base, mut requests) = stub_routes(vec![
-            StubRoute::json("POST /v1/tools/asr", 200, r#"{"text":"片段"}"#).after(Duration::from_millis(30)),
+            StubRoute::json("POST /v1/tools/asr", 200, r#"{"text":"片段"}"#).after(Duration::from_millis(30))
         ])
         .await;
         let recorded = Duration::from_secs(600);

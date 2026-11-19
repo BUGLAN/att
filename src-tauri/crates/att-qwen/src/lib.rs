@@ -90,9 +90,7 @@ const MODEL_PACKAGE: &str = "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2"
 
 /// 模型目录是否像一份 sherpa-onnx Qwen3-ASR 导出（三个 onnx + tokenizer 目录）。
 pub fn looks_like_model_dir(path: &Path) -> bool {
-    path.is_dir()
-        && MODEL_FILES.iter().all(|name| path.join(name).is_file())
-        && path.join("tokenizer").is_dir()
+    path.is_dir() && MODEL_FILES.iter().all(|name| path.join(name).is_file()) && path.join("tokenizer").is_dir()
 }
 
 /// 推理库在当前平台的动态库文件名。
@@ -245,7 +243,12 @@ pub fn silence_cut_points(samples: &[i16], sample_rate: usize) -> Vec<usize> {
 }
 
 /// 贪心装箱：每块不超过 `max_audio_seconds`，优先在窗内最靠右的静音点切，无静音点就硬切。
-pub fn plan_chunks(samples_len: usize, sample_rate: usize, max_audio_seconds: i64, cut_points: &[usize]) -> Vec<(usize, usize)> {
+pub fn plan_chunks(
+    samples_len: usize,
+    sample_rate: usize,
+    max_audio_seconds: i64,
+    cut_points: &[usize],
+) -> Vec<(usize, usize)> {
     let limit = max_audio_seconds.max(1) as usize * sample_rate;
     let mut chunks = Vec::new();
     let mut start = 0usize;
@@ -255,12 +258,8 @@ pub fn plan_chunks(samples_len: usize, sample_rate: usize, max_audio_seconds: i6
             chunks.push((start, samples_len));
             break;
         }
-        let end = cut_points
-            .iter()
-            .copied()
-            .filter(|cut| *cut > start && *cut <= limit_end)
-            .next_back()
-            .unwrap_or(limit_end);
+        let end =
+            cut_points.iter().copied().filter(|cut| *cut > start && *cut <= limit_end).next_back().unwrap_or(limit_end);
         chunks.push((start, end));
         start = end;
     }
@@ -314,10 +313,7 @@ unsafe impl Sync for LocalQwen {}
 
 impl std::fmt::Debug for LocalQwen {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LocalQwen")
-            .field("model_dir", &self.model_dir)
-            .field("lib_dir", &self.lib_dir)
-            .finish()
+        f.debug_struct("LocalQwen").field("model_dir", &self.model_dir).field("lib_dir", &self.lib_dir).finish()
     }
 }
 
@@ -355,7 +351,11 @@ impl LocalQwen {
         };
         if handle.is_null() {
             let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
-            return Err(if reason.trim().is_empty() { "加载 Qwen3-ASR 失败（未知原因）".into() } else { reason });
+            return Err(if reason.trim().is_empty() {
+                "加载 Qwen3-ASR 失败（未知原因）".into()
+            } else {
+                reason
+            });
         }
         tracing::info!(
             "本地 Qwen3-ASR 模型已加载：{}（推理库 {}，{:.2}s）",
@@ -396,7 +396,11 @@ impl LocalQwen {
         };
         if text_ptr.is_null() {
             let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
-            return Err(if reason.trim().is_empty() { "Qwen3-ASR 推理失败（未知原因）".into() } else { reason });
+            return Err(if reason.trim().is_empty() {
+                "Qwen3-ASR 推理失败（未知原因）".into()
+            } else {
+                reason
+            });
         }
         let text = unsafe { CStr::from_ptr(text_ptr) }.to_string_lossy().to_string();
         unsafe { att_qwen_free_text(text_ptr) };

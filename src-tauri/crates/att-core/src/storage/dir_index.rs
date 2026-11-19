@@ -95,11 +95,8 @@ mod tests {
 
     fn scan_names(dir: &Path, counter: &Cell<usize>) -> (Vec<String>, usize) {
         counter.set(counter.get() + 1);
-        let mut names: Vec<String> = std::fs::read_dir(dir)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
+        let mut names: Vec<String> =
+            std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         (names, 0)
     }

@@ -49,7 +49,8 @@ async fn check_get(State(state): Shared, Query(params): Query<HashMap<String, St
 }
 
 async fn check_post(State(state): Shared, body: Option<Json<Value>>) -> impl IntoResponse {
-    let requested = body.as_ref().and_then(|Json(value)| value.get("provider")).and_then(Value::as_str).map(str::to_string);
+    let requested =
+        body.as_ref().and_then(|Json(value)| value.get("provider")).and_then(Value::as_str).map(str::to_string);
     let provider = match resolve_provider(&state, requested.as_deref()) {
         Ok(provider) => provider,
         Err(response) => return response.into_response(),

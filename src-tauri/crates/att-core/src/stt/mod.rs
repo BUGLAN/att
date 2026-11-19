@@ -37,7 +37,11 @@ pub fn doubao_config(core: &CoreState) -> doubao::DoubaoConfig {
         .or_else(|| std::env::var("DOUBAO_ASR_API_KEY").ok())
         .unwrap_or_default();
     let non_empty = |value: &str, fallback: &str| {
-        if value.trim().is_empty() { fallback.to_string() } else { value.trim().to_string() }
+        if value.trim().is_empty() {
+            fallback.to_string()
+        } else {
+            value.trim().to_string()
+        }
     };
     doubao::DoubaoConfig {
         api_key,
@@ -80,7 +84,9 @@ pub fn deepseek_config(core: &CoreState) -> deepseek::DeepSeekConfig {
     deepseek::DeepSeekConfig {
         api_key,
         endpoint: if endpoint.is_empty() { deepseek::DEFAULT_ENDPOINT.into() } else { endpoint.to_string() },
-        timeout: std::time::Duration::from_secs(deepseek::request_timeout_seconds(settings.deepseek_asr_timeout_seconds)),
+        timeout: std::time::Duration::from_secs(deepseek::request_timeout_seconds(
+            settings.deepseek_asr_timeout_seconds,
+        )),
     }
 }
 
@@ -171,15 +177,19 @@ impl Engine {
     /// 整段批量识别（单段 / 多段的每一段）。
     pub async fn transcribe_pcm(&self, language: &str, samples: &[i16]) -> Result<String, String> {
         match self {
-            Engine::Doubao(config) => doubao::transcribe_pcm(config, language, "", samples).await.map(|o| o.text).map_err(|e| e.to_string()),
+            Engine::Doubao(config) => {
+                doubao::transcribe_pcm(config, language, "", samples).await.map(|o| o.text).map_err(|e| e.to_string())
+            }
             Engine::ChatGpt(config) => {
                 let wav = crate::audio::wav_bytes_16k(samples).map_err(|e| format!("音频编码失败：{e}"))?;
                 chatgpt::transcribe_wav(config, wav, language).await
             }
             Engine::DeepSeek(config) => deepseek::transcribe_pcm(config, samples).await,
-            Engine::Local(handle) => transcribe_local(handle.core.clone(), handle.kind, language.to_string(), samples.to_vec())
-                .await
-                .map(|(_, outcome)| outcome.text),
+            Engine::Local(handle) => {
+                transcribe_local(handle.core.clone(), handle.kind, language.to_string(), samples.to_vec())
+                    .await
+                    .map(|(_, outcome)| outcome.text)
+            }
         }
     }
 }

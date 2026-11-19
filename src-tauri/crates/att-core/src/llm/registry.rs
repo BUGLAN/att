@@ -112,11 +112,7 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         docs_url: "https://docs.mistral.ai/",
         ..spec("mistral", "Mistral", "mistral")
     },
-    ProviderSpec {
-        wire_base: "https://api.x.ai/v1",
-        docs_url: "https://docs.x.ai/",
-        ..spec("xai", "xAI", "xai")
-    },
+    ProviderSpec { wire_base: "https://api.x.ai/v1", docs_url: "https://docs.x.ai/", ..spec("xai", "xAI", "xai") },
     ProviderSpec {
         default_base_url: "https://openrouter.ai/api/v1",
         wire_base: "https://openrouter.ai/api/v1",
@@ -178,10 +174,7 @@ pub fn compose_model_string(provider_id: &str, model_name: &str, api_base: Optio
 
 /// 模型串 → 发给上游的模型 ID：剥掉本服务商的前缀（custom 剥 `openai/`），其余原样。
 pub fn wire_model_name<'a>(spec: &ProviderSpec, model_string: &'a str) -> &'a str {
-    model_string
-        .strip_prefix(spec.prefix)
-        .and_then(|rest| rest.strip_prefix('/'))
-        .unwrap_or(model_string)
+    model_string.strip_prefix(spec.prefix).and_then(|rest| rest.strip_prefix('/')).unwrap_or(model_string)
 }
 
 /// GET /api/llm/providers 的目录项（字段与 Python 版一致）。

@@ -53,7 +53,9 @@ impl StubRoute {
 }
 
 /// 兼容旧写法：(请求行, 状态码, JSON 响应体)。
-pub async fn stub_server(responses: Vec<(&'static str, u16, String)>) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+pub async fn stub_server(
+    responses: Vec<(&'static str, u16, String)>,
+) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
     stub_routes(responses.into_iter().map(|(line, status, body)| StubRoute::json(line, status, body)).collect()).await
 }
 
@@ -100,9 +102,9 @@ pub async fn stub_routes(routes: Vec<StubRoute>) -> (String, tokio::sync::mpsc::
                 }
                 let request = String::from_utf8_lossy(&buffer).to_string();
                 let line = request.lines().next().unwrap_or("").to_string();
-                let route = routes
-                    .iter()
-                    .find(|r| line.contains(r.request_line) && r.body_contains.map(|f| request.contains(f)).unwrap_or(true));
+                let route = routes.iter().find(|r| {
+                    line.contains(r.request_line) && r.body_contains.map(|f| request.contains(f)).unwrap_or(true)
+                });
                 let (status, content_type, body, delay) = route
                     .map(|r| (r.status, r.content_type, r.body.clone(), r.delay))
                     .unwrap_or((404, "application/json", "{}".into(), Duration::ZERO));

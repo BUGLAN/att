@@ -35,8 +35,17 @@ const VK_MASK_KEY: u16 = 0xE8;
 fn is_modifier(vk: u32) -> bool {
     matches!(
         vk,
-        VK_SHIFT | VK_CONTROL | VK_MENU | VK_LSHIFT | VK_RSHIFT | VK_LCONTROL | VK_RCONTROL | VK_LMENU | VK_RMENU
-            | VK_LWIN | VK_RWIN
+        VK_SHIFT
+            | VK_CONTROL
+            | VK_MENU
+            | VK_LSHIFT
+            | VK_RSHIFT
+            | VK_LCONTROL
+            | VK_RCONTROL
+            | VK_LMENU
+            | VK_RMENU
+            | VK_LWIN
+            | VK_RWIN
     )
 }
 
@@ -97,9 +106,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 } else {
                     // 非修饰键事件也顺带校正一次修饰键（与 macOS 每个事件带完整 flags 对齐）
                     shared.on_modifiers(modifiers_with(None), Source::Key);
-                    let hid = char::from_u32(vk)
-                        .filter(|c| c.is_ascii_alphanumeric())
-                        .and_then(hid_from_char);
+                    let hid = char::from_u32(vk).filter(|c| c.is_ascii_alphanumeric()).and_then(hid_from_char);
                     if shared.on_key(vk, hid, down) {
                         if down {
                             let mods = modifiers_with(None);
@@ -120,7 +127,13 @@ fn send_mask_key() {
     let key = |flags| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
-            ki: KEYBDINPUT { wVk: VK_MASK_KEY, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: SYNTHETIC_EVENT_TAG as usize },
+            ki: KEYBDINPUT {
+                wVk: VK_MASK_KEY,
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: SYNTHETIC_EVENT_TAG as usize,
+            },
         },
     };
     let inputs = [key(0), key(KEYEVENTF_KEYUP)];
@@ -151,7 +164,5 @@ pub fn spawn(shared: Arc<Shared>) -> Result<(), String> {
             }
         })
         .map_err(|e| format!("无法启动热键线程: {e}"))?;
-    ready_rx
-        .recv_timeout(std::time::Duration::from_secs(3))
-        .unwrap_or_else(|_| Err("键盘监听启动超时".into()))
+    ready_rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or_else(|_| Err("键盘监听启动超时".into()))
 }
