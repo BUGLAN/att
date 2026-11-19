@@ -113,6 +113,8 @@ enum BatchPlan {
 
 /// 多段模式：全部分段识别结束的等待上限（每段自身另有建连/收尾超时）。
 const MULTI_DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
+/// 多段模式同时在途的识别请求上限：长录音分段很多时，避免瞬间打满在线接口或争抢本地推理锁。
+const MULTI_TRANSCRIBE_CONCURRENCY: usize = 2;
 /// 收尾看门狗在各引擎自身超时之外再留的余量：正常情况下永远轮不到它，只兜「卡死」。
 const WATCHDOG_SLACK: Duration = Duration::from_secs(15);
 /// 看门狗取消会话后再等这么久；会话任务仍无回应（卡死 / 已崩溃）就不再等它，直接收尾。
@@ -1393,7 +1395,37 @@ async fn batch_task(
     let _ = tx.send(Cmd::Done(id, SessionOutcome { samples: all, text, error, cancelled }));
 }
 
-/// 多段会话：静音切段 → 每段立即并发送批量识别 → 按段序实时拼接推给前端与悬浮窗。
+/// 启动一个分段识别任务；共享信号量限制同时进入引擎的分段数量。
+fn spawn_multi_segment<F, Fut>(
+    index: usize,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    result_tx: mpsc::UnboundedSender<(usize, Result<stt::BatchTranscript, String>)>,
+    transcribe: F,
+) where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<stt::BatchTranscript, String>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let result = match semaphore.acquire_owned().await {
+            Ok(_permit) => transcribe().await,
+            Err(_) => Err("多段识别并发控制已关闭".to_string()),
+        };
+        let _ = result_tx.send((index, result));
+    });
+}
+
+/// 按原始分段顺序拼接成功结果；失败和超时段不参与拼接。
+fn join_multi_texts(texts: &[Option<Result<stt::BatchTranscript, String>>]) -> String {
+    texts
+        .iter()
+        .filter_map(|t| t.as_ref().and_then(|r| r.as_ref().ok()))
+        .filter(|transcript| !transcript.text.is_empty())
+        .map(|transcript| transcript.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// 多段会话：静音切段 → 每段受并发上限约束送批量识别 → 按段序实时拼接推给前端与悬浮窗。
 ///
 /// 与旧版「最后一片上传失败就永久卡在转写中」不同：收尾有总等待上限，单段失败只降级（保留其余段文本）。
 #[allow(clippy::too_many_arguments)]
@@ -1411,21 +1443,12 @@ async fn multi_task(
     let mut all: Vec<i16> = Vec::new();
     let (result_tx, mut result_rx) = mpsc::unbounded_channel::<(usize, Result<stt::BatchTranscript, String>)>();
     let mut texts: Vec<Option<Result<stt::BatchTranscript, String>>> = Vec::new();
+    let segment_semaphore = Arc::new(tokio::sync::Semaphore::new(MULTI_TRANSCRIBE_CONCURRENCY));
     let spawn_segment = |index: usize, segment: Vec<i16>| {
         let (engine, language, result_tx) = (engine.clone(), language.clone(), result_tx.clone());
-        tokio::spawn(async move {
-            let result = engine.transcribe_pcm(&language, &segment).await;
-            let _ = result_tx.send((index, result));
+        spawn_multi_segment(index, segment_semaphore.clone(), result_tx, move || async move {
+            engine.transcribe_pcm(&language, &segment).await
         });
-    };
-    let joined = |texts: &[Option<Result<stt::BatchTranscript, String>>]| {
-        texts
-            .iter()
-            .filter_map(|t| t.as_ref().and_then(|r| r.as_ref().ok()))
-            .filter(|r| !r.text.is_empty())
-            .map(|r| r.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n")
     };
     let emit_partial = |text: &str| {
         if live.load(Ordering::SeqCst) {
@@ -1441,7 +1464,7 @@ async fn multi_task(
     while audio_open {
         tokio::select! {
             _ = &mut cancel_rx => {
-                let text = joined(&texts);
+                let text = join_multi_texts(&texts);
                 let _ = tx.send(Cmd::Done(id, SessionOutcome {
                     samples: all, text, error: None, cancelled: true,
                 }));
@@ -1459,7 +1482,7 @@ async fn multi_task(
             },
             Some((index, result)) = result_rx.recv() => {
                 texts[index] = Some(result);
-                emit_partial(&joined(&texts));
+                emit_partial(&join_multi_texts(&texts));
             }
         }
     }
@@ -1474,7 +1497,7 @@ async fn multi_task(
     while texts.iter().any(Option::is_none) {
         tokio::select! {
             _ = &mut cancel_rx => {
-                let text = joined(&texts);
+                let text = join_multi_texts(&texts);
                 let _ = tx.send(Cmd::Done(id, SessionOutcome {
                     samples: all, text, error: None, cancelled: true,
                 }));
@@ -1483,13 +1506,13 @@ async fn multi_task(
             received = tokio::time::timeout_at(deadline, result_rx.recv()) => match received {
                 Ok(Some((index, result))) => {
                     texts[index] = Some(result);
-                    emit_partial(&joined(&texts));
+                    emit_partial(&join_multi_texts(&texts));
                 }
                 _ => break,
             },
         }
     }
-    let text = joined(&texts);
+    let text = join_multi_texts(&texts);
     let pending = texts.iter().filter(|t| t.is_none()).count();
     let mut reasons = Vec::new();
     for result in &texts {
@@ -1513,9 +1536,10 @@ async fn multi_task(
 #[cfg(test)]
 mod tests {
     use super::{
-        batch_plan, counts_as_timeout, finalize_budget, missing_voice, no_voice_state, processing_seconds,
-        quiet_end_reason, record_hotkey_step, recorded_until, BatchPlan, Mode, Phase, RecordHotkeyStep,
-        HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
+        batch_plan, counts_as_timeout, finalize_budget, join_multi_texts, missing_voice, no_voice_state,
+        processing_seconds, quiet_end_reason, record_hotkey_step, recorded_until, spawn_multi_segment, BatchPlan, Mode,
+        Phase, RecordHotkeyStep, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, MULTI_TRANSCRIBE_CONCURRENCY,
+        NO_VOICE_MESSAGE, WATCHDOG_SLACK,
     };
     use att_core::settings::hotkey::HotkeyAction::{ClipboardPanel, Record, RecordToggle};
     use att_hotkey::KeyPhase::{Pressed, Released};
@@ -1658,6 +1682,60 @@ mod tests {
             finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, plan),
             Duration::from_secs(600 * attempts) + WATCHDOG_SLACK
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn 多段识别_二十段并发不超过二_结果仍按原始段序拼接() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
+
+        let semaphore = Arc::new(Semaphore::new(MULTI_TRANSCRIBE_CONCURRENCY));
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel();
+        for index in 0..20 {
+            let (semaphore, result_tx) = (semaphore.clone(), result_tx.clone());
+            let (active, peak) = (active.clone(), peak.clone());
+            spawn_multi_segment(index, semaphore, result_tx, move || {
+                let (active, peak) = (active.clone(), peak.clone());
+                async move {
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(att_core::stt::BatchTranscript { text: format!("第 {} 段", index + 1), warning: None })
+                }
+            });
+        }
+        drop(result_tx);
+
+        let mut texts = vec![None; 20];
+        for _ in 0..20 {
+            let (index, result) = tokio::time::timeout(Duration::from_secs(2), result_rx.recv())
+                .await
+                .expect("等待分段识别结果超时")
+                .expect("分段结果通道提前关闭");
+            texts[index] = Some(result);
+        }
+
+        assert_eq!(peak.load(Ordering::SeqCst), MULTI_TRANSCRIBE_CONCURRENCY, "应恰好用满并发上限，而不是退化成串行");
+        assert!(peak.load(Ordering::SeqCst) <= MULTI_TRANSCRIBE_CONCURRENCY, "同时在途的分段识别任务超过上限");
+        let expected = (1..=20).map(|index| format!("第 {index} 段")).collect::<Vec<_>>().join("\n\n");
+        assert_eq!(join_multi_texts(&texts), expected, "分段完成顺序不能影响最终拼接顺序");
+    }
+
+    #[test]
+    fn 多段结果拼接_跳过失败与未完成分段() {
+        let segment = |text: &str| att_core::stt::BatchTranscript { text: text.into(), warning: None };
+        let texts: Vec<Option<Result<att_core::stt::BatchTranscript, String>>> = vec![
+            Some(Ok(segment("第一段"))),
+            Some(Err("429".into())),
+            None,
+            Some(Ok(segment("第四段"))),
+            Some(Ok(segment(""))),
+        ];
+        assert_eq!(join_multi_texts(&texts), "第一段\n\n第四段");
     }
 
     #[tokio::test]
