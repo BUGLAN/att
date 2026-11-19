@@ -217,7 +217,7 @@ fn shape_payload(entry: &Value, want_segments: bool, cached: bool, variant: Opti
     if let Some(billing) = entry.get("billing").filter(|b| b.is_object()) {
         payload["billing"] = billing.clone();
     }
-    for key in ["raw_text", "proofread"] {
+    for key in ["raw_text", "proofread", "warnings"] {
         if let Some(value) = entry.get(key) {
             payload[key] = value.clone();
         }
@@ -486,30 +486,24 @@ async fn run_doubao(
 /// DeepSeek 路径：接口单次最长 120 秒，按 115 秒切块顺序识别，段偏移拼成时间戳。
 async fn run_deepseek(core: &CoreState, samples: &[i16], duration: f64) -> Result<Value, TranscribeError> {
     let config = crate::stt::deepseek_config(core);
-    let chunk_samples = crate::stt::deepseek::MAX_CHUNK_SAMPLES;
-    let mut segments = Vec::new();
-    for (index, chunk) in samples.chunks(chunk_samples).enumerate() {
-        let offset = (index * chunk_samples) as f64 / SAMPLE_RATE as f64;
-        let wav = crate::audio::wav_bytes_16k(chunk)
-            .map_err(|error| TranscribeError::new(500, format!("音频编码失败：{error}")))?;
-        let text = crate::stt::deepseek::transcribe_wav(&config, wav)
-            .await
-            .map_err(|error| TranscribeError::new(500, format!("转写失败：{error}")))?;
-        if !text.is_empty() {
-            segments.push(json!({
-                "start": offset,
-                "end": offset + chunk.len() as f64 / SAMPLE_RATE as f64,
-                "text": text,
-            }));
-        }
-    }
-    let text = segments.iter().filter_map(|segment| segment["text"].as_str()).collect::<Vec<_>>().join("\n");
-    Ok(json!({
-        "text": text,
+    let transcript = crate::stt::deepseek::transcribe_pcm_detailed(&config, samples)
+        .await
+        .map_err(|error| TranscribeError::new(500, format!("转写失败：{error}")))?;
+    let segments = transcript
+        .segments
+        .iter()
+        .map(|segment| json!({ "start": segment.start, "end": segment.end, "text": segment.text }))
+        .collect::<Vec<_>>();
+    let mut payload = json!({
+        "text": transcript.text,
         "duration_seconds": if duration > 0.0 { duration } else { samples.len() as f64 / SAMPLE_RATE as f64 },
         "engine": "deepseek-asr",
         "segments": segments,
-    }))
+    });
+    if !transcript.warnings.is_empty() {
+        payload["warnings"] = json!(transcript.warnings);
+    }
+    Ok(payload)
 }
 
 fn start_job(core: Arc<CoreState>, request: TranscribeRequest, path: PathBuf, hash: String, duration: f64, engine: &'static str) -> Result<String, TranscribeError> {
@@ -591,9 +585,11 @@ mod tests {
     #[test]
     fn 响应整形_校对变体覆盖正文() {
         let entry = json!({"text": "原文", "duration_seconds": 3.0, "engine": "doubao_asr:bigmodel",
-            "segments": [{"start": 0.0, "end": 3.0, "text": "原文"}], "billing": {"audio_duration_seconds": 3.0}});
+            "segments": [{"start": 0.0, "end": 3.0, "text": "原文"}], "billing": {"audio_duration_seconds": 3.0},
+            "warnings": ["第 2/2 段识别失败"]});
         let plain = shape_payload(&entry, false, true, None);
         assert_eq!(plain["cached"], true);
+        assert_eq!(plain["warnings"][0], "第 2/2 段识别失败");
         assert!(plain.get("segments").is_none());
         let variant = json!({"text": "校对文", "segments": [{"start": 0.0, "end": 3.0, "text": "校对文"}], "windows": 1, "requests": 1, "model_label": "DS"});
         let shaped = shape_payload(&entry, true, true, Some(&variant));

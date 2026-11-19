@@ -1124,8 +1124,9 @@ fn batch_plan(
 
 /// 收尾看门狗的上限：各引擎自身超时之和再加余量。正常收尾远早于它，只兜卡死。
 ///
-/// DeepSeek 长录音是「115 秒一块、顺序 await」：每块各给一次 `batch_timeout`，预算必须按块数放大，
-/// 不能沿用 `recorded / 2`——600 秒录音有 6 块，最坏 6 × 120 秒，旧算法只给 318 秒。
+/// DeepSeek 长录音是「115 秒一块、顺序 await」：每块最多尝试 [`deepseek::MAX_ATTEMPTS_PER_CHUNK`] 次，
+/// 预算必须按「块数 × 尝试次数」放大，不能沿用 `recorded / 2`——600 秒录音有 6 块，
+/// 最坏 6 × 3 × 120 秒，旧算法只给 318 秒。
 fn finalize_budget(mode: Mode, recorded: Duration, batch_timeout: Duration, plan: BatchPlan) -> Duration {
     // 豆包：建连 + 末包等待（批量另按音频时长加时）+ 关闭
     let doubao = doubao::CONNECT_TIMEOUT + doubao::FINISH_TIMEOUT + Duration::from_secs(2);
@@ -1134,7 +1135,9 @@ fn finalize_budget(mode: Mode, recorded: Duration, batch_timeout: Duration, plan
         Mode::Multi => MULTI_DRAIN_TIMEOUT,
         Mode::Batch => match plan {
             BatchPlan::Single => batch_timeout.max(doubao + recorded / 2),
-            BatchPlan::DeepSeek { chunks } => batch_timeout * chunks.max(1) as u32,
+            BatchPlan::DeepSeek { chunks } => {
+                batch_timeout * (chunks.max(1) * deepseek::MAX_ATTEMPTS_PER_CHUNK) as u32
+            }
         },
     };
     engine + WATCHDOG_SLACK
@@ -1543,15 +1546,16 @@ mod tests {
 
     #[test]
     fn 收尾看门狗_deepseek长录音按串行块数放大预算() {
-        // 600 / 1800 / 7200 秒分别切成 6 / 16 / 63 块，最坏每块都要等满 120 秒
+        let attempts = att_core::stt::deepseek::MAX_ATTEMPTS_PER_CHUNK as u64;
+        // 600 / 1800 / 7200 秒分别切成 6 / 16 / 63 块，最坏每块尝试 3 次、每次等满 120 秒
         for (seconds, chunks) in [(600u64, 6usize), (1800, 16), (7200, 63)] {
             let recorded = Duration::from_secs(seconds);
             let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 120);
             assert_eq!(timeout, Duration::from_secs(120), "{seconds} 秒");
             assert_eq!(plan, BatchPlan::DeepSeek { chunks }, "{seconds} 秒");
             let budget = finalize_budget(Mode::Batch, recorded, timeout, plan);
-            assert_eq!(budget, Duration::from_secs(chunks as u64 * 120) + WATCHDOG_SLACK);
-            assert!(budget >= timeout * chunks as u32 + WATCHDOG_SLACK);
+            assert_eq!(budget, Duration::from_secs(chunks as u64 * 120 * attempts) + WATCHDOG_SLACK);
+            assert!(budget >= timeout * (chunks as u32 * attempts as u32) + WATCHDOG_SLACK);
         }
         // 旧公式（max(单块超时, 豆包开销 + recorded/2)）600 秒只有 333 秒，挡不住 6 块串行
         assert_eq!(
@@ -1561,16 +1565,23 @@ mod tests {
     }
 
     #[test]
-    fn 收尾看门狗_deepseek短录音与其他引擎预算不变() {
+    fn 收尾看门狗_deepseek短录音按尝试次数放大_其他引擎预算不变() {
+        let attempts = att_core::stt::deepseek::MAX_ATTEMPTS_PER_CHUNK as u64;
         let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 120, 120);
         assert_eq!(timeout, Duration::from_secs(120));
         assert_eq!(plan, BatchPlan::DeepSeek { chunks: 1 });
-        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, plan), Duration::from_secs(135));
+        assert_eq!(
+            finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, plan),
+            Duration::from_secs(120 * attempts) + WATCHDOG_SLACK
+        );
 
         // 单块超时按 deepseek_config 的实际范围（10～600 秒）取，预算不能跟着越界设置无限放大
         let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 900, 120);
         assert_eq!(timeout, Duration::from_secs(600));
-        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, plan), Duration::from_secs(615));
+        assert_eq!(
+            finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, plan),
+            Duration::from_secs(600 * attempts) + WATCHDOG_SLACK
+        );
     }
 
     #[tokio::test]
@@ -1586,7 +1597,7 @@ mod tests {
         let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 120);
         assert_eq!(plan, BatchPlan::DeepSeek { chunks: 6 });
         let budget = finalize_budget(Mode::Batch, recorded, timeout, plan);
-        assert_eq!(budget, Duration::from_secs(735));
+        assert_eq!(budget, Duration::from_secs(6 * 120 * deepseek::MAX_ATTEMPTS_PER_CHUNK as u64) + WATCHDOG_SLACK);
 
         let config = deepseek::DeepSeekConfig {
             api_key: "sk-test-123456".into(),
