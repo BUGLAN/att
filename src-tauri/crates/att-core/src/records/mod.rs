@@ -255,6 +255,9 @@ impl RecordRepo {
 
     /// 锁内写一条记录并同步索引（写入前先核对目录是否有外部变化）。
     fn write_locked(&self, index: &mut DirIndex<Record>, record: &Record) -> Result<(), RecordError> {
+        if !is_safe_identifier(&record.id) {
+            return Err(RecordError::NotFound);
+        }
         index.before_write();
         json_store::write_json_atomic(&self.record_path(&record.id), record)?;
         index.after_write(|records| upsert(records, record));
@@ -340,6 +343,9 @@ impl RecordRepo {
 
     /// PUT 更新：revision 乐观锁 + 字段应用 + revision 自增。
     pub fn update(&self, id: &str, update: RecordUpdate) -> Result<Record, RecordError> {
+        if !is_safe_identifier(id) {
+            return Err(RecordError::NotFound);
+        }
         let mut index = self.guard();
         let path = self.record_path(id);
         let mut record: Record = json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
@@ -419,6 +425,9 @@ impl RecordRepo {
 
     /// 音频错位修复用（migration 模块）：按 id 直接改写 audio_path 字段。
     pub fn set_audio_path(&self, id: &str, audio_file_name: &str) -> Result<(), RecordError> {
+        if !is_safe_identifier(id) {
+            return Err(RecordError::NotFound);
+        }
         let mut index = self.guard();
         let path = self.record_path(id);
         let mut record: Record = json_store::read_json_file(&path).map_err(|_| RecordError::NotFound)?;
@@ -496,6 +505,36 @@ mod tests {
         assert!(matches!(repo.get("missing"), Err(RecordError::NotFound)));
         repo.delete("rec-1").unwrap();
         assert!(matches!(repo.get("rec-1"), Err(RecordError::NotFound)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 写入口拒绝非法id且不改写记录目录外的json() {
+        let (repo, dir) = repo("unsafe-id");
+        let settings_path = dir.join("settings.json");
+        let original = br#"{"theme":"dark","revision":7}"#;
+        std::fs::write(&settings_path, original).unwrap();
+
+        for id in ["../settings", r"..\..\settings", "nested/settings"] {
+            let result = repo.update(id, RecordUpdate { raw_text: Some("被穿越写入".into()), ..Default::default() });
+            assert!(matches!(result, Err(RecordError::NotFound)), "update 必须拒绝非法 id: {id}");
+            assert!(
+                matches!(repo.insert(Record { id: id.into(), ..Default::default() }), Err(RecordError::NotFound)),
+                "insert 必须拒绝非法 id: {id}"
+            );
+            assert!(
+                matches!(repo.save(&Record { id: id.into(), ..Default::default() }), Err(RecordError::NotFound)),
+                "save 必须拒绝非法 id: {id}"
+            );
+        }
+
+        let absolute = settings_path.to_string_lossy();
+        let result =
+            repo.update(&absolute, RecordUpdate { raw_text: Some("被绝对路径写入".into()), ..Default::default() });
+        assert!(matches!(result, Err(RecordError::NotFound)), "update 必须拒绝绝对路径 id");
+
+        assert!(matches!(repo.set_audio_path("../settings", "replacement.wav"), Err(RecordError::NotFound)));
+        assert_eq!(std::fs::read(&settings_path).unwrap(), original, "记录目录外的 settings.json 字节不得变化");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

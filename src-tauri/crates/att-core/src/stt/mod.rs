@@ -196,9 +196,7 @@ impl Engine {
                 .map_err(|error| error.to_string()),
             Engine::ChatGpt(config) => {
                 let wav = crate::audio::wav_bytes_16k(samples).map_err(|e| format!("音频编码失败：{e}"))?;
-                chatgpt::transcribe_wav(config, wav, language)
-                    .await
-                    .map(|text| BatchTranscript { text, warning: None })
+                chatgpt::transcribe_wav(config, wav, language).await.map(|text| BatchTranscript { text, warning: None })
             }
             Engine::DeepSeek(config) => deepseek::transcribe_pcm_detailed(config, samples).await.map(|transcript| {
                 let warning = (!transcript.warnings.is_empty()).then(|| transcript.warnings.join("；"));
@@ -280,9 +278,11 @@ mod tests {
 
     #[tokio::test]
     async fn deepseek_分段降级_engine_保留正文并返回_warning() {
-        let (base, _requests) = crate::llm::testing::stub_routes(vec![
-            crate::llm::testing::StubRoute::json("POST /v1/tools/asr", 200, r#"{"text":"片段"}"#),
-        ])
+        let (base, _requests) = crate::llm::testing::stub_routes(vec![crate::llm::testing::StubRoute::json(
+            "POST /v1/tools/asr",
+            200,
+            r#"{"text":"片段"}"#,
+        )])
         .await;
         // 115 秒 + 0.1 秒：尾块按规则跳过，正文仍应返回，同时带出可见的降级原因
         let samples = vec![0i16; deepseek::MAX_CHUNK_SAMPLES + 1_600];
