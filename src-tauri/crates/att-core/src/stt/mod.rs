@@ -102,6 +102,16 @@ pub struct LocalHandle {
     kind: LocalKind,
 }
 
+/// 整段批量识别的结果：正文 + 可选降级原因。
+///
+/// DeepSeek 长录音按 115 秒切块；部分分段失败或尾块不足 1 秒被跳过时，
+/// 仍返回已经识别出的正文，同时把缺段原因带给录音链路，避免界面把降级当完整成功。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchTranscript {
+    pub text: String,
+    pub warning: Option<String>,
+}
+
 impl std::fmt::Debug for LocalHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalHandle").field("kind", &self.kind).finish()
@@ -175,20 +185,29 @@ impl Engine {
     }
 
     /// 整段批量识别（单段 / 多段的每一段）。
-    pub async fn transcribe_pcm(&self, language: &str, samples: &[i16]) -> Result<String, String> {
+    ///
+    /// 返回正文与非致命的降级原因；调用方应保留正文，并把 `warning` 当成
+    /// 「识别中断，已保存已识别内容」展示与落库，而不是判成整体失败。
+    pub async fn transcribe_pcm(&self, language: &str, samples: &[i16]) -> Result<BatchTranscript, String> {
         match self {
-            Engine::Doubao(config) => {
-                doubao::transcribe_pcm(config, language, "", samples).await.map(|o| o.text).map_err(|e| e.to_string())
-            }
+            Engine::Doubao(config) => doubao::transcribe_pcm(config, language, "", samples)
+                .await
+                .map(|outcome| BatchTranscript { text: outcome.text, warning: None })
+                .map_err(|error| error.to_string()),
             Engine::ChatGpt(config) => {
                 let wav = crate::audio::wav_bytes_16k(samples).map_err(|e| format!("音频编码失败：{e}"))?;
-                chatgpt::transcribe_wav(config, wav, language).await
+                chatgpt::transcribe_wav(config, wav, language)
+                    .await
+                    .map(|text| BatchTranscript { text, warning: None })
             }
-            Engine::DeepSeek(config) => deepseek::transcribe_pcm(config, samples).await,
+            Engine::DeepSeek(config) => deepseek::transcribe_pcm_detailed(config, samples).await.map(|transcript| {
+                let warning = (!transcript.warnings.is_empty()).then(|| transcript.warnings.join("；"));
+                BatchTranscript { text: transcript.text, warning }
+            }),
             Engine::Local(handle) => {
                 transcribe_local(handle.core.clone(), handle.kind, language.to_string(), samples.to_vec())
                     .await
-                    .map(|(_, outcome)| outcome.text)
+                    .map(|(_, outcome)| BatchTranscript { text: outcome.text, warning: None })
             }
         }
     }
@@ -257,6 +276,26 @@ mod tests {
         assert_eq!(local_kind("doubao_asr"), None);
         assert_eq!(local_kind("chatgpt_asr"), None);
         assert_eq!(local_kind("deepseek_asr"), None);
+    }
+
+    #[tokio::test]
+    async fn deepseek_分段降级_engine_保留正文并返回_warning() {
+        let (base, _requests) = crate::llm::testing::stub_routes(vec![
+            crate::llm::testing::StubRoute::json("POST /v1/tools/asr", 200, r#"{"text":"片段"}"#),
+        ])
+        .await;
+        // 115 秒 + 0.1 秒：尾块按规则跳过，正文仍应返回，同时带出可见的降级原因
+        let samples = vec![0i16; deepseek::MAX_CHUNK_SAMPLES + 1_600];
+        let engine = Engine::DeepSeek(deepseek::DeepSeekConfig {
+            api_key: "sk-test-123456".into(),
+            endpoint: format!("{base}/v1/tools/asr"),
+            timeout: std::time::Duration::from_secs(5),
+        });
+
+        let transcript = engine.transcribe_pcm("zh", &samples).await.expect("桩识别失败");
+        assert_eq!(transcript.text, "片段");
+        let warning = transcript.warning.expect("尾块跳过必须带降级原因");
+        assert!(warning.contains("0.1 秒"), "{warning}");
     }
 
     #[cfg(not(feature = "local-engines"))]

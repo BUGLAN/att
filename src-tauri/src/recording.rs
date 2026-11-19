@@ -1384,7 +1384,7 @@ async fn batch_task(
         // 识别期间同样响应取消（ChatGPT 听写默认可等 120s）
         tokio::select! {
             result = engine.transcribe_pcm(&language, &all) => match result {
-                Ok(text) => (text, None, false),
+                Ok(transcript) => (transcript.text, transcript.warning, false),
                 Err(error) => (String::new(), Some(error), false),
             },
             _ = &mut cancel_rx => (String::new(), None, true),
@@ -1409,8 +1409,8 @@ async fn multi_task(
     tx: mpsc::UnboundedSender<Cmd>,
 ) {
     let mut all: Vec<i16> = Vec::new();
-    let (result_tx, mut result_rx) = mpsc::unbounded_channel::<(usize, Result<String, String>)>();
-    let mut texts: Vec<Option<Result<String, String>>> = Vec::new();
+    let (result_tx, mut result_rx) = mpsc::unbounded_channel::<(usize, Result<stt::BatchTranscript, String>)>();
+    let mut texts: Vec<Option<Result<stt::BatchTranscript, String>>> = Vec::new();
     let spawn_segment = |index: usize, segment: Vec<i16>| {
         let (engine, language, result_tx) = (engine.clone(), language.clone(), result_tx.clone());
         tokio::spawn(async move {
@@ -1418,12 +1418,12 @@ async fn multi_task(
             let _ = result_tx.send((index, result));
         });
     };
-    let joined = |texts: &[Option<Result<String, String>>]| {
+    let joined = |texts: &[Option<Result<stt::BatchTranscript, String>>]| {
         texts
             .iter()
             .filter_map(|t| t.as_ref().and_then(|r| r.as_ref().ok()))
-            .filter(|t| !t.is_empty())
-            .cloned()
+            .filter(|r| !r.text.is_empty())
+            .map(|r| r.text.as_str())
             .collect::<Vec<_>>()
             .join("\n\n")
     };
@@ -1491,10 +1491,22 @@ async fn multi_task(
     }
     let text = joined(&texts);
     let pending = texts.iter().filter(|t| t.is_none()).count();
-    let error = texts
-        .iter()
-        .find_map(|t| t.as_ref().and_then(|r| r.as_ref().err()).cloned())
-        .or_else(|| (pending > 0).then(|| format!("{pending} 个分段识别超时")));
+    let mut reasons = Vec::new();
+    for result in &texts {
+        match result {
+            Some(Err(error)) => reasons.push(error.clone()),
+            Some(Ok(transcript)) => {
+                if let Some(warning) = &transcript.warning {
+                    reasons.push(warning.clone());
+                }
+            }
+            None => {}
+        }
+    }
+    if pending > 0 {
+        reasons.push(format!("{pending} 个分段识别超时"));
+    }
+    let error = (!reasons.is_empty()).then(|| reasons.join("；"));
     let _ = tx.send(Cmd::Done(id, SessionOutcome { samples: all, text, error, cancelled: false }));
 }
 
@@ -1670,11 +1682,12 @@ mod tests {
         };
         // 600 秒 16k 单声道 → 6 块；桩每块延迟 30ms，按块串行应远早于看门狗预算完成
         let samples = vec![0i16; 600 * deepseek::SAMPLE_RATE];
-        let text = tokio::time::timeout(budget, Engine::DeepSeek(config).transcribe_pcm("zh", &samples))
+        let transcript = tokio::time::timeout(budget, Engine::DeepSeek(config).transcribe_pcm("zh", &samples))
             .await
             .expect("长录音被收尾预算提前取消")
             .expect("DeepSeek 桩识别失败");
-        assert_eq!(text.lines().count(), 6, "应按块顺序拼接 6 段文本");
+        assert_eq!(transcript.text.lines().count(), 6, "应按块顺序拼接 6 段文本");
+        assert!(transcript.warning.is_none(), "全部分段成功不应有降级原因");
 
         // 桩依次收到 6 个请求：块与块之间是 await 串行的，不是并发
         let mut count = 0;
