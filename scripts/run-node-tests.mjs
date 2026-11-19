@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Node 测试统一执行器（任务 T3：质量门禁）
 //
-// 背景：tests/ 下的用例脚本会在结束时主动调用 process.exit(0)，
+// 背景：tests/ 下有手写 main() 的用例会在结束时主动调用 process.exit(0)，
 // 直接使用 `node --test tests/*.js` 会被提前截断测试收集与汇总输出。
 // 因此这里改为「逐个文件串行 spawn 一个 node 进程」，最后一个文件跑完再统一汇总，
 // 只要有任一文件失败就以非 0 退出码结束，可直接作为 CI 门禁。
@@ -53,18 +53,30 @@ async function collectTestFiles() {
 
 /**
  * 执行单个测试文件，返回 { file, ok, code, durationMs, reason }。
- * 使用 stdio: 'inherit' 让子进程输出直接透传，避免缓冲区截断用例自身的日志。
+ * 输出边读边透传，同时统计字节数：退出码 0 却没有任何输出说明测试可能被
+ * 顶层 process.exit 截断，不能当成通过。
  */
 function runTestFile(file) {
   return new Promise((resolve) => {
     const startedAt = Date.now()
     const child = spawn(process.execPath, [file], {
       cwd: repoRoot,
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true
     })
 
     let settled = false
+    let outputBytes = 0
+
+    child.stdout.on('data', (chunk) => {
+      outputBytes += chunk.length
+      process.stdout.write(chunk)
+    })
+
+    child.stderr.on('data', (chunk) => {
+      outputBytes += chunk.length
+      process.stderr.write(chunk)
+    })
 
     // 兜底：超时后强杀子进程，并记为失败
     const timer = setTimeout(() => {
@@ -118,12 +130,17 @@ function runTestFile(file) {
         return
       }
 
+      const noOutput = code === 0 && outputBytes === 0
       resolve({
         file,
-        ok: code === 0,
+        ok: code === 0 && !noOutput,
         code,
         durationMs: Date.now() - startedAt,
-        reason: code === 0 ? '通过' : `退出码 ${code}`
+        reason: noOutput
+          ? '退出码 0 但没有任何输出（测试可能被 process.exit 截断）'
+          : code === 0
+            ? '通过'
+            : `退出码 ${code}`
       })
     })
   })

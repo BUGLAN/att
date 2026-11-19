@@ -108,7 +108,7 @@ test('statusTone 与状态标签', () => {
 test('formatLatency：亚秒用毫秒，超秒用秒', () => {
   assert.equal(formatLatency(812), '812ms')
   assert.equal(formatLatency(1900), '1.9s')
-  assert.equal(formatLatency(null), '')
+  assert.equal(formatLatency(undefined), '')
   assert.equal(formatLatency(-5), '')
 })
 
@@ -155,10 +155,6 @@ test('keyDisplay：掩码展示与无密钥提示', () => {
   assert.equal(keyDisplay('', false), '无需密钥')
 })
 
-test('进程显式退出（run-node-tests 约定）', () => {
-  process.exit(0)
-})
-
 // ==================== 思考强度（2026-10-24 性能修复） ====================
 
 test('REASONING_EFFORT_OPTIONS：含「不干预」空串，且与后端取值一致', () => {
@@ -168,9 +164,9 @@ test('REASONING_EFFORT_OPTIONS：含「不干预」空串，且与后端取值�
   )
 })
 
-test('reasoningEffortLabel：空/未知都显示默认，不抛错', () => {
-  assert.equal(reasoningEffortLabel(''), '默认')
-  assert.equal(reasoningEffortLabel(undefined), '默认')
+test('reasoningEffortLabel：空值跟随模型默认，未知值回退默认，不抛错', () => {
+  assert.equal(reasoningEffortLabel(''), '跟随模型默认')
+  assert.equal(reasoningEffortLabel(undefined), '跟随模型默认')
   assert.equal(reasoningEffortLabel('bogus'), '默认')
   assert.match(reasoningEffortLabel('none'), /关闭/)
 })
