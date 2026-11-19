@@ -1,0 +1,27 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index bd060bc..02a56b4 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -2,10 +2,8 @@
+ #
+ # 前端：纯 Node 单元断言（纯函数），不需要显示器。
+ # Rust：att-core 的本地引擎依赖（CTranslate2 / sherpa-onnx）默认开启，CI 用
+-# `--no-default-features` 关闭后再跑 clippy / test；默认构建仍由本机
++# `--no-default-features` 关闭后再跑 fmt / clippy / test；默认构建仍由本机
+ # `cargo test --workspace` 与 release.yml 的打包流程覆盖。
+-# fmt 暂不进门禁：仓库现有代码尚未按 rustfmt 统一（另有卡片跟踪），先只拦编译、
+-# clippy 与测试，避免 CI 一开始就长期红。
+ 
+ name: CI
+ 
+@@ -74,6 +72,10 @@ jobs:
+         with:
+           workspaces: src-tauri
+ 
++      - name: Rust 格式化检查
++        working-directory: src-tauri
++        run: cargo fmt --all -- --check
++
+       - name: Clippy（core / server / hotkey，不含本地引擎）
+         working-directory: src-tauri
+         run: cargo clippy -p att-core -p att-server -p att-hotkey --no-default-features
