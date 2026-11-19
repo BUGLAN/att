@@ -103,6 +103,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import RecordRow from './RecordRow.vue'
 import { groupRecordsByDay } from './recordListModel.mjs'
+import { createLatestRequestGuard, runLatest } from '@/utils/latestRequest.mjs'
 
 const appStore = useAppStore()
 const recordsStore = useRecordsStore()
@@ -126,6 +127,7 @@ const currentPage = ref(1)
 const total = ref(0)
 const totalPages = ref(1)
 const pageSize = 100
+const recordsRequest = createLatestRequestGuard()
 
 function debounce(fn, delay) {
   let timer = null
@@ -143,29 +145,34 @@ function mergeRecordWithStore(record) {
 }
 
 async function loadRecordsPage() {
-  isLoading.value = true
-
-  try {
-    const result = await api.searchRecords({
-      q: recordSearch.value,
-      search_type: recordSearchType.value,
-      favorite_only: favoriteOnly.value,
-      page: currentPage.value,
-      page_size: pageSize
-    })
-    records.value = Array.isArray(result?.items) ? result.items.map(mergeRecordWithStore) : []
-    total.value = result?.total || 0
-    totalPages.value = result?.total_pages || 1
-
-    if (currentPage.value > totalPages.value) {
-      currentPage.value = totalPages.value
-      return await loadRecordsPage()
+  const outcome = await runLatest(recordsRequest, () => api.searchRecords({
+    q: recordSearch.value,
+    search_type: recordSearchType.value,
+    favorite_only: favoriteOnly.value,
+    page: currentPage.value,
+    page_size: pageSize
+  }), {
+    onStart: () => {
+      isLoading.value = true
+    },
+    onResult: (result) => {
+      records.value = Array.isArray(result?.items) ? result.items.map(mergeRecordWithStore) : []
+      total.value = result?.total || 0
+      totalPages.value = result?.total_pages || 1
+    },
+    onError: (error) => {
+      console.error('Failed to search records:', error)
+      appStore.showToast('加载记录失败', { tone: 'error' })
+    },
+    onFinally: () => {
+      isLoading.value = false
     }
-  } catch (error) {
-    console.error('Failed to search records:', error)
-    appStore.showToast('加载记录失败', { tone: 'error' })
-  } finally {
-    isLoading.value = false
+  })
+
+  // 当前页被删空后回到最后一页；新请求会接管 loading，旧请求不会复位它
+  if (outcome.applied && currentPage.value > totalPages.value) {
+    currentPage.value = totalPages.value
+    return loadRecordsPage()
   }
 }
 

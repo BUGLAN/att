@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useElectron } from '@/composables/useElectron'
+import { createLatestRequestGuard, runLatest } from '@/utils/latestRequest.mjs'
 
 export function useClipboard() {
   const appStore = useAppStore()
@@ -15,27 +16,36 @@ export function useClipboard() {
   })
   const isLoading = ref(false)
   const isImporting = ref(false)
+  const itemsRequest = createLatestRequestGuard()
+  const statsRequest = createLatestRequestGuard()
 
   async function loadItems(filters = {}) {
-    isLoading.value = true
-
-    try {
-      const result = await api.getClipboardItems(filters)
-      items.value = Array.isArray(result) ? result : []
-    } catch (error) {
-      console.error('[Clipboard] Failed to load items:', error)
-      appStore.showToast('加载剪切板记录失败')
-    } finally {
-      isLoading.value = false
-    }
+    return runLatest(itemsRequest, () => api.getClipboardItems(filters), {
+      onStart: () => {
+        isLoading.value = true
+      },
+      onResult: (result) => {
+        items.value = Array.isArray(result) ? result : []
+      },
+      onError: (error) => {
+        console.error('[Clipboard] Failed to load items:', error)
+        appStore.showToast('加载剪切板记录失败')
+      },
+      onFinally: () => {
+        isLoading.value = false
+      }
+    })
   }
 
   async function loadStats() {
-    try {
-      stats.value = await api.getClipboardStats()
-    } catch (error) {
-      console.error('[Clipboard] Failed to load stats:', error)
-    }
+    return runLatest(statsRequest, () => api.getClipboardStats(), {
+      onResult: (result) => {
+        stats.value = result
+      },
+      onError: (error) => {
+        console.error('[Clipboard] Failed to load stats:', error)
+      }
+    })
   }
 
   async function refresh(filters = {}) {
