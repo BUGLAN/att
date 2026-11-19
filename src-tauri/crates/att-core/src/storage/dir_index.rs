@@ -5,11 +5,13 @@
 //!
 //! 失效判定用目录的修改时间：目录里新增、删除、替换文件（原子写的 tmp + rename、
 //! 另一个仓库实例的写入、手工恢复备份）都会改变它，读取时发现与缓存时不一致就整体重扫。
+//! 写入前如果时间与缓存相同，再核对一次条目名，兜住文件系统时间精度不足的边角情况。
 //! 不覆盖的情形：外部程序原地改写某个文件的内容（目录时间不变）。本应用自己的写入一律走原子写，
 //! 手工改了文件内容后重启应用即可。
 //!
 //! 本类型不带锁，由调用方放进自己的 `Mutex` 里，与「读-改-写」放在同一把锁下。
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -20,16 +22,32 @@ pub struct DirIndex<T> {
     skipped: usize,
     /// 缓存对应的目录修改时间
     stamp: Option<SystemTime>,
+    /// 扫描时的目录条目名快照：目录时间精度不足时用于识别外部增删
+    entries: Option<Vec<OsString>>,
     loaded: bool,
 }
 
 impl<T> DirIndex<T> {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, items: Vec::new(), skipped: 0, stamp: None, loaded: false }
+        Self { dir, items: Vec::new(), skipped: 0, stamp: None, entries: None, loaded: false }
     }
 
     fn dir_stamp(&self) -> Option<SystemTime> {
         std::fs::metadata(&self.dir).and_then(|m| m.modified()).ok()
+    }
+
+    fn dir_entries(&self) -> Option<Vec<OsString>> {
+        let mut entries: Vec<OsString> =
+            std::fs::read_dir(&self.dir).ok()?.flatten().map(|entry| entry.file_name()).collect();
+        entries.sort_unstable();
+        Some(entries)
+    }
+
+    fn entries_unchanged(&self) -> bool {
+        match (&self.entries, self.dir_entries()) {
+            (Some(expected), Some(current)) => expected == &current,
+            _ => false,
+        }
     }
 
     /// 确保缓存是最新的：未加载、拿不到目录时间或目录有外部变化时调 `scan` 重读。
@@ -44,6 +62,7 @@ impl<T> DirIndex<T> {
         self.items = items;
         self.skipped = skipped;
         self.stamp = stamp;
+        self.entries = self.dir_entries();
         self.loaded = true;
     }
 
@@ -59,7 +78,14 @@ impl<T> DirIndex<T> {
     /// 写入前调用：上次核对之后目录有外部变化就作废缓存（下次读取重扫），
     /// 避免本次写入后记下的新时间把外部变化「盖」过去。
     pub fn before_write(&mut self) {
-        if self.loaded && self.dir_stamp() != self.stamp {
+        if !self.loaded {
+            return;
+        }
+        if self.dir_stamp() != self.stamp {
+            self.invalidate();
+        } else if self.stamp.is_some() && !self.entries_unchanged() {
+            // Windows / 部分文件系统的目录时间可能停留在同一刻度：
+            // 时间没变时再比一次条目名，避免刚发生的外部增删被本次写入盖掉。
             self.invalidate();
         }
     }
@@ -72,12 +98,14 @@ impl<T> DirIndex<T> {
         }
         apply(&mut self.items);
         self.stamp = self.dir_stamp();
+        self.entries = self.dir_entries();
     }
 
     pub fn invalidate(&mut self) {
         self.loaded = false;
         self.items = Vec::new();
         self.skipped = 0;
+        self.entries = None;
     }
 }
 
@@ -145,11 +173,13 @@ mod tests {
         assert_eq!(scans.get(), 2, "外部新增文件后必须重扫");
         assert_eq!(index.items(), ["a.json", "c.json"]);
 
-        // 写入前发现外部变化：作废缓存，after_write 不再基于旧缓存打补丁
+        // Windows 上删除后目录时间可能不前进：强制模拟这一情形，写入前仍须靠条目名发现外部删除
         std::fs::remove_file(dir.join("a.json")).unwrap();
+        index.stamp = index.dir_stamp();
         index.before_write();
         index.after_write(|items| items.push("never.json".into()));
         index.refresh(|d| scan_names(d, &scans));
+        assert_eq!(scans.get(), 3, "目录时间未变时也必须发现外部删除");
         assert_eq!(index.items(), ["c.json"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
