@@ -122,6 +122,9 @@ export const STATUS_LABELS = {
 
 /** 延迟展示：<1s 用毫秒，≥1s 用秒（一位小数）。 */
 export function formatLatency(latencyMs) {
+  if (latencyMs == null) {
+    return ''
+  }
   const value = Number(latencyMs)
   if (!Number.isFinite(value) || value < 0) {
     return ''

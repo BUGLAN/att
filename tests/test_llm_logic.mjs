@@ -108,6 +108,7 @@ test('statusTone 与状态标签', () => {
 test('formatLatency：亚秒用毫秒，超秒用秒', () => {
   assert.equal(formatLatency(812), '812ms')
   assert.equal(formatLatency(1900), '1.9s')
+  assert.equal(formatLatency(null), '')
   assert.equal(formatLatency(undefined), '')
   assert.equal(formatLatency(-5), '')
 })
