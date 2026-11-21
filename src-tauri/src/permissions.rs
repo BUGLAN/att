@@ -165,12 +165,33 @@ pub fn reveal(path: &std::path::Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("路径不存在：{}", path.display()));
     }
-    #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg("-R").arg(path).spawn();
-    #[cfg(windows)]
-    let result = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
-    #[cfg(not(any(target_os = "macos", windows)))]
-    let result = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn();
+    let result = if path.is_dir() {
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open").arg(path).spawn()
+        }
+        #[cfg(windows)]
+        {
+            std::process::Command::new("explorer").arg(path).spawn()
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            std::process::Command::new("xdg-open").arg(path).spawn()
+        }
+    } else {
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open").arg("-R").arg(path).spawn()
+        }
+        #[cfg(windows)]
+        {
+            std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn()
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn()
+        }
+    };
     result.map(|_| ()).map_err(|e| e.to_string())
 }
 

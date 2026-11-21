@@ -73,6 +73,16 @@ export function recordingModeConflict(provider, recordingMode) {
  * - idle：文件就位、尚未加载（首次录音时会自动加载）。
  */
 export function localEngineView(provider, localEngine) {
+  const view = localEngineViewBase(provider, localEngine)
+  // Whisper 缺 Silero VAD：不阻塞识别，但噪声/音乐上会整段输出幻觉文本，状态行要明确说
+  if (provider === 'whisper' && localEngine && localEngine.vad_ready === false && view.state !== 'missing') {
+    const warning = '未安装 VAD（噪声过滤），噪声环境可能出现幻觉文本；可在下方下载。'
+    view.tip = [view.tip, warning].filter(Boolean).join(' ')
+  }
+  return view
+}
+
+function localEngineViewBase(provider, localEngine) {
   const base = { message: '', detail: '', detailLabel: '', tip: '' }
   if (!isLocalProvider(provider)) {
     return { ...base, state: 'none', tone: 'neutral', chip: '', title: '' }
@@ -98,7 +108,7 @@ export function localEngineView(provider, localEngine) {
       title: '缺少模型文件',
       message: summary || `${providerLabel(provider)} 模型未安装`,
       detail: [rest, localEngine.error_detail].filter(Boolean).join('\n'),
-      detailLabel: '安装方法'
+      detailLabel: '安装位置'
     }
   }
   if (localEngine.load_error) {

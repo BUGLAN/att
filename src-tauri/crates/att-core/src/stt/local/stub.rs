@@ -167,4 +167,6 @@ impl LocalModels {
     pub fn vad_loaded(&self) -> bool {
         false
     }
+
+    pub fn unload_vad(&self) {}
 }

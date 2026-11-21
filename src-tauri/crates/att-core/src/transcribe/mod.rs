@@ -202,10 +202,10 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
     let qwen = core.local_models.status(core, LocalKind::Qwen);
     let doubao_ready = crate::stt::doubao_config(core).ensure().is_ok();
     let deepseek_ready = crate::stt::deepseek_config(core).ensure().is_ok();
-    // 只给一句结论 + 去哪看安装方法：完整的目录与命令在设置页（选中该引擎后折叠展示）
+    // 只给一句结论 + 去哪下载：完整目录与文件要求仍放在设置页折叠详情里
     let unavailable = |kind: LocalKind, status: &crate::stt::local::LocalStatus| {
         let summary = status.error.clone().unwrap_or_else(|| format!("{}不可用", kind.label()));
-        TranscribeError::new(409, format!("{summary}，可在「设置 → 识别引擎」选中它查看安装方法"))
+        TranscribeError::new(409, format!("{summary}，可在「设置 → 识别引擎」下载模型"))
     };
 
     match requested.trim().to_lowercase().as_str() {
@@ -345,6 +345,11 @@ fn shape_payload(entry: &Value, want_segments: bool, cached: bool, variant: Opti
 }
 
 impl FileTranscriber {
+    /// 是否有转写在跑（同步或异步任务持有并发闸门）：删除模型前据此拒绝。
+    pub fn is_busy(&self) -> bool {
+        self.busy.try_lock().is_err()
+    }
+
     fn cache_path(core: &CoreState) -> PathBuf {
         core.data_dir.join("transcribe_file_cache.json")
     }
@@ -541,6 +546,16 @@ async fn run_transcription(
     hash: &str,
     engine: &str,
 ) -> Result<Value, TranscribeError> {
+    let _model_gate = if crate::stt::local_kind(engine).is_some() {
+        Some(
+            core.model_gate
+                .clone()
+                .try_read_owned()
+                .map_err(|_| TranscribeError::busy("本地模型正在维护，请稍后重试"))?,
+        )
+    } else {
+        None
+    };
     let _permit = core.transcriber.try_acquire_busy()?;
     run_transcription_locked(core, path, language, duration, hash, engine, &AsrHook::none()).await
 }
@@ -691,6 +706,16 @@ fn start_job(
     duration: f64,
     engine: &'static str,
 ) -> Result<String, TranscribeError> {
+    let model_gate = if crate::stt::local_kind(engine).is_some() {
+        Some(
+            core.model_gate
+                .clone()
+                .try_read_owned()
+                .map_err(|_| TranscribeError::busy("本地模型正在维护，请稍后重试"))?,
+        )
+    } else {
+        None
+    };
     // 受理即取得执行权；guard 随任务移动，直到 ASR / 校对全部结束才释放。
     let permit = core.transcriber.try_acquire_busy()?;
     let job_id = uuid::Uuid::new_v4().simple().to_string();
@@ -718,6 +743,7 @@ fn start_job(
     let id = job_id.clone();
     tokio::spawn(async move {
         // guard 随后台任务存活，覆盖 ASR 与校对；成功、失败或 panic 时才释放。
+        let _model_gate = model_gate;
         let _permit = permit;
         let outcome = execute_job(&core, &id, &request, &path, &hash, duration, engine, &cancel).await;
         core.transcriber.update_job(&id, |job| match outcome {

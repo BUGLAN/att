@@ -105,6 +105,11 @@ export function useElectron() {
     deleteClipboardItem: (id) => httpApi.deleteClipboardItem(id),
     deleteClipboardItems: (ids) => httpApi.deleteClipboardItems(ids),
     clearClipboardHistory: () => httpApi.clearClipboardHistory(),
+    getModels: () => httpApi.getModels(),
+    downloadModel: (id, source) => httpApi.downloadModel(id, source),
+    getModelJob: (jobId) => httpApi.getModelJob(jobId),
+    cancelModelJob: (jobId) => httpApi.cancelModelJob(jobId),
+    deleteModel: (id) => httpApi.deleteModel(id),
     getSettings: () => httpApi.getSettings(),
     saveSettings: (settings) => httpApi.saveSettings(settings),
     // LLM v2（供应商档案 + 模型条目）

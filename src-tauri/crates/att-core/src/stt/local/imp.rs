@@ -631,6 +631,11 @@ impl LocalModels {
         self.vad.lock().unwrap_or_else(|error| error.into_inner()).is_some()
     }
 
+    /// 只释放 VAD（删除/替换 `silero_vad.onnx` 时用，不影响已加载的识别引擎）。
+    pub fn unload_vad(&self) {
+        *self.vad.lock().unwrap_or_else(|error| error.into_inner()) = None;
+    }
+
     fn device_of(&self, kind: LocalKind) -> Option<String> {
         match kind {
             LocalKind::Whisper => self
@@ -693,7 +698,7 @@ mod tests {
         let status = models.status(&core, LocalKind::Qwen);
         assert!(!status.available);
         assert_eq!(status.error.as_deref(), Some(att_qwen::MODEL_MISSING));
-        assert!(status.error_detail.unwrap().lines().any(|line| line.starts_with("\twget ")), "命令保持 Tab 缩进");
+        assert!(status.error_detail.unwrap().contains("设置 → 识别引擎"), "详情指向应用内下载");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -169,12 +169,13 @@ fn model_missing_hint(config: &WhisperConfig) -> String {
     let short = model.rsplit('/').next().unwrap_or(model);
     let short = short.strip_prefix("faster-whisper-").unwrap_or(short);
     let short = if short.is_empty() { "large-v3" } else { short };
+    let target = config.models_dir.join(format!("faster-whisper-{short}"));
     format!(
         "{MODEL_MISSING}\n\
-         下载 https://huggingface.co/Systran/faster-whisper-{short} 的全部文件，放到这个目录：\n\
+         在「设置 → 识别引擎」的模型列表里下载；也可以把兼容 CTranslate2 的模型放到：\n\
          \t{}\n\
          目录内至少要有 model.bin 与 tokenizer.json。",
-        default_model_dir(&config.models_dir).display()
+        target.display()
     )
 }
 
@@ -561,8 +562,11 @@ mod tests {
         let mut lines = error.lines();
         assert_eq!(lines.next(), Some(MODEL_MISSING), "首行只放一句结论：{error}");
         let detail = lines.collect::<Vec<_>>().join("\n");
-        assert!(detail.contains("Systran/faster-whisper-large-v3"), "{error}");
-        assert!(detail.contains(&format!("\t{}", default_model_dir(&root).display())), "目录单独成行便于复制：{error}");
+        assert!(detail.contains("设置 → 识别引擎"), "{error}");
+        assert!(
+            detail.contains(&format!("\t{}", root.join("faster-whisper-large-v3").display())),
+            "目录单独成行便于复制：{error}"
+        );
         // 候选路径清单、开发者工具与环境变量都不进文案
         assert!(!error.contains("ct2-transformers-converter"), "{error}");
         assert!(!error.contains("ATT_MODELS_DIR"), "{error}");

@@ -84,7 +84,7 @@ export function transcribeEngineOptions({ doubaoKeySet = false, deepseekKeySet =
     }
     if (localEngine && localEngine.provider === item.value && localEngine.available === false) {
       const summary = String(localEngine.error || '').split('\n')[0].trim() || `${item.label} 模型未安装`
-      return { ...item, disabled: true, badge: '未安装', hint: `${summary}，可在「设置 → 识别引擎」查看安装方法。` }
+      return { ...item, disabled: true, badge: '未安装', hint: `${summary}，可在「设置 → 识别引擎」下载模型。` }
     }
     return { ...item, disabled: false, badge: '', hint: '' }
   })

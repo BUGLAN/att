@@ -478,6 +478,15 @@ export const api = {
   getSettings: () => request('GET', '/settings'),
   saveSettings: (settings) => request('PUT', '/settings', { body: settings }),
   getHealth: (probeRuntime = false) => request('GET', `/health${probeRuntime ? '?probe_runtime=true' : ''}`),
+  // 本地模型：清单 / 后台下载 / 进度 / 取消 / 删除（模型体积大，下载在数据面后台进行）
+  getModels: () => request('GET', '/models'),
+  downloadModel: (id, source) => request(
+    'POST',
+    `/models/${encodeURIComponent(id)}/download${source ? `?source=${encodeURIComponent(source)}` : ''}`
+  ),
+  getModelJob: (jobId) => request('GET', `/models/jobs/${encodeURIComponent(jobId)}`),
+  cancelModelJob: (jobId) => request('POST', `/models/jobs/${encodeURIComponent(jobId)}/cancel`),
+  deleteModel: (id) => request('DELETE', `/models/${encodeURIComponent(id)}`),
   // 在线识别引擎凭据验证：GET 取最近一次结论（不发网络请求），POST 立即验证（豆包握手约 1～2 秒）
   getAsrCredentialCheck: (provider) => request('GET', `/asr/credential-check?provider=${encodeURIComponent(provider)}`),
   checkAsrCredential: (provider) => request('POST', '/asr/credential-check', { body: { provider }, timeout: SLOW_TIMEOUT_MS }),

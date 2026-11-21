@@ -504,12 +504,17 @@ pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> Value {
     })
 }
 
-/// 在文件管理器中显示数据目录（kind = "data"）、日志文件（kind = "log"）或已下载的更新安装包（kind = "update"）。
+/// 在文件管理器中显示数据目录（kind = "data"）、日志文件（kind = "log"）、模型目录
+/// （kind = "models"）或已下载的更新安装包（kind = "update"）。
 #[tauri::command]
 pub fn reveal_app_path(state: State<'_, AppState>, kind: String) -> Result<(), String> {
     let path = match kind.as_str() {
         "data" => state.core.data_dir.clone(),
         "log" => state.core.data_dir.join("logs").join("att-app.log"),
+        "models" => {
+            std::fs::create_dir_all(&state.core.models_dir).map_err(|error| format!("无法创建模型目录：{error}"))?;
+            state.core.models_dir.clone()
+        }
         "update" => state.core.updater.downloaded_path().ok_or("还没有下载好的更新安装包")?,
         other => return Err(format!("未知路径类型：{other}")),
     };

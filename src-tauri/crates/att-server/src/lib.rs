@@ -25,6 +25,7 @@ mod asr;
 mod backup;
 mod clipboard;
 mod llm;
+mod models;
 mod storage;
 mod transcribe;
 mod update;
@@ -100,6 +101,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .merge(transcribe::routes())
         // 在线识别引擎凭据验证
         .merge(asr::routes())
+        // 本地模型清单 / 下载 / 删除
+        .merge(models::routes())
         // 检查更新（设置页「关于」）
         .merge(update::routes())
         // 存储管理（设置页「诊断」）
@@ -471,6 +474,8 @@ fn local_engine_payload(core: &CoreState) -> Value {
         return Value::Null;
     };
     let status = core.local_models.status(core, kind);
+    // VAD 只看文件是否就位（只给 Whisper 用），不做加载，避免状态轮询触发推理库加载
+    let vad_ready = att_core::stt::local::catalog::vad_installed(&core.models_dir);
     json!({
         "provider": kind.provider(),
         "label": kind.label(),
@@ -482,6 +487,8 @@ fn local_engine_payload(core: &CoreState) -> Value {
         "load_error": status.load_error,
         "model_dir": status.model_dir.as_ref().map(|path| path.display().to_string()),
         "device": status.device,
+        "vad_ready": vad_ready,
+        "vad_loaded": core.local_models.vad_loaded(),
     })
 }
 

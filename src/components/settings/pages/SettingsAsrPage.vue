@@ -218,18 +218,39 @@
     <section v-if="form.asr_provider === 'whisper'" class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">faster-whisper · 本地模型</h3>
-        <LocalModelStatus :view="localView" />
+        <LocalModelStatus
+          :view="localView"
+          :models="engineModels"
+          :job="modelJob"
+          :models-dir="modelsDir"
+          :is-desktop="isDesktop"
+          :starting-model-id="startingModelId"
+          :vad-warning="modelVadWarning"
+          @download="downloadModel"
+          @cancel="cancelDownload"
+          @delete="askDeleteModel"
+          @reveal="revealModels"
+        />
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">模型</span>
             <span class="setting-desc">越大越准，也越慢。</span>
           </div>
           <BaseSelect v-model="form.whisper_model" aria-label="Whisper 模型">
-            <option value="tiny">tiny</option>
-            <option value="base">base</option>
-            <option value="small">small</option>
-            <option value="medium">medium</option>
-            <option value="large-v3">large-v3</option>
+            <option v-for="option in whisperOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </BaseSelect>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">下载源</span>
+            <span class="setting-desc">国内网络打不开 Hugging Face 时切到镜像；GitHub 项仍走官方。</span>
+          </div>
+          <BaseSelect v-model="form.model_download_source" aria-label="模型下载源">
+            <option v-for="source in downloadSources" :key="source.value" :value="source.value">
+              {{ source.label }}
+            </option>
           </BaseSelect>
         </div>
       </div>
@@ -238,7 +259,30 @@
     <section v-if="form.asr_provider === 'qwen_asr'" class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">Qwen3-ASR · 本地模型</h3>
-        <LocalModelStatus :view="localView" />
+        <LocalModelStatus
+          :view="localView"
+          :models="engineModels"
+          :job="modelJob"
+          :models-dir="modelsDir"
+          :is-desktop="isDesktop"
+          :starting-model-id="startingModelId"
+          :vad-warning="modelVadWarning"
+          @download="downloadModel"
+          @cancel="cancelDownload"
+          @delete="askDeleteModel"
+          @reveal="revealModels"
+        />
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">下载源</span>
+            <span class="setting-desc">Qwen 模型目前只有 GitHub 官方源，镜像选择对它不生效。</span>
+          </div>
+          <BaseSelect v-model="form.model_download_source" aria-label="模型下载源">
+            <option v-for="source in downloadSources" :key="source.value" :value="source.value">
+              {{ source.label }}
+            </option>
+          </BaseSelect>
+        </div>
         <!-- 模型目录自动查找（models/ 下的 Qwen3-ASR ONNX），推理固定走 CPU；
              旧版的设备 / dtype / 时间戳 / 强制对齐器选项在 Rust 引擎里没有作用，已从界面移除（字段保留兼容旧数据） -->
         <details class="settings-advanced">
@@ -297,6 +341,16 @@
         </ul>
       </div>
     </section>
+
+    <ConfirmDialog
+      v-model="isDeleteVisible"
+      :title="pendingDelete ? `删除模型「${pendingDelete.title}」？` : '删除模型？'"
+      :description="deleteDescription"
+      confirm-text="删除"
+      tone="danger"
+      :loading="isDeleting"
+      @confirm="confirmDeleteModel"
+    />
   </div>
 </template>
 
@@ -305,9 +359,11 @@ import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import BaseInput from '@/components/common/BaseInput.vue'
 import BaseSelect from '@/components/common/BaseSelect.vue'
 import BaseTextarea from '@/components/common/BaseTextarea.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
 import LocalModelStatus from '../LocalModelStatus.vue'
 import { useSettingsStore } from '@/stores/settings'
+import { useElectron } from '@/composables/useElectron'
 import { SETTINGS_CTX } from '../settingsContext.js'
 import {
   localEngineView,
@@ -319,6 +375,15 @@ import {
   languageOptions as buildLanguageOptions,
   normalizeLanguageForProvider
 } from '../asrLanguages.mjs'
+import {
+  DOWNLOAD_SOURCES,
+  formatBytes,
+  installedModelSelection,
+  isJobActive,
+  modelsForProvider,
+  vadWarning,
+  whisperOptionLabel
+} from '../modelManager.mjs'
 import { hotwordView, parseHotwords } from '../asrHotwords.mjs'
 import { credentialNote, isOnlineProvider, onlineEngineChip } from '../onlineEngineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
@@ -327,8 +392,10 @@ const { form, streamingRuntimeSummary } = inject(SETTINGS_CTX)
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const credential = useAsrCredentialCheck()
+const { isDesktop, revealAppPath } = useElectron()
 
 const LOCAL_STATUS_POLL_MS = 1000
+const MODEL_JOB_POLL_MS = 800
 
 const recordingModes = computed(() => recordingModeOptions(form.value.asr_provider))
 const modeConflict = computed(() => recordingModeConflict(form.value.asr_provider, form.value.recording_mode))
@@ -353,6 +420,166 @@ const localView = computed(() => {
   const status = isLoadingModel.value ? { provider, loading: true } : settingsStore.runtimeStatus.local_engine
   return localEngineView(provider, status)
 })
+
+// 本地模型清单：只展示当前引擎相关的项（Whisper 带 VAD；Qwen 只有模型本身）
+const engineModels = computed(() => modelsForProvider(settingsStore.modelCatalog.models, form.value.asr_provider))
+const modelJob = computed(() => settingsStore.modelCatalog.job)
+const modelsDir = computed(() => settingsStore.modelCatalog.models_dir || '')
+const downloadSources = DOWNLOAD_SOURCES
+const modelVadWarning = computed(() => {
+  if (localView.value.tip.includes('未安装 VAD')) {
+    return ''
+  }
+  return vadWarning(form.value.asr_provider, settingsStore.modelCatalog.models)
+})
+const WHISPER_VALUES = ['tiny', 'base', 'small', 'medium', 'large-v3', 'large-v3-turbo']
+const whisperOptions = computed(() => WHISPER_VALUES.map((value) => ({
+  value,
+  label: whisperOptionLabel(value, settingsStore.modelCatalog.models)
+})))
+
+// 删除模型前的二次确认（录音 / 转写进行中后端会拒绝，提示原因）
+const pendingDelete = ref(null)
+const isDeleteVisible = ref(false)
+const isDeleting = ref(false)
+const deleteDescription = computed(() => {
+  if (!pendingDelete.value) {
+    return ''
+  }
+  return `会释放 ${formatBytes(pendingDelete.value.installed_bytes)}，之后可以在同一位置重新下载。`
+})
+
+let modelPollTimer = null
+let modelPollToken = 0
+const startingModelId = ref('')
+
+function stopModelPolling() {
+  modelPollToken += 1
+  if (modelPollTimer) {
+    window.clearTimeout(modelPollTimer)
+    modelPollTimer = null
+  }
+}
+
+function startModelPolling() {
+  if (modelPollTimer || !isJobActive(settingsStore.modelCatalog.job)) {
+    return
+  }
+  const token = ++modelPollToken
+  modelPollTimer = window.setTimeout(() => pollModelJob(token), MODEL_JOB_POLL_MS)
+}
+
+async function pollModelJob(token) {
+  modelPollTimer = null
+  if (token !== modelPollToken) {
+    return
+  }
+  const jobId = settingsStore.modelCatalog.job?.id
+  if (!jobId) {
+    stopModelPolling()
+    return
+  }
+  try {
+    await settingsStore.loadModelJob(jobId)
+  } catch {
+    // 单次失败不打断：下一拍再试
+  }
+  if (token !== modelPollToken) {
+    return
+  }
+  if (isJobActive(settingsStore.modelCatalog.job)) {
+    modelPollTimer = window.setTimeout(() => pollModelJob(token), MODEL_JOB_POLL_MS)
+    return
+  }
+
+  stopModelPolling()
+  await settingsStore.loadModelCatalog().catch(() => {})
+  applyInstalledModelSelection(settingsStore.modelCatalog.job)
+  await settingsStore.loadRuntimeStatus(false).catch(() => {})
+}
+
+function applyInstalledModelSelection(job) {
+  const selection = installedModelSelection(job, settingsStore.modelCatalog.models)
+  if (selection) {
+    form.value[selection.key] = selection.value
+  }
+}
+
+onMounted(async () => {
+  try {
+    await settingsStore.loadModelCatalog()
+    if (isJobActive(settingsStore.modelCatalog.job)) {
+      startModelPolling()
+    }
+  } catch (error) {
+    console.warn('[Settings] 读取本地模型清单失败:', error)
+  }
+})
+
+onBeforeUnmount(stopModelPolling)
+
+async function downloadModel(model) {
+  if (startingModelId.value) {
+    return
+  }
+  startingModelId.value = model.id
+  try {
+    await settingsStore.downloadModel(model.id, form.value.model_download_source)
+    startModelPolling()
+    try {
+      await settingsStore.loadModelCatalog()
+    } catch (error) {
+      console.warn('[Settings] 下载启动后刷新模型清单失败:', error)
+    }
+  } catch (error) {
+    startModelPolling()
+    appStore.showToast(error.message || '下载失败')
+  } finally {
+    startingModelId.value = ''
+  }
+}
+
+async function cancelDownload(jobId) {
+  try {
+    await settingsStore.cancelModelJob(jobId)
+    startModelPolling()
+  } catch (error) {
+    appStore.showToast(error.message || '取消失败')
+  }
+}
+
+async function revealModels() {
+  if (!isDesktop) {
+    return
+  }
+  try {
+    await revealAppPath('models')
+  } catch (error) {
+    appStore.showToast(error.message || '无法打开模型目录')
+  }
+}
+
+function askDeleteModel(model) {
+  pendingDelete.value = model
+  isDeleteVisible.value = true
+}
+
+async function confirmDeleteModel() {
+  if (!pendingDelete.value) {
+    return
+  }
+  isDeleting.value = true
+  try {
+    await settingsStore.deleteModel(pendingDelete.value.id)
+    await settingsStore.loadRuntimeStatus(false).catch(() => {})
+    isDeleteVisible.value = false
+    pendingDelete.value = null
+  } catch (error) {
+    appStore.showToast(error.message || '删除模型失败')
+  } finally {
+    isDeleting.value = false
+  }
+}
 
 // 点引擎卡片：切换引擎；再点已选中的本地引擎 = 提前加载（未加载时）或重试（加载失败时），界面上不另放按钮
 function selectEngine(value) {

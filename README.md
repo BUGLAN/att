@@ -49,7 +49,7 @@ macOS 需要授予三项权限：「麦克风」（录音）、「输入监控�
 
 按住录音与点按录音可以设成不同的键同时使用；想用同一个键，先清空其中一个，同一个键只能启用一种录音方式。
 
-本地识别模型不随安装包分发；用本地 Whisper / Qwen 时按「设置 → 识别引擎」的提示下载。
+本地识别模型不随安装包分发；用本地 Whisper / Qwen 时在「设置 → 识别引擎」里直接下载（带进度、取消、断点续传、SHA-256 校验与源站固定版本，国内可切 hf-mirror.com 镜像），装好后可查看占用并删除；Whisper 会一并安装 Silero VAD。
 
 ## 开发
 
@@ -62,7 +62,7 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 
 - `cargo` 命令要在 `src-tauri/` 目录内执行（Windows 的 `+crt-static` 配置只在该目录下生效）。
 - 首次构建会编译 CTranslate2（约 10~20 分钟），macOS 需先 `brew install cmake`。
-- 本地 Whisper / Qwen 的模型与推理库不随仓库分发；选择对应引擎后按「设置 → 识别引擎」的提示下载，模型目录默认 `models/`，可用 `ATT_MODELS_DIR` / `ATT_SHERPA_ONNX_DIR` 改位置。
+- 本地 Whisper / Qwen 的模型与推理库不随仓库分发；选择对应引擎后在「设置 → 识别引擎」里应用内下载（Whisper 会自动装 Silero VAD，Qwen 走 GitHub Release），模型目录默认 `models/`，可用 `ATT_MODELS_DIR` / `ATT_SHERPA_ONNX_DIR` 改位置。
 - 开发态的 macOS 权限归属启动 `tauri dev` 的终端应用。
 - 更多开发约定与常见陷阱见 [`AGENTS.md`](AGENTS.md)。
 

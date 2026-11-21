@@ -53,7 +53,7 @@ test('本地引擎状态：缺模型 / 加载失败 / 已就绪 / 未加载', ()
   assert.equal(missing.state, 'missing')
   assert.equal(missing.message, '本地 Qwen3-ASR 模型未安装', '结论只有一句')
   assert.equal(missing.detail, '用下面的命令下载：\n\twget https://x/a.tar.bz2', '命令进折叠详情')
-  assert.equal(missing.detailLabel, '安装方法')
+  assert.equal(missing.detailLabel, '安装位置')
 
   const failed = localEngineView('whisper', { provider: 'whisper', available: true, load_error: '加载本地 Whisper 模型失败：x' })
   assert.equal(failed.state, 'failed')
@@ -84,6 +84,16 @@ test('本地引擎状态：旧格式多行 error 拆成结论 + 详情，缺省�
   const bare = localEngineView('whisper', { provider: 'whisper', available: false })
   assert.equal(bare.message, 'faster-whisper 模型未安装')
   assert.equal(bare.detail, '')
+})
+
+test('本地引擎状态：Whisper 缺 VAD 时提示幻觉风险，Qwen 不提示', () => {
+  const idle = localEngineView('whisper', { provider: 'whisper', available: true, loaded: false, vad_ready: false })
+  assert.match(idle.tip, /未安装 VAD/)
+  assert.match(idle.tip, /幻觉/)
+  const ready = localEngineView('whisper', { provider: 'whisper', available: true, loaded: true, vad_ready: true })
+  assert.equal(ready.tip.includes('未安装 VAD'), false)
+  const qwen = localEngineView('qwen_asr', { provider: 'qwen_asr', available: true, loaded: false, vad_ready: false })
+  assert.equal(qwen.tip.includes('未安装 VAD'), false)
 })
 
 test('提示拆分：首行结论、缩进行是命令、其余是说明', () => {

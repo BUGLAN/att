@@ -41,12 +41,17 @@ impl RetranscribeJobs {
     fn finish(&self, id: &str) {
         self.lock().remove(id);
     }
+
+    pub fn is_any_active(&self) -> bool {
+        !self.lock().is_empty()
+    }
 }
 
 /// 后台任务结束（含 panic、受理中途出错）时释放占用。
 struct JobGuard {
     core: Arc<CoreState>,
     id: String,
+    _model_gate: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
 }
 
 impl Drop for JobGuard {
@@ -134,6 +139,16 @@ pub async fn start(core: Arc<CoreState>, id: &str, provider: Option<&str>) -> Re
     if core.retranscribe.is_active(id) {
         return Err(RetranscribeError::Busy("这条记录正在重新识别"));
     }
+    let model_gate = if stt::local_kind(&provider).is_some() {
+        Some(
+            core.model_gate
+                .clone()
+                .try_read_owned()
+                .map_err(|_| RetranscribeError::Busy("本地模型正在维护，稍后再重新识别"))?,
+        )
+    } else {
+        None
+    };
     let engine = Engine::resolve_provider(&core, &provider).map_err(RetranscribeError::EngineUnavailable)?;
     // 当场解码一遍：音频坏了直接报错，不把记录置为识别中
     let samples = tokio::task::spawn_blocking(move || crate::audio::read_audio_16k_mono(&audio))
@@ -147,7 +162,7 @@ pub async fn start(core: Arc<CoreState>, id: &str, provider: Option<&str>) -> Re
     if !core.retranscribe.try_begin(id) {
         return Err(RetranscribeError::Busy("这条记录正在重新识别"));
     }
-    let guard = JobGuard { core: core.clone(), id: id.to_string() };
+    let guard = JobGuard { core: core.clone(), id: id.to_string(), _model_gate: model_gate };
     let marked = core.records.patch(id, |record| record.status = RecordStatus::Transcribing)?;
     // 重新识别可以换引擎：设置里的语言是按当前引擎选的，换到不能指定语言的引擎时记为 auto
     let language = stt::effective_language(&provider, &settings.asr_language);

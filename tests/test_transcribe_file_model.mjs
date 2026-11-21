@@ -119,7 +119,7 @@ test('transcribeEngineOptions：豆包 / DeepSeek 未配置、当前本地引擎
   }))
   assert.equal(missing.whisper.disabled, true)
   assert.equal(missing.whisper.badge, '未安装')
-  assert.equal(missing.whisper.hint, '本地 Whisper 模型未安装，可在「设置 → 识别引擎」查看安装方法。')
+  assert.equal(missing.whisper.hint, '本地 Whisper 模型未安装，可在「设置 → 识别引擎」下载模型。')
   assert.equal(missing.qwen_asr.disabled, false, 'local_engine 只描述设置里选中的那个本地引擎')
 
   const loaded = byValue(transcribeEngineOptions({

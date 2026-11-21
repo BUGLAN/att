@@ -49,6 +49,13 @@ pub struct CoreState {
     backup_maintenance: AtomicBool,
     /// 本地引擎常驻池（faster-whisper / Qwen3-ASR）
     pub local_models: crate::stt::local::LocalModels,
+    /// 本地模型的下载任务与安装状态（设置页 / `/api/models`）
+    pub model_manager: Arc<crate::stt::local::download::ModelManager>,
+    /// 本地模型使用闸门：录音 / 文件转写 / 重新识别 / 预加载持读锁，删除模型持写锁。
+    pub model_gate: Arc<tokio::sync::RwLock<()>>,
+    /// 录音进行中（含建连、收尾）：删除模型时据此拒绝，避免把正在用的文件删掉。
+    /// 由壳层录音 Actor 在状态变化时维护，核心层只读取。
+    recording_active: AtomicBool,
     /// 在线引擎最近一次凭据验证结果（按凭据指纹失效，只在内存里）
     pub credential_checks: crate::stt::verify::CredentialChecks,
     /// 提示词预设目录（prompts/*.txt；打包版由壳层改指向安装资源目录）
@@ -102,9 +109,10 @@ impl CoreState {
         let llm = LlmStore::load(data_dir, crypto.clone());
         let settings_path = data_dir.join("settings.json");
         let settings = UserSettings::load(&settings_path, platform);
+        let models_dir = resolve_models_dir(data_dir);
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
-            models_dir: resolve_models_dir(data_dir),
+            models_dir: models_dir.clone(),
             settings_path,
             platform,
             settings: Mutex::new(settings),
@@ -120,6 +128,9 @@ impl CoreState {
             backup_paths: Default::default(),
             backup_maintenance: AtomicBool::new(false),
             local_models: Default::default(),
+            model_manager: Arc::new(crate::stt::local::download::ModelManager::new(models_dir)),
+            model_gate: Arc::new(tokio::sync::RwLock::new(())),
+            recording_active: AtomicBool::new(false),
             credential_checks: Default::default(),
             prompts_dir: crate::prompts::resolve_dir(data_dir, None),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -145,6 +156,15 @@ impl CoreState {
     /// 读取设置快照（clone；写少读多场景可接受）。
     pub fn settings(&self) -> UserSettings {
         self.settings.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// 录音 Actor 维护的「正在录音」标记；删除模型时用它拒绝危险操作。
+    pub fn set_recording_active(&self, active: bool) {
+        self.recording_active.store(active, Ordering::Relaxed);
+    }
+
+    pub fn is_recording_active(&self) -> bool {
+        self.recording_active.load(Ordering::Relaxed)
     }
 
     /// 在锁内修改设置并落盘（原子写）。

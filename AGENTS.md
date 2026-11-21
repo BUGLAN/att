@@ -36,7 +36,7 @@ src-tauri/
   crates/att-core/     领域内核：settings / records / llm（注册表·存储·网关·优化）/ stt（豆包·ChatGPT·local 常驻池）/
                        transcribe（文件转写·校对）/ clipboard / prompts（内置 + 自定义预设）/ update（检查更新）/
                        storage（原子写·Fernet）/ migration
-  crates/att-whisper/  本地 faster-whisper：ct2rs（CTranslate2）绑定，复用 models/faster_whisper 的 CT2 模型
+  crates/att-whisper/  本地 faster-whisper：ct2rs（CTranslate2）绑定，兼容应用内下载目录与旧 CT2 目录
   crates/att-qwen/     本地 Qwen3-ASR：sherpa-onnx C API（运行期 dlopen）+ ONNX 模型；C 桥见 src/shim.c
   crates/att-server/   axum 数据面（仅回环），HTTP 契约与旧 Python 版一致
   crates/att-audio/    cpal 麦克风采集
@@ -44,7 +44,8 @@ src-tauri/
 src/                   Vue 前端；桌面能力只经 composables/useElectron.js，HTTP 只经 api/client.js
 prompts/*.txt          内置提示词预设（只读，打包时作为资源随包）；用户自定义预设在 data/custom_prompts.json
 data/                  用户数据（开发态即仓库 data/），不入库
-models/                本地模型（不入库）：faster_whisper/（CT2 large-v3）、qwen3-asr-0.6B-int8/（sherpa ONNX）、
+models/                本地模型（不入库）：faster-whisper-<短名>/（应用内下载；旧 faster_whisper/ 仍兼容）、
+                       qwen3-asr-0.6B-int8/（sherpa ONNX）、silero_vad.onnx、.downloads/（可续传暂存）、
                        sherpa-onnx/（sherpa-onnx 动态库 + onnxruntime）；可用 ATT_MODELS_DIR / ATT_SHERPA_ONNX_DIR 改位置
 ```
 
@@ -75,7 +76,7 @@ models/                本地模型（不入库）：faster_whisper/（CT2 large
 | dev 下 Whisper 慢 9 倍 | cmake crate 在 opt-level=0 时按 Debug 编 CTranslate2；根 `Cargo.toml` 用 `[profile.dev.package.ct2rs]` 等强制优化，别删 |
 | 本地引擎首次构建慢 | `att-core` 依赖 `att-whisper`，首次会 CMake 编译 CTranslate2 + oneDNN（约 10~20 分钟）；之后走缓存 |
 | Qwen 引擎与系统 ORT 冲突 | Windows 上 `C:\Windows\System32\onnxruntime.dll`（旧版）会抢占依赖解析导致崩溃；`shim.c` 已按绝对路径预加载 `models/sherpa-onnx/` 里的 ORT，改动加载逻辑时别丢掉这一步 |
-| 本地引擎没有模型时 | 只给 409 + 可照做的下载命令，不 panic；模型不入库，路径见上文「代码布局」 |
+| 本地引擎没有模型时 | 设置页可在应用内下载（进度、取消、断点续传、SHA-256 校验、解压、删除，Whisper 会一并装 Silero VAD；国内可切 `hf-mirror.com`）；缺模型时接口只给 409 + 可照做的提示，不 panic；模型不入库，路径见上文「代码布局」 |
 | 图片写剪贴板 | Windows 上必须自己写 `CF_DIB`(BI_RGB) + `CF_DIBV5`(BI_RGB) + `PNG`（`src-tauri/src/clipboard_image.rs`）；换回 arboard 的 BI_BITFIELDS 写法会让 Chromium 系应用粘不出图 |
 | 新增模拟按键 | 自动输入 / 粘贴等自己发出的键盘事件必须打 `att_hotkey::SYNTHETIC_EVENT_TAG`（macOS `EVENT_SOURCE_USER_DATA`、Windows `dwExtraInfo`），否则热键监听会把它清零的修饰键当成用户松开，按住录音时被打断又自动开新一段 |
 | 剪贴板偶发写失败 | 剪贴板同一时刻只允许一个线程打开，写入要重试；失败发生在 `EmptyClipboard` 之后会把用户剪贴板清空 |

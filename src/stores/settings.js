@@ -130,6 +130,7 @@ export const useSettingsStore = defineStore('settings', () => {
     qwen_asr_use_forced_aligner: false,
     qwen_asr_forced_aligner_model: 'Qwen/Qwen3-ForcedAligner-0.6B',
     qwen_asr_max_audio_seconds: 30,
+    model_download_source: 'official',
     // 火山引擎豆包双向流式 ASR（在线识别）
     // 注意：明文 Access Token 不进前端默认值/本地状态，只以「是否已配置」的形式展示；
     // 用户在设置页输入后由后端加密落盘（doubao_asr_api_key_encrypted）。
@@ -186,6 +187,9 @@ export const useSettingsStore = defineStore('settings', () => {
     streaming_backend: null,
     streaming_error: null
   })
+
+  // 本地模型清单与下载任务（/api/models）；下载在数据面后台进行，页面切走也不会中断
+  const modelCatalog = ref({ models: [], models_dir: '', source: 'official', job: null })
 
   const presets = ref([])
   // 提示词预设弹窗状态：{ mode: 'view' | 'edit' | 'create', preset, name, prompt_template }
@@ -293,6 +297,66 @@ export const useSettingsStore = defineStore('settings', () => {
       console.error('Failed to load runtime status:', e)
       throw e
     }
+  }
+
+  async function loadModelCatalog() {
+    const result = await api.getModels()
+    modelCatalog.value = { ...modelCatalog.value, ...result }
+    return modelCatalog.value
+  }
+
+  async function loadModelJob(jobId) {
+    let result
+    try {
+      result = await api.getModelJob(jobId)
+    } catch (error) {
+      if (error?.status === 404 && modelCatalog.value.job?.id === jobId) {
+        modelCatalog.value = {
+          ...modelCatalog.value,
+          job: {
+            ...modelCatalog.value.job,
+            status: 'error',
+            error: '后台下载任务已丢失；重新下载会从暂存文件继续。',
+            finished_at: new Date().toISOString()
+          }
+        }
+      }
+      throw error
+    }
+    if (result?.job && modelCatalog.value.job?.id === result.job.id) {
+      modelCatalog.value = { ...modelCatalog.value, job: result.job }
+    }
+    return result
+  }
+
+  async function downloadModel(id, source) {
+    const result = await api.downloadModel(id, source)
+    if (result?.job) {
+      modelCatalog.value = { ...modelCatalog.value, job: result.job }
+    }
+    return result
+  }
+
+  async function cancelModelJob(jobId) {
+    const result = await api.cancelModelJob(jobId)
+    if (result?.job) {
+      modelCatalog.value = { ...modelCatalog.value, job: result.job }
+    }
+    return result
+  }
+
+  async function deleteModel(id) {
+    let result
+    try {
+      result = await api.deleteModel(id)
+    } catch (error) {
+      await loadModelCatalog().catch((refreshError) => {
+        console.warn('[Settings] Failed to refresh model catalog after delete error:', refreshError)
+      })
+      throw error
+    }
+    await loadModelCatalog()
+    return result
   }
 
   function applyStreamingServiceStatus(result) {
@@ -582,6 +646,7 @@ export const useSettingsStore = defineStore('settings', () => {
     isLoading,
     error,
     runtimeStatus,
+    modelCatalog,
     presets,
     presetEditor,
     defaultPresetId,
@@ -597,6 +662,11 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultPreset,
     loadSettings,
     loadRuntimeStatus,
+    loadModelCatalog,
+    loadModelJob,
+    downloadModel,
+    cancelModelJob,
+    deleteModel,
     startStreamingService,
     stopStreamingService,
     saveSettings,

@@ -336,6 +336,7 @@ pub fn preload_local(core: Arc<CoreState>, kind: LocalKind) {
         return;
     }
     runtime.spawn_blocking(move || {
+        let _model_gate = core.model_gate.blocking_read();
         match core.local_models.get(&core, kind) {
             Ok(engine) => {
                 engine.warmup();
@@ -350,6 +351,7 @@ pub fn preload_local(core: Arc<CoreState>, kind: LocalKind) {
 /// 预热本地引擎（`/api/model-service/start`）：加载模型并跑一次极短推理。
 pub async fn warmup_local(core: Arc<CoreState>, kind: LocalKind) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
+        let _model_gate = core.model_gate.blocking_read();
         let engine = core.local_models.get(&core, kind)?;
         engine.warmup();
         Ok::<_, String>(format!("{} 已就绪（{}）", engine.label(), engine.device()))

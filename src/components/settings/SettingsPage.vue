@@ -72,6 +72,7 @@ import {
 } from './settingsFormSync.mjs'
 import { createLatestSaveQueue } from './settingsSaveQueue.mjs'
 import { isOnlineProvider, needsCredentialCheck } from './onlineEngineStatus.mjs'
+import { normalizeDownloadSource } from './modelManager.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
 import { normalizeLanguageForProvider } from './asrLanguages.mjs'
@@ -342,6 +343,7 @@ function normalizeSettings(value = {}) {
     qwen_asr_use_forced_aligner: value.qwen_asr_use_forced_aligner ?? false,
     qwen_asr_forced_aligner_model: value.qwen_asr_forced_aligner_model || 'Qwen/Qwen3-ForcedAligner-0.6B',
     qwen_asr_max_audio_seconds: value.qwen_asr_max_audio_seconds ?? 30,
+    model_download_source: normalizeDownloadSource(value.model_download_source),
     // 豆包语音：明文 Token 只存在于表单内存里，初始值恒为空
     doubao_asr_api_key: '',
     doubao_asr_api_key_clear: false,
@@ -411,6 +413,7 @@ function buildSettingsPayload() {
     qwen_asr_use_forced_aligner: enableQwenTimestamps && form.value.qwen_asr_use_forced_aligner,
     qwen_asr_forced_aligner_model: form.value.qwen_asr_forced_aligner_model,
     qwen_asr_max_audio_seconds: form.value.qwen_asr_max_audio_seconds,
+    model_download_source: normalizeDownloadSource(form.value.model_download_source),
     doubao_asr_resource_id: form.value.doubao_asr_resource_id,
     doubao_asr_endpoint: form.value.doubao_asr_endpoint,
     doubao_asr_end_window_size: form.value.doubao_asr_end_window_size,

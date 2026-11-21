@@ -87,9 +87,6 @@ pub struct Transcript {
 pub const MODEL_MISSING: &str = "本地 Qwen3-ASR 模型未安装";
 /// 缺 sherpa-onnx 推理库时错误文案的首行结论。
 pub const LIB_MISSING: &str = "本地 Qwen3-ASR 推理库未安装";
-/// sherpa-onnx 官方导出的 Qwen3-ASR 0.6B int8 模型包（Release `asr-models` 的 assets 名）。
-const MODEL_PACKAGE: &str = "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2";
-
 /// 模型目录是否像一份 sherpa-onnx Qwen3-ASR 导出（三个 onnx + tokenizer 目录）。
 pub fn looks_like_model_dir(path: &Path) -> bool {
     path.is_dir() && MODEL_FILES.iter().all(|name| path.join(name).is_file()) && path.join("tokenizer").is_dir()
@@ -144,15 +141,14 @@ pub fn resolve_model_dir(config: &QwenConfig) -> Result<PathBuf, String> {
         config.model,
         candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("、")
     );
-    // 首行一句结论（首页只显示这一句）；Tab 缩进行是命令，前端排成代码块；路径带引号，
-    // 打包版模型目录在「Application Support」下，含空格
+    // 首行一句结论（首页只显示这一句）；路径单独缩进，设置页可直接复制。
+    let target = config.models_dir.join("qwen3-asr-0.6B-int8");
     Err(format!(
         "{MODEL_MISSING}\n\
-         用下面的命令下载并解压到模型目录：\n\
-         \twget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/{MODEL_PACKAGE}\n\
-         \ttar xvf {MODEL_PACKAGE} -C \"{}\"\n\
-         解压后的目录内需要 {} 与 tokenizer/。",
-        config.models_dir.display(),
+         在「设置 → 识别引擎」的模型列表里下载；离线时解压到：\n\
+         \t{}\n\
+         目录内需要 {} 与 tokenizer/。",
+        target.display(),
         MODEL_FILES.join("、"),
     ))
 }
@@ -523,15 +519,13 @@ mod tests {
         assert_eq!(resolve_model_dir(&config).unwrap(), scanned);
         let _ = std::fs::remove_dir_all(&root);
 
-        // 3) 缺失时：首行一句结论，其后是 Tab 缩进的命令（路径带引号，兼容含空格的目录）
+        // 3) 缺失时：首行一句结论，其后是应用内下载说明与目标目录
         let root = temp_dir("missing");
         let config = QwenConfig::new("Qwen/Qwen3-ASR-1.7B", &root);
         let error = resolve_model_dir(&config).unwrap_err();
         assert_eq!(error.lines().next(), Some(MODEL_MISSING), "{error}");
-        let commands: Vec<&str> = error.lines().filter(|line| line.starts_with('\t')).collect();
-        assert_eq!(commands.len(), 2, "{error}");
-        assert!(commands[0].contains("sherpa-onnx-qwen3-asr"), "{error}");
-        assert!(commands[1].contains(&format!("-C \"{}\"", root.display())), "{error}");
+        assert!(error.contains("设置 → 识别引擎"), "{error}");
+        assert!(error.contains(&format!("\t{}", root.join("qwen3-asr-0.6B-int8").display())), "{error}");
         assert!(error.contains("conv_frontend.onnx"), "{error}");
         assert!(!error.contains("ATT_MODELS_DIR"), "{error}");
         // 设置里的模型名是兼容字段（默认 1.7B，与实际用的 sherpa 0.6B int8 不符），不进文案

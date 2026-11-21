@@ -113,6 +113,9 @@ pub struct UserSettings {
     pub qwen_asr_forced_aligner_model: String,
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub qwen_asr_max_audio_seconds: i64,
+    /// 本地模型下载源：`official`（Hugging Face / GitHub Releases）或 `mirror`
+    /// （Hugging Face 走 hf-mirror.com；没有镜像的项仍走 GitHub）。旧数据缺字段按官方源。
+    pub model_download_source: String,
     // ---- 豆包（火山 SAUC）----
     pub doubao_asr_resource_id: String,
     pub doubao_asr_endpoint: String,
@@ -214,6 +217,7 @@ impl UserSettings {
             qwen_asr_use_forced_aligner: false,
             qwen_asr_forced_aligner_model: "Qwen/Qwen3-ForcedAligner-0.6B".into(),
             qwen_asr_max_audio_seconds: 30,
+            model_download_source: "official".into(),
             doubao_asr_resource_id: "volc.seedasr.sauc.duration".into(),
             doubao_asr_endpoint: crate::stt::sauc::DEFAULT_ENDPOINT.into(),
             doubao_asr_end_window_size: 800,
@@ -610,6 +614,13 @@ pub fn apply_settings_update(
             // ---- 整数键 ----
             "qwen_asr_max_new_tokens" => set_i64(&mut settings.qwen_asr_max_new_tokens, key, value, &type_error)?,
             "qwen_asr_max_audio_seconds" => set_i64(&mut settings.qwen_asr_max_audio_seconds, key, value, &type_error)?,
+            "model_download_source" => {
+                let source = value.as_str().ok_or_else(|| type_error("字符串"))?;
+                if !matches!(source, "official" | "mirror") {
+                    return Err(format!("字段 model_download_source 取值非法: {source}"));
+                }
+                settings.model_download_source = source.into();
+            }
             "doubao_asr_end_window_size" => set_i64(&mut settings.doubao_asr_end_window_size, key, value, &type_error)?,
             "chatgpt_asr_timeout_seconds" => {
                 set_i64(&mut settings.chatgpt_asr_timeout_seconds, key, value, &type_error)?
@@ -895,6 +906,35 @@ mod tests {
         assert!(view["hotkey"].is_object(), "旧 hotkey 兼容字段必须存在");
         assert_eq!(view["launch_at_login"], json!(false));
         assert_eq!(view["main_window_close_action"], json!("tray"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 模型下载源_默认官方_接受镜像_拒绝其它值() {
+        let dir = temp_dir("model-source");
+        let path = dir.join("settings.json");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        // 旧数据没有这个键：默认官方源
+        std::fs::write(&path, json!({ "asr_provider": "whisper" }).to_string()).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Windows);
+        assert_eq!(settings.model_download_source, "official");
+
+        apply_settings_update(&mut settings, &json!({ "model_download_source": "mirror" }), Platform::Windows, &crypto)
+            .unwrap();
+        assert_eq!(settings.model_download_source, "mirror");
+        assert_eq!(settings.public_view(Platform::Windows)["model_download_source"], "mirror");
+        settings.save(&path).unwrap();
+        assert_eq!(UserSettings::load(&path, Platform::Windows).model_download_source, "mirror");
+
+        let error = apply_settings_update(
+            &mut settings,
+            &json!({ "model_download_source": "ftp" }),
+            Platform::Windows,
+            &crypto,
+        )
+        .unwrap_err();
+        assert!(error.contains("取值非法"), "{error}");
+        assert_eq!(settings.model_download_source, "mirror", "非法值不能改动已保存的设置");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

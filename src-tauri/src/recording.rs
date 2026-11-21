@@ -288,6 +288,8 @@ struct Active {
     stopped_at: Option<Instant>,
     /// 本次用的识别引擎与语言（落库写进记录）
     asr: AsrInfo,
+    /// 本地引擎录音会话持有的模型使用闸门，防止录音途中模型被删除。
+    _model_gate: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
 }
 
 /// 识别引擎与语言：写进记录，换引擎重试、排查识别质量时对照。
@@ -467,6 +469,8 @@ impl Actor {
     }
 
     fn emit_state(&self, phase: &str, extra: Value) {
+        // 删除模型要拒绝正在录音的场景（建连、录音、收尾都算），由数据面读取
+        self.core.set_recording_active(matches!(phase, "connecting" | "recording" | "finalizing"));
         let mode = self.active.as_ref().map(|a| a.mode.as_str()).unwrap_or("streaming");
         let mut payload = json!({ "phase": phase, "mode": mode });
         if let (Some(target), Some(source)) = (payload.as_object_mut(), extra.as_object()) {
@@ -690,6 +694,16 @@ impl Actor {
         }
         let settings = self.core.settings();
         let voice_rewrite = voice_rewrite_selection.is_some();
+        let model_gate = if stt::local_kind(&settings.asr_provider).is_some() {
+            match self.core.model_gate.clone().try_read_owned() {
+                Ok(guard) => Some(guard),
+                Err(_) => {
+                    return self.fail_start("本地模型正在维护，请稍后再开始录音".to_string());
+                }
+            }
+        } else {
+            None
+        };
         self.cancel_modifiers = if held { start_cancel_modifiers(&settings, voice_rewrite) } else { ModSet::default() };
         // 本地引擎不在这里等模型加载（只校验文件并在后台预加载），录音按下即开始，推理时再等加载完成
         let engine = match stt::Engine::resolve(&self.core) {
@@ -781,6 +795,7 @@ impl Actor {
             started: Instant::now(),
             stopped_at: None,
             asr,
+            _model_gate: model_gate,
         });
 
         let tx = self.tx.clone();
