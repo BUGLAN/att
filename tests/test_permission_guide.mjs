@@ -26,7 +26,9 @@ test('更新后首次启动且有没生效的项：弹出引导并说明版本�
   assert.equal(guide.versionText, '落墨已从 2.8.0 更新到 2.9.0。')
   assert.deepEqual(guide.items.map((item) => item.id), ['input_monitoring', 'accessibility'])
   assert.match(guide.items[0].impact, /快捷键/)
+  assert.match(guide.items[0].impact, /语音改写/)
   assert.match(guide.items[1].impact, /自动粘贴/)
+  assert.match(guide.items[1].impact, /语音改写/)
   assert.ok(UPDATE_PERMISSION_STEPS.some((step) => step.includes('删掉旧条目')), '步骤要写明先删旧条目')
 })
 

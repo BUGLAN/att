@@ -67,15 +67,34 @@ fn read_clipboard_text() -> Option<String> {
 /// 返回 `Ok(None)`：没有选中文本（剪贴板没换代，或换代后不是文字）。剪贴板里会留下这段选中文字，
 /// 和用户自己按复制一样；它不进剪贴板历史（标记为内部写入）。
 pub fn copy_selection() -> Result<Option<String>, String> {
-    platform::ensure_typing_ready().map_err(|e| e.replace("自动输入", "优化选中文本"))?;
-    let released_by = Instant::now() + MODIFIER_RELEASE_TIMEOUT;
-    while att_hotkey::listener::physical_modifiers().is_some_and(|mods| !mods.is_empty())
-        && Instant::now() < released_by
-    {
-        std::thread::sleep(COPY_POLL);
+    copy_selection_inner(false)
+}
+
+/// 取前台选区，但允许快捷键的修饰键仍被按住（「按住说改写要求」用）。
+///
+/// macOS 的模拟 ⌘C 只带 Command flag，可直接发；Windows 的 SendInput 会被用户仍按着的
+/// Alt / Shift / Win 污染，因此平台层会短暂送修饰键抬起、复制后再恢复按下。所有模拟事件都带
+/// [`att_hotkey::SYNTHETIC_EVENT_TAG`]，不会反过来打断本应用的热键状态机。
+pub fn copy_selection_while_shortcut_held() -> Result<Option<String>, String> {
+    copy_selection_inner(true)
+}
+
+fn copy_selection_inner(while_shortcut_held: bool) -> Result<Option<String>, String> {
+    platform::ensure_typing_ready().map_err(|e| e.replace("自动输入", "读取选中文本"))?;
+    if !while_shortcut_held {
+        let released_by = Instant::now() + MODIFIER_RELEASE_TIMEOUT;
+        while att_hotkey::listener::physical_modifiers().is_some_and(|mods| !mods.is_empty())
+            && Instant::now() < released_by
+        {
+            std::thread::sleep(COPY_POLL);
+        }
     }
     let before = platform::clipboard_change_count().ok_or("当前平台暂不支持读取选中文本")?;
-    platform::copy()?;
+    if while_shortcut_held {
+        platform::copy_while_shortcut_held()?;
+    } else {
+        platform::copy()?;
+    }
     let deadline = Instant::now() + COPY_TIMEOUT;
     while platform::clipboard_change_count() == Some(before) {
         if Instant::now() >= deadline {
@@ -167,6 +186,11 @@ mod platform {
     pub fn copy() -> Result<(), String> {
         const KEY_C: u16 = 0x08;
         command_shortcut(KEY_C)
+    }
+
+    pub fn copy_while_shortcut_held() -> Result<(), String> {
+        // CGEvent 的 flags 已只带 Command，不受用户仍按着的 ⌃ / ⌥ / ⇧ 影响
+        copy()
     }
 
     /// 发一次 ⌘ + 指定键（只带 ⌘：用户仍按着的其他修饰键不掺进来）。
@@ -277,7 +301,8 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_BACK, VK_CONTROL,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+        VK_BACK, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
     };
 
     fn key(vk: u16, up: bool) -> INPUT {
@@ -304,6 +329,48 @@ mod platform {
     pub fn copy() -> Result<(), String> {
         const VK_C: u16 = 0x43;
         control_shortcut(VK_C).map_err(|_| "模拟复制失败（SendInput 被拦截）".into())
+    }
+
+    pub fn copy_while_shortcut_held() -> Result<(), String> {
+        const VK_C: u16 = 0x43;
+        // 必须按左右键分别判断、分别恢复：若同时给没按下的另一颗 Win 送 keydown，
+        // 之后没有对应的物理 keyup，会让那颗键一直卡在按下状态。
+        let modifiers: Vec<u16> =
+            [VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LSHIFT, VK_RSHIFT, VK_LWIN, VK_RWIN]
+                .into_iter()
+                .filter(|vk| is_down(*vk))
+                .collect();
+
+        let released = send_modifiers(&modifiers, true);
+        if !modifiers.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(12));
+        }
+        let copied = if released.is_ok() { control_shortcut(VK_C) } else { Err(()) };
+        if !modifiers.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(12));
+            // 物理键仍按着；恢复按键状态，避免录音结束后修饰键在系统中变成「已松开」
+            let restored = send_modifiers(&modifiers, false);
+            released.map_err(|_| "暂时释放修饰键失败（SendInput 被拦截）".to_string())?;
+            copied.map_err(|_| "模拟复制失败（SendInput 被拦截）".to_string())?;
+            restored.map_err(|_| "恢复修饰键失败（SendInput 被拦截）".to_string())?;
+        } else {
+            released.map_err(|_| "模拟复制失败（SendInput 被拦截）".to_string())?;
+            copied.map_err(|_| "模拟复制失败（SendInput 被拦截）".to_string())?;
+        }
+        Ok(())
+    }
+
+    fn is_down(vk: u16) -> bool {
+        unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
+    }
+
+    fn send_modifiers(keys: &[u16], up: bool) -> Result<(), ()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let inputs: Vec<INPUT> = keys.iter().map(|vk| key(*vk, up)).collect();
+        let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+        (sent as usize == inputs.len()).then_some(()).ok_or(())
     }
 
     fn control_shortcut(vk: u16) -> Result<(), ()> {
@@ -394,6 +461,10 @@ mod platform {
     }
 
     pub fn copy() -> Result<(), String> {
+        Err("当前平台暂不支持读取选中文本".into())
+    }
+
+    pub fn copy_while_shortcut_held() -> Result<(), String> {
         Err("当前平台暂不支持读取选中文本".into())
     }
 

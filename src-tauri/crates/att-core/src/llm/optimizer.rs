@@ -126,7 +126,40 @@ pub async fn optimize_record_with_preset(
     }
     .await;
     core.optimizer.unregister(record_id, task_id);
+    finish_optimization(core, record_id, outcome)
+}
 
+/// 用内置的「语音指令改写选中文本」模板执行一次优化。
+///
+/// 语音识别出的 `instruction` 是可执行要求；`selection` 只是被改写对象。记录里的原文由调用方按
+/// 「要求 + 原文」组装，这里只负责生成提示词、调用模型与落盘。
+pub async fn optimize_record_with_voice_rewrite(
+    core: &CoreState,
+    record_id: &str,
+    instruction: &str,
+    selection: &str,
+    mut on_event: impl FnMut(OptimizeEvent),
+) -> OptimizeOutcome {
+    let (task_id, mut cancel_rx) = core.optimizer.register(record_id);
+    let outcome = async {
+        set_status(core, record_id, RecordStatus::Optimizing, None);
+        on_event(OptimizeEvent::Started);
+        tokio::select! {
+            biased;
+            _ = cancel_rx.wait_for(|cancelled| *cancelled) => None,
+            result = run_voice_rewrite(core, instruction, selection, &mut on_event) => Some(result),
+        }
+    }
+    .await;
+    core.optimizer.unregister(record_id, task_id);
+    finish_optimization(core, record_id, outcome)
+}
+
+fn finish_optimization(
+    core: &CoreState,
+    record_id: &str,
+    outcome: Option<Result<OptimizeSuccess, LlmError>>,
+) -> OptimizeOutcome {
     match outcome {
         None => {
             set_status(core, record_id, RecordStatus::Transcribed, Some(String::new()));
@@ -166,23 +199,15 @@ fn set_status(core: &CoreState, record_id: &str, status: RecordStatus, error: Op
     }
 }
 
-/// 解析模板与模型 → 流式补全（首字前失败回退非流式）→ 清洗。
+/// 解析预设模板与模型 → 组装消息。
 async fn run(
     core: &CoreState,
     text: &str,
     preset_id: Option<&str>,
     on_event: &mut impl FnMut(OptimizeEvent),
 ) -> Result<OptimizeSuccess, LlmError> {
-    let started = Instant::now();
     if text.trim().is_empty() {
-        return Ok(OptimizeSuccess {
-            optimized_text: text.to_string(),
-            processing_time: 0.0,
-            tokens_used: 0,
-            truncated: false,
-            model_string: String::new(),
-            degraded: false,
-        });
+        return Ok(unchanged(text));
     }
     let settings = core.settings();
     // 查找链：本次指定 → 设置里的默认预设 → 内置默认；指定的预设被删了也落到用户自己选的默认，而不是直接跳内置
@@ -192,7 +217,47 @@ async fn run(
         .unwrap_or_else(|| prompt::DEFAULT_PROMPT.to_string());
     let preset_id = preset_id.or(settings.default_preset_id.as_deref());
     let messages = prompt::build_messages(text, &template, &settings.asr_hotwords);
+    let prompt = format!("预设：{preset_id:?}");
+    let glossary = settings.asr_hotwords.len();
+    run_chat(core, messages, text.chars().count(), &prompt, glossary, on_event).await
+}
 
+/// 用固定的语音改写模板组装消息；不读取用户预设，避免临时要求被某个「整理口述」预设干扰。
+async fn run_voice_rewrite(
+    core: &CoreState,
+    instruction: &str,
+    selection: &str,
+    on_event: &mut impl FnMut(OptimizeEvent),
+) -> Result<OptimizeSuccess, LlmError> {
+    if instruction.trim().is_empty() || selection.trim().is_empty() {
+        return Ok(unchanged(selection));
+    }
+    let messages = prompt::build_voice_rewrite_messages(instruction, selection);
+    let input_chars = instruction.chars().count() + selection.chars().count();
+    run_chat(core, messages, input_chars, "语音改写选中文本", 0, on_event).await
+}
+
+fn unchanged(text: &str) -> OptimizeSuccess {
+    OptimizeSuccess {
+        optimized_text: text.to_string(),
+        processing_time: 0.0,
+        tokens_used: 0,
+        truncated: false,
+        model_string: String::new(),
+        degraded: false,
+    }
+}
+
+/// 模型调用 → 流式补全（首字前失败回退非流式）→ 清洗。
+async fn run_chat(
+    core: &CoreState,
+    messages: Vec<gateway::ChatMessage>,
+    input_chars: usize,
+    prompt_label: &str,
+    glossary: usize,
+    on_event: &mut impl FnMut(OptimizeEvent),
+) -> Result<OptimizeSuccess, LlmError> {
+    let started = Instant::now();
     let target = core.llm.resolve_runtime(None)?;
     let spec = registry::get(&target.profile.provider).ok_or_else(|| {
         LlmError::plain(CODE_UNSUPPORTED_PROVIDER, format!("未知服务商：{}", target.profile.provider))
@@ -200,7 +265,7 @@ async fn run(
     let endpoint =
         Endpoint::resolve(spec, target.profile.api_base.as_deref(), &target.api_key, &target.profile.extra_headers)?;
     let params = &target.model.params;
-    let budget = timeouts::derive(params.timeout_s, text.chars().count());
+    let budget = timeouts::derive(params.timeout_s, input_chars);
     let options = ChatOptions {
         max_tokens: params.max_tokens,
         temperature: Some(params.temperature),
@@ -209,13 +274,7 @@ async fn run(
         reasoning_effort: params.reasoning_effort.clone(),
     };
     let model = target.model.model.as_str();
-    tracing::info!(
-        model,
-        preset = ?preset_id,
-        text_length = text.chars().count(),
-        glossary = settings.asr_hotwords.len(),
-        "开始流式文本优化"
-    );
+    tracing::info!(model, prompt = prompt_label, text_length = input_chars, glossary, "开始流式文本优化");
 
     let mut streamed = String::new();
     let stream_budget = StreamBudget { first_token: budget.first_token, chunk_idle: budget.chunk_idle };
@@ -249,7 +308,7 @@ async fn run(
     };
     tracing::info!(
         model,
-        original_length = text.chars().count(),
+        original_length = input_chars,
         optimized_length = success.optimized_text.chars().count(),
         processing_time = format!("{:.2}s", success.processing_time),
         degraded,
@@ -397,6 +456,26 @@ mod tests {
         let outcome = optimize_record_with_preset(&core, "rec-1", "嗯那个明天开会", None, |_| {}).await;
         assert!(matches!(outcome, OptimizeOutcome::Completed(_)));
         assert!(requests.recv().await.unwrap().contains("你是程序员助手"), "None = 默认预设");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn 语音改写_要求与选中文字分装_不读取用户预设() {
+        let (base, mut requests) = stub_routes(vec![StubRoute::sse(
+            "POST /v1/chat/completions",
+            &[r#"{"choices":[{"delta":{"content":"该方案整体可行。"},"finish_reason":"stop"}]}"#],
+        )])
+        .await;
+        let (core, root) = setup(&base, "voice-rewrite");
+        let outcome =
+            optimize_record_with_voice_rewrite(&core, "rec-1", "改成更正式的语气", "这个方案大概可以", |_| {}).await;
+        assert!(matches!(outcome, OptimizeOutcome::Completed(_)), "{outcome:?}");
+        let request = requests.recv().await.unwrap();
+        assert!(request.contains("语音改写选中文本"), "使用固定内置模板");
+        assert!(request.contains("<rewrite_instruction>\\n改成更正式的语气\\n</rewrite_instruction>"));
+        assert!(request.contains("<selected_text>\\n这个方案大概可以\\n</selected_text>"));
+        assert!(!request.contains("你是程序员助手"), "不受设置里的默认预设影响");
+        assert_eq!(core.records.get("rec-1").unwrap().optimized_text.as_deref(), Some("该方案整体可行。"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

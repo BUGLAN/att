@@ -38,6 +38,10 @@
 //! 直接进入同一个 Optimizing 相位——同一个悬浮窗、同一套流式输入与收尾，区别只在 [`OptimizeSource`]：
 //! 用「选中文本优化」预设、总是输回原处（不看自动粘贴开关）、失败时不动选区。
 //!
+//! 语音改写选中文本（快捷键 [`HotkeyAction::VoiceRewriteSelection`]）与上一条共用「输回选区」的收尾，
+//! 但按下时同时开始录音；松开后把识别出的话当作改写要求，和之前复制的选中文字一起送固定模板，
+//! 不用设置里的任何预设。没有选区、没有识别出要求、或录音里没人声时都不调用 LLM，原文保持不动。
+//!
 //! 前端事件：`recording:state`（相位 + 文本 + 记录）、`recording:partial`（实时文本）、
 //! `recording:level`（音量 0..1）。
 
@@ -210,21 +214,29 @@ enum Cmd {
     ReleaseGrace(u64, u64),
 }
 
-/// 一次优化从哪来：决定用哪个预设、结果要不要强制输出、收尾文案。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 一次优化从哪来：决定提示词、结果要不要强制输出、收尾文案。
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum OptimizeSource {
     /// 录音转写后的自动优化（默认预设，输出跟随「自动复制并粘贴」）
     Recording,
     /// 快捷键优化选中文本（「选中文本优化」预设，总是输回原处替换选区）
     Selection,
+    /// 语音指令改写选中文本（固定模板，总是输回原处替换选区）
+    VoiceRewriteSelection { instruction: String, selection: String },
 }
 
 impl OptimizeSource {
-    fn as_str(self) -> &'static str {
+    fn as_str(&self) -> &'static str {
         match self {
             OptimizeSource::Recording => "recording",
             OptimizeSource::Selection => "selection",
+            OptimizeSource::VoiceRewriteSelection { .. } => "voice_selection",
         }
+    }
+
+    /// 结果是否总是替换原选区（不看自动粘贴开关）。
+    fn replaces_selection(&self) -> bool {
+        matches!(self, OptimizeSource::Selection | OptimizeSource::VoiceRewriteSelection { .. })
     }
 }
 
@@ -269,6 +281,8 @@ struct Active {
     pending_release: Option<(u64, Instant)>,
     /// 由「按住录音」键开始：只有这种会话在松开时收尾；点按录音 / 界面按钮开始的会话不理会松开
     held: bool,
+    /// 本次录音是「语音改写选中文本」且已复制到的选中文字；转写完成后走固定模板
+    voice_rewrite_selection: Option<String>,
     started: Instant,
     /// 停止录音的时刻（按住模式取真实松开那一刻）：记录里的「处理耗时」从这里算起，不含录音本身
     stopped_at: Option<Instant>,
@@ -479,6 +493,25 @@ impl Actor {
             }
             return;
         }
+        if action == HotkeyAction::VoiceRewriteSelection {
+            match key_phase {
+                KeyPhase::Pressed => self.begin_voice_rewrite().await,
+                KeyPhase::Released
+                    if self
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| active.held && active.voice_rewrite_selection.is_some()) =>
+                {
+                    self.release_after_grace();
+                }
+                KeyPhase::Released => {}
+            }
+            return;
+        }
+        if self.active.as_ref().is_some_and(|active| active.voice_rewrite_selection.is_some()) {
+            // 语音改写按住期间只认自己的松开；别的录音键不能把它当普通录音停掉
+            return;
+        }
         let held = self.active.as_ref().is_some_and(|a| a.held);
         let step = record_hotkey_step(action, key_phase, self.phase, held);
         tracing::debug!("录音热键 {action:?} {key_phase:?}，当前 {:?}（按住开始: {held}）→ {step:?}", self.phase);
@@ -580,6 +613,42 @@ impl Actor {
         self.begin_optimization(Mode::Batch, record_id, text, None, record, OptimizeSource::Selection);
     }
 
+    /// 语音改写选中文本：先复制选区（不等待用户松开按键），再开始按住录音。
+    /// 松开后识别出的话作为改写要求；没有选区时只提示，不打开麦克风。
+    async fn begin_voice_rewrite(&mut self) {
+        if self.phase != Phase::Idle {
+            tracing::info!("{:?} 中按下语音改写选中文本，忽略", self.phase);
+            return crate::floating::nudge(&self.app);
+        }
+        if !att_hotkey::listener::suppresses_keys() {
+            return self.emit_state(
+                "error",
+                json!({ "message": "语音改写选中文本需要「辅助功能」权限：授权后请重启应用（否则快捷键会在前台应用里打出字符）" }),
+            );
+        }
+        if !optimizer::has_default_model(&self.core) {
+            return self.emit_state(
+                "error",
+                json!({ "message": "语音改写选中文本需要 LLM 模型：请先在 设置 → LLM 服务 中添加" }),
+            );
+        }
+        let selection = tokio::task::spawn_blocking(crate::desktop::copy_selection_while_shortcut_held)
+            .await
+            .unwrap_or_else(|error| Err(error.to_string()));
+        let text = match selection {
+            Ok(Some(text)) => text,
+            Ok(None) => {
+                return self.emit_state("error", json!({ "message": "请先选中要改写的文字，再按住快捷键说出改写要求" }))
+            }
+            Err(message) => {
+                tracing::warn!("读取选中文本失败: {message}");
+                return self.emit_state("error", json!({ "message": message }));
+            }
+        };
+        tracing::info!("语音改写选中文本（{} 字），开始收音", text.chars().count());
+        self.start_with(true, Some(text)).await;
+    }
+
     fn fail_start(&mut self, message: String) {
         tracing::warn!("录音无法开始: {message}");
         self.set_phase(Phase::Idle);
@@ -589,6 +658,11 @@ impl Actor {
 
     /// 开始一段录音；`held` = 由「按住录音」键按下开始（松开时收尾）。
     async fn start(&mut self, held: bool) {
+        self.start_with(held, None).await;
+    }
+
+    /// 录音统一入口；`voice_rewrite_selection` 有值时强制单段识别，并在转写后走语音改写模板。
+    async fn start_with(&mut self, held: bool, voice_rewrite_selection: Option<String>) {
         if self.phase == Phase::Optimizing {
             // 流式：上一段优化转入后台继续跑，直接开始新录音；单段：优化期间保持「处理中」，吞掉
             match self.optimizing.as_ref() {
@@ -615,24 +689,22 @@ impl Actor {
             return;
         }
         let settings = self.core.settings();
-        self.cancel_modifiers = if held {
-            settings
-                .binding_of(HotkeyAction::Record)
-                .filter(|binding| binding.enabled)
-                .map(|binding| binding.modifiers)
-                .unwrap_or_default()
-        } else {
-            ModSet::default()
-        };
+        let voice_rewrite = voice_rewrite_selection.is_some();
+        self.cancel_modifiers = if held { start_cancel_modifiers(&settings, voice_rewrite) } else { ModSet::default() };
         // 本地引擎不在这里等模型加载（只校验文件并在后台预加载），录音按下即开始，推理时再等加载完成
         let engine = match stt::Engine::resolve(&self.core) {
             Ok(engine) => engine,
             Err(message) => return self.fail_start(message),
         };
-        let mode = match settings.recording_mode.as_str() {
-            "streaming" => Mode::Streaming,
-            "multi" => Mode::Multi,
-            _ => Mode::Batch,
+        let mode = if voice_rewrite {
+            // 改写要求是一句短话，等松开后一次性识别最稳，也避免流式中间结果影响提示词
+            Mode::Batch
+        } else {
+            match settings.recording_mode.as_str() {
+                "streaming" => Mode::Streaming,
+                "multi" => Mode::Multi,
+                _ => Mode::Batch,
+            }
         };
         // 流式只有豆包支持（ChatGPT 听写 / DeepSeek 是批量接口）
         let streaming_config = match (&engine, mode) {
@@ -705,6 +777,7 @@ impl Actor {
             multi_drain_policy: None,
             pending_release: None,
             held,
+            voice_rewrite_selection,
             started: Instant::now(),
             stopped_at: None,
             asr,
@@ -723,7 +796,8 @@ impl Actor {
             }
             Mode::Batch => {
                 self.set_phase(Phase::Recording);
-                self.emit_state("recording", json!({ "message": "正在录音" }));
+                let message = if voice_rewrite { "请说出改写要求，松开结束" } else { "正在录音" };
+                self.emit_state("recording", json!({ "message": message }));
                 tauri::async_runtime::spawn(batch_task(id, engine, language, audio_rx, cancel_rx, tx));
             }
             Mode::Multi => {
@@ -915,6 +989,7 @@ impl Actor {
         // 让 emit_state 仍能带上本次模式
         let mode = active.mode;
         let (quiet_end, timed_out) = (active.quiet_end, active.timed_out);
+        let voice_rewrite_selection = active.voice_rewrite_selection.take();
         let processing_time = processing_seconds(active.stopped_at, Instant::now());
         let asr = active.asr.clone();
         self.active = Some(Active { capture: None, cancel: None, ..active });
@@ -927,7 +1002,8 @@ impl Actor {
 
         if let (true, Some(reason)) = (outcome.cancelled, quiet_end) {
             // 松开时是误触或整场没说话：不进转写、不建记录，悬浮窗直接收起
-            self.emit_state("completed", json!({ "message": reason, "text": "", "silent": true }));
+            let message = quiet_end_message(reason, voice_rewrite_selection.is_some());
+            self.emit_state("completed", json!({ "message": message, "text": "", "silent": true }));
         } else if outcome.cancelled {
             self.emit_state("cancelled", json!({ "message": "已取消本次录音" }));
         } else if outcome.samples.is_empty() && outcome.text.is_empty() && outcome.error.is_some() {
@@ -935,7 +1011,8 @@ impl Actor {
             self.emit_state("error", json!({ "message": outcome.error }));
         } else if duration < MIN_DURATION_SECONDS && outcome.text.is_empty() {
             // 误触：同样安静收起
-            self.emit_state("completed", json!({ "message": "录音时间过短", "text": "", "silent": true }));
+            let message = quiet_end_message("录音时间过短", voice_rewrite_selection.is_some());
+            self.emit_state("completed", json!({ "message": message, "text": "", "silent": true }));
         } else if outcome.text.is_empty() {
             match outcome.error {
                 // 识别失败且没有任何文本：音频落盘并建失败记录，避免录音丢失
@@ -945,7 +1022,14 @@ impl Actor {
                         .await;
                     self.emit_state("error", json!({ "message": error, "record": record }));
                 }
-                None => self.emit_state("completed", json!({ "message": "没有识别到语音内容", "text": "" })),
+                None => {
+                    let message = if voice_rewrite_selection.is_some() {
+                        "没有识别到语音内容，选中文字未改动"
+                    } else {
+                        "没有识别到语音内容"
+                    };
+                    self.emit_state("completed", json!({ "message": message, "text": "" }))
+                }
             }
         } else if let Some(activity) = missing_voice(&outcome.samples) {
             // 识别出了字，但录音里几乎没有人声：多半是底噪或一下杂音被识别成了词（实测按住 16s 没说话，识别出「Clean.」）。
@@ -963,18 +1047,56 @@ impl Actor {
                 Some(error) => format!("{NO_VOICE_NOTE}；{error}"),
                 None => NO_VOICE_NOTE.to_string(),
             };
+            let raw_text = match &voice_rewrite_selection {
+                Some(selection) => compose_voice_rewrite_raw_text(&outcome.text, selection),
+                None => outcome.text.clone(),
+            };
             let record = self
                 .save_record(
                     &outcome.samples,
                     duration,
-                    Some(outcome.text.clone()),
+                    Some(raw_text.clone()),
                     Some(note),
                     processing_time,
                     Some(&asr),
                 )
                 .await;
-            self.emit_state("completed", no_voice_state(&outcome.text, record));
+            let mut state = no_voice_state(&raw_text, record);
+            if voice_rewrite_selection.is_some() {
+                state["source"] = json!("voice_selection");
+                state["message"] = json!("没有听到改写要求，检查麦克风；选中文字未改动");
+            }
+            self.emit_state("completed", state);
         } else {
+            if let Some(selection) = voice_rewrite_selection {
+                // 语音要求与选中文字分开送模型；记录仍沿用 Selection 的形状：raw_text = 要求 + 原文
+                let raw_text = compose_voice_rewrite_raw_text(&outcome.text, &selection);
+                let record = self
+                    .save_record(
+                        &outcome.samples,
+                        duration,
+                        Some(raw_text.clone()),
+                        outcome.error.clone(),
+                        processing_time,
+                        Some(&asr),
+                    )
+                    .await;
+                let Some(record_id) = record.get("id").and_then(Value::as_str).map(str::to_string) else {
+                    self.emit_state("error", json!({ "message": "保存记录失败，选中文字未改写" }));
+                    self.active = None;
+                    return;
+                };
+                self.begin_optimization(
+                    mode,
+                    record_id,
+                    raw_text,
+                    outcome.error.clone(),
+                    record,
+                    OptimizeSource::VoiceRewriteSelection { instruction: outcome.text.clone(), selection },
+                );
+                self.active = None;
+                return;
+            }
             let record = self
                 .save_record(
                     &outcome.samples,
@@ -1037,16 +1159,25 @@ impl Actor {
         let detached = Arc::new(AtomicBool::new(false));
         let typing_halt = Arc::new(AtomicBool::new(false));
         let settings = self.core.settings();
-        let output = source == OptimizeSource::Selection || settings.auto_copy_to_clipboard;
+        let output = source.replaces_selection() || settings.auto_copy_to_clipboard;
         let mut typing = output.then(|| StreamTyping::spawn(typing_halt.clone()));
-        let preset_id = match source {
+        let preset_id = match &source {
             OptimizeSource::Recording => None,
             OptimizeSource::Selection => settings.rewrite_preset_id.clone(),
+            OptimizeSource::VoiceRewriteSelection { .. } => None,
         };
-        let message = match source {
+        let message = match &source {
             OptimizeSource::Recording => "转写完成，正在优化",
             OptimizeSource::Selection => "正在优化选中文本",
+            OptimizeSource::VoiceRewriteSelection { .. } => "正在按语音要求改写选中文本",
         };
+        let voice_rewrite = match &source {
+            OptimizeSource::VoiceRewriteSelection { instruction, selection } => {
+                Some((instruction.clone(), selection.clone()))
+            }
+            _ => None,
+        };
+        let source_label = source.as_str();
         self.set_phase(Phase::Optimizing);
         self.optimizing = Some(PendingOptimization {
             session_id,
@@ -1060,7 +1191,7 @@ impl Actor {
         });
         self.emit_state(
             "optimizing",
-            json!({ "mode": mode.as_str(), "source": source.as_str(), "message": message, "text": raw_text, "record": record }),
+            json!({ "mode": mode.as_str(), "source": source_label, "message": message, "text": raw_text, "record": record }),
         );
 
         let core = self.core.clone();
@@ -1069,19 +1200,27 @@ impl Actor {
         tauri::async_runtime::spawn(async move {
             let mut accumulated = String::new();
             let delta_record = record_id.clone();
-            let outcome =
-                optimizer::optimize_record_with_preset(&core, &record_id, &raw_text, preset_id.as_deref(), |event| {
-                    let OptimizeEvent::Delta(chunk) = event else { return };
-                    accumulated.push_str(&chunk);
-                    // 输入框只出「收尾清洗不会剥掉」的部分（套话 / 思考块不上屏）。
-                    // 悬浮窗不回填优化稿：它停留很短，一闪而过反而突兀，「轉」期间一直显示识别稿
-                    let stable = cleaning::stable_prefix(&accumulated);
-                    if let Some(typing) = typing.as_mut() {
-                        typing.advance(&stable);
-                    }
-                    let _ = app.emit("recording:optimization", json!({ "record_id": &delta_record, "text": chunk }));
-                })
-                .await;
+            let on_event = |event| {
+                let OptimizeEvent::Delta(chunk) = event else { return };
+                accumulated.push_str(&chunk);
+                // 输入框只出「收尾清洗不会剥掉」的部分（套话 / 思考块不上屏）。
+                // 悬浮窗不回填优化稿：它停留很短，一闪而过反而突兀，「轉」期间一直显示识别稿
+                let stable = cleaning::stable_prefix(&accumulated);
+                if let Some(typing) = typing.as_mut() {
+                    typing.advance(&stable);
+                }
+                let _ = app.emit("recording:optimization", json!({ "record_id": &delta_record, "text": chunk }));
+            };
+            let outcome = match voice_rewrite {
+                Some((instruction, selection)) => {
+                    optimizer::optimize_record_with_voice_rewrite(&core, &record_id, &instruction, &selection, on_event)
+                        .await
+                }
+                None => {
+                    optimizer::optimize_record_with_preset(&core, &record_id, &raw_text, preset_id.as_deref(), on_event)
+                        .await
+                }
+            };
             let _ = tx.send(Cmd::Optimized(session_id, delta_record, outcome, typing));
         });
     }
@@ -1104,22 +1243,31 @@ impl Actor {
             return;
         };
         crate::tray::refresh(&self.app);
-        let selection = pending.source == OptimizeSource::Selection;
-        let (final_text, optimized, optimize_error, base_message) = match (&outcome, selection) {
+        let replace_selection = pending.source.replaces_selection();
+        let voice_rewrite = matches!(pending.source, OptimizeSource::VoiceRewriteSelection { .. });
+        let original_text = match &pending.source {
+            OptimizeSource::VoiceRewriteSelection { selection, .. } => selection.clone(),
+            _ => pending.raw_text.clone(),
+        };
+        let (final_text, optimized, optimize_error, base_message) = match (&outcome, replace_selection) {
             (OptimizeOutcome::Completed(success), false) => {
                 (success.optimized_text.clone(), true, None, "录音已完成，已优化".to_string())
             }
-            (OptimizeOutcome::Completed(success), true) => {
-                (success.optimized_text.clone(), true, None, "选中文本已优化".to_string())
-            }
+            (OptimizeOutcome::Completed(success), true) => (
+                success.optimized_text.clone(),
+                true,
+                None,
+                if voice_rewrite { "选中文本已按语音要求改写" } else { "选中文本已优化" }.to_string(),
+            ),
             (OptimizeOutcome::Failed(error), false) => {
                 (pending.raw_text.clone(), false, Some(error.clone()), format!("优化失败，已保留转写原文：{error}"))
             }
             (OptimizeOutcome::Failed(error), true) => {
-                (pending.raw_text.clone(), false, Some(error.clone()), format!("优化失败，选中的文字没有改动：{error}"))
+                let prefix = if voice_rewrite { "改写失败" } else { "优化失败" };
+                (original_text.clone(), false, Some(error.clone()), format!("{prefix}，选中的文字没有改动：{error}"))
             }
             (OptimizeOutcome::Cancelled, _) => {
-                (pending.raw_text.clone(), false, None, "已取消优化，保留原始文本".to_string())
+                (original_text.clone(), false, None, "已取消优化，保留原始文本".to_string())
             }
         };
         let truncated = matches!(&outcome, OptimizeOutcome::Completed(s) if s.truncated);
@@ -1138,10 +1286,10 @@ impl Actor {
         let (copied, pasted, copy_error) = if cancelled {
             let typed_any = typing.as_ref().is_some_and(|t| !t.typed().is_empty());
             abort_typing(typing).await;
-            let copied = selection && typed_any && copy_to_clipboard(&pending.raw_text).await;
+            let copied = replace_selection && typed_any && copy_to_clipboard(&original_text).await;
             (copied, false, None)
         } else {
-            self.deliver(&final_text, optimized, typing, pending.source).await
+            self.deliver(&final_text, optimized, typing, &pending.source).await
         };
         let message = match &pending.transcribe_error {
             Some(error) => format!("识别中断，已保存已识别内容：{error}"),
@@ -1235,9 +1383,9 @@ impl Actor {
         final_text: &str,
         optimized: bool,
         typing: Option<StreamTyping>,
-        source: OptimizeSource,
+        source: &OptimizeSource,
     ) -> (bool, bool, Option<String>) {
-        let force = source == OptimizeSource::Selection;
+        let force = source.replaces_selection();
         let Some(typing) = typing else { return self.auto_copy(final_text, force).await };
         let typed_any = !typing.typed().is_empty();
         if !typed_any && !optimized {
@@ -1333,6 +1481,30 @@ fn quiet_end_reason(recorded: Duration, heard: bool) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// 按住期间 Esc 取消绑定的修饰键：普通录音跟随「按住录音」，语音改写跟随自己的热键。
+/// 两者可能是不同的组合；取错会让录音中的 Esc 匹配不上，取消失效。
+fn start_cancel_modifiers(settings: &att_core::settings::UserSettings, voice_rewrite: bool) -> ModSet {
+    let action = if voice_rewrite { HotkeyAction::VoiceRewriteSelection } else { HotkeyAction::Record };
+    settings.binding_of(action).filter(|binding| binding.enabled).map(|binding| binding.modifiers).unwrap_or_default()
+}
+
+/// 语音改写的安静结束提示：原文没动，文案要说清楚没有发生改写。
+fn quiet_end_message(reason: &'static str, voice_rewrite: bool) -> &'static str {
+    if !voice_rewrite {
+        return reason;
+    }
+    match reason {
+        "没有检测到说话" => "没有听到改写要求，选中文字未改动",
+        "录音时间过短" => "按键时间过短，选中文字未改动",
+        _ => reason,
+    }
+}
+
+/// 选中文本记录的形状：raw_text = 语音要求 + 原文；optimized_text 由优化落盘补齐。
+fn compose_voice_rewrite_raw_text(instruction: &str, selection: &str) -> String {
+    format!("改写要求：{}\n\n原文：\n{}", instruction.trim(), selection)
 }
 
 /// 批量引擎的收尾预算参数：单次请求超时 + 请求形态。
@@ -1747,13 +1919,14 @@ async fn multi_task(
 #[cfg(test)]
 mod tests {
     use super::{
-        abort_multi_segments, batch_plan, cancel_binding_modifiers, counts_as_timeout, finalize_budget,
-        join_multi_texts, missing_voice, no_voice_state, parse_multi_drain_fallback, processing_seconds,
-        quiet_end_reason, record_hotkey_step, recorded_until, spawn_multi_segment, BatchPlan, Mode, MultiDrainPolicy,
-        Phase, RecordHotkeyStep, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, MULTI_DRAIN_DEFAULT_FALLBACK,
-        MULTI_DRAIN_SCHEDULING_SLACK, MULTI_TRANSCRIBE_CONCURRENCY, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
+        abort_multi_segments, batch_plan, cancel_binding_modifiers, compose_voice_rewrite_raw_text, counts_as_timeout,
+        finalize_budget, join_multi_texts, missing_voice, no_voice_state, parse_multi_drain_fallback,
+        processing_seconds, quiet_end_message, quiet_end_reason, record_hotkey_step, recorded_until,
+        spawn_multi_segment, start_cancel_modifiers, BatchPlan, Mode, MultiDrainPolicy, Phase, RecordHotkeyStep,
+        HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, MULTI_DRAIN_DEFAULT_FALLBACK, MULTI_DRAIN_SCHEDULING_SLACK,
+        MULTI_TRANSCRIBE_CONCURRENCY, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
     };
-    use att_core::settings::hotkey::HotkeyAction::{ClipboardPanel, Record, RecordToggle};
+    use att_core::settings::hotkey::HotkeyAction::{ClipboardPanel, Record, RecordToggle, VoiceRewriteSelection};
     use att_core::settings::hotkey::ModSet;
     use att_hotkey::KeyPhase::{Pressed, Released};
     use serde_json::{json, Value};
@@ -1814,6 +1987,24 @@ mod tests {
     }
 
     #[test]
+    fn 语音改写录音时_esc_取消绑定跟随语音改写热键() {
+        let mut settings = att_core::settings::UserSettings::with_platform(att_core::Platform::Macos);
+        settings.hotkeys.iter_mut().find(|b| b.action == VoiceRewriteSelection).unwrap().enabled = true;
+        settings.hotkeys.iter_mut().find(|b| b.action == VoiceRewriteSelection).unwrap().modifiers =
+            ModSet::new(true, true, false, false);
+        assert_eq!(
+            start_cancel_modifiers(&settings, true),
+            ModSet::new(true, true, false, false),
+            "语音改写应使用自己的修饰键，不能沿用按住录音"
+        );
+        assert_eq!(
+            start_cancel_modifiers(&settings, false),
+            settings.binding_of(Record).unwrap().modifiers,
+            "普通录音仍跟随按住录音"
+        );
+    }
+
+    #[test]
     fn 松开缓冲_吸收修饰键闪断_且不把缓冲算进录音时长() {
         // 实测按住 ⌘⌥ 时 ⌘ 闪断 213ms：缓冲要盖得住，又不能长到让正常松开明显变慢
         assert!(HOLD_RELEASE_GRACE > Duration::from_millis(213) && HOLD_RELEASE_GRACE <= Duration::from_millis(400));
@@ -1838,6 +2029,17 @@ mod tests {
         assert_eq!(quiet_end_reason(Duration::from_millis(150), false), Some("录音时间过短"));
         assert_eq!(quiet_end_reason(Duration::from_secs(3), false), Some("没有检测到说话"));
         assert_eq!(quiet_end_reason(Duration::from_secs(3), true), None);
+    }
+
+    #[test]
+    fn 语音改写_没说话时明确说原文未动_记录是要求加原文() {
+        assert_eq!(quiet_end_message("没有检测到说话", true), "没有听到改写要求，选中文字未改动");
+        assert_eq!(quiet_end_message("录音时间过短", true), "按键时间过短，选中文字未改动");
+        assert_eq!(quiet_end_message("没有检测到说话", false), "没有检测到说话");
+        assert_eq!(
+            compose_voice_rewrite_raw_text("  改成更正式的语气\n", "这个方案\n大概可以。"),
+            "改写要求：改成更正式的语气\n\n原文：\n这个方案\n大概可以。"
+        );
     }
 
     #[test]

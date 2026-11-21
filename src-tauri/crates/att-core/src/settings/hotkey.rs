@@ -27,13 +27,16 @@ pub enum HotkeyAction {
     /// 录音会话期间的内部取消键（Esc）。不是设置项，也不会写进 `settings.json`；
     /// 只由键盘监听在录音 Actor 非 Idle 时临时追加。
     CancelRecording,
+    /// 语音改写选中文本：按住说出改写要求，识别后与选中文字一起送 LLM（按住触发，默认空）
+    VoiceRewriteSelection,
 }
 
 impl HotkeyAction {
-    /// 动作对应的触发方式：按住录音是按住，其余（点按录音、剪贴板悬浮框、优化选中文本）都是点按。
+    /// 动作对应的触发方式：按住录音、语音改写选中文本是按住，其余（点按录音、剪贴板悬浮框、
+    /// 优化选中文本）都是点按。
     pub fn trigger(self) -> TriggerMode {
         match self {
-            HotkeyAction::Record => TriggerMode::Hold,
+            HotkeyAction::Record | HotkeyAction::VoiceRewriteSelection => TriggerMode::Hold,
             _ => TriggerMode::Toggle,
         }
     }
@@ -52,6 +55,7 @@ impl HotkeyAction {
             HotkeyAction::ClipboardPanel => "剪贴板悬浮框",
             HotkeyAction::RewriteSelection => "优化选中文本",
             HotkeyAction::CancelRecording => "取消录音",
+            HotkeyAction::VoiceRewriteSelection => "语音改写选中文本",
         }
     }
 }
@@ -186,6 +190,10 @@ impl HotkeyBinding {
             // 显示主窗口默认不启用（快捷键为空）：用户需要时再录入
             HotkeyAction::ShowMainWindow => {
                 Self { action, trigger: TriggerMode::Toggle, enabled: false, ..Self::default_binding(platform) }
+            }
+            // 语音改写需要用户先选定一个顺手的键：默认留空，录入后才启用
+            HotkeyAction::VoiceRewriteSelection => {
+                Self { action, trigger: TriggerMode::Hold, modifiers: ModSet::default(), hid_key: None, enabled: false }
             }
             // 点按录音默认不启用（快捷键为空）：组合与按住录音的默认值相同，用户录入新键后才启用
             HotkeyAction::RecordToggle => {
@@ -395,6 +403,20 @@ mod tests {
             assert!(!binding.same_combo(&other));
         }
         assert_eq!(serde_json::to_value(HotkeyAction::RewriteSelection).unwrap(), "rewrite_selection");
+    }
+
+    #[test]
+    fn 语音改写选中文本默认_按住且为空() {
+        for platform in [Platform::Macos, Platform::Windows, Platform::Linux] {
+            let binding = HotkeyBinding::default_for(HotkeyAction::VoiceRewriteSelection, platform);
+            assert!(!binding.enabled, "默认快捷键为空");
+            assert_eq!(binding.trigger, TriggerMode::Hold);
+            assert_eq!(binding.display(platform), "");
+            assert!(binding.hid_key.is_none() && binding.modifiers.is_empty());
+        }
+        assert_eq!(HotkeyAction::VoiceRewriteSelection.trigger(), TriggerMode::Hold);
+        assert_eq!(HotkeyAction::VoiceRewriteSelection.label(), "语音改写选中文本");
+        assert_eq!(serde_json::to_value(HotkeyAction::VoiceRewriteSelection).unwrap(), "voice_rewrite_selection");
     }
 
     #[test]

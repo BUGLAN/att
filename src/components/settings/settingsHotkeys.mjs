@@ -17,6 +17,14 @@ export const HOTKEY_TARGETS = Object.freeze([
     enabledField: 'show_main_window_enabled',
     clearable: true,
     defaultEmpty: true
+  },
+  // 语音改写默认为空：录入即启用，清空只关开关；按住快捷键说出要求
+  {
+    field: 'voice_rewrite_hotkey',
+    label: '语音改写选中文本',
+    enabledField: 'voice_rewrite_enabled',
+    clearable: true,
+    defaultEmpty: true
   }
 ])
 
@@ -85,7 +93,7 @@ export function clearHotkey(field) {
 }
 
 /**
- * 恢复默认：默认为空的快捷键（显示主窗口）关闭开关，其余回到传入的平台默认组合。
+ * 恢复默认：默认为空的快捷键（显示主窗口、语音改写）关闭开关，其余回到传入的平台默认组合。
  * @returns {{ patch: object } | { error: string }}
  */
 export function resetHotkey(form, field, defaultHotkey) {

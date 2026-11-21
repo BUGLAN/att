@@ -1,6 +1,6 @@
 // 设置页快捷键纯逻辑（src/components/settings/settingsHotkeys.mjs）单元测试。
-// 覆盖：五个快捷键的撞键判定（与后端 apply_settings_update 同规则：两边都启用才算撞），
-// 以及录音 / 显示主窗口快捷键的录入即启用、清空、恢复默认与首页提示。
+// 覆盖：六个快捷键的撞键判定（与后端 apply_settings_update 同规则：两边都启用才算撞），
+// 以及录音 / 显示主窗口 / 语音改写快捷键的录入即启用、清空、恢复默认与首页提示。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -20,6 +20,7 @@ const PANEL = { modifiers: ['ctrl', 'alt'], key: 'v' }
 const REWRITE = { modifiers: ['alt'], key: 'a' }
 const TOGGLE = { modifiers: ['cmd', 'shift'], key: 't', display: '⌘⇧T' }
 const SHOW_WINDOW = { modifiers: ['ctrl', 'shift'], key: 'm', display: '⌃⇧M' }
+const VOICE = { modifiers: ['ctrl', 'shift'], key: 'y', display: '⌃⇧Y' }
 
 function form(overrides = {}) {
   return {
@@ -33,14 +34,23 @@ function form(overrides = {}) {
     rewrite_enabled: true,
     show_main_window_hotkey: SHOW_WINDOW,
     show_main_window_enabled: false,
+    voice_rewrite_hotkey: VOICE,
+    voice_rewrite_enabled: false,
     ...overrides
   }
 }
 
-test('快捷键清单：按住录音 / 点按录音 / 剪贴板悬浮框 / 优化选中文本 / 显示主窗口', () => {
+test('快捷键清单：按住录音 / 点按录音 / 剪贴板悬浮框 / 优化选中文本 / 显示主窗口 / 语音改写', () => {
   assert.deepEqual(
     HOTKEY_TARGETS.map((target) => target.field),
-    ['hotkey', 'record_toggle_hotkey', 'clipboard_panel_hotkey', 'rewrite_hotkey', 'show_main_window_hotkey']
+    [
+      'hotkey',
+      'record_toggle_hotkey',
+      'clipboard_panel_hotkey',
+      'rewrite_hotkey',
+      'show_main_window_hotkey',
+      'voice_rewrite_hotkey'
+    ]
   )
 })
 
@@ -57,6 +67,10 @@ test('撞键：报出撞上的是哪个快捷键', () => {
   assert.deepEqual(findHotkeyConflict(form(), 'clipboard_panel_hotkey', RECORD), { field: 'hotkey', label: '按住录音' })
   assert.equal(findHotkeyConflict(form(), 'rewrite_hotkey', REWRITE), null, '和自己相同不算撞')
   assert.equal(findHotkeyConflict(form(), 'rewrite_hotkey', { modifiers: ['ctrl', 'alt'], key: 'p' }), null)
+  assert.deepEqual(findHotkeyConflict(form({ voice_rewrite_enabled: true }), 'hotkey', VOICE), {
+    field: 'voice_rewrite_hotkey',
+    label: '语音改写选中文本'
+  })
 })
 
 test('撞键：任一边关掉就不算撞（关掉的快捷键不注册）', () => {
@@ -64,6 +78,7 @@ test('撞键：任一边关掉就不算撞（关掉的快捷键不注册）', ()
   assert.equal(findHotkeyConflict(form({ rewrite_enabled: false }), 'rewrite_hotkey', PANEL), null)
   assert.equal(findHotkeyConflict(form({ rewrite_enabled: false }), 'hotkey', REWRITE), null)
   assert.ok(findHotkeyConflict(form({ rewrite_enabled: undefined }), 'hotkey', REWRITE), '缺字段按开启处理')
+  assert.equal(findHotkeyConflict(form(), 'hotkey', VOICE), null, '语音改写默认关闭，不算撞键')
 })
 
 test('点按录音：默认为空，录入即启用；与按住录音分键时两种都可用', () => {
@@ -94,9 +109,10 @@ test('同一个键只能启用一种录音方式：先清空另一个才能录',
   assert.match(captureHotkey(toggleOnly, 'hotkey', same).error, /先清空「点按录音」/)
 })
 
-test('清空：录音与显示主窗口快捷键可清空，其余用各自的开关', () => {
+test('清空：录音、显示主窗口与语音改写快捷键可清空，其余用各自的开关', () => {
   assert.deepEqual(clearHotkey('record_toggle_hotkey'), { record_toggle_enabled: false })
   assert.deepEqual(clearHotkey('show_main_window_hotkey'), { show_main_window_enabled: false })
+  assert.deepEqual(clearHotkey('voice_rewrite_hotkey'), { voice_rewrite_enabled: false })
   assert.equal(clearHotkey('rewrite_hotkey'), null)
   assert.equal(clearHotkey('clipboard_panel_hotkey'), null)
 })
@@ -134,6 +150,17 @@ test('显示主窗口：和已启用的快捷键撞键时拒绝', () => {
     null,
     '显示主窗口关掉时不参与撞键判定'
   )
+})
+
+test('语音改写：默认为空，录入即启用，清空只关开关', () => {
+  assert.equal(isHotkeyEnabled(form(), 'voice_rewrite_hotkey'), false)
+  assert.deepEqual(captureHotkey(form(), 'voice_rewrite_hotkey', VOICE), {
+    patch: { voice_rewrite_hotkey: VOICE, voice_rewrite_enabled: true }
+  })
+  assert.deepEqual(clearHotkey('voice_rewrite_hotkey'), { voice_rewrite_enabled: false })
+  assert.deepEqual(resetHotkey({ ...form(), voice_rewrite_enabled: true }, 'voice_rewrite_hotkey', RECORD), {
+    patch: { voice_rewrite_enabled: false }
+  })
 })
 
 test('录入非录音快捷键：撞上已启用的点按录音也拒绝，提示换一个', () => {

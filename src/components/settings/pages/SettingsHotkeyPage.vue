@@ -179,6 +179,47 @@
       </div>
     </section>
 
+    <section class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">语音改写选中文本</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">按住快捷键说出改写要求</span>
+            <span class="setting-desc">先选中文字，再按住快捷键说出「改得正式一点」「翻译成英文」等要求；松开后直接替换原选区。</span>
+          </div>
+          <div class="hotkey-input-wrapper">
+            <BaseInput
+              :value="voiceRewriteHotkeyDisplay"
+              class="hotkey-input"
+              :class="{ listening: isCapturingVoiceRewriteHotkey }"
+              type="text"
+              readonly
+              aria-label="语音改写选中文本快捷键"
+              placeholder="未设置 · 点击录入"
+              @click="startHotkeyCapture('voice_rewrite_hotkey')"
+            />
+            <BaseButton
+              v-if="voiceRewriteHotkeyDisplay"
+              variant="ghost"
+              icon
+              title="清空快捷键"
+              aria-label="清空语音改写选中文本快捷键"
+              @click="clearHotkey('voice_rewrite_hotkey')"
+            >
+              <template #icon>
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </template>
+            </BaseButton>
+          </div>
+        </div>
+        <div v-if="!voiceRewriteHotkeyDisplay" class="settings-note">
+          <span>默认未设置；录入组合键后启用。需要先在设置 → LLM 服务中配置模型。</span>
+        </div>
+      </div>
+    </section>
+
     <div v-if="hotkeyError" class="settings-note warn">
       <span>{{ hotkeyError }}</span>
     </div>
@@ -202,6 +243,8 @@ const {
   isCapturingShowMainWindowHotkey,
   rewriteHotkeyDisplay,
   isCapturingRewriteHotkey,
+  voiceRewriteHotkeyDisplay,
+  isCapturingVoiceRewriteHotkey,
   hotkeyError,
   startHotkeyCapture,
   resetHotkey,

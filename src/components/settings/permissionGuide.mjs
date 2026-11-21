@@ -17,8 +17,8 @@ export const UPDATE_PERMISSION_STEPS = Object.freeze([
 
 /** 各项没生效时的影响 */
 const IMPACTS = Object.freeze({
-  input_monitoring: '全局快捷键（录音、优化选中文本、剪贴板悬浮框）不响应',
-  accessibility: '自动粘贴、优化选中文本无法把文字输出到其他应用'
+  input_monitoring: '全局快捷键（录音、优化或语音改写选中文本、剪贴板悬浮框）不响应',
+  accessibility: '自动粘贴、优化或语音改写选中文本无法把文字输出到其他应用'
 })
 
 /**

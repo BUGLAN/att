@@ -157,8 +157,13 @@ impl CoreState {
 
     /// PUT /api/settings：在设置锁内应用白名单更新并持久化。
     pub fn apply_settings_update(&self, body: &serde_json::Value) -> Result<settings::SettingsUpdate, String> {
-        self.update_settings(|current| settings::apply_settings_update(current, body, self.platform, &self.crypto))
-            .map_err(|e| e.to_string())?
+        let mut current = self.settings.lock().unwrap_or_else(|e| e.into_inner());
+        // 先在副本上应用：撞键、空快捷键等校验失败时不能改内存，更不能把非法组合落盘。
+        let mut next = current.clone();
+        let outcome = settings::apply_settings_update(&mut next, body, self.platform, &self.crypto)?;
+        next.save(&self.settings_path).map_err(|e| e.to_string())?;
+        *current = next;
+        Ok(outcome)
     }
 
     /// 剪贴板历史的自动清理上限（设置里 0 = 不限）。
@@ -274,6 +279,7 @@ pub struct PresetFallback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::hotkey::HotkeyAction;
     use serde_json::json;
 
     #[test]
@@ -290,6 +296,13 @@ mod tests {
         core.apply_settings_update(&json!({"asr_provider": "qwen_asr"})).unwrap();
         let reloaded = CoreState::init(&dir, Platform::Windows).unwrap();
         assert_eq!(reloaded.settings().asr_provider, "qwen_asr");
+
+        // 校验失败的更新不落内存也不落盘：语音改写不能以空组合启用
+        let err = core.apply_settings_update(&json!({"voice_rewrite_enabled": true})).unwrap_err();
+        assert!(err.contains("快捷键不能为空"), "{err}");
+        assert!(!core.settings().binding_of(HotkeyAction::VoiceRewriteSelection).unwrap().enabled);
+        let reloaded = CoreState::init(&dir, Platform::Windows).unwrap();
+        assert!(!reloaded.settings().binding_of(HotkeyAction::VoiceRewriteSelection).unwrap().enabled);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

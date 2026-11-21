@@ -251,6 +251,7 @@ impl UserSettings {
                 HotkeyBinding::default_for(HotkeyAction::ClipboardPanel, platform),
                 HotkeyBinding::default_for(HotkeyAction::RewriteSelection, platform),
                 HotkeyBinding::default_for(HotkeyAction::ShowMainWindow, platform),
+                HotkeyBinding::default_for(HotkeyAction::VoiceRewriteSelection, platform),
             ],
             settings_revision: SETTINGS_REVISION,
         }
@@ -298,6 +299,7 @@ impl UserSettings {
             HotkeyAction::ClipboardPanel,
             HotkeyAction::RewriteSelection,
             HotkeyAction::ShowMainWindow,
+            HotkeyAction::VoiceRewriteSelection,
         ] {
             if self.binding_of(action).is_none() {
                 self.hotkeys.push(HotkeyBinding::default_for(action, platform));
@@ -420,6 +422,7 @@ const EXTRA_HOTKEY_FIELDS: &[(HotkeyAction, &str, &str)] = &[
     (HotkeyAction::ClipboardPanel, "clipboard_panel_hotkey", "clipboard_panel_enabled"),
     (HotkeyAction::RewriteSelection, "rewrite_hotkey", "rewrite_enabled"),
     (HotkeyAction::ShowMainWindow, "show_main_window_hotkey", "show_main_window_enabled"),
+    (HotkeyAction::VoiceRewriteSelection, "voice_rewrite_hotkey", "voice_rewrite_enabled"),
 ];
 
 /// 设置更新结果：变更的运行时键（供上层触发停服务/重建 provider）。
@@ -644,6 +647,14 @@ pub fn apply_settings_update(
                 .runtime_keys_changed
                 .push(MODEL_RUNTIME_KEYS.iter().find(|k| **k == key.as_str()).copied().unwrap_or(""));
         }
+    }
+
+    // 语音改写默认没有组合键；若界面只打开了开关却没录入按键，不能让空组合进入监听
+    if settings
+        .binding_of(HotkeyAction::VoiceRewriteSelection)
+        .is_some_and(|b| b.enabled && b.modifiers.is_empty() && b.hid_key.is_none())
+    {
+        return Err("语音改写选中文本的快捷键不能为空，请先录入组合键".into());
     }
 
     // 两个全局快捷键撞键时只会触发其中一个：直接拒绝，让用户换一个
@@ -1331,6 +1342,8 @@ mod tests {
         assert_eq!(view["auto_download_updates"], false);
         assert_eq!(view["rewrite_hotkey"]["display"], "⌥A");
         assert_eq!(view["rewrite_enabled"], true);
+        assert_eq!(view["voice_rewrite_hotkey"]["display"], "");
+        assert_eq!(view["voice_rewrite_enabled"], false);
 
         let crypto = Crypto::load_or_create(&dir).unwrap();
         let body = serde_json::json!({
@@ -1348,6 +1361,32 @@ mod tests {
         apply_settings_update(&mut settings, &serde_json::json!({"rewrite_preset_id": ""}), Platform::Macos, &crypto)
             .unwrap();
         assert!(settings.rewrite_preset_id.is_none(), "空串 = 跟随默认");
+
+        // 语音改写默认空；录入并启用后是按住动作，空组合的「已启用」会被拒绝
+        let voice = serde_json::json!({
+            "voice_rewrite_hotkey": {"modifiers": ["ctrl", "shift"], "key": "y"},
+            "voice_rewrite_enabled": true
+        });
+        apply_settings_update(&mut settings, &voice, Platform::Macos, &crypto).unwrap();
+        let voice_binding = settings.binding_of(HotkeyAction::VoiceRewriteSelection).unwrap();
+        assert_eq!(voice_binding.display(Platform::Macos), "⌃⇧Y");
+        assert_eq!(voice_binding.trigger, TriggerMode::Hold);
+        assert!(voice_binding.enabled);
+        let empty_disabled = serde_json::json!({
+            "voice_rewrite_hotkey": {"modifiers": [], "key": null},
+            "voice_rewrite_enabled": false
+        });
+        apply_settings_update(&mut settings, &empty_disabled, Platform::Macos, &crypto).unwrap();
+        assert!(!settings.binding_of(HotkeyAction::VoiceRewriteSelection).unwrap().enabled);
+        let mut invalid = settings.clone();
+        let err = apply_settings_update(
+            &mut invalid,
+            &serde_json::json!({"voice_rewrite_enabled": true}),
+            Platform::Macos,
+            &crypto,
+        )
+        .unwrap_err();
+        assert!(err.contains("快捷键不能为空"), "{err}");
 
         // 自动下载更新：布尔键，保存后重新读取仍保持
         apply_settings_update(

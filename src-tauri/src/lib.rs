@@ -456,6 +456,7 @@ fn start_hotkey_listener(
                             | HotkeyAction::ClipboardPanel
                             | HotkeyAction::RewriteSelection
                             | HotkeyAction::ShowMainWindow
+                            | HotkeyAction::VoiceRewriteSelection
                     )
             })
             .map(att_hotkey::HotkeySpec::from_binding)
@@ -499,12 +500,13 @@ fn start_hotkey_listener(
                     .unwrap_or_else(|| "未设置".into())
             };
             tracing::info!(
-                "全局快捷键已启用: 按住录音 {} / 点按录音 {} / 剪贴板悬浮框 {} / 优化选中文本 {} / 显示主窗口 {} / 录音中 Esc 取消",
+                "全局快捷键已启用: 按住录音 {} / 点按录音 {} / 剪贴板悬浮框 {} / 优化选中文本 {} / 显示主窗口 {} / 语音改写选中文本 {} / 录音中 Esc 取消",
                 combo(HotkeyAction::Record),
                 combo(HotkeyAction::RecordToggle),
                 combo(HotkeyAction::ClipboardPanel),
                 combo(HotkeyAction::RewriteSelection),
-                combo(HotkeyAction::ShowMainWindow)
+                combo(HotkeyAction::ShowMainWindow),
+                combo(HotkeyAction::VoiceRewriteSelection)
             );
             None
         }

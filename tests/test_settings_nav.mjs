@@ -35,6 +35,7 @@ test('搜索：关键词大小写不敏感，只保留命中页并去掉空分�
   const hotkey = buildNavGroups('热键')
   assert.equal(hotkey.length, 1)
   assert.equal(hotkey[0].items[0].id, 'hotkey')
+  assert.deepEqual(buildNavGroups('语音指令').flatMap((group) => group.items.map((item) => item.id)), ['hotkey'])
 
   const clipboard = buildNavGroups('悬浮框')
   assert.deepEqual(clipboard.flatMap((group) => group.items.map((item) => item.id)), ['clipboard'])

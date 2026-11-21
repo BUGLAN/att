@@ -18,8 +18,8 @@ export const SETTINGS_SECTIONS = Object.freeze([
     id: 'hotkey',
     group: '通用',
     label: '快捷键',
-    desc: '全局录音与优化选中文本的快捷键，窗口在后台时同样生效。',
-    keywords: ['快捷键', '热键', '按住', '组合键', 'hotkey', '选中文本', '改写']
+    desc: '全局录音、优化与语音改写选中文本的快捷键，窗口在后台时同样生效。',
+    keywords: ['快捷键', '热键', '按住', '组合键', 'hotkey', '选中文本', '改写', '语音指令']
   },
   {
     id: 'clipboard',

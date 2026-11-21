@@ -152,13 +152,14 @@ const { syncDesktopSettings, syncInputSettings, platform, isDesktop, listAudioDe
 
 const form = ref({})
 const audioInputDevices = ref([])
-// 正在录入哪个快捷键：HOTKEY_TARGETS 里的字段名（hotkey / record_toggle_hotkey / clipboard_panel_hotkey / rewrite_hotkey）或 null
+// 正在录入哪个快捷键：HOTKEY_TARGETS 里的字段名（含 voice_rewrite_hotkey）或 null
 const captureTarget = ref(null)
 const isCapturingHotkey = computed(() => captureTarget.value === 'hotkey')
 const isCapturingToggleHotkey = computed(() => captureTarget.value === 'record_toggle_hotkey')
 const isCapturingPanelHotkey = computed(() => captureTarget.value === 'clipboard_panel_hotkey')
 const isCapturingRewriteHotkey = computed(() => captureTarget.value === 'rewrite_hotkey')
 const isCapturingShowMainWindowHotkey = computed(() => captureTarget.value === 'show_main_window_hotkey')
+const isCapturingVoiceRewriteHotkey = computed(() => captureTarget.value === 'voice_rewrite_hotkey')
 const hotkeyError = ref('')
 
 const selectedPresetId = ref('')
@@ -219,6 +220,11 @@ const panelHotkeyDisplay = computed(() => {
 })
 const rewriteHotkeyDisplay = computed(() => {
   return form.value.rewrite_hotkey?.display || '点击录入快捷键'
+})
+const voiceRewriteHotkeyDisplay = computed(() => {
+  return isHotkeyEnabled(form.value, 'voice_rewrite_hotkey')
+    ? form.value.voice_rewrite_hotkey?.display || ''
+    : ''
 })
 
 function getDefaultHotkey() {
@@ -378,6 +384,9 @@ function normalizeSettings(value = {}) {
     audio_retention_days: normalizeLimit(value.audio_retention_days),
     rewrite_enabled: value.rewrite_enabled ?? true,
     rewrite_hotkey: normalizeHotkeyConfig(value.rewrite_hotkey, getDefaultRewriteHotkey()),
+    // 语音改写默认没有组合键；服务端 disabled 时返回空 display，不能落回录音默认键
+    voice_rewrite_enabled: value.voice_rewrite_enabled ?? false,
+    voice_rewrite_hotkey: normalizeHotkeyConfig(value.voice_rewrite_hotkey, null),
     // 空串 = 跟随默认优化预设
     rewrite_preset_id: value.rewrite_preset_id || '',
     recording_mode: value.recording_mode || 'single',
@@ -430,6 +439,8 @@ function buildSettingsPayload() {
     audio_retention_days: normalizeLimit(form.value.audio_retention_days),
     rewrite_enabled: Boolean(form.value.rewrite_enabled),
     rewrite_hotkey: normalizeHotkeyConfig(form.value.rewrite_hotkey, getDefaultRewriteHotkey()),
+    voice_rewrite_enabled: Boolean(form.value.voice_rewrite_enabled),
+    voice_rewrite_hotkey: normalizeHotkeyConfig(form.value.voice_rewrite_hotkey, null),
     rewrite_preset_id: form.value.rewrite_preset_id || '',
     recording_mode: form.value.recording_mode,
     silence_threshold: form.value.silence_threshold,
@@ -584,7 +595,7 @@ function resetHotkey(target = 'hotkey') {
   Object.assign(form.value, result.patch)
 }
 
-/** 清空录音快捷键（按住 / 点按）：只关开关，组合保留 */
+/** 清空可清空的快捷键（按住 / 点按录音、语音改写）：只关开关，组合保留 */
 function clearHotkey(target) {
   stopHotkeyCapture()
   const patch = clearHotkeyPatch(target)
@@ -818,6 +829,8 @@ provide(SETTINGS_CTX, {
   isCapturingPanelHotkey,
   rewriteHotkeyDisplay,
   isCapturingRewriteHotkey,
+  voiceRewriteHotkeyDisplay,
+  isCapturingVoiceRewriteHotkey,
   hotkeyError,
   startHotkeyCapture,
   resetHotkey,
