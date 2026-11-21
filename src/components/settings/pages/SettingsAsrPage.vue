@@ -218,7 +218,7 @@
     <section v-if="form.asr_provider === 'whisper'" class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">faster-whisper · 本地模型</h3>
-        <LocalModelStatus :view="localView" />
+        <LocalModelStatus :view="localView" :releasing="isReleasingModel" @release="releaseLocalModel" />
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">模型</span>
@@ -238,7 +238,7 @@
     <section v-if="form.asr_provider === 'qwen_asr'" class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">Qwen3-ASR · 本地模型</h3>
-        <LocalModelStatus :view="localView" />
+        <LocalModelStatus :view="localView" :releasing="isReleasingModel" @release="releaseLocalModel" />
         <!-- 模型目录自动查找（models/ 下的 Qwen3-ASR ONNX），推理固定走 CPU；
              旧版的设备 / dtype / 时间戳 / 强制对齐器选项在 Rust 引擎里没有作用，已从界面移除（字段保留兼容旧数据） -->
         <details class="settings-advanced">
@@ -257,6 +257,26 @@
             <BaseInput v-model.number="form.qwen_asr_max_audio_seconds" type="number" min="5" max="600" step="5" aria-label="音频长度上限" />
           </div>
         </details>
+      </div>
+    </section>
+
+    <section v-if="isLocalProvider(form.asr_provider)" class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">本地模型内存</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">空闲多久自动释放</span>
+            <span class="setting-desc">分钟；0 表示不自动释放。释放后下次使用会重新加载，第一次识别需多等几秒。</span>
+          </div>
+          <BaseInput
+            v-model.number="form.local_model_idle_unload_minutes"
+            type="number"
+            min="0"
+            max="1440"
+            step="1"
+            aria-label="本地模型空闲自动释放分钟数"
+          />
+        </div>
       </div>
     </section>
 
@@ -312,6 +332,7 @@ import LocalModelStatus from '../LocalModelStatus.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { SETTINGS_CTX } from '../settingsContext.js'
 import {
+  isLocalProvider,
   localEngineView,
   recordingModeConflict,
   recordingModeOptions
@@ -343,6 +364,7 @@ onMounted(() => {
 })
 // 「提前加载 / 重试」请求进行中：后端可能还没来得及置位 loading，前端先按加载中展示
 const isLoadingModel = ref(false)
+const isReleasingModel = ref(false)
 const localView = computed(() => {
   const provider = form.value.asr_provider
   const status = isLoadingModel.value ? { provider, loading: true } : settingsStore.runtimeStatus.local_engine
@@ -438,6 +460,22 @@ async function loadLocalModel() {
     await settingsStore.loadRuntimeStatus(false).catch(() => {})
   } finally {
     isLoadingModel.value = false
+  }
+}
+
+async function releaseLocalModel() {
+  if (isReleasingModel.value || localView.value.state !== 'ready') {
+    return
+  }
+  isReleasingModel.value = true
+  try {
+    await settingsStore.stopStreamingService()
+    appStore.showToast('本地模型内存已释放')
+  } catch (error) {
+    appStore.showToast(error.message || '释放本地模型失败')
+    await settingsStore.loadRuntimeStatus(false).catch(() => {})
+  } finally {
+    isReleasingModel.value = false
   }
 }
 

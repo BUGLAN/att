@@ -107,6 +107,9 @@ pub struct UserSettings {
     pub qwen_asr_forced_aligner_model: String,
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub qwen_asr_max_audio_seconds: i64,
+    /// 本地模型空闲多久自动释放（分钟）；0 = 关闭自动释放。
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub local_model_idle_unload_minutes: i64,
     // ---- 豆包（火山 SAUC）----
     pub doubao_asr_resource_id: String,
     pub doubao_asr_endpoint: String,
@@ -190,6 +193,7 @@ impl UserSettings {
             qwen_asr_use_forced_aligner: false,
             qwen_asr_forced_aligner_model: "Qwen/Qwen3-ForcedAligner-0.6B".into(),
             qwen_asr_max_audio_seconds: 30,
+            local_model_idle_unload_minutes: 15,
             doubao_asr_resource_id: "volc.seedasr.sauc.duration".into(),
             doubao_asr_endpoint: crate::stt::sauc::DEFAULT_ENDPOINT.into(),
             doubao_asr_end_window_size: 800,
@@ -532,6 +536,12 @@ pub fn apply_settings_update(
             // ---- 整数键 ----
             "qwen_asr_max_new_tokens" => set_i64(&mut settings.qwen_asr_max_new_tokens, key, value, &type_error)?,
             "qwen_asr_max_audio_seconds" => set_i64(&mut settings.qwen_asr_max_audio_seconds, key, value, &type_error)?,
+            "local_model_idle_unload_minutes" => {
+                set_i64(&mut settings.local_model_idle_unload_minutes, key, value, &type_error)?;
+                if settings.local_model_idle_unload_minutes < 0 {
+                    return Err("字段 local_model_idle_unload_minutes 不能为负数".into());
+                }
+            }
             "doubao_asr_end_window_size" => set_i64(&mut settings.doubao_asr_end_window_size, key, value, &type_error)?,
             "chatgpt_asr_timeout_seconds" => {
                 set_i64(&mut settings.chatgpt_asr_timeout_seconds, key, value, &type_error)?
@@ -731,6 +741,7 @@ mod tests {
         assert!(settings.auto_optimize);
         // 默认值兜底：未出现的键全部有值
         assert_eq!(settings.whisper_model, "large-v3");
+        assert_eq!(settings.local_model_idle_unload_minutes, 15, "旧 settings.json 取 15 分钟默认值");
         // 旧热键迁移：Ctrl+Shift+R 保持
         let binding = settings.binding_of(HotkeyAction::Record).unwrap();
         assert_eq!(binding.display(Platform::Linux), "Ctrl+Shift+R");
@@ -932,6 +943,41 @@ mod tests {
         let bad = serde_json::json!({ "silence_level": "loud" });
         let err = apply_settings_update(&mut settings, &bad, Platform::Windows, &crypto).unwrap_err();
         assert!(err.contains("silence_level") && err.contains("整数"), "错误信息应包含字段名与期望类型: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 更新_本地模型空闲释放分钟数_支持关闭且拒绝负数() {
+        let dir = temp_dir("local-idle-minutes");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::with_platform(Platform::Windows);
+
+        apply_settings_update(
+            &mut settings,
+            &json!({ "local_model_idle_unload_minutes": 0 }),
+            Platform::Windows,
+            &crypto,
+        )
+        .unwrap();
+        assert_eq!(settings.local_model_idle_unload_minutes, 0);
+
+        apply_settings_update(
+            &mut settings,
+            &json!({ "local_model_idle_unload_minutes": 2.6 }),
+            Platform::Windows,
+            &crypto,
+        )
+        .unwrap();
+        assert_eq!(settings.local_model_idle_unload_minutes, 3);
+
+        let err = apply_settings_update(
+            &mut settings,
+            &json!({ "local_model_idle_unload_minutes": -1 }),
+            Platform::Windows,
+            &crypto,
+        )
+        .unwrap_err();
+        assert!(err.contains("local_model_idle_unload_minutes") && err.contains("不能为负数"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -26,7 +26,10 @@ pub mod window_shape;
 use att_core::{migration, state::CoreState, Platform};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::Manager;
+
+const LOCAL_MODEL_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// 命令层共享状态。
 pub struct AppState {
@@ -173,6 +176,7 @@ pub fn run() {
             // 录音 Actor + 全局热键（热键直达 Actor，不经过前端：窗口隐藏/后台时同样可用）
             let recorder = recording::RecordingController::spawn(app.handle().clone(), core.clone());
             let hotkey_error = start_hotkey_listener(app.handle().clone(), core.clone(), recorder.clone());
+            spawn_local_model_idle_monitor(core.clone(), recorder.clone());
 
             // 状态先注册：保证窗口首屏的 invoke 一定能取到 State
             // （shutdown_tx 放进 AppState 随应用存活，防止数据面被误关）
@@ -419,6 +423,30 @@ fn spawn_startup_update_check(core: Arc<CoreState>) {
         tokio::time::sleep(std::time::Duration::from_secs(20)).await;
         let result = att_core::update::check_and_maybe_download(core).await;
         tracing::info!("启动时自动检查更新：{}", result.status);
+    });
+}
+
+/// 每分钟检查一次本地模型空闲时间；录音、文件转写或加载期间跳过。
+fn spawn_local_model_idle_monitor(core: Arc<CoreState>, recorder: recording::RecordingController) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(LOCAL_MODEL_IDLE_CHECK_INTERVAL).await;
+            let minutes = core.settings().local_model_idle_unload_minutes;
+            if minutes <= 0 {
+                continue;
+            }
+            if recorder.is_using_asr() || core.transcriber.is_busy() {
+                continue;
+            }
+            let threshold = Duration::from_secs((minutes as u64).saturating_mul(60));
+            let unload_core = core.clone();
+            let unloaded = tokio::task::spawn_blocking(move || unload_core.local_models.unload_idle(threshold, false))
+                .await
+                .unwrap_or(0);
+            if unloaded > 0 {
+                tracing::debug!("本地模型空闲回收完成：{unloaded} 个引擎");
+            }
+        }
     });
 }
 

@@ -35,6 +35,18 @@ export function supportsStreaming(provider) {
   return STREAMING_PROVIDERS.includes(provider)
 }
 
+/** 本地模型空闲释放分钟数：缺省 15，0 表示关闭，负数和无效输入回落到 0/默认值。 */
+export function normalizeLocalModelIdleMinutes(value) {
+  if (value === '' || value == null) {
+    return 15
+  }
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) {
+    return 15
+  }
+  return Math.max(0, Math.round(parsed))
+}
+
 /**
  * 录音模式卡片：按当前引擎标出不可用的模式。
  * 返回 [{ value, label, desc, disabled, hint }]；hint 为不可用原因（可用时为空串）。

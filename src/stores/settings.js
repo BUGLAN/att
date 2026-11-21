@@ -130,6 +130,7 @@ export const useSettingsStore = defineStore('settings', () => {
     qwen_asr_use_forced_aligner: false,
     qwen_asr_forced_aligner_model: 'Qwen/Qwen3-ForcedAligner-0.6B',
     qwen_asr_max_audio_seconds: 30,
+    local_model_idle_unload_minutes: 15,
     // 火山引擎豆包双向流式 ASR（在线识别）
     // 注意：明文 Access Token 不进前端默认值/本地状态，只以「是否已配置」的形式展示；
     // 用户在设置页输入后由后端加密落盘（doubao_asr_api_key_encrypted）。

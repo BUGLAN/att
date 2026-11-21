@@ -370,6 +370,11 @@ impl FileTranscriber {
     fn try_acquire_busy(&self) -> Result<OwnedMutexGuard<()>, TranscribeError> {
         self.busy.clone().try_lock_owned().map_err(|_| TranscribeError::busy("转写引擎忙，请稍后重试"))
     }
+
+    /// 文件转写是否正在执行（本地模型空闲回收据此避让）。
+    pub fn is_busy(&self) -> bool {
+        self.busy.try_lock().is_err()
+    }
 }
 
 fn last_used(entry: &Value) -> f64 {
@@ -584,6 +589,7 @@ fn start_job(
         // guard 随后台任务存活，覆盖 ASR 与校对；成功、失败或 panic 时才释放。
         let _permit = permit;
         let outcome = execute_job(&core, &id, &request, &path, &hash, duration, engine).await;
+        drop(_permit);
         core.transcriber.update_job(&id, |job| match outcome {
             Ok(result) => {
                 job.stage = "done";
@@ -684,6 +690,7 @@ mod tests {
         // current_thread runtime 下不主动 yield，后台任务尚未开始，受理取得的 guard 仍在。
         let first =
             start_job(core.clone(), request(), path.clone(), "first-hash".into(), 3600.0, "deepseek_asr").unwrap();
+        assert!(core.transcriber.is_busy(), "受理后台任务后必须能从外部观察到忙碌状态");
         let busy_job =
             start_job(core.clone(), request(), path.clone(), "second-hash".into(), 3600.0, "deepseek_asr").unwrap_err();
         assert_eq!(busy_job.status, 503);
@@ -707,6 +714,7 @@ mod tests {
         .expect("已受理任务应结束");
         assert_eq!(job["status"], "failed");
         assert!(!job["error"].as_str().unwrap_or("").contains("引擎忙"), "{}", job["error"]);
+        assert!(!core.transcriber.is_busy(), "任务结束后必须恢复空闲");
 
         // 任务结束后许可释放，下一批请求可以继续受理。
         let third = start_job(core.clone(), request(), path, "third-hash".into(), 3600.0, "deepseek_asr").unwrap();

@@ -1,5 +1,5 @@
 <template>
-  <!-- 本地引擎的模型状态行：状态点 + 标题 + 一句结论；获取方式 / 失败原因折叠在下面，不放按钮（加载/重试靠点上方的引擎卡片） -->
+  <!-- 本地引擎状态：加载/重试仍靠引擎卡片，已就绪时在状态行提供手动释放。 -->
   <div class="model-status" :class="`is-${view.state}`" role="status" aria-live="polite">
     <div class="model-status-head">
       <span class="model-status-dot" aria-hidden="true"></span>
@@ -7,6 +7,16 @@
         <span class="model-status-title">{{ view.title }}</span>
         <span class="model-status-desc" :class="{ 'is-mono': view.state === 'ready' }">{{ view.message }}</span>
       </div>
+      <BaseButton
+        v-if="view.state === 'ready'"
+        class="model-status-release"
+        variant="outline"
+        size="sm"
+        :loading="releasing"
+        @click="emit('release')"
+      >
+        释放内存
+      </BaseButton>
     </div>
 
     <!-- 加载中：底边一道扫过的金色光带（与选中卡片同款） -->
@@ -29,6 +39,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import BaseButton from '@/components/common/BaseButton.vue'
 import { hintBlocks } from './asrEngineStatus.mjs'
 
 defineOptions({ name: 'LocalModelStatus' })
@@ -38,8 +49,14 @@ const props = defineProps({
   view: {
     type: Object,
     required: true
+  },
+  releasing: {
+    type: Boolean,
+    default: false
   }
 })
+
+const emit = defineEmits(['release'])
 
 // 详情按原顺序排成「说明 / 命令块」，命令单独成块便于复制
 const blocks = computed(() => hintBlocks(props.view.detail))
@@ -64,7 +81,7 @@ const blocks = computed(() => hintBlocks(props.view.detail))
 
 .model-status-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--s-3);
 }
 
@@ -88,6 +105,11 @@ const blocks = computed(() => hintBlocks(props.view.detail))
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.model-status-release {
+  flex: none;
+  align-self: center;
 }
 
 .model-status-title {
@@ -185,5 +207,16 @@ const blocks = computed(() => hintBlocks(props.view.detail))
 @media (prefers-reduced-motion: reduce) {
   .model-status.is-loading .model-status-dot { animation: none; }
   .model-status-bar { animation: none; left: 0; width: 100%; opacity: 0.5; }
+}
+
+@media (max-width: 560px) {
+  .model-status-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .model-status-release {
+    margin-left: calc(6px + var(--s-3));
+  }
 }
 </style>
