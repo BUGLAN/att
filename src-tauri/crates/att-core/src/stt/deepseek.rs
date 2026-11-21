@@ -245,7 +245,17 @@ pub async fn transcribe_pcm(config: &DeepSeekConfig, samples: &[i16]) -> Result<
 
 /// 同 [`transcribe_pcm`]，返回分段位置与降级警告，供文件转写把缺段信息带回响应。
 pub async fn transcribe_pcm_detailed(config: &DeepSeekConfig, samples: &[i16]) -> Result<PcmTranscript, String> {
-    transcribe_pcm_with_limits(config, samples, MAX_CHUNK_SAMPLES, MIN_TAIL_SAMPLES).await
+    transcribe_pcm_with_limits(config, samples, MAX_CHUNK_SAMPLES, MIN_TAIL_SAMPLES, &mut |_, _| true).await
+}
+
+/// 同 [`transcribe_pcm_detailed`]，每块请求前回调（已处理样本数, 总样本数），完成后回调（总数, 总数）；
+/// 回调返回 false 时不再请求后面的块，返回 [`super::TRANSCRIBE_CANCELLED`]。
+pub async fn transcribe_pcm_with_progress(
+    config: &DeepSeekConfig,
+    samples: &[i16],
+    on_chunk: &mut (dyn FnMut(usize, usize) -> bool + Send),
+) -> Result<PcmTranscript, String> {
+    transcribe_pcm_with_limits(config, samples, MAX_CHUNK_SAMPLES, MIN_TAIL_SAMPLES, on_chunk).await
 }
 
 async fn transcribe_pcm_with_limits(
@@ -253,6 +263,7 @@ async fn transcribe_pcm_with_limits(
     samples: &[i16],
     chunk_samples: usize,
     min_tail_samples: usize,
+    on_chunk: &mut (dyn FnMut(usize, usize) -> bool + Send),
 ) -> Result<PcmTranscript, String> {
     config.ensure()?;
     let plan = plan_chunks(samples.len(), chunk_samples, min_tail_samples);
@@ -271,6 +282,9 @@ async fn transcribe_pcm_with_limits(
     let mut succeeded = 0usize;
     let mut failures = Vec::new();
     for (index, range) in plan.ranges.into_iter().enumerate() {
+        if !on_chunk(range.start, samples.len()) {
+            return Err(super::TRANSCRIBE_CANCELLED.to_string());
+        }
         let wav = match crate::audio::wav_bytes_16k(&samples[range.clone()]) {
             Ok(wav) => wav,
             Err(error) => return Err(format!("音频编码失败：{error}")),
@@ -299,6 +313,7 @@ async fn transcribe_pcm_with_limits(
         }
     }
 
+    on_chunk(samples.len(), samples.len());
     if succeeded == 0 && !failures.is_empty() {
         return Err(if failures.len() == 1 {
             failures.remove(0)
@@ -435,12 +450,38 @@ mod tests {
         ])
         .await;
 
-        let transcript = transcribe_pcm_with_limits(&config(&base), &samples, 4, 2).await.unwrap();
+        let transcript = transcribe_pcm_with_limits(&config(&base), &samples, 4, 2, &mut |_, _| true).await.unwrap();
         assert_eq!(transcript.text, "第一段");
         assert_eq!(transcript.segments.len(), 1);
         assert_eq!(transcript.warnings.len(), 1);
         assert!(transcript.warnings[0].contains("第 2/2 段"), "{:?}", transcript.warnings);
         assert_eq!(request_count(&mut requests), 4, "第一块 1 次 + 第二块首次与两次重试");
+    }
+
+    #[tokio::test]
+    async fn 分块进度_回调叫停后不再请求后面的块() {
+        let mut samples = vec![0x4141i16; 4];
+        samples.extend(vec![0x4242i16; 4]);
+        let (base, mut requests) =
+            stub_routes(vec![StubRoute::json("POST /v1/tools/asr", 200, r#"{"text":"第一段"}"#)]).await;
+
+        let mut seen = Vec::new();
+        let mut on_chunk = |done: usize, total: usize| {
+            seen.push((done, total));
+            done == 0 // 第二块之前叫停
+        };
+        let error = transcribe_pcm_with_limits(&config(&base), &samples, 4, 2, &mut on_chunk).await.unwrap_err();
+        assert_eq!(error, crate::stt::TRANSCRIBE_CANCELLED);
+        assert_eq!(seen, vec![(0, 8), (4, 8)]);
+        assert_eq!(request_count(&mut requests), 1, "叫停之后不再请求第二块");
+
+        let mut seen = Vec::new();
+        let mut on_chunk = |done: usize, total: usize| {
+            seen.push((done, total));
+            true
+        };
+        transcribe_pcm_with_limits(&config(&base), &samples, 4, 2, &mut on_chunk).await.unwrap();
+        assert_eq!(seen, vec![(0, 8), (4, 8), (8, 8)], "每块之前一次，完成后一次");
     }
 
     #[tokio::test]
@@ -453,7 +494,7 @@ mod tests {
         ])
         .await;
 
-        let transcript = transcribe_pcm_with_limits(&config(&base), &samples, 4, 2).await.unwrap();
+        let transcript = transcribe_pcm_with_limits(&config(&base), &samples, 4, 2, &mut |_, _| true).await.unwrap();
         assert_eq!(transcript.text, "第一段");
         assert_eq!(transcript.segments.len(), 1);
         assert!(transcript.warnings[0].contains("HTTP 400"), "{:?}", transcript.warnings);
@@ -465,7 +506,7 @@ mod tests {
         let (base, mut requests) =
             stub_routes(vec![StubRoute::json("POST /v1/tools/asr", 400, r#"{"error":"bad"}"#)]).await;
 
-        let error = transcribe_pcm_with_limits(&config(&base), &[0x4141; 4], 4, 2).await.unwrap_err();
+        let error = transcribe_pcm_with_limits(&config(&base), &[0x4141; 4], 4, 2, &mut |_, _| true).await.unwrap_err();
         assert!(error.contains("HTTP 400"), "{error}");
         assert_eq!(request_count(&mut requests), 1);
     }

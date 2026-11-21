@@ -46,6 +46,7 @@ fn request(path: String, engine: &str) -> TranscribeRequest {
         proofread: false,
         proofread_model_id: None,
         proofread_options: None,
+        async_job: false,
     }
 }
 

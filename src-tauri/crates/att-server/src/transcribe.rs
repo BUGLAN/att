@@ -19,7 +19,10 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub fn routes() -> Router<Arc<ServerState>> {
-    Router::new().route("/api/transcribe", post(transcribe_file)).route("/api/transcribe/jobs/{job_id}", get(job))
+    Router::new()
+        .route("/api/transcribe", post(transcribe_file))
+        .route("/api/transcribe/jobs/{job_id}", get(job))
+        .route("/api/transcribe/jobs/{job_id}/cancel", post(cancel_job))
 }
 
 fn error_response(error: TranscribeError) -> Response {
@@ -48,6 +51,9 @@ struct Body {
     proofread_model_id: Option<String>,
     #[serde(default)]
     proofread_options: Option<Value>,
+    /// 一律走后台任务（拿得到进度、可以取消）；缓存命中仍直接返回结果
+    #[serde(default)]
+    async_job: bool,
 }
 
 fn default_language() -> String {
@@ -73,6 +79,7 @@ async fn transcribe_file(State(state): State<Arc<ServerState>>, body: Bytes) -> 
         proofread: body.proofread,
         proofread_model_id: body.proofread_model_id.filter(|id| !id.is_empty()),
         proofread_options: body.proofread_options,
+        async_job: body.async_job,
     };
     match transcribe::handle(state.core.clone(), request).await {
         Ok(Outcome::Result(payload)) => Json(payload).into_response(),
@@ -83,6 +90,15 @@ async fn transcribe_file(State(state): State<Arc<ServerState>>, body: Bytes) -> 
 
 async fn job(State(state): State<Arc<ServerState>>, Path(job_id): Path<String>) -> Response {
     match state.core.transcriber.get_job(&job_id) {
+        Some(job) => Json(job).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({ "detail": "任务不存在或已过期" }))).into_response(),
+    }
+}
+
+/// 取消后台任务：返回当前快照（`cancel_requested=true`，任务在下一个检查点退出后变为 `cancelled`）；
+/// 已结束的任务原样返回。
+async fn cancel_job(State(state): State<Arc<ServerState>>, Path(job_id): Path<String>) -> Response {
+    match state.core.transcriber.cancel_job(&job_id) {
         Some(job) => Json(job).into_response(),
         None => (StatusCode::NOT_FOUND, Json(json!({ "detail": "任务不存在或已过期" }))).into_response(),
     }
@@ -121,6 +137,17 @@ mod tests {
         app.clone().oneshot(builder.body(Body::from(body)).unwrap()).await.unwrap().status()
     }
 
+    async fn post_cancel(app: &Router, token: Option<&str>) -> StatusCode {
+        let mut builder = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/transcribe/jobs/nope/cancel")
+            .header("host", "127.0.0.1");
+        if let Some(token) = token {
+            builder = builder.header("x-att-token", token);
+        }
+        app.clone().oneshot(builder.body(Body::empty()).unwrap()).await.unwrap().status()
+    }
+
     async fn get_job(app: &Router, token: Option<&str>) -> StatusCode {
         let mut builder = axum::http::Request::builder().uri("/api/transcribe/jobs/nope").header("host", "127.0.0.1");
         if let Some(token) = token {
@@ -134,6 +161,7 @@ mod tests {
         let app = router(test_state());
         assert_eq!(post_transcribe(&app, None).await, StatusCode::UNAUTHORIZED);
         assert_eq!(get_job(&app, None).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(post_cancel(&app, None).await, StatusCode::UNAUTHORIZED);
         // 鉴权在 JSON 解析之前：请求体坏掉也不能绕过 token 检查
         assert_eq!(post_body(&app, None, "{").await, StatusCode::UNAUTHORIZED);
     }
@@ -151,6 +179,7 @@ mod tests {
         // 已过鉴权：POST 进入引擎解析 / 路径校验；GET 任务不存在 → 404
         assert_ne!(post_transcribe(&app, Some("test-token")).await, StatusCode::UNAUTHORIZED);
         assert_eq!(get_job(&app, Some("test-token")).await, StatusCode::NOT_FOUND);
+        assert_eq!(post_cancel(&app, Some("test-token")).await, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

@@ -467,12 +467,13 @@ export const api = {
     return appendToken(`${baseUrl}/records/${id}/audio`, token)
   },
 
-  // 本地文件转写：短文件同步 200；长文件 202 {job_id}，再用 getTranscribeJob 轮询
+  // 本地文件转写：短文件同步 200；长文件或 async_job 202 {job_id}，再用 getTranscribeJob 轮询、cancelTranscribeJob 取消
   transcribeFile: (payload) => request('POST', '/transcribe', {
     body: payload,
     timeout: TRANSCRIBE_SYNC_TIMEOUT_MS
   }),
   getTranscribeJob: (jobId) => request('GET', `/transcribe/jobs/${encodeURIComponent(jobId)}`),
+  cancelTranscribeJob: (jobId) => request('POST', `/transcribe/jobs/${encodeURIComponent(jobId)}/cancel`),
 
   getSettings: () => request('GET', '/settings'),
   saveSettings: (settings) => request('PUT', '/settings', { body: settings }),

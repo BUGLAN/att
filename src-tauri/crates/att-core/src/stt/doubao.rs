@@ -455,14 +455,31 @@ pub async fn transcribe_pcm(
     context: &str,
     samples: &[i16],
 ) -> Result<FinishOutcome, SttError> {
+    transcribe_pcm_with_progress(config, language, context, samples, &mut |_| true).await
+}
+
+/// 同 [`transcribe_pcm`]，每推一帧前回调已推送的样本数；回调返回 false 时停止推流、关闭会话，
+/// 返回 [`super::TRANSCRIBE_CANCELLED`]（文件转写取消用）。
+pub async fn transcribe_pcm_with_progress(
+    config: &DoubaoConfig,
+    language: &str,
+    context: &str,
+    samples: &[i16],
+    on_push: &mut (dyn FnMut(usize) -> bool + Send),
+) -> Result<FinishOutcome, SttError> {
     if samples.is_empty() {
         return Err(SttError::new(ErrorKind::Input, "音频为空，无法转写", false, ""));
     }
     let mut session = DoubaoSession::connect(config, language, context, None).await?;
     session.frame_samples = sauc::CHUNK_SAMPLES;
-    for chunk in samples.chunks(sauc::CHUNK_SAMPLES) {
+    for (index, chunk) in samples.chunks(sauc::CHUNK_SAMPLES).enumerate() {
+        if !on_push(index * sauc::CHUNK_SAMPLES) {
+            session.close().await;
+            return Err(SttError::new(ErrorKind::Input, super::TRANSCRIBE_CANCELLED, false, ""));
+        }
         session.push(chunk).await?;
     }
+    on_push(samples.len());
     // 批量推流比实时快得多，服务端需要更长时间吐完结果
     let audio_seconds = samples.len() as u64 / sauc::SAMPLE_RATE as u64;
     let timeout = FINISH_TIMEOUT + Duration::from_secs(audio_seconds / 2);

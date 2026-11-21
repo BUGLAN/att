@@ -327,7 +327,7 @@ pub fn run() {
             commands::get_hotkey_status,
             commands::get_floating_state,
             commands::open_main_settings,
-            commands::open_media_file,
+            commands::open_media_files,
             commands::choose_backup_export_path,
             commands::choose_backup_import_path,
             commands::restart_app,

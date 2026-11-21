@@ -18,7 +18,18 @@ import {
   defaultTranscribeEngine,
   transcribeEngineOptions,
   FALLBACK_TRANSCRIBE_ENGINE,
-  TRANSCRIBE_ENGINES
+  TRANSCRIBE_ENGINES,
+  QUEUE_STATUS_LABELS,
+  clearFinishedQueueItems,
+  describeJobProgress,
+  enqueuePaths,
+  formatClock,
+  isJobFinished,
+  jobProgressSignature,
+  nextQueuedItem,
+  queueSummary,
+  removeQueueItem,
+  updateQueueItem
 } from '../src/composables/transcribe/fileTranscribeModel.mjs'
 
 test('同步超时常量与契约一致（15 分钟）', () => {
@@ -240,4 +251,93 @@ test('isSupportedMediaPath：大小写不敏感，txt 拒绝', () => {
   assert.equal(isSupportedMediaPath('/x/y.WAV'), true)
   assert.equal(isSupportedMediaPath('/x/y.txt'), false)
   assert.equal(isSupportedMediaPath(''), false)
+})
+
+test('buildTranscribeRequest：asyncJob 为真时带 async_job，默认不带', () => {
+  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', asyncJob: true }).async_job, true)
+  assert.ok(!('async_job' in buildTranscribeRequest({ path: '/a/b.wav' })))
+})
+
+test('describeJobProgress：识别阶段按音频秒数给百分比与时钟', () => {
+  const job = { status: 'running', stage: 'asr', progress: { stage: 'asr', done_seconds: 200, total_seconds: 720 } }
+  assert.deepEqual(describeJobProgress(job), { percent: 27, label: '识别中 · 3:20 / 12:00' })
+  // 推完音频、等服务端吐结果
+  const pushed = { ...job, progress: { stage: 'asr', done_seconds: 720, total_seconds: 720 } }
+  assert.deepEqual(describeJobProgress(pushed), { percent: 100, label: '识别中 · 等待识别结果…' })
+  // 拿不到进度：不定进度
+  assert.deepEqual(describeJobProgress({ stage: 'asr', progress: null }), { percent: null, label: '识别中…' })
+  // 超长文件用 h:mm:ss
+  assert.equal(formatClock(3725), '1:02:05')
+  assert.equal(formatClock(-1), '0:00')
+})
+
+test('describeJobProgress：校对阶段字段不变（窗口数）；取消中改文案保留进度', () => {
+  const job = { stage: 'proofreading', progress: { window_done: 2, window_total: 5 } }
+  assert.deepEqual(describeJobProgress(job), { percent: 40, label: 'LLM 校对中 · 窗口 2/5' })
+  assert.deepEqual(describeJobProgress(job, { cancelRequested: true }), { percent: 40, label: '正在取消…' })
+  assert.equal(describeJobProgress({ ...job, cancel_requested: true }).label, '正在取消…')
+})
+
+test('isJobFinished / jobProgressSignature：cancelled 也算结束；进度一变签名就变', () => {
+  assert.ok(isJobFinished({ status: 'cancelled' }))
+  assert.ok(isJobFinished({ status: 'done' }))
+  assert.ok(!isJobFinished({ status: 'running' }))
+  const a = jobProgressSignature({ stage: 'asr', progress: { done_seconds: 1 } })
+  const b = jobProgressSignature({ stage: 'asr', progress: { done_seconds: 2 } })
+  const c = jobProgressSignature({ stage: 'proofreading', progress: { window_done: 0 } })
+  assert.notEqual(a, b)
+  assert.notEqual(b, c)
+  assert.equal(a, jobProgressSignature({ stage: 'asr', progress: { done_seconds: 1 } }))
+})
+
+test('enqueuePaths：按顺序排队，跳过不支持的类型与还没转完的重复路径', () => {
+  let seq = 0
+  const makeId = () => `id${++seq}`
+  const first = enqueuePaths([], ['/a/1.mp3', '/a/note.txt', ' /a/2.wav ', '', '/a/3.mp4'], { makeId })
+  assert.deepEqual(first.queue.map((item) => [item.id, item.fileName, item.status]), [
+    ['id1', '1.mp3', 'pending'],
+    ['id2', '2.wav', 'pending'],
+    ['id3', '3.mp4', 'pending']
+  ])
+  assert.deepEqual(first.unsupported, ['/a/note.txt'])
+
+  // 正在转的同一文件再次拖入算重复；转完的可以再排
+  const running = updateQueueItem(first.queue, 'id1', { status: 'running' })
+  const again = enqueuePaths(running, ['/a/1.mp3', '/a/2.wav'], { makeId })
+  assert.deepEqual(again.duplicate, ['/a/1.mp3', '/a/2.wav'])
+  assert.equal(again.added.length, 0)
+  const done = updateQueueItem(running, 'id1', { status: 'done' })
+  assert.equal(enqueuePaths(done, ['/a/1.mp3'], { makeId }).added.length, 1)
+  // 不修改入参
+  assert.equal(first.queue[0].status, 'pending')
+})
+
+test('队列推进：中间一个失败后面的照常排；只有未开始的能移除', () => {
+  let seq = 0
+  let { queue } = enqueuePaths([], ['/a/1.mp3', '/a/2.mp3', '/a/3.mp3'], { makeId: () => `id${++seq}` })
+  const outcomes = { id1: 'done', id2: 'failed', id3: 'done' }
+  const order = []
+  let item = nextQueuedItem(queue)
+  while (item) {
+    order.push(item.id)
+    queue = updateQueueItem(queue, item.id, { status: 'running' })
+    assert.equal(removeQueueItem(queue, item.id).length, queue.length, '转写中的不能移除')
+    queue = updateQueueItem(queue, item.id, { status: outcomes[item.id], error: outcomes[item.id] === 'failed' ? '解码失败' : '' })
+    item = nextQueuedItem(queue)
+  }
+  assert.deepEqual(order, ['id1', 'id2', 'id3'])
+  assert.deepEqual(queueSummary(queue), { total: 3, pending: 0, running: 0, done: 2, failed: 1, cancelled: 0 })
+  assert.equal(queue[1].error, '解码失败')
+
+  // 未开始的可以移除
+  let pending = enqueuePaths([], ['/a/x.mp3', '/a/y.mp3'], { makeId: () => `p${++seq}` }).queue
+  pending = removeQueueItem(pending, pending[1].id)
+  assert.deepEqual(pending.map((entry) => entry.fileName), ['x.mp3'])
+  assert.equal(nextQueuedItem([]), null)
+})
+
+test('clearFinishedQueueItems：只留排队中与转写中的', () => {
+  const queue = ['pending', 'running', 'done', 'failed', 'cancelled'].map((status, index) => ({ id: String(index), status }))
+  assert.deepEqual(clearFinishedQueueItems(queue).map((item) => item.status), ['pending', 'running'])
+  assert.equal(QUEUE_STATUS_LABELS.cancelled, '已取消')
 })

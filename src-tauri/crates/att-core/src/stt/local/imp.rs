@@ -25,6 +25,12 @@ pub const QWEN: &str = "qwen_asr";
 const VAD_PAD_MS: usize = 200;
 /// 相邻语音区间间隔小于该值时合并，避免同一句话被切成两段重复识别。
 const VAD_MERGE_GAP_MS: usize = 400;
+/// 合并后的区间不超过该时长（Whisper 本身按 30 秒窗口推理）：长文件的进度与取消按区间推进，
+/// 连续讲话合成一整块会让进度长时间不动、取消也要等整块推理完。只在 VAD 的静音间隙处断开。
+const VAD_MERGE_MAX_SECONDS: usize = 30;
+/// 没有 VAD 时，超过该时长的音频按能量静音点切成 ≤[`VAD_MERGE_MAX_SECONDS`] 的块逐块推理（文件转写的进度与取消
+/// 靠它推进）；更短的（口述录音）照旧整段推理，行为不变。
+const NO_VAD_CHUNK_ABOVE_SECONDS: usize = 60;
 
 /// 本地引擎种类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,19 +154,33 @@ impl LocalEngine {
 
     /// 阻塞式整段转写（调用方负责丢进 `spawn_blocking`）。
     pub fn transcribe(&self, language: &str, samples: &[i16]) -> Result<LocalTranscript, String> {
+        self.transcribe_with_progress(language, samples, &mut |_, _| true)
+    }
+
+    /// 同 [`Self::transcribe`]，按分块（Whisper 的 VAD 区间、Qwen 的分块）回调进度：
+    /// 每块推理前回调（已处理样本数, 总样本数），完成后回调（总数, 总数）；回调返回 false 时停在下一块之前，
+    /// 返回 [`crate::stt::TRANSCRIBE_CANCELLED`]。正在推理的那一块无法中途打断。
+    pub fn transcribe_with_progress(
+        &self,
+        language: &str,
+        samples: &[i16],
+        on_chunk: &mut dyn FnMut(usize, usize) -> bool,
+    ) -> Result<LocalTranscript, String> {
         match (&self.whisper, &self.qwen) {
-            (Some(whisper), _) => transcribe_whisper(whisper, self.vad.as_deref(), language, samples),
-            (_, Some(qwen)) => qwen.transcribe(language, samples).map(|outcome| LocalTranscript {
-                text: outcome.text,
-                segments: outcome
-                    .segments
-                    .into_iter()
-                    .map(|segment| LocalSegment { start: segment.start, end: segment.end, text: segment.text })
-                    .collect(),
-                duration: outcome.duration,
-                elapsed: outcome.elapsed,
-                device: "cpu:onnx".to_string(),
-            }),
+            (Some(whisper), _) => transcribe_whisper(whisper, self.vad.as_deref(), language, samples, on_chunk),
+            (_, Some(qwen)) => {
+                qwen.transcribe_with_progress(language, samples, on_chunk).map(|outcome| LocalTranscript {
+                    text: outcome.text,
+                    segments: outcome
+                        .segments
+                        .into_iter()
+                        .map(|segment| LocalSegment { start: segment.start, end: segment.end, text: segment.text })
+                        .collect(),
+                    duration: outcome.duration,
+                    elapsed: outcome.elapsed,
+                    device: "cpu:onnx".to_string(),
+                })
+            }
             _ => Err("本地引擎未就绪".into()),
         }
     }
@@ -189,16 +209,33 @@ fn transcribe_whisper(
     vad: Option<&SileroVad>,
     language: &str,
     samples: &[i16],
+    on_chunk: &mut dyn FnMut(usize, usize) -> bool,
 ) -> Result<LocalTranscript, String> {
     let duration = samples.len() as f64 / SAMPLE_RATE as f64;
+    let total = samples.len();
+    // 没有 VAD：短音频整段推理（只有开始与结束两个进度点）；长音频按静音点切块，进度与取消逐块推进
+    let without_vad = |on_chunk: &mut dyn FnMut(usize, usize) -> bool| {
+        if total > NO_VAD_CHUNK_ABOVE_SECONDS * SAMPLE_RATE {
+            let cuts = att_qwen::silence_cut_points(samples, SAMPLE_RATE);
+            let chunks = att_qwen::plan_chunks(total, SAMPLE_RATE, VAD_MERGE_MAX_SECONDS as i64, &cuts);
+            tracing::info!("本地 Whisper（无 VAD）：{duration:.1}s 音频按静音点分 {} 块推理", chunks.len());
+            return transcribe_whisper_chunks(whisper, language, samples, chunks, on_chunk, "静音点分块");
+        }
+        if !on_chunk(0, total) {
+            return Err(crate::stt::TRANSCRIBE_CANCELLED.to_string());
+        }
+        let outcome = whisper.transcribe(language, samples).map(from_whisper)?;
+        on_chunk(total, total);
+        Ok(outcome)
+    };
     let Some(vad) = vad else {
-        return whisper.transcribe(language, samples).map(from_whisper);
+        return without_vad(on_chunk);
     };
     let ranges = match vad.speech_ranges(samples) {
         Ok(ranges) => ranges,
         Err(error) => {
-            tracing::warn!("Silero VAD 失败，退回整段识别：{error}");
-            return whisper.transcribe(language, samples).map(from_whisper);
+            tracing::warn!("Silero VAD 失败，退回无 VAD 识别：{error}");
+            return without_vad(on_chunk);
         }
     };
     if ranges.is_empty() {
@@ -213,21 +250,29 @@ fn transcribe_whisper(
     }
     let pad = SAMPLE_RATE * VAD_PAD_MS / 1000;
     let merge_gap = SAMPLE_RATE * VAD_MERGE_GAP_MS / 1000;
-    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
-    for (start, end) in ranges {
-        let start = start.saturating_sub(pad);
-        let end = (end + pad).min(samples.len());
-        match merged.last_mut() {
-            Some(last) if start <= last.1 + merge_gap => last.1 = last.1.max(end),
-            _ => merged.push((start, end)),
-        }
-    }
+    let merged = merge_speech_ranges(ranges, samples.len(), pad, merge_gap, SAMPLE_RATE * VAD_MERGE_MAX_SECONDS);
+    transcribe_whisper_chunks(whisper, language, samples, merged, on_chunk, "VAD 分段")
+}
 
+/// 逐块推理并按块偏移拼回时间戳；每块之前回调进度，回调返回 false 时停下（取消）。
+fn transcribe_whisper_chunks(
+    whisper: &LocalWhisper,
+    language: &str,
+    samples: &[i16],
+    chunks: Vec<(usize, usize)>,
+    on_chunk: &mut dyn FnMut(usize, usize) -> bool,
+    how: &str,
+) -> Result<LocalTranscript, String> {
+    let duration = samples.len() as f64 / SAMPLE_RATE as f64;
+    let total = samples.len();
     let mut segments: Vec<LocalSegment> = Vec::new();
     let mut elapsed = 0.0;
-    for (start, end) in merged {
+    for (start, end) in chunks {
         if end <= start {
             continue;
+        }
+        if !on_chunk(start, total) {
+            return Err(crate::stt::TRANSCRIBE_CANCELLED.to_string());
         }
         let offset = start as f64 / SAMPLE_RATE as f64;
         let outcome = whisper.transcribe(language, &samples[start..end])?;
@@ -240,9 +285,40 @@ fn transcribe_whisper(
             });
         }
     }
+    on_chunk(total, total);
     let text = segments.iter().map(|segment| segment.text.as_str()).collect::<Vec<_>>().join(" ");
-    tracing::info!("本地 Whisper（VAD 分段）完成：{} 段文本，音频 {duration:.1}s，推理 {elapsed:.2}s", segments.len());
+    tracing::info!("本地 Whisper（{how}）完成：{} 段文本，音频 {duration:.1}s，推理 {elapsed:.2}s", segments.len());
     Ok(LocalTranscript { text, segments, duration, elapsed, device: whisper.device().to_string() })
+}
+
+/// VAD 语音区间加余量后合并：间隔小于 `merge_gap` 的相邻区间合成一块，但合并后不超过 `max_len`
+/// （单个区间本身超长时保持原样，不在语音中间硬切）。
+fn merge_speech_ranges(
+    ranges: Vec<(usize, usize)>,
+    len: usize,
+    pad: usize,
+    merge_gap: usize,
+    max_len: usize,
+) -> Vec<(usize, usize)> {
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        let start = start.saturating_sub(pad);
+        let end = (end + pad).min(len);
+        match merged.last_mut() {
+            Some(last) if start <= last.1 + merge_gap && end.max(last.1) - last.0 <= max_len => {
+                last.1 = last.1.max(end)
+            }
+            // 与上一块重叠（余量相交）但合并会超长：从上一块末尾接着切，避免重复识别同一段
+            Some(last) if start < last.1 => {
+                let from = last.1;
+                if end > from {
+                    merged.push((from, end));
+                }
+            }
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
 }
 
 /// 池中一项：加载时的设置指纹 + 句柄。
@@ -580,6 +656,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let core = CoreState::init(&dir, Platform::Windows).unwrap();
         (dir, core)
+    }
+
+    #[test]
+    fn vad_区间合并_不超过上限且不重叠() {
+        // 间隔小 → 合并
+        assert_eq!(merge_speech_ranges(vec![(100, 200), (250, 300)], 1000, 10, 100, 1000), vec![(90, 310)]);
+        // 合并后超过上限 → 断开；余量相交的部分从上一块末尾接着切，不重复识别
+        let merged = merge_speech_ranges(vec![(100, 200), (205, 300)], 1000, 10, 100, 150);
+        assert_eq!(merged, vec![(90, 210), (210, 310)]);
+        // 单个区间本身超长时保持原样
+        assert_eq!(merge_speech_ranges(vec![(0, 900)], 1000, 0, 100, 150), vec![(0, 900)]);
+        // 间隔大 → 各自成块
+        assert_eq!(merge_speech_ranges(vec![(0, 100), (500, 600)], 1000, 0, 100, 1000), vec![(0, 100), (500, 600)]);
     }
 
     #[test]

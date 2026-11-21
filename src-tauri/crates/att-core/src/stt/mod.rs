@@ -25,6 +25,12 @@ use crate::state::CoreState;
 use local::LocalKind;
 use std::sync::Arc;
 
+/// 分块识别被进度回调叫停（文件转写取消）时的错误文案。
+pub const TRANSCRIBE_CANCELLED: &str = "转写已取消";
+
+/// 分块识别的进度回调：参数是（已处理样本数, 总样本数）；返回 false 表示取消，停在下一块之前。
+pub type ChunkProgress = Box<dyn FnMut(usize, usize) -> bool + Send>;
+
 /// 从用户设置组装豆包配置。密钥优先级：用户设置（密文）> 环境变量 `DOUBAO_ASR_API_KEY`。
 pub fn doubao_config(core: &CoreState) -> doubao::DoubaoConfig {
     let settings = core.settings();
@@ -294,10 +300,23 @@ pub async fn transcribe_local(
     language: String,
     samples: Vec<i16>,
 ) -> Result<(String, local::LocalTranscript), String> {
+    transcribe_local_with_progress(core, kind, language, samples, Box::new(|_, _| true)).await
+}
+
+/// 同 [`transcribe_local`]，按分块回调进度、可在块与块之间取消（文件转写用）。
+///
+/// 取消只在块之间生效：返回的 future 要等 blocking 线程真正退出才结束，调用方据此释放引擎占用。
+pub async fn transcribe_local_with_progress(
+    core: Arc<CoreState>,
+    kind: LocalKind,
+    language: String,
+    samples: Vec<i16>,
+    mut on_chunk: ChunkProgress,
+) -> Result<(String, local::LocalTranscript), String> {
     tokio::task::spawn_blocking(move || {
         let engine = core.local_models.get(&core, kind)?;
         let model_label = engine.model_label();
-        let transcript = engine.transcribe(&language, &samples)?;
+        let transcript = engine.transcribe_with_progress(&language, &samples, &mut *on_chunk)?;
         Ok::<_, String>((model_label, transcript))
     })
     .await

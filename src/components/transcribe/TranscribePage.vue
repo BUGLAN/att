@@ -24,21 +24,34 @@
           </span>
           <div class="ui-row-main">
             <template v-if="isDragging">
-              <div class="ui-row-title">松手，开始转写</div>
-              <div class="ui-row-desc">一次转一个文件</div>
+              <div class="ui-row-title">{{ isBusy ? '松手，排进队列' : '松手，开始转写' }}</div>
+              <div class="ui-row-desc">可以一次拖入多个文件，按顺序逐个转写</div>
             </template>
             <template v-else-if="!filePath">
               <div class="ui-row-title">拖入音视频文件，或点击选择</div>
-              <div class="ui-row-desc">mp4 / mov / mkv / webm / wav / mp3 / m4a / flac / ogg · 结果不进记录集 · 同一文件秒回缓存</div>
+              <div class="ui-row-desc">mp4 / mov / mkv / webm / wav / mp3 / m4a / flac / ogg · 可多选排队 · 结果不进记录集 · 同一文件秒回缓存</div>
             </template>
             <template v-else>
               <div class="ui-row-title">{{ fileName }}</div>
               <div class="ui-row-desc ui-mono transcribe-path-text" :title="filePath">{{ filePath }}</div>
             </template>
           </div>
-          <span v-if="isBusy" class="ui-meta">
-            <span class="ui-dot blue pulse"></span>{{ statusText || '正在转写…' }}
-          </span>
+          <template v-if="isBusy">
+            <span class="ui-meta transcribe-status" aria-live="polite">
+              <span class="ui-dot blue pulse"></span>{{ statusText || '正在转写…' }}
+            </span>
+            <button class="ui-tbtn" type="button" title="选择更多文件排进队列" @click.stop="chooseFile">
+              <span class="ui-tbtn-glyph">{{ G.import }}</span>加入
+            </button>
+            <button
+              class="ui-tbtn is-danger is-line"
+              type="button"
+              :disabled="cancelRequested"
+              @click.stop="cancelCurrent"
+            >
+              <span class="ui-tbtn-glyph">{{ G.cancel }}</span>{{ cancelRequested ? '取消中' : '取消' }}
+            </button>
+          </template>
           <template v-else-if="filePath">
             <button class="ui-tbtn" type="button" @click.stop="chooseFile">换一个</button>
             <button class="ui-tbtn is-gold is-line" type="button" @click.stop="startTranscribe">
@@ -68,7 +81,70 @@
           <span>{{ error }}</span>
         </div>
       </div>
-      <div v-if="isBusy" class="ui-flow" style="--flow: var(--seal-converting-line)"></div>
+      <div
+        v-if="isBusy && progressInfo.percent != null"
+        class="transcribe-progress"
+        role="progressbar"
+        aria-label="转写进度"
+        :aria-valuenow="progressInfo.percent"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <span class="transcribe-progress-bar" :style="{ width: progressInfo.percent + '%' }"></span>
+      </div>
+      <div v-else-if="isBusy" class="ui-flow" style="--flow: var(--seal-converting-line)"></div>
+    </section>
+
+    <!-- 排队：多选 / 一次拖入多个时按顺序逐个转写；只有一个文件时不显示 -->
+    <section v-if="showQueue" class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">
+          队列
+          <span class="ui-title-aside ui-meta">{{ queueMeta }}</span>
+          <button
+            v-if="queueStats.done + queueStats.failed + queueStats.cancelled > 0"
+            class="ui-tbtn transcribe-queue-clear"
+            type="button"
+            @click="clearFinished"
+          >
+            清除已结束
+          </button>
+        </h3>
+        <div
+          v-for="item in queue"
+          :key="item.id"
+          class="ui-row transcribe-queue-item"
+          :class="'is-' + item.status"
+        >
+          <span class="ui-glyph-tile">{{ G.file }}</span>
+          <span class="ui-row-main">
+            <span class="ui-row-title" :title="item.path">{{ item.fileName }}</span>
+            <span v-if="item.status === 'failed' && item.error" class="ui-row-desc transcribe-queue-error">{{ item.error }}</span>
+            <span v-else-if="item.status === 'running'" class="ui-row-desc">{{ statusText || '正在转写…' }}</span>
+          </span>
+          <span class="ui-meta">
+            <span class="ui-dot" :class="queueDot(item.status)"></span>{{ QUEUE_STATUS_LABELS[item.status] }}
+          </span>
+          <button
+            v-if="item.status === 'pending'"
+            class="ui-tbtn is-danger"
+            type="button"
+            :aria-label="'移除 ' + item.fileName"
+            @click="removeFromQueue(item.id)"
+          >
+            <span class="ui-tbtn-glyph">{{ G.delete }}</span>移除
+          </button>
+          <button
+            v-else-if="item.status === 'running'"
+            class="ui-tbtn is-danger"
+            type="button"
+            :disabled="cancelRequested"
+            @click="cancelCurrent"
+          >
+            <span class="ui-tbtn-glyph">{{ G.cancel }}</span>{{ cancelRequested ? '取消中' : '取消' }}
+          </button>
+        </div>
+      </div>
     </section>
 
     <!-- 转写选项：与设置页同款的行 -->
@@ -233,8 +309,10 @@ import { useSettingsStore } from '@/stores/settings'
 import { useFileTranscribe } from '@/composables/useFileTranscribe'
 import { useElectron } from '@/composables/useElectron'
 import {
+  QUEUE_STATUS_LABELS,
   buildProofreadDiff,
   formatDuration,
+  queueSummary,
   transcribeEngineOptions
 } from '@/composables/transcribe/fileTranscribeModel.mjs'
 import {
@@ -263,16 +341,43 @@ const {
   loadLlmModels,
   isBusy,
   statusText,
+  progressInfo,
+  cancelRequested,
+  queue,
   error,
   result,
   history,
   chooseFile,
-  ingestDroppedFile,
-  ingestDroppedPath,
+  ingestDroppedFiles,
+  ingestDroppedPaths,
   startTranscribe,
+  cancelCurrent,
+  removeFromQueue,
+  clearFinished,
   copyResult,
   selectHistoryItem
 } = useFileTranscribe()
+
+// 队列：不止一个文件，或唯一那个已经结束且失败 / 取消（留着看原因）时才显示
+const queueStats = computed(() => queueSummary(queue.value))
+const showQueue = computed(() => queueStats.value.total > 1)
+const queueMeta = computed(() => {
+  const stats = queueStats.value
+  const parts = [`${stats.done}/${stats.total} 完成`]
+  if (stats.failed) parts.push(`${stats.failed} 失败`)
+  if (stats.cancelled) parts.push(`${stats.cancelled} 已取消`)
+  return parts.join(' · ')
+})
+
+function queueDot(status) {
+  return {
+    pending: '',
+    running: 'blue pulse',
+    done: 'ok',
+    failed: 'err',
+    cancelled: 'warn'
+  }[status] || ''
+}
 
 const copied = ref(false)
 const activeResultTab = ref('text')
@@ -386,15 +491,7 @@ async function onDrop(event) {
   if (!files.length) {
     return // 拖进来的不是文件（比如一段文本），安静忽略
   }
-  if (isBusy.value) {
-    appStore.showToast('正在转写中，先等这一条跑完', { tone: 'info' })
-    return
-  }
-  if (files.length > 1) {
-    appStore.showToast('一次转一个：已取第一个文件', { tone: 'info' })
-  }
-
-  await ingestDroppedFile(files[0])
+  await ingestDroppedFiles(files)
 }
 
 // 桌面端：WebView 拿不到拖入文件的路径，改订阅原生拖放事件（页面常驻挂载，只在本页可见时响应）
@@ -412,14 +509,8 @@ async function onNativeFileDrop({ type, paths }) {
   if (type !== 'drop' || !paths.length) {
     return
   }
-  if (isBusy.value) {
-    appStore.showToast('正在转写中，先等这一条跑完', { tone: 'info' })
-    return
-  }
-  if (paths.length > 1) {
-    appStore.showToast('一次转一个：已取第一个文件', { tone: 'info' })
-  }
-  await ingestDroppedPath(paths[0])
+  // 转写中再拖入：排在队列后面
+  await ingestDroppedPaths(paths)
 }
 
 onMounted(async () => {
@@ -483,6 +574,61 @@ async function handleCopy() {
 
 .transcribe-path {
   margin-top: var(--s-2);
+}
+
+.transcribe-status {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 确定进度：底边细条（替代流动线），宽度随识别 / 校对进度推进 */
+.transcribe-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  overflow: hidden;
+  background: var(--accent-faint);
+}
+
+.transcribe-progress-bar {
+  display: block;
+  height: 100%;
+  background: var(--seal-converting-line);
+  transition: width 0.6s var(--ease);
+}
+
+.transcribe-queue-clear {
+  height: 24px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.transcribe-queue-item {
+  margin-top: var(--s-2);
+}
+
+.transcribe-queue-item .ui-row-main {
+  display: grid;
+  gap: 2px;
+}
+
+.transcribe-queue-item.is-done .ui-row-title,
+.transcribe-queue-item.is-cancelled .ui-row-title {
+  color: var(--text-3);
+}
+
+.transcribe-queue-error {
+  color: var(--err);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transcribe-progress-bar {
+    transition: none;
+  }
 }
 
 .transcribe-tabs {

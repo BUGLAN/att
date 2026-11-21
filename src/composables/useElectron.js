@@ -10,7 +10,7 @@ import { api as httpApi, getBackendPort } from '@/api/client'
  * - `isElectron` 名称保留（语义 = 「桌面环境」），新增 `isDesktop` 别名
  * - 事件通道名沿用旧名（paste-text / clipboard:changed …），Rust 侧事件桥按同名发射
  * - 录音走 `recording.*`（Rust 录音 Actor），全局快捷键在 Rust 侧直达 Actor，悬浮窗也由 Actor 驱动
- * - 待接入项：openMediaFile / filePathForFile 返回降级值
+ * - 待接入项：openMediaFiles / filePathForFile 返回降级值
  */
 
 const isElectron = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
@@ -328,9 +328,10 @@ export function useElectron() {
   }
 
   // 「转文字」页：系统文件选择对话框（Rust 侧 dialog 插件）；取消返回 null
-  async function openMediaFile() {
-    if (!isDesktop) return null
-    return invoke('open_media_file')
+  // 「转文字」页：系统文件对话框（可多选）；取消或浏览器环境返回 []
+  async function openMediaFiles() {
+    if (!isDesktop) return []
+    return (await invoke('open_media_files')) || []
   }
 
   // 设置 → 诊断：备份保存 / 选择恢复文件（Rust 侧系统对话框）；取消返回 null
@@ -408,7 +409,7 @@ export function useElectron() {
     syncDesktopSettings,
     getDesktopSettings,
     saveDesktopSettings,
-    openMediaFile,
+    openMediaFiles,
     chooseBackupExportPath,
     chooseBackupImportPath,
     restartApp,

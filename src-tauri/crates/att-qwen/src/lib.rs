@@ -24,6 +24,8 @@ pub use vad::SileroVad;
 
 /// 16kHz：录音链路与模型输入采样率。
 pub const SAMPLE_RATE: usize = 16_000;
+/// 分块转写被进度回调叫停（文件转写取消）时的错误文案。
+pub const CANCELLED: &str = "转写已取消";
 /// 模型必需文件（sherpa-onnx Qwen3-ASR 导出目录的固定布局）。
 pub const MODEL_FILES: [&str; 3] = ["conv_frontend.onnx", "encoder.int8.onnx", "decoder.int8.onnx"];
 /// 错误缓冲区长度（与 shim.c 的 ATT_ERR_LEN 一致）。
@@ -411,6 +413,17 @@ impl LocalQwen {
     ///
     /// `language` 只用于日志（sherpa 的 Qwen3-ASR 不支持语言指定，模型自行判定）。
     pub fn transcribe(&self, language: &str, samples: &[i16]) -> Result<Transcript, String> {
+        self.transcribe_with_progress(language, samples, &mut |_, _| true)
+    }
+
+    /// 同 [`Self::transcribe`]，每块推理前回调（已处理样本数, 总样本数），全部完成后再回调一次（总数, 总数）；
+    /// 回调返回 false 时不再推理后面的块，返回 [`CANCELLED`]。
+    pub fn transcribe_with_progress(
+        &self,
+        language: &str,
+        samples: &[i16],
+        on_chunk: &mut dyn FnMut(usize, usize) -> bool,
+    ) -> Result<Transcript, String> {
         let _guard = self.gate.lock().unwrap_or_else(|error| error.into_inner());
         let started = Instant::now();
         let duration = samples.len() as f64 / SAMPLE_RATE as f64;
@@ -427,6 +440,9 @@ impl LocalQwen {
 
         let mut segments = Vec::new();
         for (start, end) in chunks {
+            if !on_chunk(start, samples.len()) {
+                return Err(CANCELLED.to_string());
+            }
             let offset = start as f64 / SAMPLE_RATE as f64;
             let text = self.transcribe_chunk(&samples[start..end])?;
             if text.is_empty() {
@@ -434,6 +450,7 @@ impl LocalQwen {
             }
             segments.push(Segment { start: offset, end: end as f64 / SAMPLE_RATE as f64, text });
         }
+        on_chunk(samples.len(), samples.len());
         let text = segments.iter().map(|segment| segment.text.as_str()).collect::<Vec<_>>().join(" ");
         let elapsed = started.elapsed().as_secs_f64();
         tracing::info!("本地 Qwen3-ASR 转写完成：{} 段，耗时 {elapsed:.2}s", segments.len());

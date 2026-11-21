@@ -1,10 +1,11 @@
 /**
  * 「转文字」页的纯逻辑模型（不依赖 Vue / 浏览器全局，可在 Node 里直接测试）。
  *
- * 覆盖三块：
+ * 覆盖四块：
  * 1. 请求构造与响应归一 —— 与后端 POST /api/transcribe 契约一一对应；
- * 2. 202 异步任务的轮询策略 —— 1s 起步、逐次退避到 5s、总等待 15 分钟封顶；
- * 3. 展示格式化 —— 时长、文件名、扩展名预检。
+ * 2. 202 异步任务的轮询策略 —— 1s 起步、逐次退避到 5s；进度停滞 15 分钟才放弃等待；
+ * 3. 识别 / 校对进度的展示与多文件排队；
+ * 4. 展示格式化 —— 时长、文件名、扩展名预检。
  */
 
 // 与后端 file_transcription_service 的可识别扩展名保持一致（仅用于前端预检提示，后端仍是权威）
@@ -101,7 +102,8 @@ export function buildTranscribeRequest({
   proofread = false,
   proofreadModelId = null,
   proofreadBatchSegments = 40,
-  proofreadContextChars = 200
+  proofreadContextChars = 200,
+  asyncJob = false
 }) {
   const trimmed = String(path ?? '').trim()
   if (!trimmed) {
@@ -114,6 +116,10 @@ export function buildTranscribeRequest({
     want_segments: Boolean(wantSegments),
     engine: defaultTranscribeEngine(engine),
     proofread: Boolean(proofread)
+  }
+  // 一律走后台任务：拿得到识别进度、可以取消（缓存命中仍直接返回结果）
+  if (asyncJob) {
+    request.async_job = true
   }
 
   if (request.proofread) {
@@ -194,6 +200,147 @@ export function nextJobPollDelay(attempt, { initialDelayMs = JOB_POLL_INITIAL_DE
 export function isJobPollExpired(elapsedMs, { maxWaitMs = JOB_POLL_MAX_WAIT_MS } = {}) {
   const safeElapsed = Number.isFinite(elapsedMs) && elapsedMs > 0 ? elapsedMs : 0
   return safeElapsed >= maxWaitMs
+}
+
+/** 任务已经结束（成功 / 失败 / 已取消）。 */
+export function isJobFinished(job) {
+  return ['done', 'failed', 'cancelled'].includes(job?.status)
+}
+
+/**
+ * 任务进度的签名：阶段或进度一变签名就变（用来判断「还在推进」，停滞才算超时）。
+ */
+export function jobProgressSignature(job) {
+  const progress = job?.progress || {}
+  return [
+    job?.stage || '',
+    progress.done_seconds ?? '',
+    progress.window_done ?? ''
+  ].join('|')
+}
+
+/** 秒 → "m:ss" 或 "h:mm:ss"（进度文案用）。 */
+export function formatClock(seconds) {
+  const safe = Number.isFinite(Number(seconds)) && Number(seconds) > 0 ? Math.floor(Number(seconds)) : 0
+  const hours = Math.floor(safe / 3600)
+  const minutes = Math.floor((safe % 3600) / 60)
+  const rest = String(safe % 60).padStart(2, '0')
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${rest}` : `${minutes}:${rest}`
+}
+
+/**
+ * 后台任务进度 → 展示：{ percent: 0~100 | null, label }。
+ * - 识别阶段 `{stage:"asr", done_seconds, total_seconds}` → 「识别中 · 3:20 / 12:00」；
+ * - 校对阶段 `{window_done, window_total}` → 「LLM 校对中 · 窗口 2/5」；
+ * - 拿不到进度时 percent 为 null（界面退回不定进度的流动线）。
+ * `cancelRequested` 为真时文案改成「正在取消…」，进度保留。
+ */
+export function describeJobProgress(job, { cancelRequested = false } = {}) {
+  const stage = String(job?.stage || '')
+  const progress = job?.progress || null
+  let percent = null
+  let label = ''
+
+  if (stage === 'proofreading') {
+    const total = Number(progress?.window_total)
+    const done = Number(progress?.window_done)
+    if (Number.isFinite(total) && total > 0 && Number.isFinite(done)) {
+      percent = Math.min(100, Math.max(0, Math.floor((done / total) * 100)))
+      label = `LLM 校对中 · 窗口 ${done}/${total}`
+    } else {
+      label = 'LLM 校对中…'
+    }
+  } else if (stage === 'asr' || stage === '') {
+    const total = Number(progress?.total_seconds)
+    const done = Number(progress?.done_seconds)
+    if (Number.isFinite(total) && total > 0 && Number.isFinite(done)) {
+      percent = Math.min(100, Math.max(0, Math.floor((done / total) * 100)))
+      label = percent >= 100
+        ? '识别中 · 等待识别结果…'
+        : `识别中 · ${formatClock(done)} / ${formatClock(total)}`
+    } else {
+      label = '识别中…'
+    }
+  }
+
+  if (cancelRequested || job?.cancel_requested) {
+    label = '正在取消…'
+  }
+  return { percent, label }
+}
+
+// ---------- 多文件排队 ----------
+
+/** 队列项状态：排队中 / 转写中 / 完成 / 失败 / 已取消。 */
+export const QUEUE_STATUS_LABELS = {
+  pending: '排队中',
+  running: '转写中',
+  done: '完成',
+  failed: '失败',
+  cancelled: '已取消'
+}
+
+let queueSeq = 0
+
+/**
+ * 把一批路径加进队列（按给出的顺序排在末尾）：不支持的类型、已在队列里还没转完的同一路径都跳过。
+ * 返回 { queue, added, unsupported, duplicate }（不修改入参）。
+ */
+export function enqueuePaths(queue, paths, { makeId = () => `q${++queueSeq}` } = {}) {
+  const next = Array.isArray(queue) ? [...queue] : []
+  const added = []
+  const unsupported = []
+  const duplicate = []
+  for (const raw of Array.isArray(paths) ? paths : [paths]) {
+    const path = String(raw ?? '').trim()
+    if (!path) {
+      continue
+    }
+    if (!isSupportedMediaPath(path)) {
+      unsupported.push(path)
+      continue
+    }
+    if (next.some((item) => item.path === path && (item.status === 'pending' || item.status === 'running'))) {
+      duplicate.push(path)
+      continue
+    }
+    const item = { id: makeId(), path, fileName: fileNameOf(path), status: 'pending', error: '' }
+    next.push(item)
+    added.push(item)
+  }
+  return { queue: next, added, unsupported, duplicate }
+}
+
+/** 下一个要转写的项（最靠前的排队中项）；没有时返回 null。 */
+export function nextQueuedItem(queue) {
+  return (queue || []).find((item) => item.status === 'pending') || null
+}
+
+/** 改一项的字段（返回新数组）。 */
+export function updateQueueItem(queue, id, patch) {
+  return (queue || []).map((item) => (item.id === id ? { ...item, ...patch } : item))
+}
+
+/** 移除一项：只有还没开始的能移除（转写中的要先取消）。 */
+export function removeQueueItem(queue, id) {
+  return (queue || []).filter((item) => item.id !== id || item.status !== 'pending')
+}
+
+/** 清掉已经结束的项（完成 / 失败 / 已取消），保留排队中与转写中的。 */
+export function clearFinishedQueueItems(queue) {
+  return (queue || []).filter((item) => item.status === 'pending' || item.status === 'running')
+}
+
+/** 队列计数：{ total, pending, running, done, failed, cancelled }。 */
+export function queueSummary(queue) {
+  const summary = { total: 0, pending: 0, running: 0, done: 0, failed: 0, cancelled: 0 }
+  for (const item of queue || []) {
+    summary.total += 1
+    if (item.status in summary) {
+      summary[item.status] += 1
+    }
+  }
+  return summary
 }
 
 /**

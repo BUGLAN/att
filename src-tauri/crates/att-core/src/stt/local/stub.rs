@@ -92,6 +92,15 @@ impl LocalEngine {
     pub fn transcribe(&self, _language: &str, _samples: &[i16]) -> Result<LocalTranscript, String> {
         Err(LOCAL_ENGINES_DISABLED.into())
     }
+
+    pub fn transcribe_with_progress(
+        &self,
+        _language: &str,
+        _samples: &[i16],
+        _on_chunk: &mut dyn FnMut(usize, usize) -> bool,
+    ) -> Result<LocalTranscript, String> {
+        Err(LOCAL_ENGINES_DISABLED.into())
+    }
 }
 
 /// 本地引擎就绪性（关闭 feature 时永远不可用）。

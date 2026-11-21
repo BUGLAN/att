@@ -356,9 +356,9 @@ pub fn get_floating_state() -> Value {
 
 // ---------------- 转文字页 ----------------
 
-/// 系统「选择文件」对话框：只列音视频容器；用户取消返回 None。
+/// 系统「选择文件」对话框（可多选，按顺序排队转写）：只列音视频容器；用户取消返回空列表。
 #[tauri::command]
-pub async fn open_media_file(app: AppHandle) -> Option<String> {
+pub async fn open_media_files(app: AppHandle) -> Vec<String> {
     use tauri_plugin_dialog::DialogExt;
     let extensions: Vec<&str> = att_core::transcribe::media::VIDEO_EXTENSIONS
         .iter()
@@ -370,12 +370,17 @@ pub async fn open_media_file(app: AppHandle) -> Option<String> {
             .file()
             .set_title("选择要转写的音视频文件")
             .add_filter("音视频文件", &extensions)
-            .blocking_pick_file()
+            .blocking_pick_files()
     })
     .await
     .ok()
-    .flatten()?;
-    picked.into_path().ok().map(|path| path.to_string_lossy().into_owned())
+    .flatten()
+    .unwrap_or_default();
+    picked
+        .into_iter()
+        .filter_map(|file| file.into_path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// 设置 → 诊断「导出备份」：系统保存对话框，默认文件名带日期；取消返回 None。
