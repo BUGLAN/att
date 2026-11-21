@@ -359,6 +359,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "uuid",
+ "zip 2.6.1",
 ]
 
 [[package]]

@@ -325,6 +325,7 @@ pub struct RecordingController {
     tx: mpsc::UnboundedSender<Cmd>,
     snapshot: Arc<Mutex<Value>>,
     cancel_binding: CancelBinding,
+    core: Arc<CoreState>,
 }
 
 impl RecordingController {
@@ -332,6 +333,7 @@ impl RecordingController {
         let (tx, rx) = mpsc::unbounded_channel();
         let snapshot = Arc::new(Mutex::new(json!({ "phase": "idle" })));
         let cancel_binding = CancelBinding::default();
+        let controller_core = core.clone();
         let actor = Actor {
             app,
             core,
@@ -346,10 +348,13 @@ impl RecordingController {
             snapshot: snapshot.clone(),
         };
         tauri::async_runtime::spawn(actor.run(rx));
-        Self { tx, snapshot, cancel_binding }
+        Self { tx, snapshot, cancel_binding, core: controller_core }
     }
 
     pub fn start(&self) {
+        if self.core.backup_maintenance_active() {
+            return;
+        }
         let _ = self.tx.send(Cmd::Start);
     }
 
@@ -362,6 +367,9 @@ impl RecordingController {
     }
 
     pub fn hotkey(&self, action: HotkeyAction, phase: KeyPhase) {
+        if self.core.backup_maintenance_active() && action != HotkeyAction::CancelRecording {
+            return;
+        }
         let _ = self.tx.send(Cmd::Hotkey(action, phase));
     }
 
@@ -396,10 +404,18 @@ impl Actor {
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Cmd>) {
         while let Some(cmd) = rx.recv().await {
             match cmd {
-                Cmd::Start => self.start(false).await,
+                Cmd::Start => {
+                    if !self.core.backup_maintenance_active() {
+                        self.start(false).await;
+                    }
+                }
                 Cmd::Stop => self.stop("正在完成转写"),
                 Cmd::Cancel => self.cancel(),
-                Cmd::Hotkey(action, key_phase) => self.on_hotkey(action, key_phase).await,
+                Cmd::Hotkey(action, key_phase) => {
+                    if !self.core.backup_maintenance_active() || action == HotkeyAction::CancelRecording {
+                        self.on_hotkey(action, key_phase).await;
+                    }
+                }
                 Cmd::Connected(id) => {
                     if self.is_current(id) && self.phase == Phase::Connecting {
                         self.set_phase(Phase::Recording);

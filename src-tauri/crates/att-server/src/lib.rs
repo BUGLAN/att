@@ -22,6 +22,7 @@
 //! 事件改由 Tauri events 下发（旧事件名重放）。
 
 mod asr;
+mod backup;
 mod clipboard;
 mod llm;
 mod storage;
@@ -31,7 +32,7 @@ mod update;
 use att_core::records::export::{self as record_export, ExportFormat};
 use att_core::records::{RecordError, RecordFilter, RecordUpdate};
 use att_core::state::CoreState;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
@@ -66,6 +67,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
     // 令牌校验在 CORS 内侧：预检由 CORS 层直接应答，不会要求 X-ATT-Token。
     // 除 /api/health 外所有端点都必须带本次启动的令牌；health 仍校验回环 Host。
     let guard_token = state.token.clone();
+    let maintenance_core = state.core.clone();
     Router::new()
         .route("/", get(root))
         .route("/api/health", get(health))
@@ -102,6 +104,22 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .merge(update::routes())
         // 存储管理（设置页「诊断」）
         .merge(storage::routes())
+        // 数据备份 / 恢复（设置页「诊断」）
+        .merge(backup::routes())
+        // 备份维护态下拒绝所有数据写请求；恢复成功后一直保持到进程重启。
+        // 放在鉴权层内侧：未带令牌的请求仍先得到 401，不泄露更多状态。
+        .layer(middleware::from_fn(move |req: Request, next: middleware::Next| {
+            let core = maintenance_core.clone();
+            async move {
+                let path = req.uri().path();
+                let backup_request = path == "/api/backup/export" || path == "/api/backup/import";
+                let read_only = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
+                if core.backup_maintenance_active() && !read_only && !backup_request {
+                    return err(StatusCode::CONFLICT, "数据备份或恢复进行中，已暂停写入".into()).into_response();
+                }
+                next.run(req).await
+            }
+        }))
         .layer(middleware::from_fn(move |req, next| {
             let token = guard_token.clone();
             async move { data_plane_guard(token, req, next).await }
@@ -2119,5 +2137,52 @@ mod tests {
         }
         // 旧 Python 时代的 qwen_streaming_* 双命名前端已不再读取
         assert!(body.as_object().unwrap().keys().all(|key| !key.starts_with("qwen_streaming")));
+    }
+
+    #[tokio::test]
+    async fn 备份导出导入_返回快照与重启提示_拒绝相对路径() {
+        let state = test_state("backup").await;
+        let zip = state.core.data_dir.with_extension("zip");
+        let destination = zip.display().to_string();
+
+        let (status, error) =
+            request_with_body(&state, "POST", "/api/backup/export", json!({"path": "relative.zip"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(error["detail"].as_str().unwrap().contains("绝对路径"));
+
+        let (status, error) =
+            request_with_body(&state, "POST", "/api/backup/export", json!({"path": destination})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(error["detail"].as_str().unwrap().contains("未经系统对话框授权"));
+
+        assert!(state.core.backup_paths.authorize_export(&zip));
+        let (status, body) = request_with_body(
+            &state,
+            "POST",
+            "/api/backup/export",
+            json!({"path": destination, "include_key": false, "include_audio": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(zip.is_file());
+        assert_eq!(body["manifest"]["format"], json!("att-backup"));
+        assert_eq!(body["manifest"]["sections"]["records"]["files"], json!(1));
+
+        assert!(state.core.backup_paths.authorize_import(&zip));
+        let (status, body) =
+            request_with_body(&state, "POST", "/api/backup/import", json!({"path": destination})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["restart_required"], json!(true));
+        assert_eq!(body["credentials_reset"], json!(0));
+        assert!(std::path::PathBuf::from(body["pre_import_backup"].as_str().unwrap()).is_dir());
+        assert!(state.core.data_dir.join("records/rec-x.json").is_file());
+        assert!(state.core.backup_maintenance_active(), "恢复成功后必须保持维护态直到重启");
+        let (status, error) =
+            request_with_body(&state, "PUT", "/api/settings", json!({"asr_provider": "qwen_asr"})).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(error["detail"].as_str().unwrap().contains("暂停写入"));
+
+        let _ = std::fs::remove_dir_all(&state.core.data_dir);
+        let _ = std::fs::remove_file(&zip);
     }
 }

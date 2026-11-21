@@ -100,6 +100,10 @@ pub fn start(core: Arc<CoreState>) {
         tracing::info!("剪贴板监控已启动（{}ms 轮询）", POLL_INTERVAL.as_millis());
         loop {
             std::thread::sleep(POLL_INTERVAL);
+            if core.backup_maintenance_active() {
+                last_change = crate::desktop::clipboard_change_count();
+                continue;
+            }
             // 先看换代计数：没变就不读内容。剪贴板里放着大图时，每次读取都要整图解码 + 哈希，
             // 常驻轮询会持续占 CPU。拿不到计数的平台照旧每次读取。
             let change = crate::desktop::clipboard_change_count();

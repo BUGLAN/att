@@ -10,6 +10,7 @@ use crate::storage::crypto::Crypto;
 use crate::Platform;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +43,10 @@ pub struct CoreState {
     pub transcriber: crate::transcribe::FileTranscriber,
     /// 本机用户确认过、允许文件转写的精确路径白名单（只在内存里）
     pub transcribe_allowed: Mutex<HashSet<PathBuf>>,
+    /// 用户通过系统对话框确认过、供下一次导出 / 恢复使用的一次性路径白名单
+    pub backup_paths: crate::backup::BackupPathGrants,
+    /// 备份 / 恢复期间暂停录音与剪贴板等后台写入；恢复成功后保持到进程重启。
+    backup_maintenance: AtomicBool,
     /// 本地引擎常驻池（faster-whisper / Qwen3-ASR）
     pub local_models: crate::stt::local::LocalModels,
     /// 在线引擎最近一次凭据验证结果（按凭据指纹失效，只在内存里）
@@ -112,6 +117,8 @@ impl CoreState {
             storage_usage: Default::default(),
             transcriber: Default::default(),
             transcribe_allowed: Mutex::new(HashSet::new()),
+            backup_paths: Default::default(),
+            backup_maintenance: AtomicBool::new(false),
             local_models: Default::default(),
             credential_checks: Default::default(),
             prompts_dir: crate::prompts::resolve_dir(data_dir, None),
@@ -119,6 +126,20 @@ impl CoreState {
             updater: Arc::new(crate::update::Updater::new(data_dir)),
             events: EventBus::default(),
         })
+    }
+
+    /// 开始备份维护窗口。一次只允许一个导出 / 导入占用。
+    pub fn begin_backup_maintenance(&self) -> bool {
+        self.backup_maintenance.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    /// 导出失败或导入失败后恢复后台写入；导入成功则保持锁定直到重启。
+    pub fn end_backup_maintenance(&self) {
+        self.backup_maintenance.store(false, Ordering::Release);
+    }
+
+    pub fn backup_maintenance_active(&self) -> bool {
+        self.backup_maintenance.load(Ordering::Acquire)
     }
 
     /// 读取设置快照（clone；写少读多场景可接受）。

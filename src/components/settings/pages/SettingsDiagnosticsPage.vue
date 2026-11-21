@@ -105,8 +105,67 @@
             <span class="setting-desc mono">{{ appInfo.prompts_dir }}</span>
           </div>
         </div>
+        <div v-if="isDesktop" class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">导出备份</span>
+            <span class="setting-desc">把设置、记录、录音、剪贴板、提示词预设和 LLM 配置打包成一个 zip；日志与临时文件不会进入备份。</span>
+          </div>
+          <div class="setting-actions-inline diag-actions">
+            <BaseButton
+              ref="exportButton"
+              variant="outline"
+              size="sm"
+              :loading="exporting"
+              :disabled="exporting || importing || restartRequired"
+              @click="exportDialogOpen = true"
+            >
+              导出备份
+            </BaseButton>
+          </div>
+        </div>
+        <div v-if="isDesktop" class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">从备份恢复</span>
+            <span class="setting-desc">会用备份覆盖本机数据；导入前自动把当前数据复制到 data/.pre-import-*，失败时回滚。</span>
+          </div>
+          <div class="setting-actions-inline diag-actions">
+            <BaseButton
+              ref="importButton"
+              variant="outline"
+              size="sm"
+              :loading="importing"
+              :disabled="exporting || importing || restartRequired"
+              @click="importConfirmOpen = true"
+            >
+              从备份恢复
+            </BaseButton>
+          </div>
+        </div>
+        <div v-if="restartRequired" class="settings-note warn diag-restart" role="status">
+          <div class="diag-restart__body">
+            <strong class="diag-restart__title">恢复完成，请重启应用后生效</strong>
+            <span>{{ importSummary }}</span>
+            <span v-if="importCredentialsReset" class="diag-restart__detail">
+              备份不含加密密钥，{{ importCredentialsReset }} 项识别 / LLM 凭据已按「未设置」处理，重启后请重新填写。
+            </span>
+            <span v-if="importBackupPath" class="diag-restart__detail mono">导入前数据：{{ importBackupPath }}</span>
+          </div>
+        </div>
       </div>
     </section>
+
+    <BackupExportDialog v-model="exportDialogOpen" @confirm="startExport" />
+
+    <ConfirmDialog
+      v-model="importConfirmOpen"
+      title="从备份恢复"
+      description="备份中的设置、记录、录音、剪贴板、提示词预设和 LLM 配置将覆盖本机数据。导入前会自动保存一份当前数据快照，导入失败时回滚。完成后需要重启应用。"
+      confirm-text="选择备份并导入"
+      cancel-text="取消"
+      tone="default"
+      :loading="importing"
+      @confirm="startImport"
+    />
 
     <ConfirmDialog
       v-model="isOrphanConfirmVisible"
@@ -124,11 +183,66 @@
       @update:model-value="(open) => { if (!open) closeRetentionConfirm() }"
       @confirm="applyPendingRetention"
     />
+
+    <Teleport to="body">
+      <div
+        v-if="exporting || importing"
+        class="backup-busy-gate"
+        @keydown.tab.prevent="focusBusyPanel"
+        @keydown.esc.prevent
+      >
+        <div
+          ref="busyPanel"
+          class="backup-busy-gate__panel"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="backupBusyTitle"
+          aria-describedby="backupBusyDesc"
+          tabindex="-1"
+        >
+          <span class="backup-busy-gate__spinner" aria-hidden="true"></span>
+          <div>
+            <strong id="backupBusyTitle">{{ importing ? '正在恢复数据' : '正在导出备份' }}</strong>
+            <p id="backupBusyDesc">
+              {{ importing ? '处理期间会暂停录音与剪贴板写入，请勿关闭应用。' : '正在打包本地数据，请稍候。' }}
+            </p>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="restartRequired"
+        class="backup-restart-gate"
+        @keydown.tab.prevent="focusRestartButton"
+        @keydown.esc.prevent
+      >
+        <div
+          ref="restartPanel"
+          class="backup-restart-gate__panel"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="backupRestartTitle"
+          aria-describedby="backupRestartDesc"
+        >
+          <h3 id="backupRestartTitle" class="backup-restart-gate__title">恢复完成，需要重启应用</h3>
+          <div id="backupRestartDesc" class="backup-restart-gate__body">
+            <p>{{ importSummary }}旧进程仍持有恢复前的设置与目录索引，继续使用可能把旧数据写回备份。</p>
+            <p v-if="importCredentialsReset">
+              备份不含加密密钥，{{ importCredentialsReset }} 项识别 / LLM 凭据已按「未设置」处理，重启后请重新填写。
+            </p>
+            <p v-if="importBackupPath" class="mono">导入前数据已保存在：{{ importBackupPath }}</p>
+          </div>
+          <BaseButton variant="solid" :loading="restarting" @click="restartNow">立即重启</BaseButton>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, ref } from 'vue'
 import { providerLabel } from '../asrEngineStatus.mjs'
 import { SETTINGS_CTX } from '../settingsContext.js'
 import {
@@ -144,6 +258,8 @@ import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import BaseSelect from '@/components/common/BaseSelect.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import BackupExportDialog from '../BackupExportDialog.vue'
+import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useElectron } from '@/composables/useElectron'
@@ -151,9 +267,34 @@ import { useElectron } from '@/composables/useElectron'
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const { form } = inject(SETTINGS_CTX)
-const { api, getAppInfo, revealAppPath } = useElectron()
+const {
+  isDesktop,
+  getAppInfo,
+  revealAppPath,
+  chooseBackupExportPath,
+  chooseBackupImportPath,
+  recording,
+  restartApp
+} = useElectron()
 const appInfo = ref(null)
 const runtime = computed(() => settingsStore.runtimeStatus || {})
+const exportDialogOpen = ref(false)
+const importConfirmOpen = ref(false)
+const busyPanel = ref(null)
+const restartPanel = ref(null)
+const exportButton = ref(null)
+const importButton = ref(null)
+const exporting = ref(false)
+const importing = ref(false)
+const restarting = ref(false)
+const restartRequired = ref(false)
+const importBackupPath = ref('')
+const importCredentialsReset = ref(0)
+const importRecordCount = ref(0)
+const importSummary = computed(() => {
+  const records = importRecordCount.value
+  return records > 0 ? `已恢复 ${records} 条记录。` : '已恢复备份内容。'
+})
 
 // ---- 存储 ----
 const storage = ref(null)
@@ -235,6 +376,95 @@ async function reveal(kind) {
   }
 }
 
+function formatSize(bytes) {
+  const value = Number(bytes) || 0
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+async function startExport(options) {
+  exporting.value = true
+  try {
+    await nextTick()
+    focusBusyPanel()
+    await recording.cancel()
+    const path = await chooseBackupExportPath()
+    if (!path) return
+    await recording.cancel()
+    const result = await api.exportBackup({
+      path,
+      include_key: options.include_key,
+      include_audio: options.include_audio
+    })
+    appStore.showToast(`备份已导出（${formatSize(result.bytes)}）：${result.path}`, { tone: 'success', duration: 8000 })
+  } catch (error) {
+    appStore.showToast(`导出备份失败：${error?.message || error}`, { tone: 'error', duration: 10000 })
+  } finally {
+    exporting.value = false
+    await restoreActionFocus(exportButton)
+  }
+}
+
+async function startImport() {
+  importing.value = true
+  try {
+    await nextTick()
+    focusBusyPanel()
+    await recording.cancel()
+    const path = await chooseBackupImportPath()
+    if (!path) return
+    await recording.cancel()
+    const result = await api.importBackup({ path })
+    importBackupPath.value = result.pre_import_backup || ''
+    importCredentialsReset.value = Number(result.credentials_reset) || 0
+    importRecordCount.value = Number(result.manifest?.sections?.records?.files) || 0
+    restartRequired.value = result.restart_required !== false
+    if (restartRequired.value) {
+      await nextTick()
+      focusRestartButton()
+      await restartNow()
+    }
+    appStore.showToast(
+      restartRequired.value ? '数据已恢复，请重启应用后生效' : '数据已恢复',
+      { tone: 'success', duration: 10000 }
+    )
+  } catch (error) {
+    appStore.showToast(`恢复备份失败：${error?.message || error}`, { tone: 'error', duration: 10000 })
+  } finally {
+    importing.value = false
+    if (!restartRequired.value) {
+      await restoreActionFocus(importButton)
+    }
+  }
+}
+
+function focusBusyPanel() {
+  busyPanel.value?.focus()
+}
+
+async function restoreActionFocus(target) {
+  await nextTick()
+  const element = target.value?.$el || target.value
+  element?.focus?.()
+}
+
+function focusRestartButton() {
+  restartPanel.value?.querySelector('button')?.focus()
+}
+
+async function restartNow() {
+  if (restarting.value) return
+  restarting.value = true
+  try {
+    await restartApp()
+  } catch (error) {
+    restarting.value = false
+    appStore.showToast(`重启应用失败：${error?.message || error}`, { tone: 'error', duration: 10000 })
+  }
+}
+
 onMounted(async () => {
   settingsStore.loadRuntimeStatus(false).catch(() => {})
   void loadStorage()
@@ -265,5 +495,127 @@ onMounted(async () => {
   min-width: 72px;
   text-align: right;
   color: var(--text-1);
+}
+
+.diag-restart {
+  align-items: flex-start;
+}
+
+.diag-restart__body {
+  display: grid;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.diag-restart__title {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.diag-restart__detail {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+
+.backup-restart-gate {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-modal) + 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s-6);
+  background: var(--scrim-soft);
+  backdrop-filter: blur(8px);
+}
+
+.backup-busy-gate {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s-6);
+  background: var(--scrim-soft);
+  backdrop-filter: blur(6px);
+}
+
+.backup-busy-gate__panel {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  width: min(430px, 100%);
+  padding: var(--s-5);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  box-shadow: var(--e-3), var(--edge-hi);
+}
+
+.backup-busy-gate__panel strong {
+  color: var(--text-1);
+  font-size: var(--fs-sm);
+}
+
+.backup-busy-gate__panel p {
+  margin: var(--s-1) 0 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.backup-busy-gate__spinner {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: var(--r-full);
+  animation: backup-spin 0.8s linear infinite;
+}
+
+.backup-restart-gate__panel {
+  width: min(520px, 100%);
+  max-height: calc(100dvh - 2 * var(--s-6));
+  overflow-y: auto;
+  padding: var(--s-6);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  box-shadow: var(--e-3), var(--edge-hi);
+}
+
+.backup-restart-gate__title {
+  margin: 0 0 var(--s-3);
+  color: var(--text-1);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.backup-restart-gate__body {
+  display: grid;
+  gap: var(--s-3);
+  margin-bottom: var(--s-5);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+}
+
+.backup-restart-gate__body p {
+  margin: 0;
+}
+
+@keyframes backup-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backup-busy-gate__spinner {
+    animation-duration: 1.6s;
+  }
 }
 </style>

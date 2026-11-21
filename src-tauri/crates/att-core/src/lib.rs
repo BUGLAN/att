@@ -16,6 +16,7 @@
 //! - [`update`]：检查更新（发布渠道最新版本比较、安装包下载）
 
 pub mod audio;
+pub mod backup;
 pub mod clipboard;
 pub mod events;
 pub mod llm;

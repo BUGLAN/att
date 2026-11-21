@@ -378,6 +378,77 @@ pub async fn open_media_file(app: AppHandle) -> Option<String> {
     picked.into_path().ok().map(|path| path.to_string_lossy().into_owned())
 }
 
+/// 设置 → 诊断「导出备份」：系统保存对话框，默认文件名带日期；取消返回 None。
+#[tauri::command]
+pub async fn choose_backup_export_path(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let suggested = format!("att-backup-{}.zip", chrono::Local::now().format("%Y-%m-%d"));
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("保存数据备份")
+            .set_file_name(suggested)
+            .add_filter("ATT 备份", &["zip"])
+            .blocking_save_file()
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(path) = picked.and_then(|picked| picked.into_path().ok()) else {
+        return Ok(None);
+    };
+    let selected = path;
+    let path = ensure_zip_extension(selected.clone());
+    if path != selected && path.exists() {
+        return Err(format!("已存在同名备份 {}，请重新选择并在文件名中保留 .zip 后缀", path.display()));
+    }
+    if !state.core.backup_paths.authorize_export(&path) {
+        return Err("备份保存路径无效，请重新选择".into());
+    }
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// 设置 → 诊断「从备份恢复」：系统文件选择对话框，只列 zip；取消返回 None。
+#[tauri::command]
+pub async fn choose_backup_import_path(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog().file().set_title("选择要恢复的 ATT 备份").add_filter("ATT 备份", &["zip"]).blocking_pick_file()
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(path) = picked.and_then(|picked| picked.into_path().ok()) else {
+        return Ok(None);
+    };
+    if !state.core.backup_paths.authorize_import(&path) {
+        return Err("备份文件路径无效，请重新选择".into());
+    }
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+fn ensure_zip_extension(mut path: std::path::PathBuf) -> std::path::PathBuf {
+    let has_zip = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"));
+    if !has_zip {
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(".zip");
+        path.set_file_name(name);
+    }
+    path
+}
+
+/// 恢复备份后旧进程仍持有旧密钥与目录索引：由用户确认后重启整个应用。
+#[tauri::command]
+pub fn restart_app(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        app.restart();
+    });
+}
+
 /// 允许转写一个本机文件：用户在界面里选择 / 拖入 / 手动确认路径后由前端调用。
 ///
 /// 这是 HTTP 转写接口的精确白名单入口；外部网页与进程无法调用 Tauri 命令，

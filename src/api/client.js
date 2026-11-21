@@ -131,6 +131,8 @@ const DEFAULT_TIMEOUT_MS = 30000
 const SLOW_TIMEOUT_MS = 180000
 // 文件转写同步请求的读取超时：契约约定短文件给 15 分钟；更长的文件后端直接 202
 const TRANSCRIBE_SYNC_TIMEOUT_MS = 15 * 60 * 1000
+// 备份 / 恢复可能包含几百 MB 录音：给足读写时间，超时只防永久卡死
+const BACKUP_TIMEOUT_MS = 30 * 60 * 1000
 
 /**
  * 从错误响应体里提取可读的中文错误信息。
@@ -519,6 +521,10 @@ export const api = {
   downloadUpdate: ({ installer = false } = {}) => request('POST', '/update/download', { body: { installer } }),
   // 安装已下载的应用内更新包并重启：返回时状态为 installing，随后应用退出重启
   installUpdate: () => request('POST', '/update/install'),
+
+  // 数据备份 / 恢复（设置 → 诊断）：路径由桌面端系统对话框选择
+  exportBackup: (payload) => request('POST', '/backup/export', { body: payload, timeout: BACKUP_TIMEOUT_MS }),
+  importBackup: (payload) => request('POST', '/backup/import', { body: payload, timeout: BACKUP_TIMEOUT_MS }),
 
   // 提示词预设：内置（prompts/*.txt，只读）+ 自定义（data/custom_prompts.json，可增删改）
   getPresets: () => request('GET', '/prompts'),
