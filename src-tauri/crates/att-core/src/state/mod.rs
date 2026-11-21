@@ -186,16 +186,19 @@ impl CoreState {
 
     /// 在锁内修改设置并落盘（原子写）。
     pub fn update_settings<T>(&self, mutate: impl FnOnce(&mut UserSettings) -> T) -> Result<T, CoreError> {
-        let mut guard = self.settings.lock().unwrap_or_else(|e| e.into_inner());
-        let outcome = mutate(&mut guard);
-        guard.save(&self.settings_path)?;
+        let mut current = self.settings.lock().unwrap_or_else(|e| e.into_inner());
+        // 先在副本上应用：落盘成功后才替换内存，保存失败不能留下只改了一半的设置。
+        let mut next = current.clone();
+        let outcome = mutate(&mut next);
+        next.save(&self.settings_path)?;
+        *current = next;
         Ok(outcome)
     }
 
     /// PUT /api/settings：在设置锁内应用白名单更新并持久化。
     pub fn apply_settings_update(&self, body: &serde_json::Value) -> Result<settings::SettingsUpdate, String> {
         let mut current = self.settings.lock().unwrap_or_else(|e| e.into_inner());
-        // 先在副本上应用：撞键、空快捷键等校验失败时不能改内存，更不能把非法组合落盘。
+        // 校验返回 Err 时不能进入保存流程：先在副本上应用，成功落盘后才替换内存。
         let mut next = current.clone();
         let outcome = settings::apply_settings_update(&mut next, body, self.platform, &self.crypto)?;
         next.save(&self.settings_path).map_err(|e| e.to_string())?;
@@ -413,6 +416,36 @@ mod tests {
         assert!(!core.settings().binding_of(HotkeyAction::VoiceRewriteSelection).unwrap().enabled);
         let reloaded = CoreState::init(&dir, Platform::Windows).unwrap();
         assert!(!reloaded.settings().binding_of(HotkeyAction::VoiceRewriteSelection).unwrap().enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 设置更新_后面的键校验失败_前面的键不生效也不落盘() {
+        let dir = std::env::temp_dir().join(format!("att-core-settings-atomic-{}", uuid::Uuid::new_v4()));
+        let core = CoreState::init(&dir, Platform::Windows).unwrap();
+
+        // 先落一份基线，确保失败时有可对比的 settings.json。
+        core.apply_settings_update(&json!({"asr_provider": "chatgpt_asr"})).unwrap();
+        let before = core.settings();
+        let disk_before = std::fs::read(&core.settings_path).unwrap();
+
+        // asr_provider 排在 recording_mode 前面：旧实现会先改掉它，再因后面的非法值报错并落盘。
+        let err = core
+            .apply_settings_update(&json!({
+                "asr_provider": "qwen_asr",
+                "recording_mode": "invalid"
+            }))
+            .unwrap_err();
+        assert!(err.contains("recording_mode"), "{err}");
+
+        let after = core.settings();
+        assert_eq!(after.asr_provider, before.asr_provider, "前面的合法键不能部分生效");
+        assert_eq!(after.recording_mode, before.recording_mode);
+        assert_eq!(std::fs::read(&core.settings_path).unwrap(), disk_before, "失败时不能落盘");
+
+        let reloaded = CoreState::init(&dir, Platform::Windows).unwrap();
+        assert_eq!(reloaded.settings().asr_provider, before.asr_provider);
+        assert_eq!(reloaded.settings().recording_mode, before.recording_mode);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
