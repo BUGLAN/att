@@ -18,6 +18,24 @@ export function downloadFromUrl(url, filename) {
 }
 
 /**
+ * 把前端生成的文本内容存成文件下载（转文字页导出 TXT / SRT / VTT）：Blob URL + `<a download>`。
+ * 同页触发（不开新窗口），下载开始后稍后释放 Blob URL。
+ * @param {string} content 文件内容
+ * @param {string} filename 保存文件名（含扩展名）
+ * @param {string} mime MIME 类型
+ */
+export function downloadText(content, filename, mime = 'text/plain;charset=utf-8') {
+  const url = URL.createObjectURL(new Blob([content], { type: mime }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 30_000)
+}
+
+/**
  * 由记录构造导出文件名：att-{日期时间}-{短 id}.{扩展名}
  * @param {{ id: string, created_at?: string }} record 记录对象
  * @param {string} format 导出格式（扩展名），如 txt / json

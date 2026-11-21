@@ -2,6 +2,9 @@
  * 「转文字」页编排：选文件（可多选 / 一次拖入多个）→ 排队 → 逐个 POST /api/transcribe（async_job）
  * → 轮询任务进度 → 归一结果；转写中可以取消，单个失败或取消不影响后面排队的文件。
  *
+ * 转写结果由后端存进记录集（`source_file`）；「最近转写」从记录集读，重启后仍在。
+ * 导出 TXT / SRT / VTT 由 transcribe/subtitleExport.mjs 生成、Blob 下载。
+ *
  * 纯逻辑全部在 transcribe/fileTranscribeModel.mjs（有 Node 用例），这里只做
  * Vue 状态与副作用的粘合；HTTP 走 api/client，桌面对话框走 useElectron。
  */
@@ -15,6 +18,8 @@ import {
   defaultTranscribeEngine,
   describeJobProgress,
   enqueuePaths,
+  historyFromRecords,
+  TRANSCRIBE_HISTORY_LIMIT,
   isAsyncJobAccepted,
   isJobPollExpired,
   isSupportedMediaPath,
@@ -25,9 +30,9 @@ import {
   removeQueueItem,
   updateQueueItem
 } from '@/composables/transcribe/fileTranscribeModel.mjs'
+import { buildTranscribeExport } from '@/composables/transcribe/subtitleExport.mjs'
 import { normalizeLanguageForProvider } from '@/components/settings/asrLanguages.mjs'
-
-const HISTORY_LIMIT = 20
+import { downloadText } from '@/utils/exportDownload.mjs'
 // 取消之后轮询改成短间隔：尽快看到任务真正退出、开始下一个
 const CANCEL_POLL_DELAY_MS = 400
 const UNSUPPORTED_MESSAGE = '暂不支持该文件类型：请选择音视频文件（mp4 / flv / webm / wav / mp3 / m4a 等）'
@@ -188,10 +193,47 @@ export function useFileTranscribe() {
     return enqueue(list).added.length > 0
   }
 
-  function pushHistory(entry) {
-    history.value = [entry, ...history.value.filter((item) => item.path !== entry.path)]
-      .slice(0, HISTORY_LIMIT)
+  // 本次运行转出来的完整结果（带分段与路径），按记录 id 存：回看历史时优先用它，字幕才能导出
+  const sessionResults = new Map()
+
+  function withSessionResult(item) {
+    return (item.recordId && sessionResults.get(item.recordId)) || item
   }
+
+  /** 从记录集读最近的文件转写（source=file）；读不到时保留现有列表。 */
+  async function loadHistory() {
+    try {
+      const page = await api.searchRecords({ source: 'file', page: 1, page_size: TRANSCRIBE_HISTORY_LIMIT })
+      history.value = historyFromRecords(page?.items).map(withSessionResult)
+    } catch (err) {
+      // 数据面暂时不可用：历史留空 / 保持原样，不打扰转写
+    }
+  }
+
+  function pushHistory(entry) {
+    if (entry.recordId) {
+      sessionResults.set(entry.recordId, entry)
+    }
+    // 先放进列表立刻可见，再以记录集为准刷新（存记录失败时也能在本次运行里回看）
+    const key = (item) => item.recordId || item.path
+    history.value = [entry, ...history.value.filter((item) => key(item) !== key(entry))]
+      .slice(0, TRANSCRIBE_HISTORY_LIMIT)
+    if (entry.recordId) {
+      void loadHistory()
+    }
+  }
+
+  /** 导出当前结果：TXT / SRT / VTT；返回 { filename } 或 { error }（字幕缺分段等）。 */
+  function exportResult(format) {
+    const built = buildTranscribeExport(result.value, format)
+    if (built.error) {
+      return { error: built.error }
+    }
+    downloadText(built.content, built.filename, built.mime)
+    return { filename: built.filename }
+  }
+
+  void loadHistory()
 
   function applyJobState(job) {
     stage.value = String(job?.stage || '')
@@ -458,9 +500,13 @@ export function useFileTranscribe() {
     removeFromQueue,
     clearFinished,
     copyResult,
+    exportResult,
+    loadHistory,
     selectHistoryItem: (item) => {
-      result.value = item
-      filePath.value = item.path
+      result.value = withSessionResult(item)
+      if (result.value.path) {
+        filePath.value = result.value.path
+      }
     },
     reset
   }

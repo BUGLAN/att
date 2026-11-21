@@ -368,6 +368,7 @@ export function normalizeTranscribeResult(payload, { path = '' } = {}) {
   return {
     path: String(path || ''),
     fileName: fileNameOf(path),
+    recordId: typeof payload.record_id === 'string' ? payload.record_id : '',
     text,
     durationSeconds,
     engine: String(payload.engine ?? ''),
@@ -386,6 +387,45 @@ export function normalizeTranscribeResult(payload, { path = '' } = {}) {
         }
       : null
   }
+}
+
+/** 转文字页「最近转写」条数（从记录集读带 source_file 的记录）。 */
+export const TRANSCRIBE_HISTORY_LIMIT = 20
+
+/**
+ * 记录集里的文件转写记录 → 转文字页结果视图（与 {@link normalizeTranscribeResult} 同形）。
+ * 记录不存分段时间戳，`segments` 为空（回看历史不能直接导出字幕）；没有 `source_file` 的返回 null。
+ */
+export function recordToTranscribeResult(record) {
+  if (!record || typeof record !== 'object' || !record.source_file) {
+    return null
+  }
+  const raw = typeof record.raw_text === 'string' ? record.raw_text : ''
+  const optimized = typeof record.optimized_text === 'string' && record.optimized_text.trim() ? record.optimized_text : ''
+  const engine = String(record.engine ?? '')
+  return {
+    path: '',
+    fileName: String(record.source_file),
+    recordId: String(record.id ?? ''),
+    createdAt: String(record.created_at ?? ''),
+    text: optimized || raw,
+    durationSeconds: Number.isFinite(Number(record.duration)) ? Number(record.duration) : 0,
+    engine,
+    engineKey: engine.split(':')[0],
+    cached: false,
+    fromRecord: true,
+    segments: [],
+    rawText: optimized ? raw : '',
+    proofread: optimized ? { applied: true, llmModel: '', windows: 0, fallbackBatches: [] } : null
+  }
+}
+
+/** 记录集搜索结果 → 最近转写列表（只留文件转写的记录，最多 {@link TRANSCRIBE_HISTORY_LIMIT} 条）。 */
+export function historyFromRecords(items, limit = TRANSCRIBE_HISTORY_LIMIT) {
+  return (Array.isArray(items) ? items : [])
+    .map(recordToTranscribeResult)
+    .filter(Boolean)
+    .slice(0, limit)
 }
 
 /**

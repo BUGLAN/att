@@ -29,7 +29,7 @@
             </template>
             <template v-else-if="!filePath">
               <div class="ui-row-title">拖入音视频文件，或点击选择</div>
-              <div class="ui-row-desc">mp4 / mov / mkv / webm / wav / mp3 / m4a / flac / ogg · 可多选排队 · 结果不进记录集 · 同一文件秒回缓存</div>
+              <div class="ui-row-desc">mp4 / mov / mkv / webm / wav / mp3 / m4a / flac / ogg · 可多选排队 · 结果存入记录集 · 同一文件秒回缓存</div>
             </template>
             <template v-else>
               <div class="ui-row-title">{{ fileName }}</div>
@@ -254,6 +254,7 @@
             <button class="ui-tbtn" type="button" :disabled="!result.text" @click="handleCopy">
               <span class="ui-tbtn-glyph">{{ G.copy }}</span>{{ copied ? '已复制' : '复制全文' }}
             </button>
+            <ExportFormatMenu :formats="exportFormats" :disabled="!result.text" @select="handleExport" />
           </span>
         </div>
 
@@ -278,16 +279,19 @@
       </div>
     </section>
 
-    <!-- 本次会话转过的文件 -->
+    <!-- 最近转写：从记录集读（带来源文件的记录），重启后仍在 -->
     <section v-if="history.length" class="settings-section">
       <div class="settings-group">
-        <h3 class="settings-group-title">本次会话</h3>
+        <h3 class="settings-group-title">
+          最近转写
+          <span class="ui-title-aside ui-meta">已存入记录集</span>
+        </h3>
         <button
           v-for="item in history"
-          :key="item.path + item.text.length"
+          :key="item.recordId || item.path"
           type="button"
           class="ui-row is-clickable transcribe-history"
-          :class="{ 'is-open': result && result.path === item.path }"
+          :class="{ 'is-open': isOpenHistory(item) }"
           @click="selectHistoryItem(item)"
         >
           <span class="ui-glyph-tile">{{ G.file }}</span>
@@ -322,6 +326,12 @@ import {
 } from '@/components/settings/asrLanguages.mjs'
 import BaseSelect from '@/components/common/BaseSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import ExportFormatMenu from '@/components/records/ExportFormatMenu.vue'
+import {
+  SUBTITLE_NEEDS_SEGMENTS,
+  TRANSCRIBE_EXPORT_FORMATS,
+  canExportSubtitles
+} from '@/composables/transcribe/subtitleExport.mjs'
 import { ACTION_GLYPHS as G, SEALS } from '@/components/common/glyphs.mjs'
 
 const appStore = useAppStore()
@@ -355,8 +365,34 @@ const {
   removeFromQueue,
   clearFinished,
   copyResult,
+  exportResult,
   selectHistoryItem
 } = useFileTranscribe()
+
+// 导出：字幕要分段时间戳，没有时置灰并说明
+const exportFormats = computed(() => {
+  const subtitles = canExportSubtitles(result.value)
+  const hint = result.value?.fromRecord
+    ? '从记录集回看的结果不含分段时间戳：重新转写这个文件（开启「分段时间戳」）后可导出字幕'
+    : SUBTITLE_NEEDS_SEGMENTS
+  return TRANSCRIBE_EXPORT_FORMATS.map((option) => (
+    option.value === 'txt' || subtitles ? option : { ...option, disabled: true, hint }
+  ))
+})
+
+function handleExport(format) {
+  const outcome = exportResult(format)
+  if (outcome.error) {
+    appStore.showToast(outcome.error, { tone: 'info' })
+    return
+  }
+  appStore.showToast(`已导出 ${outcome.filename}`, { tone: 'success' })
+}
+
+function isOpenHistory(item) {
+  if (!result.value) return false
+  return item.recordId ? result.value.recordId === item.recordId : result.value.path === item.path
+}
 
 // 队列：不止一个文件，或唯一那个已经结束且失败 / 取消（留着看原因）时才显示
 const queueStats = computed(() => queueSummary(queue.value))
@@ -637,6 +673,8 @@ async function handleCopy() {
 }
 
 .transcribe-tabs-actions {
+  display: inline-flex;
+  gap: 4px;
   margin-left: auto;
   padding-bottom: 4px;
 }

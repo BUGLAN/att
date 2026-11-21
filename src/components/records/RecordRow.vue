@@ -25,9 +25,12 @@
       <p class="record-row-text" :class="{ 'ui-clamp-2': !expanded, 'is-pending': !hasText }">
         {{ displayText }}<span v-if="showTypingCursor" class="typing-cursor" aria-hidden="true"></span>
       </p>
-      <div v-if="statusMeta || showQuickRetry" class="record-row-status">
+      <div v-if="statusMeta || showQuickRetry || record.source_file" class="record-row-status">
         <span v-if="statusMeta" class="ui-meta" :title="statusMeta.title || failureReason || null">
           <span class="ui-dot" :class="statusMeta.dot"></span>{{ statusMeta.text }}
+        </span>
+        <span v-if="record.source_file" class="ui-meta record-row-source" :title="record.source_file">
+          来自文件：{{ record.source_file }}
         </span>
         <button
           v-if="showQuickRetry"
@@ -42,7 +45,7 @@
 
       <div v-if="expanded" class="record-row-detail" @click.stop>
         <div>
-          <h4>{{ isTextRecord ? '选中原文' : '原始转写' }}</h4>
+          <h4>{{ isTextRecord ? '选中原文' : record.source_file ? '识别原文' : '原始转写' }}</h4>
           <p>{{ record.raw_text || '（没有原始转写）' }}</p>
         </div>
         <div>
@@ -207,7 +210,10 @@ const canOptimize = computed(() => (
 const clock = computed(() => formatClock(props.record.created_at))
 const duration = computed(() => formatRecordDuration(props.record.duration))
 // 优化选中文本建的记录：没有音频也没有时长（录音落盘失败的记录仍有时长，照常显示）
-const isTextRecord = computed(() => !props.record.audio_path && !Number(props.record.duration))
+// 文件转写的记录也没有音频，但带来源文件名，不算这一类
+const isTextRecord = computed(() => (
+  !props.record.audio_path && !Number(props.record.duration) && !props.record.source_file
+))
 const statusMeta = computed(() => recordStatusMeta(props.record, { optimizing: isStreamingOptimization.value }))
 
 // ---- 重新识别 ----
@@ -282,6 +288,13 @@ function handleClick() {
   align-items: center;
   gap: var(--s-2);
   margin-top: 4px;
+}
+
+.record-row-source {
+  display: inline-block;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .record-row-retry {

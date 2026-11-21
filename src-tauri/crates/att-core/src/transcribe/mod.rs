@@ -6,6 +6,8 @@
 //!   校对阶段为 `{window_done, window_total}`；
 //! - 错误码契约：404 文件不存在 / 415 无法解码 / 413 超时长上限 / 409 引擎或校对不可用 /
 //!   503 引擎忙（Retry-After）/ 500 其他；
+//! - 转写完成存进记录集：无音频的文本记录，`source_file` 是原文件名；记录 id 记在缓存引擎桶的 `record_id`，
+//!   同一文件同一引擎只建一条（记录还在就只更新校对稿，被删了才重建），响应里带 `record_id`；
 //! - 缓存 `data/transcribe_file_cache.json`（与 Python 同格式：sha256 → engines → 引擎桶 → 校对变体）；
 //! - 引擎：豆包（在线，ffmpeg 解码为 16k PCM 后按会话上限分段推流）；本地 Whisper（faster-whisper）
 //!   与本地 Qwen3-ASR（sherpa-onnx ONNX）走 [`crate::stt::transcribe_local`]，分段时间戳原样返回。
@@ -445,6 +447,24 @@ impl FileTranscriber {
         });
     }
 
+    /// 缓存引擎桶里记着的记录 id（转写结果存进记录集时写入）。
+    fn bucket_record_id(&self, core: &CoreState, hash: &str, engine: &str) -> Option<String> {
+        self.with_cache(core, |cache| {
+            cache.get(hash)?.get("engines")?.get(engine)?.get("record_id")?.as_str().map(str::to_string)
+        })
+    }
+
+    fn set_bucket_record_id(&self, core: &CoreState, hash: &str, engine: &str, record_id: &str) {
+        self.with_cache(core, |cache| {
+            let Some(bucket) = cache.get_mut(hash).and_then(|e| e.get_mut("engines")).and_then(|e| e.get_mut(engine))
+            else {
+                return;
+            };
+            bucket["record_id"] = json!(record_id);
+            Self::save_cache(core, cache);
+        });
+    }
+
     pub fn get_job(&self, job_id: &str) -> Option<Value> {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         prune(&mut jobs);
@@ -518,7 +538,8 @@ pub async fn handle(core: Arc<CoreState>, request: TranscribeRequest) -> Result<
             .flatten();
         if !request.proofread || variant.is_some() {
             tracing::info!("文件转写缓存命中: {}（{engine}）", path.display());
-            return Ok(Outcome::Result(shape_payload(&cached, request.want_segments, true, variant.as_ref())));
+            let payload = shape_payload(&cached, request.want_segments, true, variant.as_ref());
+            return Ok(Outcome::Result(save_record(&core, &request, &path, &hash, engine, payload)));
         }
         // ASR 命中但校对变体缺失 → 走 202 只跑校对阶段
     }
@@ -534,7 +555,8 @@ pub async fn handle(core: Arc<CoreState>, request: TranscribeRequest) -> Result<
         return start_job(core.clone(), request, path, hash, duration, engine).map(Outcome::Job);
     }
     let payload = run_transcription(&core, &path, &request.language, duration, &hash, engine).await?;
-    Ok(Outcome::Result(shape_payload(&payload, request.want_segments, false, None)))
+    let payload = shape_payload(&payload, request.want_segments, false, None);
+    Ok(Outcome::Result(save_record(&core, &request, &path, &hash, engine, payload)))
 }
 
 /// 单并发执行一次转写并写缓存；忙时 503。
@@ -853,7 +875,85 @@ async fn execute_job(
         }
         payload["proofread"] = result.meta();
     }
-    Ok(shape_payload(&payload, request.want_segments, false, None))
+    let payload = shape_payload(&payload, request.want_segments, false, None);
+    Ok(save_record(core, request, path, hash, engine, payload))
+}
+
+/// 把转写结果存进记录集，并在响应里带上 `record_id`。
+///
+/// 无音频的文本记录：`raw_text` 是识别原文，校对成功时 `optimized_text` 是校对稿；`source_file` 是原文件名。
+/// 同一文件同一引擎只建一条：记录 id 记在缓存引擎桶里，记录还在时只在有新校对稿时更新它，被删了才重建。
+/// 存记录失败只写日志，不影响转写结果。
+fn save_record(
+    core: &CoreState,
+    request: &TranscribeRequest,
+    path: &Path,
+    hash: &str,
+    engine: &str,
+    mut payload: Value,
+) -> Value {
+    use crate::records::{Record, RecordStatus};
+
+    let text = payload.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+    let proofread_applied =
+        payload.get("proofread").and_then(|p| p.get("applied")).and_then(Value::as_bool).unwrap_or(false);
+    let raw_text = match payload.get("raw_text").and_then(Value::as_str) {
+        Some(raw) if proofread_applied => raw.to_string(),
+        _ => text.clone(),
+    };
+    let optimized_text = proofread_applied.then(|| text.clone());
+
+    let existing = core.transcriber.bucket_record_id(core, hash, engine).filter(|id| core.records.get(id).is_ok());
+    let record_id = match existing {
+        Some(id) => {
+            // 已有记录：只在这次带来了新的校对稿时更新（用户改过的不覆盖）
+            let stale = |record: &Record| {
+                optimized_text
+                    .as_deref()
+                    .is_some_and(|optimized| !record.is_modified && record.optimized_text.as_deref() != Some(optimized))
+            };
+            if core.records.get(&id).is_ok_and(|record| stale(&record)) {
+                let outcome = core.records.patch(&id, |record| {
+                    record.optimized_text = optimized_text.clone();
+                    record.status = RecordStatus::Optimized;
+                });
+                if let Err(error) = outcome {
+                    tracing::warn!("更新文件转写记录 {id} 失败：{error}");
+                }
+            }
+            Some(id)
+        }
+        None => {
+            let id = crate::records::new_record_id();
+            let source_file = path.file_name().map(|name| name.to_string_lossy().into_owned());
+            let record = Record {
+                id: id.clone(),
+                duration: payload.get("duration_seconds").and_then(Value::as_f64).unwrap_or(0.0),
+                status: if optimized_text.is_some() { RecordStatus::Optimized } else { RecordStatus::Transcribed },
+                raw_text: Some(raw_text),
+                optimized_text,
+                engine: Some(engine.to_string()),
+                language: Some(crate::stt::effective_language(engine, &request.language)),
+                source_file,
+                ..Default::default()
+            };
+            match core.records.insert(record) {
+                Ok(()) => {
+                    core.transcriber.set_bucket_record_id(core, hash, engine, &id);
+                    tracing::info!("文件转写已存入记录集：{id}（{}）", path.display());
+                    Some(id)
+                }
+                Err(error) => {
+                    tracing::warn!("文件转写结果存入记录集失败：{error}");
+                    None
+                }
+            }
+        }
+    };
+    if let Some(id) = record_id {
+        payload["record_id"] = json!(id);
+    }
+    payload
 }
 
 #[cfg(test)]
@@ -1014,6 +1114,62 @@ mod tests {
         assert_eq!(progress()["done_seconds"], 12.3);
         report(700.0);
         assert_eq!(progress()["done_seconds"], 600.0, "不超过总时长");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 转写结果存入记录集_同一文件同一引擎只建一条() {
+        let dir = std::env::temp_dir().join(format!("att-ft-record-{}", uuid::Uuid::new_v4()));
+        let core = CoreState::init(&dir, crate::Platform::Macos).unwrap();
+        let request = TranscribeRequest {
+            path: String::new(),
+            language: "zh".into(),
+            want_segments: false,
+            engine: "whisper".into(),
+            proofread: false,
+            proofread_model_id: None,
+            proofread_options: None,
+            async_job: true,
+        };
+        let path = PathBuf::from("/media/周会 录音.mp4");
+        let entry = json!({ "text": "原文", "duration_seconds": 61.5, "engine": "whisper:large-v3", "segments": [] });
+        core.transcriber.cache_store(&core, "h1", "whisper", &entry);
+
+        let first = save_record(&core, &request, &path, "h1", "whisper", shape_payload(&entry, false, false, None));
+        let id = first["record_id"].as_str().unwrap().to_string();
+        let record = core.records.get(&id).unwrap();
+        assert_eq!(record.source_file.as_deref(), Some("周会 录音.mp4"), "只存文件名，不含目录");
+        assert_eq!(record.raw_text.as_deref(), Some("原文"));
+        assert_eq!(record.optimized_text, None);
+        assert_eq!(record.status, crate::records::RecordStatus::Transcribed);
+        assert_eq!(record.duration, 61.5);
+        assert!(record.audio_path.is_empty(), "无音频的文本记录");
+        assert_eq!(record.engine.as_deref(), Some("whisper"));
+
+        // 缓存命中再转一次：不重复建
+        let again = save_record(&core, &request, &path, "h1", "whisper", shape_payload(&entry, false, true, None));
+        assert_eq!(again["record_id"], json!(id));
+        assert_eq!(core.records.list(None, 10, 0).len(), 1);
+
+        // 之后开了校对：同一条记录补上校对稿
+        let variant = json!({ "text": "校对稿", "windows": 1, "requests": 1 });
+        let proofread = shape_payload(&entry, false, true, Some(&variant));
+        save_record(&core, &request, &path, "h1", "whisper", proofread);
+        let record = core.records.get(&id).unwrap();
+        assert_eq!(record.raw_text.as_deref(), Some("原文"));
+        assert_eq!(record.optimized_text.as_deref(), Some("校对稿"));
+        assert_eq!(record.status, crate::records::RecordStatus::Optimized);
+        assert_eq!(core.records.list(None, 10, 0).len(), 1);
+
+        // 记录被删了：再转时重建
+        core.records.delete(&id).unwrap();
+        let rebuilt = save_record(&core, &request, &path, "h1", "whisper", shape_payload(&entry, false, true, None));
+        assert_ne!(rebuilt["record_id"], json!(id));
+        assert_eq!(core.records.list(None, 10, 0).len(), 1);
+        // 换引擎是另一条
+        core.transcriber.cache_store(&core, "h1", "doubao_asr", &entry);
+        save_record(&core, &request, &path, "h1", "doubao_asr", shape_payload(&entry, false, false, None));
+        assert_eq!(core.records.list(None, 10, 0).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1,5 +1,6 @@
 <template>
-  <!-- 导出按钮 + 格式菜单（记录集「导出当前结果」「导出选中」共用）：点外面或按 Esc 收起 -->
+  <!-- 导出按钮 + 格式菜单（记录集「导出当前结果」「导出选中」、转文字页结果共用）：点外面或按 Esc 收起；
+       不可用的格式置灰并在下面写一句原因 -->
   <div ref="rootRef" class="export-menu" @keydown.esc="open = false">
     <button
       class="ui-tbtn"
@@ -14,14 +15,17 @@
     </button>
     <div v-if="open" class="export-menu-list" :class="`is-${placement}`" role="menu">
       <button
-        v-for="option in EXPORT_FORMATS"
+        v-for="option in formats"
         :key="option.value"
         class="export-menu-item"
         type="button"
         role="menuitem"
+        :disabled="option.disabled"
+        :aria-disabled="option.disabled ? 'true' : null"
         @click="choose(option.value)"
       >
         {{ option.label }}
+        <span v-if="option.disabled && option.hint" class="export-menu-hint">{{ option.hint }}</span>
       </button>
     </div>
   </div>
@@ -50,6 +54,11 @@ const props = defineProps({
   buttonClass: {
     type: [String, Object, Array],
     default: ''
+  },
+  // 菜单项：[{ value, label, disabled?, hint? }]；默认是记录集批量导出的四种格式
+  formats: {
+    type: Array,
+    default: () => EXPORT_FORMATS
   }
 })
 
@@ -123,7 +132,22 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.export-menu-item:hover,
+.export-menu-item:disabled {
+  color: var(--text-3);
+  cursor: default;
+}
+
+.export-menu-hint {
+  display: block;
+  max-width: 240px;
+  margin-top: 2px;
+  font-size: var(--fs-cap);
+  line-height: 1.5;
+  color: var(--text-3);
+  white-space: normal;
+}
+
+.export-menu-item:hover:not(:disabled),
 .export-menu-item:focus-visible {
   outline: none;
   background: var(--accent-veil);

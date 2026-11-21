@@ -130,6 +130,7 @@ pub fn render(records: &[Record], format: ExportFormat, use_optimized: bool) -> 
                         "optimized_text": record.optimized_text,
                         "engine": record.engine,
                         "language": record.language,
+                        "source_file": record.source_file,
                     })
                 })
                 .collect();

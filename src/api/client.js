@@ -377,6 +377,8 @@ export const api = {
     if (params.status) searchParams.set('status', params.status)
     if (params.date_from) searchParams.set('date_from', params.date_from)
     if (params.date_to) searchParams.set('date_to', params.date_to)
+    // source=file：只要「转文字」页文件转写的记录
+    if (params.source) searchParams.set('source', params.source)
 
     const query = searchParams.toString()
     return request('GET', `/records/search${query ? `?${query}` : ''}`)

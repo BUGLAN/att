@@ -600,6 +600,12 @@ fn record_filter(params: &HashMap<String, String>) -> Result<RecordFilter, Strin
     if let Some(status) = status.as_deref().filter(|s| !RECORD_STATUSES.contains(s)) {
         return Err(format!("status 只能是 {}：{status}", RECORD_STATUSES.join(" / ")));
     }
+    // source=file：只要「转文字」页文件转写的记录
+    let file_only = match text("source").as_deref() {
+        None => false,
+        Some("file") => true,
+        Some(other) => return Err(format!("source 只能是 file：{other}")),
+    };
     Ok(RecordFilter {
         query: params.get("q").cloned().unwrap_or_default(),
         search_type: text("search_type").unwrap_or_else(|| "all".into()),
@@ -607,6 +613,7 @@ fn record_filter(params: &HashMap<String, String>) -> Result<RecordFilter, Strin
         status,
         date_from: date("date_from")?,
         date_to: date("date_to")?,
+        file_only,
     })
 }
 
@@ -1721,6 +1728,12 @@ mod tests {
         )
         .await;
         assert_eq!(body["total"], json!(251), "250 条加 test_state 的 rec-x 都在这两天内");
+
+        let (status, body) = get_json(&state, "/api/records/search?source=file").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["total"], json!(0), "没有文件转写的记录");
+        let (status, _) = get_json(&state, "/api/records/search?source=mic").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
         let (status, _) = get_json(&state, "/api/records/search?date_from=2026-13-40").await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);

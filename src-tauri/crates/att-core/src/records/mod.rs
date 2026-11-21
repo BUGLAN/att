@@ -69,6 +69,9 @@ pub struct Record {
     /// 识别语言（录音时的设置 `asr_language`，如 `zh`）；旧记录与文本记录没有这个字段
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// 「转文字」页转写的原文件名（不含目录）；录音与旧记录没有这个字段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_file: Option<String>,
 }
 
 impl Default for Record {
@@ -90,6 +93,7 @@ impl Default for Record {
             revision: 0,
             engine: None,
             language: None,
+            source_file: None,
         }
     }
 }
@@ -227,6 +231,8 @@ pub struct RecordFilter {
     /// 创建日期范围（本机时区的日期，含两端）；None = 不限
     pub date_from: Option<chrono::NaiveDate>,
     pub date_to: Option<chrono::NaiveDate>,
+    /// 只要「转文字」页文件转写的记录（带 `source_file`）
+    pub file_only: bool,
 }
 
 impl RecordFilter {
@@ -235,6 +241,9 @@ impl RecordFilter {
             return false;
         }
         if self.status.as_deref().is_some_and(|status| record.status.as_str() != status) {
+            return false;
+        }
+        if self.file_only && record.source_file.is_none() {
             return false;
         }
         if self.date_from.is_some() || self.date_to.is_some() {
@@ -674,6 +683,23 @@ mod tests {
         assert_eq!(record.revision, 0);
         assert_eq!(record.engine, None, "旧记录没有识别引擎字段");
         assert_eq!(record.language, None, "旧记录没有识别语言字段");
+        assert_eq!(record.source_file, None, "旧记录没有来源文件字段");
+        // 没有来源文件时不写出这个字段（旧版本读得回来）
+        assert!(serde_json::to_value(&record).unwrap().get("source_file").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 筛选_只要文件转写的记录() {
+        let (repo, dir) = repo("file-only");
+        repo.insert(sample("rec-voice", "口述")).unwrap();
+        repo.insert(Record { source_file: Some("会议.mp4".into()), ..sample("rec-file", "文件") }).unwrap();
+        let filter = RecordFilter { file_only: true, ..Default::default() };
+        let (items, total) = repo.search_filtered(&filter, 1, 20);
+        assert_eq!(total, 1);
+        assert_eq!(items[0].id, "rec-file");
+        assert_eq!(items[0].source_file.as_deref(), Some("会议.mp4"));
+        assert_eq!(repo.search_filtered(&RecordFilter::default(), 1, 20).1, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
