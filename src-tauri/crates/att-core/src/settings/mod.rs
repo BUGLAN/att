@@ -88,7 +88,7 @@ impl EnvSettings {
 pub struct UserSettings {
     // ---- ASR 基础 ----
     pub asr_provider: String, // whisper | qwen_asr | doubao_asr | chatgpt_asr | deepseek_asr
-    pub asr_language: String, // zh | en | ja | ko
+    pub asr_language: String, // auto（自动检测）或各引擎支持的语种码，如 zh / en / ja / ko / yue
     /// 个人词表（热词）：与引擎无关地保存，目前只有豆包会发送（见 `stt::hotwords`）。
     /// 宽容读：结构异常只丢这一项，不能拖垮整份设置
     #[serde(default, deserialize_with = "deserialize_hotwords_lenient")]
@@ -846,6 +846,23 @@ mod tests {
         apply_settings_update(&mut settings, &json!({"deepseek_asr_api_key_clear": true}), Platform::Windows, &crypto)
             .unwrap();
         assert!(settings.deepseek_asr_api_key_encrypted.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn asr_language_接受自动检测并原样落盘() {
+        let dir = temp_dir("asr-language");
+        let path = dir.join("settings.json");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::with_platform(Platform::Macos);
+
+        let outcome =
+            apply_settings_update(&mut settings, &json!({ "asr_language": "auto" }), Platform::Macos, &crypto).unwrap();
+        assert_eq!(settings.asr_language, "auto");
+        assert!(outcome.runtime_keys_changed.contains(&"asr_language"));
+
+        settings.save(&path).unwrap();
+        assert_eq!(UserSettings::load(&path, Platform::Macos).asr_language, "auto");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

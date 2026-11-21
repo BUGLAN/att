@@ -17,6 +17,7 @@ import {
   nextJobPollDelay,
   normalizeTranscribeResult
 } from '@/composables/transcribe/fileTranscribeModel.mjs'
+import { normalizeLanguageForProvider } from '@/components/settings/asrLanguages.mjs'
 
 const HISTORY_LIMIT = 20
 
@@ -29,11 +30,12 @@ export function useFileTranscribe() {
   const settingsStore = useSettingsStore()
 
   const filePath = ref('')
-  const language = ref('zh')
-  const wantSegments = ref(false)
   // 引擎默认跟随设置里的识别引擎（文件转写不支持的退到豆包）；用户在本页手动选过就不再跟随。
-  // UI 不暴露 auto；校对默认关
-  const engine = ref(defaultTranscribeEngine(settingsStore.settings.asr_provider))
+  // Qwen / DeepSeek 只能自动判定，初始语言也按引擎归一；校对默认关。
+  const initialEngine = defaultTranscribeEngine(settingsStore.settings.asr_provider)
+  const language = ref(normalizeLanguageForProvider(initialEngine, 'zh').language)
+  const wantSegments = ref(false)
+  const engine = ref(initialEngine)
   let enginePicked = false
   const proofreadOn = ref(false)
   const proofreadModelId = ref('')
@@ -72,7 +74,12 @@ export function useFileTranscribe() {
   // 设置是异步加载的，之后用户也可能去设置页换引擎：没手动选过就一直跟随
   watch(() => settingsStore.settings.asr_provider, (provider) => {
     if (!enginePicked) {
-      engine.value = defaultTranscribeEngine(provider)
+      const next = defaultTranscribeEngine(provider)
+      engine.value = next
+      const adjusted = normalizeLanguageForProvider(next, language.value)
+      if (adjusted.changed) {
+        language.value = adjusted.language
+      }
     }
   })
 

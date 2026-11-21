@@ -38,6 +38,12 @@ test('buildTranscribeRequest：正常构造 snake_case 请求体（M2 含 engine
   )
 })
 
+test('buildTranscribeRequest：自动检测原样传给后端', () => {
+  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', language: 'auto' }).language, 'auto')
+  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', language: 'auto', engine: 'whisper' }).language, 'auto')
+  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', language: 'auto', engine: 'qwen_asr' }).language, 'auto')
+})
+
 test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法引擎回落豆包', () => {
   const request = buildTranscribeRequest({
     path: '/a/b.wav',

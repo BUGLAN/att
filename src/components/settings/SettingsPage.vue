@@ -74,6 +74,7 @@ import { createLatestSaveQueue } from './settingsSaveQueue.mjs'
 import { isOnlineProvider, needsCredentialCheck } from './onlineEngineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
+import { normalizeLanguageForProvider } from './asrLanguages.mjs'
 import { captureHotkey, clearHotkey as clearHotkeyPatch, isHotkeyEnabled } from './settingsHotkeys.mjs'
 import { SETTINGS_CTX } from './settingsContext.js'
 import { DEFAULT_SECTION_ID, buildNavGroups, findSection, resolveSectionId } from './settingsNav.mjs'
@@ -309,7 +310,7 @@ function normalizeSettings(value = {}) {
   const normalizedHotkey = normalizeHotkeyConfig(value.hotkey)
   form.value = {
     asr_provider: value.asr_provider || 'whisper',
-    asr_language: value.asr_language || 'zh',
+    asr_language: normalizeLanguageForProvider(value.asr_provider || 'whisper', value.asr_language || 'zh').language,
     // 文本框原文：解析结果与服务端一致时保留用户正在敲的内容（见 hotwordsText）
     asr_hotwords_text: hotwordsText(value.asr_hotwords, form.value?.asr_hotwords_text),
     whisper_model: value.whisper_model || 'large-v3',

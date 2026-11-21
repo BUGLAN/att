@@ -265,12 +265,10 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">识别语言</span>
+            <span class="setting-desc">{{ asrLanguageHint }}</span>
           </div>
           <BaseSelect v-model="form.asr_language" aria-label="识别语言">
-            <option value="zh">中文</option>
-            <option value="en">英文</option>
-            <option value="ja">日文</option>
-            <option value="ko">韩文</option>
+            <option v-for="item in asrLanguageOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
           </BaseSelect>
         </div>
       </div>
@@ -316,6 +314,11 @@ import {
   recordingModeConflict,
   recordingModeOptions
 } from '../asrEngineStatus.mjs'
+import {
+  languageHint,
+  languageOptions as buildLanguageOptions,
+  normalizeLanguageForProvider
+} from '../asrLanguages.mjs'
 import { hotwordView, parseHotwords } from '../asrHotwords.mjs'
 import { credentialNote, isOnlineProvider, onlineEngineChip } from '../onlineEngineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
@@ -329,6 +332,8 @@ const LOCAL_STATUS_POLL_MS = 1000
 
 const recordingModes = computed(() => recordingModeOptions(form.value.asr_provider))
 const modeConflict = computed(() => recordingModeConflict(form.value.asr_provider, form.value.recording_mode))
+const asrLanguageOptions = computed(() => buildLanguageOptions(form.value.asr_provider))
+const asrLanguageHint = computed(() => languageHint(form.value.asr_provider))
 // LLM 模型列表没加载过时按「有模型」处理，免得误报（同输出页）；挂载时补拉一次
 const llmLoaded = ref(false)
 const hotwords = computed(() => hotwordView(form.value.asr_provider, parseHotwords(form.value.asr_hotwords_text), {
@@ -361,6 +366,13 @@ function selectEngine(value) {
     return
   }
   form.value.asr_provider = value
+  const adjusted = normalizeLanguageForProvider(value, form.value.asr_language)
+  if (adjusted.changed) {
+    form.value.asr_language = adjusted.language
+  }
+  if (adjusted.message) {
+    appStore.showToast(adjusted.message, { tone: 'info' })
+  }
 }
 
 function onlineKeySet(provider) {

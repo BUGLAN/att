@@ -22,7 +22,7 @@ export const JOB_POLL_MAX_DELAY_MS = 5000
 export const JOB_POLL_MAX_WAIT_MS = 15 * 60 * 1000
 
 /**
- * 识别引擎下拉的元数据（与后端 engine 参数一一对应；UI 不暴露 auto）。
+ * 识别引擎下拉的元数据（与后端 engine 参数一一对应）。
  * 文件转写只支持这几个引擎（后端 att-core transcribe::resolve_engine），ChatGPT 听写不在其中。
  */
 export const TRANSCRIBE_ENGINES = [

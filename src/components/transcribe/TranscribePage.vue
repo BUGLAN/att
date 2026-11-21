@@ -94,12 +94,10 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">识别语言</span>
+            <span class="setting-desc">{{ languageHint }}</span>
           </div>
           <BaseSelect v-model="language" :disabled="isBusy" aria-label="识别语言">
-            <option value="zh">中文</option>
-            <option value="en">英语</option>
-            <option value="ja">日语</option>
-            <option value="ko">韩语</option>
+            <option v-for="item in languageOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
           </BaseSelect>
         </div>
         <div class="setting-item">
@@ -239,6 +237,11 @@ import {
   formatDuration,
   transcribeEngineOptions
 } from '@/composables/transcribe/fileTranscribeModel.mjs'
+import {
+  languageHint as buildLanguageHint,
+  languageOptions as buildLanguageOptions,
+  normalizeLanguageForProvider
+} from '@/components/settings/asrLanguages.mjs'
 import BaseSelect from '@/components/common/BaseSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { ACTION_GLYPHS as G, SEALS } from '@/components/common/glyphs.mjs'
@@ -282,6 +285,8 @@ const engineOptions = computed(() => transcribeEngineOptions({
   localEngine: settingsStore.runtimeStatus?.local_engine || null
 }))
 const currentEngine = computed(() => engineOptions.value.find((item) => item.value === engine.value))
+const languageOptions = computed(() => buildLanguageOptions(engine.value))
+const languageHint = computed(() => buildLanguageHint(engine.value))
 
 function pickEngine(value) {
   const option = engineOptions.value.find((item) => item.value === value)
@@ -289,7 +294,14 @@ function pickEngine(value) {
     appStore.showToast(option.hint, { tone: 'info' })
     return
   }
+  const adjusted = normalizeLanguageForProvider(value, language.value)
   selectEngine(value)
+  if (adjusted.changed) {
+    language.value = adjusted.language
+  }
+  if (adjusted.message) {
+    appStore.showToast(adjusted.message, { tone: 'info' })
+  }
 }
 
 const fileName = computed(() => filePath.value.split(/[\\/]/).pop() || filePath.value)
