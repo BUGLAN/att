@@ -356,6 +356,20 @@ pub fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// 显示 / 隐藏主窗口（快捷键「显示主窗口」用）：已经在前台时隐藏，否则显示并聚焦。
+pub fn toggle_main_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else { return };
+    let focused = window.is_focused().unwrap_or(false);
+    let visible = window.is_visible().unwrap_or(false);
+    if visible && focused {
+        let _ = window.hide();
+    } else {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 /// 日志同时输出到终端与 `data/logs/att-app.log`（打包版没有终端可看）。
 ///
 /// 每次启动先把上一次的日志改名为 `att-app.prev.log` 再新建：崩溃后用户重启应用，
@@ -438,6 +452,7 @@ fn start_hotkey_listener(
                             | HotkeyAction::RecordToggle
                             | HotkeyAction::ClipboardPanel
                             | HotkeyAction::RewriteSelection
+                            | HotkeyAction::ShowMainWindow
                     )
             })
             .map(att_hotkey::HotkeySpec::from_binding)
@@ -461,6 +476,13 @@ fn start_hotkey_listener(
                 std::thread::spawn(move || clipboard_panel::toggle(&app));
             }
         }
+        HotkeyAction::ShowMainWindow => {
+            // 同上：窗口的显示 / 隐藏不在键盘钩子线程里做
+            if phase == att_hotkey::KeyPhase::Pressed {
+                let app = app.clone();
+                std::thread::spawn(move || toggle_main_window(&app));
+            }
+        }
         _ => recorder.hotkey(action, phase),
     });
     match att_hotkey::listener::start(bindings, sink) {
@@ -474,11 +496,12 @@ fn start_hotkey_listener(
                     .unwrap_or_else(|| "未设置".into())
             };
             tracing::info!(
-                "全局快捷键已启用: 按住录音 {} / 点按录音 {} / 剪贴板悬浮框 {} / 优化选中文本 {} / 录音中 Esc 取消",
+                "全局快捷键已启用: 按住录音 {} / 点按录音 {} / 剪贴板悬浮框 {} / 优化选中文本 {} / 显示主窗口 {} / 录音中 Esc 取消",
                 combo(HotkeyAction::Record),
                 combo(HotkeyAction::RecordToggle),
                 combo(HotkeyAction::ClipboardPanel),
-                combo(HotkeyAction::RewriteSelection)
+                combo(HotkeyAction::RewriteSelection),
+                combo(HotkeyAction::ShowMainWindow)
             );
             None
         }

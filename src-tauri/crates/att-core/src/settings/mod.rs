@@ -250,6 +250,7 @@ impl UserSettings {
                 HotkeyBinding::default_for(HotkeyAction::RecordToggle, platform),
                 HotkeyBinding::default_for(HotkeyAction::ClipboardPanel, platform),
                 HotkeyBinding::default_for(HotkeyAction::RewriteSelection, platform),
+                HotkeyBinding::default_for(HotkeyAction::ShowMainWindow, platform),
             ],
             settings_revision: SETTINGS_REVISION,
         }
@@ -292,7 +293,12 @@ impl UserSettings {
         if self.binding_of(HotkeyAction::Record).is_none() {
             self.hotkeys.insert(0, HotkeyBinding::default_binding(platform));
         }
-        for action in [HotkeyAction::RecordToggle, HotkeyAction::ClipboardPanel, HotkeyAction::RewriteSelection] {
+        for action in [
+            HotkeyAction::RecordToggle,
+            HotkeyAction::ClipboardPanel,
+            HotkeyAction::RewriteSelection,
+            HotkeyAction::ShowMainWindow,
+        ] {
             if self.binding_of(action).is_none() {
                 self.hotkeys.push(HotkeyBinding::default_for(action, platform));
             }
@@ -413,6 +419,7 @@ const EXTRA_HOTKEY_FIELDS: &[(HotkeyAction, &str, &str)] = &[
     (HotkeyAction::RecordToggle, "record_toggle_hotkey", "record_toggle_enabled"),
     (HotkeyAction::ClipboardPanel, "clipboard_panel_hotkey", "clipboard_panel_enabled"),
     (HotkeyAction::RewriteSelection, "rewrite_hotkey", "rewrite_enabled"),
+    (HotkeyAction::ShowMainWindow, "show_main_window_hotkey", "show_main_window_enabled"),
 ];
 
 /// 设置更新结果：变更的运行时键（供上层触发停服务/重建 provider）。
@@ -1113,6 +1120,54 @@ mod tests {
         let view = settings.public_view(Platform::Macos);
         assert_eq!(view["clipboard_panel_enabled"], true);
         assert_eq!(view["clipboard_panel_hotkey"]["display"], "⌃⌥V");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 显示主窗口_旧数据补默认绑定_默认为空_改键与撞键() {
+        let dir = temp_dir("show-main");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "hotkeys": [{"action": "record", "trigger": "hold", "modifiers": {"alt": true, "meta": true}, "enabled": true}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut settings = UserSettings::load(&path, Platform::Macos);
+        let binding = settings.binding_of(HotkeyAction::ShowMainWindow).unwrap();
+        assert!(!binding.enabled, "旧数据补的默认绑定为空");
+        assert_eq!(binding.trigger, TriggerMode::Toggle);
+        let view = settings.public_view(Platform::Macos);
+        assert_eq!(view["show_main_window_enabled"], false);
+        assert!(view["show_main_window_hotkey"]["display"].is_string());
+
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        apply_settings_update(
+            &mut settings,
+            &serde_json::json!({
+                "show_main_window_hotkey": {"modifiers": ["ctrl", "alt"], "key": "m"},
+                "show_main_window_enabled": true
+            }),
+            Platform::Macos,
+            &crypto,
+        )
+        .unwrap();
+        let binding = settings.binding_of(HotkeyAction::ShowMainWindow).unwrap();
+        assert!(binding.enabled);
+        assert_eq!(binding.display(Platform::Macos), "⌃⌥M");
+
+        // 和剪贴板悬浮框默认的 ⌃⌥V 撞键：拒绝保存
+        let err = apply_settings_update(
+            &mut settings,
+            &serde_json::json!({"show_main_window_hotkey": {"modifiers": ["ctrl", "alt"], "key": "v"}}),
+            Platform::Macos,
+            &crypto,
+        )
+        .unwrap_err();
+        assert_eq!(err, "显示主窗口的快捷键与剪贴板悬浮框快捷键相同，请换一个");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

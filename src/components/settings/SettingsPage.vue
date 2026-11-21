@@ -75,7 +75,12 @@ import { isOnlineProvider, needsCredentialCheck } from './onlineEngineStatus.mjs
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
 import { normalizeLanguageForProvider } from './asrLanguages.mjs'
-import { captureHotkey, clearHotkey as clearHotkeyPatch, isHotkeyEnabled } from './settingsHotkeys.mjs'
+import {
+  captureHotkey,
+  clearHotkey as clearHotkeyPatch,
+  isHotkeyEnabled,
+  resetHotkey as resetHotkeyPatch
+} from './settingsHotkeys.mjs'
 import { SETTINGS_CTX } from './settingsContext.js'
 import { DEFAULT_SECTION_ID, buildNavGroups, findSection, resolveSectionId } from './settingsNav.mjs'
 import { normalizeLimit } from './clipboardLimits.mjs'
@@ -153,6 +158,7 @@ const isCapturingHotkey = computed(() => captureTarget.value === 'hotkey')
 const isCapturingToggleHotkey = computed(() => captureTarget.value === 'record_toggle_hotkey')
 const isCapturingPanelHotkey = computed(() => captureTarget.value === 'clipboard_panel_hotkey')
 const isCapturingRewriteHotkey = computed(() => captureTarget.value === 'rewrite_hotkey')
+const isCapturingShowMainWindowHotkey = computed(() => captureTarget.value === 'show_main_window_hotkey')
 const hotkeyError = ref('')
 
 const selectedPresetId = ref('')
@@ -204,6 +210,9 @@ const hotkeyDisplay = computed(() => {
 })
 const toggleHotkeyDisplay = computed(() => {
   return isHotkeyEnabled(form.value, 'record_toggle_hotkey') ? form.value.record_toggle_hotkey?.display || '' : ''
+})
+const showMainWindowHotkeyDisplay = computed(() => {
+  return isHotkeyEnabled(form.value, 'show_main_window_hotkey') ? form.value.show_main_window_hotkey?.display || '' : ''
 })
 const panelHotkeyDisplay = computed(() => {
   return form.value.clipboard_panel_hotkey?.display || '点击录入快捷键'
@@ -358,6 +367,9 @@ function normalizeSettings(value = {}) {
     // 点按录音默认为空（未启用）
     record_toggle_hotkey: normalizeHotkeyConfig(value.record_toggle_hotkey),
     record_toggle_enabled: value.record_toggle_enabled ?? false,
+    // 显示主窗口默认为空（未启用）
+    show_main_window_hotkey: normalizeHotkeyConfig(value.show_main_window_hotkey),
+    show_main_window_enabled: value.show_main_window_enabled === true,
     clipboard_panel_enabled: value.clipboard_panel_enabled ?? true,
     clipboard_panel_hotkey: normalizeHotkeyConfig(value.clipboard_panel_hotkey, getDefaultPanelHotkey()),
     clipboard_panel_enter_action: value.clipboard_panel_enter_action === 'copy' ? 'copy' : 'paste',
@@ -408,6 +420,8 @@ function buildSettingsPayload() {
     hotkey_enabled: form.value.hotkey_enabled !== false,
     record_toggle_hotkey: normalizeHotkeyConfig(form.value.record_toggle_hotkey),
     record_toggle_enabled: form.value.record_toggle_enabled === true,
+    show_main_window_hotkey: normalizeHotkeyConfig(form.value.show_main_window_hotkey),
+    show_main_window_enabled: form.value.show_main_window_enabled === true,
     clipboard_panel_enabled: Boolean(form.value.clipboard_panel_enabled),
     clipboard_panel_hotkey: normalizeHotkeyConfig(form.value.clipboard_panel_hotkey, getDefaultPanelHotkey()),
     clipboard_panel_enter_action: form.value.clipboard_panel_enter_action,
@@ -561,7 +575,13 @@ function applyHotkeyCapture(target, next) {
 
 function resetHotkey(target = 'hotkey') {
   stopHotkeyCapture()
-  applyHotkeyCapture(target, getDefaultHotkeyFor(target))
+  const result = resetHotkeyPatch(form.value, target, getDefaultHotkeyFor(target))
+  if (result.error) {
+    hotkeyError.value = result.error
+    return
+  }
+  hotkeyError.value = ''
+  Object.assign(form.value, result.patch)
 }
 
 /** 清空录音快捷键（按住 / 点按）：只关开关，组合保留 */
@@ -792,6 +812,8 @@ provide(SETTINGS_CTX, {
   isCapturingHotkey,
   toggleHotkeyDisplay,
   isCapturingToggleHotkey,
+  showMainWindowHotkeyDisplay,
+  isCapturingShowMainWindowHotkey,
   panelHotkeyDisplay,
   isCapturingPanelHotkey,
   rewriteHotkeyDisplay,

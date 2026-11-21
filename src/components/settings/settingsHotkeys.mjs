@@ -1,4 +1,4 @@
-// 设置页全局快捷键的纯模型：有哪些可录入的快捷键、各自的开关字段，以及撞键判定
+// 设置页全局快捷键的纯模型：有哪些可录入的快捷键、各自的开关字段、撞键判定与恢复默认
 // （不依赖 Vue，供 tests/test_settings_hotkeys.mjs 锁定；规则与 Rust 侧 apply_settings_update 的撞键校验一致）。
 
 /**
@@ -10,7 +10,14 @@ export const HOTKEY_TARGETS = Object.freeze([
   { field: 'hotkey', label: '按住录音', enabledField: 'hotkey_enabled', clearable: true },
   { field: 'record_toggle_hotkey', label: '点按录音', enabledField: 'record_toggle_enabled', clearable: true },
   { field: 'clipboard_panel_hotkey', label: '剪贴板悬浮框', enabledField: 'clipboard_panel_enabled' },
-  { field: 'rewrite_hotkey', label: '优化选中文本', enabledField: 'rewrite_enabled' }
+  { field: 'rewrite_hotkey', label: '优化选中文本', enabledField: 'rewrite_enabled' },
+  {
+    field: 'show_main_window_hotkey',
+    label: '显示主窗口',
+    enabledField: 'show_main_window_enabled',
+    clearable: true,
+    defaultEmpty: true
+  }
 ])
 
 function sortedModifiers(modifiers = []) {
@@ -75,6 +82,21 @@ export function captureHotkey(form, field, next) {
 export function clearHotkey(field) {
   const target = HOTKEY_TARGETS.find((item) => item.field === field)
   return target?.clearable ? { [target.enabledField]: false } : null
+}
+
+/**
+ * 恢复默认：默认为空的快捷键（显示主窗口）关闭开关，其余回到传入的平台默认组合。
+ * @returns {{ patch: object } | { error: string }}
+ */
+export function resetHotkey(form, field, defaultHotkey) {
+  const target = HOTKEY_TARGETS.find((item) => item.field === field)
+  if (!target) {
+    return { error: '未知的快捷键' }
+  }
+  if (target.defaultEmpty) {
+    return { patch: clearHotkey(field) }
+  }
+  return captureHotkey(form, field, defaultHotkey)
 }
 
 /**

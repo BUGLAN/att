@@ -18,7 +18,7 @@ pub enum HotkeyAction {
     /// 点按录音：按一下开始、再按一下结束（长段口述不用一直按着）。
     /// 与按住录音各有一条绑定，可以用不同的键；同一个键只能启用其中一种（撞键校验会拒绝）
     RecordToggle,
-    /// 显示/唤起主窗口（预留动作，目前没有默认绑定）
+    /// 显示/唤起主窗口：主窗口在前台时隐藏它（点按切换）
     ShowMainWindow,
     /// 唤起 / 收起剪贴板悬浮框（点按切换）
     ClipboardPanel,
@@ -183,6 +183,10 @@ impl HotkeyBinding {
                 hid_key: hid_from_char('a'),
                 enabled: true,
             },
+            // 显示主窗口默认不启用（快捷键为空）：用户需要时再录入
+            HotkeyAction::ShowMainWindow => {
+                Self { action, trigger: TriggerMode::Toggle, enabled: false, ..Self::default_binding(platform) }
+            }
             // 点按录音默认不启用（快捷键为空）：组合与按住录音的默认值相同，用户录入新键后才启用
             HotkeyAction::RecordToggle => {
                 Self { action, trigger: TriggerMode::Toggle, enabled: false, ..Self::default_binding(platform) }
@@ -401,6 +405,16 @@ mod tests {
         assert_eq!(HotkeyAction::RecordToggle.trigger(), TriggerMode::Toggle);
         assert_eq!(HotkeyAction::Record.trigger(), TriggerMode::Hold);
         assert_eq!(serde_json::to_value(HotkeyAction::RecordToggle).unwrap(), "record_toggle");
+    }
+
+    #[test]
+    fn 显示主窗口默认_点按且未启用() {
+        let binding = HotkeyBinding::default_for(HotkeyAction::ShowMainWindow, Platform::Macos);
+        assert!(!binding.enabled, "默认不绑定，避免悄悄占用按键");
+        assert_eq!(binding.trigger, TriggerMode::Toggle);
+        assert_eq!(HotkeyAction::ShowMainWindow.trigger(), TriggerMode::Toggle);
+        assert_eq!(HotkeyAction::ShowMainWindow.label(), "显示主窗口");
+        assert_eq!(serde_json::to_value(HotkeyAction::ShowMainWindow).unwrap(), "show_main_window");
     }
 
     #[test]

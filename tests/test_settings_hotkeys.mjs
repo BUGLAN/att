@@ -1,6 +1,6 @@
 // 设置页快捷键纯逻辑（src/components/settings/settingsHotkeys.mjs）单元测试。
-// 覆盖：四个快捷键的撞键判定（与后端 apply_settings_update 同规则：两边都启用才算撞），
-// 以及按住 / 点按两种录音快捷键的录入即启用、清空、同键二选一与首页提示。
+// 覆盖：五个快捷键的撞键判定（与后端 apply_settings_update 同规则：两边都启用才算撞），
+// 以及录音 / 显示主窗口快捷键的录入即启用、清空、恢复默认与首页提示。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -11,6 +11,7 @@ import {
   findHotkeyConflict,
   isHotkeyEnabled,
   recordHotkeySummary,
+  resetHotkey,
   sameHotkey
 } from '../src/components/settings/settingsHotkeys.mjs'
 
@@ -18,6 +19,7 @@ const RECORD = { modifiers: ['cmd', 'shift'], key: 'r' }
 const PANEL = { modifiers: ['ctrl', 'alt'], key: 'v' }
 const REWRITE = { modifiers: ['alt'], key: 'a' }
 const TOGGLE = { modifiers: ['cmd', 'shift'], key: 't', display: '⌘⇧T' }
+const SHOW_WINDOW = { modifiers: ['ctrl', 'shift'], key: 'm', display: '⌃⇧M' }
 
 function form(overrides = {}) {
   return {
@@ -29,14 +31,16 @@ function form(overrides = {}) {
     clipboard_panel_enabled: true,
     rewrite_hotkey: REWRITE,
     rewrite_enabled: true,
+    show_main_window_hotkey: SHOW_WINDOW,
+    show_main_window_enabled: false,
     ...overrides
   }
 }
 
-test('快捷键清单：按住录音 / 点按录音 / 剪贴板悬浮框 / 优化选中文本', () => {
+test('快捷键清单：按住录音 / 点按录音 / 剪贴板悬浮框 / 优化选中文本 / 显示主窗口', () => {
   assert.deepEqual(
     HOTKEY_TARGETS.map((target) => target.field),
-    ['hotkey', 'record_toggle_hotkey', 'clipboard_panel_hotkey', 'rewrite_hotkey']
+    ['hotkey', 'record_toggle_hotkey', 'clipboard_panel_hotkey', 'rewrite_hotkey', 'show_main_window_hotkey']
   )
 })
 
@@ -90,10 +94,46 @@ test('同一个键只能启用一种录音方式：先清空另一个才能录',
   assert.match(captureHotkey(toggleOnly, 'hotkey', same).error, /先清空「点按录音」/)
 })
 
-test('清空：只有两种录音快捷键可清空，其余用各自的开关', () => {
+test('清空：录音与显示主窗口快捷键可清空，其余用各自的开关', () => {
   assert.deepEqual(clearHotkey('record_toggle_hotkey'), { record_toggle_enabled: false })
+  assert.deepEqual(clearHotkey('show_main_window_hotkey'), { show_main_window_enabled: false })
   assert.equal(clearHotkey('rewrite_hotkey'), null)
   assert.equal(clearHotkey('clipboard_panel_hotkey'), null)
+})
+
+test('显示主窗口：默认为空，录入即启用，恢复默认清空', () => {
+  assert.equal(isHotkeyEnabled(form(), 'show_main_window_hotkey'), false)
+  const captured = captureHotkey(form(), 'show_main_window_hotkey', SHOW_WINDOW)
+  assert.deepEqual(captured, { patch: { show_main_window_hotkey: SHOW_WINDOW, show_main_window_enabled: true } })
+  const enabled = { ...form(), ...captured.patch }
+  assert.ok(isHotkeyEnabled(enabled, 'show_main_window_hotkey'))
+
+  assert.deepEqual(resetHotkey(enabled, 'show_main_window_hotkey', RECORD), {
+    patch: { show_main_window_enabled: false }
+  })
+  assert.equal(isHotkeyEnabled({ ...enabled, ...resetHotkey(enabled, 'show_main_window_hotkey', RECORD).patch }, 'show_main_window_hotkey'), false)
+
+  // 其余快捷键恢复默认仍然回到平台默认组合（并保持启用）
+  assert.deepEqual(resetHotkey(form(), 'hotkey', RECORD), { patch: { hotkey: RECORD, hotkey_enabled: true } })
+  assert.deepEqual(resetHotkey(form(), 'missing', RECORD), { error: '未知的快捷键' })
+})
+
+test('显示主窗口：和已启用的快捷键撞键时拒绝', () => {
+  const sameAsRewrite = form({ show_main_window_hotkey: REWRITE, show_main_window_enabled: true })
+  assert.equal(
+    captureHotkey(sameAsRewrite, 'show_main_window_hotkey', { ...REWRITE, display: '⌥A' }).error,
+    '⌥A 已用作优化选中文本快捷键，请换一个'
+  )
+  const otherRewrite = form({ rewrite_hotkey: { modifiers: ['alt'], key: 'x' }, show_main_window_hotkey: REWRITE, show_main_window_enabled: true })
+  assert.deepEqual(findHotkeyConflict(otherRewrite, 'clipboard_panel_hotkey', REWRITE), {
+    field: 'show_main_window_hotkey',
+    label: '显示主窗口'
+  })
+  assert.equal(
+    findHotkeyConflict(form(), 'rewrite_hotkey', SHOW_WINDOW),
+    null,
+    '显示主窗口关掉时不参与撞键判定'
+  )
 })
 
 test('录入非录音快捷键：撞上已启用的点按录音也拒绝，提示换一个', () => {

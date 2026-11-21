@@ -451,6 +451,8 @@ impl Actor {
             Some((state, show)) => crate::floating::update(&self.app, state, show),
             None => crate::floating::hide(&self.app),
         }
+        // 托盘菜单顶部的「开始 / 停止录音」跟随相位切换
+        crate::tray::refresh(&self.app);
         let _ = self.app.emit("recording:state", payload);
     }
 

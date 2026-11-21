@@ -1,4 +1,5 @@
-//! 系统托盘：四态图标（待命 = 品牌标「墨」，录音 / 转写 / 断开 = 状态章「聽 轉 斷」）+ 最近 10 条记录菜单（点击 = 复制并粘贴）+ 设置 + 退出。
+//! 系统托盘：四态图标（待命 = 品牌标「墨」，录音 / 转写 / 断开 = 状态章「聽 轉 斷」）+
+//! 开始 / 停止录音、打开主窗口 + 最近 10 条记录菜单（点击 = 复制并粘贴）+ 设置 + 退出。
 //!
 //! 菜单直接读 Rust 记录库（不依赖主窗口前端是否加载），录音/优化落库后由 Actor 调 [`refresh`]；
 //! 前端的 `update_tray_menu` 也只触发一次重建。
@@ -135,6 +136,10 @@ pub fn refresh(app: &AppHandle) {
 
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let menu = Menu::new(app)?;
+    let (record_label, record_enabled) = recording_menu(&recording_phase(app));
+    menu.append(&MenuItem::with_id(app, "record-toggle", record_label, record_enabled, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "open-main", "打开主窗口", true, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
     let records = app
         .try_state::<crate::AppState>()
         .map(|state| state.core.records.list(None, RECENT_LIMIT, 0))
@@ -155,6 +160,23 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     Ok(menu)
 }
 
+/// 当前录音相位（Actor 维护的最新快照；没有状态时按空闲处理）。
+fn recording_phase(app: &AppHandle) -> String {
+    app.try_state::<crate::AppState>()
+        .map(|state| state.recorder.state())
+        .and_then(|state| state.get("phase").and_then(|phase| phase.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "idle".into())
+}
+
+/// 托盘录音项：录音 / 建连中显示「停止录音」，其余显示「开始录音」；收尾中不能开始新一段。
+fn recording_menu(phase: &str) -> (&'static str, bool) {
+    match phase {
+        "connecting" | "recording" => ("停止录音", true),
+        "finalizing" => ("开始录音", false),
+        _ => ("开始录音", true),
+    }
+}
+
 fn record_text(record: &att_core::records::Record) -> Option<&str> {
     record
         .optimized_text
@@ -167,6 +189,16 @@ fn record_text(record: &att_core::records::Record) -> Option<&str> {
 fn on_menu(app: &AppHandle, id: &str) {
     match id {
         "quit" => app.exit(0),
+        "record-toggle" => {
+            let Some(state) = app.try_state::<crate::AppState>() else { return };
+            match recording_phase(app).as_str() {
+                "connecting" | "recording" => state.recorder.stop(),
+                // 收尾中的菜单项是灰的；这里再兜一层，避免点到后吞掉下一次录音
+                "finalizing" => {}
+                _ => state.recorder.start(),
+            }
+        }
+        "open-main" => crate::show_main_window(app),
         "settings" => {
             crate::show_main_window(app);
             let _ = app.emit_to("main", "navigate:settings", ());
@@ -231,5 +263,14 @@ mod tests {
         assert_eq!(truncate(&"字".repeat(45), 40), format!("{}...", "字".repeat(40)));
         assert_eq!(normalize("weird"), "idle");
         assert_eq!(format_time("not-a-time"), "");
+    }
+
+    #[test]
+    fn 录音菜单项_随相位切换() {
+        assert_eq!(recording_menu("connecting"), ("停止录音", true));
+        assert_eq!(recording_menu("recording"), ("停止录音", true));
+        assert_eq!(recording_menu("finalizing"), ("开始录音", false), "收尾中不能开始新一段");
+        assert_eq!(recording_menu("optimizing"), ("开始录音", true));
+        assert_eq!(recording_menu("idle"), ("开始录音", true));
     }
 }

@@ -80,6 +80,58 @@
 
     <section class="settings-section">
       <div class="settings-group">
+        <h3 class="settings-group-title">窗口</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">显示主窗口</span>
+            <span class="setting-desc">按下时显示并聚焦主窗口；主窗口已在前台时隐藏。</span>
+          </div>
+          <div class="hotkey-input-wrapper">
+            <BaseInput
+              :value="showMainWindowHotkeyDisplay"
+              class="hotkey-input"
+              :class="{ listening: isCapturingShowMainWindowHotkey }"
+              type="text"
+              readonly
+              aria-label="显示主窗口快捷键"
+              placeholder="未设置 · 点击录入"
+              @click="startHotkeyCapture('show_main_window_hotkey')"
+            />
+            <BaseButton
+              v-if="showMainWindowHotkeyDisplay"
+              variant="ghost"
+              icon
+              title="清空快捷键"
+              aria-label="清空显示主窗口快捷键"
+              @click="clearHotkey('show_main_window_hotkey')"
+            >
+              <template #icon>
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </template>
+            </BaseButton>
+            <BaseButton
+              variant="ghost"
+              icon
+              title="恢复默认快捷键"
+              aria-label="恢复显示主窗口默认快捷键"
+              @click="resetHotkey('show_main_window_hotkey')"
+            >
+              <template #icon>
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M4 10.5A8 8 0 1 1 6.6 17" />
+                  <path d="M4 5v5.5h5.5" />
+                </svg>
+              </template>
+            </BaseButton>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="settings-group">
         <h3 class="settings-group-title">优化选中文本</h3>
         <div class="setting-item">
           <div class="setting-info">
@@ -146,6 +198,8 @@ const {
   isCapturingHotkey,
   toggleHotkeyDisplay,
   isCapturingToggleHotkey,
+  showMainWindowHotkeyDisplay,
+  isCapturingShowMainWindowHotkey,
   rewriteHotkeyDisplay,
   isCapturingRewriteHotkey,
   hotkeyError,
