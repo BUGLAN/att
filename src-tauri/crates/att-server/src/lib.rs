@@ -759,21 +759,105 @@ async fn records_delete(
     }
 }
 
-/// 音频播放：完整文件回传（Content-Length 齐备即可供 <audio> 播放）。
-async fn records_audio(State(state): State<Arc<ServerState>>, Path(id): Path<String>) -> impl IntoResponse {
+/// 音频播放：支持单段 `Range` 请求（WebView 拖动进度条时按 206 回传），其余完整回传。
+async fn records_audio(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+    request_headers: HeaderMap,
+) -> impl IntoResponse {
     match state.core.records.audio_file(&id) {
         Ok(Some(path)) => match tokio::fs::read(&path).await {
             Ok(bytes) => {
+                let total = bytes.len() as u64;
                 let mut headers = HeaderMap::new();
                 headers.insert(header::CONTENT_TYPE, att_core::audio::audio_content_type(&path).parse().unwrap());
-                headers.insert(header::ACCEPT_RANGES, "none".parse().unwrap());
-                (StatusCode::OK, headers, bytes).into_response()
+                headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+                let range = request_headers.get(header::RANGE).and_then(|value| value.to_str().ok());
+                match parse_byte_range(range, total) {
+                    ByteRange::Unsatisfiable => {
+                        headers.insert(header::CONTENT_RANGE, format!("bytes */{total}").parse().unwrap());
+                        (StatusCode::RANGE_NOT_SATISFIABLE, headers).into_response()
+                    }
+                    ByteRange::Full => {
+                        headers.insert(header::CONTENT_LENGTH, total.to_string().parse().unwrap());
+                        (StatusCode::OK, headers, bytes).into_response()
+                    }
+                    ByteRange::Partial { start, end } => {
+                        let body = bytes[start as usize..=end as usize].to_vec();
+                        headers.insert(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}").parse().unwrap());
+                        headers.insert(header::CONTENT_LENGTH, (end - start + 1).to_string().parse().unwrap());
+                        (StatusCode::PARTIAL_CONTENT, headers, body).into_response()
+                    }
+                }
             }
             Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
         Ok(None) => err(StatusCode::NOT_FOUND, "音频不存在".into()).into_response(),
         Err(e) => map_record_error(e).into_response(),
     }
+}
+
+/// 单段 `Range` 的解析结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ByteRange {
+    /// 没有 `Range` 头，或语法不认识（其他单位 / 多段 / 非法）：按完整文件返回。
+    Full,
+    /// 可满足的单段闭区间（`end` 已按文件长度夹取）。
+    Partial { start: u64, end: u64 },
+    /// 语法合法但与文件没有交集：返回 416。
+    Unsatisfiable,
+}
+
+/// 解析 `Range: bytes=...`。只支持单段范围；多段、其他单位和非法语法一律忽略，
+/// 由调用方按完整文件 200 返回（RFC 9110 允许服务端忽略 Range）。
+fn parse_byte_range(value: Option<&str>, len: u64) -> ByteRange {
+    let Some(value) = value else {
+        return ByteRange::Full;
+    };
+    let Some((unit, spec)) = value.trim().split_once('=') else {
+        return ByteRange::Full;
+    };
+    if !unit.trim().eq_ignore_ascii_case("bytes") {
+        return ByteRange::Full;
+    }
+    let spec = spec.trim();
+    if spec.is_empty() || spec.contains(',') {
+        return ByteRange::Full;
+    }
+    let Some((start_text, end_text)) = spec.split_once('-') else {
+        return ByteRange::Full;
+    };
+    let start_text = start_text.trim();
+    let end_text = end_text.trim();
+
+    // `-N`：最后 N 个字节；N 为 0 或空文件时不可满足。
+    if start_text.is_empty() {
+        let Ok(suffix) = end_text.parse::<u64>() else {
+            return ByteRange::Full;
+        };
+        if suffix == 0 || len == 0 {
+            return ByteRange::Unsatisfiable;
+        }
+        return ByteRange::Partial { start: len.saturating_sub(suffix), end: len - 1 };
+    }
+
+    let Ok(start) = start_text.parse::<u64>() else {
+        return ByteRange::Full;
+    };
+    if start >= len {
+        return ByteRange::Unsatisfiable;
+    }
+    if end_text.is_empty() {
+        return ByteRange::Partial { start, end: len - 1 };
+    }
+    let Ok(end) = end_text.parse::<u64>() else {
+        return ByteRange::Full;
+    };
+    if end < start {
+        // `bytes=5-3` 语法非法，按忽略处理。
+        return ByteRange::Full;
+    }
+    ByteRange::Partial { start, end: end.min(len - 1) }
 }
 
 async fn records_export(
@@ -1107,6 +1191,23 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
+    async fn get_raw(
+        state: &Arc<ServerState>,
+        uri: &str,
+        extra_headers: &[(&str, &str)],
+    ) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let mut builder =
+            axum::http::Request::builder().uri(uri).header("x-att-token", "test-token").header("host", "127.0.0.1");
+        for (name, value) in extra_headers {
+            builder = builder.header(*name, *value);
+        }
+        let response = router(state.clone()).oneshot(builder.body(Body::empty()).unwrap()).await.unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, bytes.to_vec())
+    }
+
     async fn request_with_body(state: &Arc<ServerState>, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
         let response = router(state.clone())
             .oneshot(
@@ -1268,6 +1369,74 @@ mod tests {
             .unwrap();
         assert!(response.status().is_success(), "预检应成功，实际 {}", response.status());
         assert_eq!(response.headers()["access-control-allow-origin"], "http://127.0.0.1:8090");
+    }
+
+    #[tokio::test]
+    async fn 音频回放_单段范围返回206_越界返回416() {
+        let state = test_state("audio-range").await;
+        let content: Vec<u8> = (0..=255u8).collect();
+        std::fs::write(state.core.records.audio_dir().join("rec-x.flac"), &content).unwrap();
+        state.core.records.set_audio_path("rec-x", "rec-x.flac").unwrap();
+
+        // 没有 Range：完整回传，但声明支持字节范围
+        let (status, headers, body) = get_raw(&state, "/api/records/rec-x/audio", &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::ACCEPT_RANGES], "bytes");
+        assert_eq!(headers[header::CONTENT_TYPE], "audio/flac");
+        assert_eq!(headers[header::CONTENT_LENGTH], "256");
+        assert_eq!(body, content);
+
+        // 闭区间、开放结尾、后缀、超过文件长度、覆盖整个文件
+        for (range, expected_start, expected_end) in [
+            ("bytes=10-19", 10, 19),
+            ("bytes=250-", 250, 255),
+            ("bytes=-6", 250, 255),
+            ("bytes=0-9999", 0, 255),
+            ("bytes=0-", 0, 255),
+        ] {
+            let (status, headers, body) = get_raw(&state, "/api/records/rec-x/audio", &[("range", range)]).await;
+            assert_eq!(status, StatusCode::PARTIAL_CONTENT, "{range}");
+            assert_eq!(headers[header::ACCEPT_RANGES], "bytes", "{range}");
+            assert_eq!(
+                headers[header::CONTENT_RANGE].to_str().unwrap(),
+                format!("bytes {expected_start}-{expected_end}/256"),
+                "{range}"
+            );
+            assert_eq!(
+                headers[header::CONTENT_LENGTH].to_str().unwrap(),
+                (expected_end - expected_start + 1).to_string(),
+                "{range}"
+            );
+            assert_eq!(body.as_slice(), &content[expected_start..=expected_end], "{range}");
+        }
+
+        // 语法合法但与文件没有交集：416 + `Content-Range: bytes */总长`
+        for range in ["bytes=256-", "bytes=999-1000", "bytes=-0"] {
+            let (status, headers, body) = get_raw(&state, "/api/records/rec-x/audio", &[("range", range)]).await;
+            assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE, "{range}");
+            assert_eq!(headers[header::CONTENT_RANGE], "bytes */256", "{range}");
+            assert!(body.is_empty(), "{range}");
+        }
+
+        // 非法语法 / 多段范围 / 其他单位：忽略 Range，按完整文件返回
+        for range in ["bytes=abc", "bytes=5-3", "bytes=0-1,4-5", "items=0-1", "bytes="] {
+            let (status, _headers, body) = get_raw(&state, "/api/records/rec-x/audio", &[("range", range)]).await;
+            assert_eq!(status, StatusCode::OK, "{range}");
+            assert_eq!(body, content, "{range}");
+        }
+    }
+
+    #[test]
+    fn byte_range_解析_空文件与边界() {
+        assert_eq!(parse_byte_range(None, 10), ByteRange::Full);
+        assert_eq!(parse_byte_range(Some("bytes=0-0"), 10), ByteRange::Partial { start: 0, end: 0 });
+        assert_eq!(parse_byte_range(Some("bytes=9-"), 10), ByteRange::Partial { start: 9, end: 9 });
+        assert_eq!(parse_byte_range(Some("bytes=-1"), 10), ByteRange::Partial { start: 9, end: 9 });
+        assert_eq!(parse_byte_range(Some("bytes=-99"), 10), ByteRange::Partial { start: 0, end: 9 });
+        assert_eq!(parse_byte_range(Some("bytes=10-"), 10), ByteRange::Unsatisfiable);
+        assert_eq!(parse_byte_range(Some("bytes=0-0"), 0), ByteRange::Unsatisfiable);
+        assert_eq!(parse_byte_range(Some("bytes=-1"), 0), ByteRange::Unsatisfiable);
+        assert_eq!(parse_byte_range(Some("BYTES=0-0"), 10), ByteRange::Partial { start: 0, end: 0 });
     }
 
     #[tokio::test]

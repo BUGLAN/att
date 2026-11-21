@@ -64,11 +64,57 @@ pub fn flac_bytes_16k(samples: &[i16]) -> std::io::Result<Vec<u8>> {
         .map_err(|(_, error)| std::io::Error::other(format!("FLAC 编码参数无效: {error:?}")))?;
     let wide: Vec<i32> = samples.iter().map(|&s| i32::from(s)).collect();
     let source = flacenc::source::MemSource::from_samples(&wide, 1, 16, TARGET_RATE as usize);
-    let stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
+    let mut stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
         .map_err(|error| std::io::Error::other(format!("FLAC 编码失败: {error:?}")))?;
+    add_seektable(&mut stream, TARGET_RATE as usize)?;
     let mut sink = flacenc::bitsink::ByteSink::new();
     stream.write(&mut sink).map_err(|error| std::io::Error::other(format!("FLAC 写出失败: {error:?}")))?;
     Ok(sink.into_inner())
+}
+
+/// SEEKTABLE 的 seek point 间隔：10 秒一个，首点固定在 0。
+const FLAC_SEEKPOINT_INTERVAL_SECONDS: usize = 10;
+
+/// 给 flacenc 编出的流补一个标准 SEEKTABLE。
+///
+/// WebView2（Chromium/FFmpeg）对没有 SEEKTABLE 的 FLAC，靠近文件末尾的 seek 会失败：
+/// 6 秒录音 seek 到 5.4 秒报 `FFmpegDemuxer: demuxer seek failed`，补上只含 0 点的
+/// SEEKTABLE 后同一位置可正常 seek。seek point 的 `stream_offset` 相对第一个音频帧，
+/// 因此追加元数据块不会改变已算好的偏移。
+fn add_seektable(stream: &mut flacenc::component::Stream, sample_rate: usize) -> std::io::Result<()> {
+    use flacenc::component::{BitRepr, MetadataBlockData};
+
+    let interval = sample_rate.saturating_mul(FLAC_SEEKPOINT_INTERVAL_SECONDS).max(1);
+    let mut points = Vec::new();
+    let mut sample = 0u64;
+    let mut stream_offset = 0u64;
+    let mut next_target = 0u64;
+    for index in 0..stream.frame_count() {
+        let Some(frame) = stream.frame(index) else {
+            break;
+        };
+        let block_samples = frame.block_size() as u64;
+        if sample >= next_target {
+            points.push((sample, stream_offset, block_samples.min(u64::from(u16::MAX)) as u16));
+            next_target = (sample / interval as u64 + 1).saturating_mul(interval as u64);
+        }
+        stream_offset = stream_offset.saturating_add((frame.count_bits() / 8) as u64);
+        sample = sample.saturating_add(block_samples);
+    }
+    if points.is_empty() {
+        return Ok(());
+    }
+
+    let mut data = Vec::with_capacity(points.len() * 18);
+    for (sample_number, stream_offset, frame_samples) in points {
+        data.extend_from_slice(&sample_number.to_be_bytes());
+        data.extend_from_slice(&stream_offset.to_be_bytes());
+        data.extend_from_slice(&frame_samples.to_be_bytes());
+    }
+    let metadata = MetadataBlockData::new_unknown(3, &data)
+        .map_err(|error| std::io::Error::other(format!("SEEKTABLE 构造失败: {error:?}")))?;
+    stream.add_metadata_block(metadata);
+    Ok(())
 }
 
 /// 同目录临时文件 + rename 落盘（失败时清理临时文件）。
@@ -386,6 +432,34 @@ impl Segmenter {
 mod tests {
     use super::*;
 
+    /// 读 FLAC 元数据，返回音频帧起点和 SEEKTABLE 里的 (sample, offset, frame_samples)。
+    fn flac_seekpoints(bytes: &[u8]) -> (usize, Vec<(u64, u64, u16)>) {
+        assert_eq!(&bytes[..4], b"fLaC");
+        let mut pos = 4;
+        let mut points = Vec::new();
+        loop {
+            let header = bytes[pos];
+            let last = header & 0x80 != 0;
+            let kind = header & 0x7f;
+            let len = u32::from_be_bytes([0, bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]]) as usize;
+            let data = &bytes[pos + 4..pos + 4 + len];
+            if kind == 3 {
+                assert_eq!(len % 18, 0, "SEEKTABLE 长度必须是 18 的倍数");
+                for point in data.chunks_exact(18) {
+                    points.push((
+                        u64::from_be_bytes(point[0..8].try_into().unwrap()),
+                        u64::from_be_bytes(point[8..16].try_into().unwrap()),
+                        u16::from_be_bytes(point[16..18].try_into().unwrap()),
+                    ));
+                }
+            }
+            pos += 4 + len;
+            if last {
+                return (pos, points);
+            }
+        }
+    }
+
     #[test]
     fn 重采样_48k到16k_样本数与分块无关() {
         let input: Vec<f32> = (0..48_000).map(|i| (i as f32 * 0.001).sin()).collect();
@@ -419,6 +493,11 @@ mod tests {
         write_recording_16k(&path, &samples).unwrap();
         assert!(!dir.join(format!("a.{RECORDING_EXTENSION}.tmp")).exists(), "不留临时文件");
         assert_eq!(read_audio_16k_mono(&path).unwrap(), samples, "FLAC 必须逐样本无损");
+        let bytes = std::fs::read(&path).unwrap();
+        let (_, points) = flac_seekpoints(&bytes);
+        assert_eq!(points.len(), 1, "3 秒录音只需一个 0 点：浏览器 seek 依赖它");
+        assert_eq!(points[0].0, 0);
+        assert_eq!(points[0].1, 0);
         let flac_size = std::fs::metadata(&path).unwrap().len() as usize;
         assert!(flac_size < samples.len() * 2 * 3 / 4, "FLAC {flac_size} 字节，应明显小于 WAV");
         assert_eq!(audio_content_type(&path), "audio/flac");
@@ -427,6 +506,32 @@ mod tests {
         // 空录音也能编码（只有头）
         write_recording_16k(&dir.join("empty.flac"), &[]).unwrap();
         assert!(read_audio_16k_mono(&dir.join("empty.flac")).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flac_seektable_每十秒一个点且指向帧头() {
+        let samples = vec![0i16; 25 * TARGET_RATE as usize];
+        let bytes = flac_bytes_16k(&samples).unwrap();
+        let (audio_start, points) = flac_seekpoints(&bytes);
+        assert_eq!(points.len(), 3, "25 秒录音应有 0/10/20 秒三个 seek point");
+        assert_eq!(points[0], (0, 0, 4096));
+        for (index, expected_second) in [(1usize, 10u64), (2, 20)] {
+            let (sample, offset, frame_samples) = points[index];
+            let target = expected_second * u64::from(TARGET_RATE);
+            assert!((target..target + 4096).contains(&sample));
+            assert_eq!(frame_samples, 4096);
+            let frame = audio_start + offset as usize;
+            assert_eq!(bytes[frame], 0xFF, "seek point {index} 的偏移应指向帧头");
+            assert_eq!(bytes[frame + 1] & 0xFC, 0xF8, "seek point {index} 的偏移应指向帧头");
+        }
+
+        // 补元数据块后仍能正常解码
+        let dir = std::env::temp_dir().join(format!("att-audio-seektable-{}", std::process::id()));
+        let path = dir.join("seektable.flac");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(read_audio_16k_mono(&path).unwrap(), samples);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
