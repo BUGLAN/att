@@ -55,7 +55,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// 低于该时长视为误触（不建记录、不计费）。
 const MIN_DURATION_SECONDS: f64 = 0.3;
@@ -123,10 +123,61 @@ enum BatchPlan {
     DeepSeek { chunks: usize },
 }
 
-/// 多段模式：全部分段识别结束的等待上限（每段自身另有建连/收尾超时）。
-const MULTI_DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
+/// 多段模式的预算参数：每个在途任务的最长运行时间，以及配置错误的兜底下限。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MultiDrainPolicy {
+    segment_timeout: Duration,
+    fallback: Duration,
+}
+
+impl MultiDrainPolicy {
+    fn for_engine(engine: &stt::Engine, fallback: Duration) -> Self {
+        let segment_timeout = match engine {
+            // 单段的 FINISH_TIMEOUT 会再按音频时长加时；分段最长 10 秒，这里覆盖建连、推流和末包。
+            stt::Engine::Doubao(_) => {
+                doubao::CONNECT_TIMEOUT
+                    + doubao::FINISH_TIMEOUT
+                    + Duration::from_secs_f64(att_core::audio::MAX_SEGMENT_SECONDS / 2.0)
+                    + WATCHDOG_SLACK
+            }
+            stt::Engine::ChatGpt(config) => config.timeout,
+            // DeepSeek 在单个 10 秒分段内仍会按暂时性错误重试三次。
+            stt::Engine::DeepSeek(config) => {
+                config.timeout.saturating_mul(deepseek::MAX_ATTEMPTS_PER_CHUNK as u32) + Duration::from_secs(3)
+            }
+            // 本地推理没有上游请求超时；由运行时可配置值统一限制单段，避免模型卡死拖住整场录音。
+            stt::Engine::Local(_) => fallback,
+        };
+        Self { segment_timeout: segment_timeout.max(Duration::from_secs(1)), fallback }
+    }
+
+    fn budget(self, pending_segments: usize) -> Duration {
+        let rounds = pending_segments.div_ceil(MULTI_TRANSCRIBE_CONCURRENCY);
+        let derived = self
+            .segment_timeout
+            .saturating_mul(u32::try_from(rounds).unwrap_or(u32::MAX))
+            .saturating_add(MULTI_DRAIN_SCHEDULING_SLACK);
+        derived.max(self.fallback)
+    }
+}
+
+/// 解析多段收尾兜底：默认 120 秒，允许通过环境变量提高到最多 7 天；非法值继续使用默认值。
+fn parse_multi_drain_fallback(value: Option<&str>) -> Duration {
+    let seconds = value.and_then(|value| value.trim().parse::<u64>().ok()).filter(|seconds| *seconds > 0);
+    seconds.map(|seconds| Duration::from_secs(seconds.min(7 * 24 * 60 * 60))).unwrap_or(MULTI_DRAIN_DEFAULT_FALLBACK)
+}
+
+fn multi_drain_fallback_timeout() -> Duration {
+    parse_multi_drain_fallback(std::env::var("ATT_MULTI_DRAIN_FALLBACK_SECONDS").ok().as_deref())
+}
+
 /// 多段模式同时在途的识别请求上限：长录音分段很多时，避免瞬间打满在线接口或争抢本地推理锁。
 const MULTI_TRANSCRIBE_CONCURRENCY: usize = 2;
+/// 多段收尾的默认保底时间。实际等待会按剩余段数、并发上限和单段超时继续放大；
+/// 可用 `ATT_MULTI_DRAIN_FALLBACK_SECONDS` 覆盖，避免旧版本固定 120 秒在慢网络下截断尾段。
+const MULTI_DRAIN_DEFAULT_FALLBACK: Duration = Duration::from_secs(120);
+/// 多段收尾调度的少量余量，确保最后一批正好在单段超时边界返回时仍有提交结果的窗口。
+const MULTI_DRAIN_SCHEDULING_SLACK: Duration = Duration::from_secs(1);
 /// 收尾看门狗在各引擎自身超时之外再留的余量：正常情况下永远轮不到它，只兜「卡死」。
 const WATCHDOG_SLACK: Duration = Duration::from_secs(15);
 /// 看门狗取消会话后再等这么久；会话任务仍无回应（卡死 / 已崩溃）就不再等它，直接收尾。
@@ -210,6 +261,10 @@ struct Active {
     timed_out: bool,
     /// 用户点了取消：看门狗强制收尾时仍按取消处理（丢弃），不算识别超时
     user_cancelled: bool,
+    /// 多段任务关闭音频后回报的实际收尾预算；看门狗据此与 `multi_task` 使用同一个截止时间
+    multi_drain_budget: Option<watch::Receiver<Option<Duration>>>,
+    /// 多段任务迟迟没有回报预算时的兜底，同时用于推导本地推理的单段上限
+    multi_drain_policy: Option<MultiDrainPolicy>,
     /// 按住模式已松开、正处在松开缓冲里：(缓冲序号, 松开时刻)。重新按下时清掉，到点仍在才收尾
     pending_release: Option<(u64, Instant)>,
     /// 由「按住录音」键开始：只有这种会话在松开时收尾；点按录音 / 界面按钮开始的会话不理会松开
@@ -628,6 +683,8 @@ impl Actor {
             quiet_end: None,
             timed_out: false,
             user_cancelled: false,
+            multi_drain_budget: None,
+            multi_drain_policy: None,
             pending_release: None,
             held,
             started: Instant::now(),
@@ -657,8 +714,14 @@ impl Actor {
                 let segmenter =
                     att_core::audio::Segmenter::new(settings.silence_level as f64, settings.silence_threshold);
                 let app = self.app.clone();
+                let policy = MultiDrainPolicy::for_engine(&engine, multi_drain_fallback_timeout());
+                let (budget_tx, budget_rx) = watch::channel::<Option<Duration>>(None);
+                if let Some(active) = self.active.as_mut().filter(|active| active.id == id) {
+                    active.multi_drain_budget = Some(budget_rx);
+                    active.multi_drain_policy = Some(policy);
+                }
                 tauri::async_runtime::spawn(multi_task(
-                    id, engine, language, audio_rx, cancel_rx, segmenter, live, app, tx,
+                    id, engine, language, audio_rx, cancel_rx, segmenter, live, app, tx, policy, budget_tx,
                 ));
             }
         }
@@ -709,9 +772,15 @@ impl Actor {
             return;
         }
         let (id, mode) = (active.id, active.mode);
-        let budget = self.finalize_budget(mode, recorded);
+        let multi_budget = active.multi_drain_budget.take();
+        let multi_policy = active.multi_drain_policy;
         self.emit_state("finalizing", json!({ "message": message }));
-        self.arm_watchdog(id, Some(budget));
+        if let (Mode::Multi, Some(budget), Some(policy)) = (mode, multi_budget, multi_policy) {
+            self.arm_multi_watchdog(id, budget, policy.fallback);
+        } else {
+            let budget = self.finalize_budget(mode, recorded);
+            self.arm_watchdog(id, Some(budget));
+        }
     }
 
     /// 收尾看门狗：`budget` 到点先取消会话任务（它会带着已收内容回来），再过 [`WATCHDOG_GRACE`] 仍无回应就强制收尾。
@@ -724,6 +793,29 @@ impl Actor {
                 tokio::time::sleep(budget).await;
                 let _ = tx.send(Cmd::FinalizeTimeout(id, false));
             }
+            tokio::time::sleep(WATCHDOG_GRACE).await;
+            let _ = tx.send(Cmd::FinalizeTimeout(id, true));
+        });
+    }
+
+    /// 多段收尾先等会话任务在音频关闭后回报实际段数预算，再启动同额看门狗。
+    /// 音频迟迟不能关闭或会话任务提前退出时，用可配置兜底超时取消，避免 Actor 永久卡在收尾中。
+    fn arm_multi_watchdog(&self, id: u64, mut budget_rx: watch::Receiver<Option<Duration>>, fallback: Duration) {
+        let tx = self.tx.clone();
+        tauri::async_runtime::spawn(async move {
+            let announced = async {
+                loop {
+                    if let Some(budget) = *budget_rx.borrow_and_update() {
+                        break Some(budget);
+                    }
+                    if budget_rx.changed().await.is_err() {
+                        break None;
+                    }
+                }
+            };
+            let budget = tokio::time::timeout(fallback, announced).await.ok().flatten().unwrap_or(fallback);
+            tokio::time::sleep(budget).await;
+            let _ = tx.send(Cmd::FinalizeTimeout(id, false));
             tokio::time::sleep(WATCHDOG_GRACE).await;
             let _ = tx.send(Cmd::FinalizeTimeout(id, true));
         });
@@ -1252,7 +1344,8 @@ fn finalize_budget(mode: Mode, recorded: Duration, batch_timeout: Duration, plan
     let doubao = doubao::CONNECT_TIMEOUT + doubao::FINISH_TIMEOUT + Duration::from_secs(2);
     let engine = match mode {
         Mode::Streaming => doubao,
-        Mode::Multi => MULTI_DRAIN_TIMEOUT,
+        // 正常情况下多段走 `arm_multi_watchdog` 的动态预算；这里只兜内部状态异常时仍保证能收尾。
+        Mode::Multi => MULTI_DRAIN_DEFAULT_FALLBACK,
         Mode::Batch => match plan {
             BatchPlan::Single => batch_timeout.max(doubao + recorded / 2),
             BatchPlan::DeepSeek { chunks } => batch_timeout * (chunks.max(1) * deepseek::MAX_ATTEMPTS_PER_CHUNK) as u32,
@@ -1468,18 +1561,34 @@ fn spawn_multi_segment<F, Fut>(
     index: usize,
     semaphore: Arc<tokio::sync::Semaphore>,
     result_tx: mpsc::UnboundedSender<(usize, Result<stt::BatchTranscript, String>)>,
+    timeout: Duration,
     transcribe: F,
-) where
+) -> tokio::task::JoinHandle<()>
+where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<stt::BatchTranscript, String>> + Send + 'static,
 {
     tokio::spawn(async move {
         let result = match semaphore.acquire_owned().await {
-            Ok(_permit) => transcribe().await,
+            Ok(_permit) => match tokio::time::timeout(timeout, transcribe()).await {
+                Ok(result) => result,
+                Err(_) => Err(format!("多段第 {} 段识别超时", index + 1)),
+            },
             Err(_) => Err("多段识别并发控制已关闭".to_string()),
         };
         let _ = result_tx.send((index, result));
-    });
+    })
+}
+
+/// 取消或收尾结束时中止所有排队/在途分段，并等句柄真正退出。
+/// 排队任务还没拿到 permit 就会被 abort，因此不会在用户取消后继续发起 ASR 请求。
+async fn abort_multi_segments(tasks: &mut Vec<tokio::task::JoinHandle<()>>) {
+    for task in tasks.iter() {
+        task.abort();
+    }
+    while let Some(task) = tasks.pop() {
+        let _ = task.await;
+    }
 }
 
 /// 按原始分段顺序拼接成功结果；失败和超时段不参与拼接。
@@ -1507,16 +1616,23 @@ async fn multi_task(
     live: Arc<AtomicBool>,
     app: AppHandle,
     tx: mpsc::UnboundedSender<Cmd>,
+    policy: MultiDrainPolicy,
+    drain_budget_tx: watch::Sender<Option<Duration>>,
 ) {
     let mut all: Vec<i16> = Vec::new();
     let (result_tx, mut result_rx) = mpsc::unbounded_channel::<(usize, Result<stt::BatchTranscript, String>)>();
     let mut texts: Vec<Option<Result<stt::BatchTranscript, String>>> = Vec::new();
+    let mut segment_tasks = Vec::new();
     let segment_semaphore = Arc::new(tokio::sync::Semaphore::new(MULTI_TRANSCRIBE_CONCURRENCY));
-    let spawn_segment = |index: usize, segment: Vec<i16>| {
+    let mut spawn_segment = |index: usize, segment: Vec<i16>| {
         let (engine, language, result_tx) = (engine.clone(), language.clone(), result_tx.clone());
-        spawn_multi_segment(index, segment_semaphore.clone(), result_tx, move || async move {
-            engine.transcribe_pcm(&language, &segment).await
-        });
+        segment_tasks.push(spawn_multi_segment(
+            index,
+            segment_semaphore.clone(),
+            result_tx,
+            policy.segment_timeout,
+            move || async move { engine.transcribe_pcm(&language, &segment).await },
+        ));
     };
     let emit_partial = |text: &str| {
         if live.load(Ordering::SeqCst) {
@@ -1532,6 +1648,7 @@ async fn multi_task(
     while audio_open {
         tokio::select! {
             _ = &mut cancel_rx => {
+                abort_multi_segments(&mut segment_tasks).await;
                 let text = join_multi_texts(&texts);
                 let _ = tx.send(Cmd::Done(id, SessionOutcome {
                     samples: all, text, error: None, cancelled: true,
@@ -1560,11 +1677,15 @@ async fn multi_task(
     }
     drop(result_tx);
 
-    // 收尾：等全部分段识别结束（有总上限，不会永久卡在「正在转写」）
-    let deadline = tokio::time::Instant::now() + MULTI_DRAIN_TIMEOUT;
+    // 收尾：按实际剩余段数排满并发轮次；外层的动态看门狗共享同一个预算。
+    let pending = texts.iter().filter(|text| text.is_none()).count();
+    let budget = policy.budget(pending);
+    let _ = drain_budget_tx.send(Some(budget));
+    let deadline = tokio::time::Instant::now() + budget;
     while texts.iter().any(Option::is_none) {
         tokio::select! {
             _ = &mut cancel_rx => {
+                abort_multi_segments(&mut segment_tasks).await;
                 let text = join_multi_texts(&texts);
                 let _ = tx.send(Cmd::Done(id, SessionOutcome {
                     samples: all, text, error: None, cancelled: true,
@@ -1576,12 +1697,16 @@ async fn multi_task(
                     texts[index] = Some(result);
                     emit_partial(&join_multi_texts(&texts));
                 }
-                _ => break,
+                Ok(None) | Err(_) => break,
             },
         }
     }
+    abort_multi_segments(&mut segment_tasks).await;
+    while let Ok((index, result)) = result_rx.try_recv() {
+        texts[index] = Some(result);
+    }
     let text = join_multi_texts(&texts);
-    let pending = texts.iter().filter(|t| t.is_none()).count();
+    let pending = texts.iter().filter(|text| text.is_none()).count();
     let mut reasons = Vec::new();
     for result in &texts {
         match result {
@@ -1604,10 +1729,11 @@ async fn multi_task(
 #[cfg(test)]
 mod tests {
     use super::{
-        batch_plan, cancel_binding_modifiers, counts_as_timeout, finalize_budget, join_multi_texts, missing_voice,
-        no_voice_state, processing_seconds, quiet_end_reason, record_hotkey_step, recorded_until, spawn_multi_segment,
-        BatchPlan, Mode, Phase, RecordHotkeyStep, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS,
-        MULTI_TRANSCRIBE_CONCURRENCY, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
+        abort_multi_segments, batch_plan, cancel_binding_modifiers, counts_as_timeout, finalize_budget,
+        join_multi_texts, missing_voice, no_voice_state, parse_multi_drain_fallback, processing_seconds,
+        quiet_end_reason, record_hotkey_step, recorded_until, spawn_multi_segment, BatchPlan, Mode, MultiDrainPolicy,
+        Phase, RecordHotkeyStep, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, MULTI_DRAIN_DEFAULT_FALLBACK,
+        MULTI_DRAIN_SCHEDULING_SLACK, MULTI_TRANSCRIBE_CONCURRENCY, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
     };
     use att_core::settings::hotkey::HotkeyAction::{ClipboardPanel, Record, RecordToggle};
     use att_core::settings::hotkey::ModSet;
@@ -1780,7 +1906,7 @@ mod tests {
         for index in 0..20 {
             let (semaphore, result_tx) = (semaphore.clone(), result_tx.clone());
             let (active, peak) = (active.clone(), peak.clone());
-            spawn_multi_segment(index, semaphore, result_tx, move || {
+            spawn_multi_segment(index, semaphore, result_tx, Duration::from_secs(2), move || {
                 let (active, peak) = (active.clone(), peak.clone());
                 async move {
                     let now = active.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1806,6 +1932,99 @@ mod tests {
         assert!(peak.load(Ordering::SeqCst) <= MULTI_TRANSCRIBE_CONCURRENCY, "同时在途的分段识别任务超过上限");
         let expected = (1..=20).map(|index| format!("第 {index} 段")).collect::<Vec<_>>().join("\n\n");
         assert_eq!(join_multi_texts(&texts), expected, "分段完成顺序不能影响最终拼接顺序");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn 多段积压超过一百二十秒_动态预算仍拼接全部尾段() {
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
+
+        // 用毫秒缩放：三轮分段约 300ms 完成，旧的 120ms 兜底会丢掉后两轮；
+        // 单段预算放大到 2s，给并行测试调度留足余量。
+        let policy = MultiDrainPolicy { segment_timeout: Duration::from_secs(2), fallback: Duration::from_millis(120) };
+        let budget = policy.budget(6);
+        assert_eq!(budget, Duration::from_secs(6) + MULTI_DRAIN_SCHEDULING_SLACK, "6 段、并发 2 必须给三轮单段超时");
+
+        let semaphore = Arc::new(Semaphore::new(MULTI_TRANSCRIBE_CONCURRENCY));
+        let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tasks = Vec::new();
+        for index in 0..6 {
+            tasks.push(spawn_multi_segment(
+                index,
+                semaphore.clone(),
+                result_tx.clone(),
+                policy.segment_timeout,
+                move || async move {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Ok(att_core::stt::BatchTranscript { text: format!("第 {} 段", index + 1), warning: None })
+                },
+            ));
+        }
+        drop(result_tx);
+
+        let deadline = tokio::time::Instant::now() + budget;
+        let mut texts = vec![None; 6];
+        while texts.iter().any(Option::is_none) {
+            let (index, result) = tokio::time::timeout_at(deadline, result_rx.recv())
+                .await
+                .expect("动态预算内应完成全部积压分段")
+                .expect("分段结果通道提前关闭");
+            texts[index] = Some(result);
+        }
+        abort_multi_segments(&mut tasks).await;
+
+        let expected = (1..=6).map(|index| format!("第 {index} 段")).collect::<Vec<_>>().join("\n\n");
+        assert_eq!(join_multi_texts(&texts), expected);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn 多段取消后_排队任务不再发起识别请求() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
+
+        let semaphore = Arc::new(Semaphore::new(MULTI_TRANSCRIBE_CONCURRENCY));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (result_tx, _result_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tasks = Vec::new();
+        for index in 0..10 {
+            let calls = calls.clone();
+            tasks.push(spawn_multi_segment(
+                index,
+                semaphore.clone(),
+                result_tx.clone(),
+                Duration::from_secs(5),
+                move || async move {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    Ok(att_core::stt::BatchTranscript { text: String::new(), warning: None })
+                },
+            ));
+        }
+        drop(result_tx);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while calls.load(std::sync::atomic::Ordering::SeqCst) < MULTI_TRANSCRIBE_CONCURRENCY {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("在途分段没有启动");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), MULTI_TRANSCRIBE_CONCURRENCY);
+
+        abort_multi_segments(&mut tasks).await;
+        let after_abort = calls.load(std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), after_abort, "取消后排队分段仍调用了 ASR");
+        assert_eq!(after_abort, MULTI_TRANSCRIBE_CONCURRENCY);
+    }
+
+    #[test]
+    fn 多段兜底超时可由环境变量调整且非法值回落默认() {
+        assert_eq!(parse_multi_drain_fallback(None), MULTI_DRAIN_DEFAULT_FALLBACK);
+        assert_eq!(parse_multi_drain_fallback(Some("300")), Duration::from_secs(300));
+        assert_eq!(parse_multi_drain_fallback(Some("0")), MULTI_DRAIN_DEFAULT_FALLBACK);
+        assert_eq!(parse_multi_drain_fallback(Some("bad")), MULTI_DRAIN_DEFAULT_FALLBACK);
     }
 
     #[test]
