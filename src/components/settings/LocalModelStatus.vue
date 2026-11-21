@@ -1,5 +1,6 @@
 <template>
   <!-- 本地引擎的模型状态行 + 可安装模型列表：状态点 / 结论 / 失败原因折叠；模型行带下载、进度、取消与删除 -->
+  <!-- 已就绪时额外提供手动释放内存。 -->
   <div class="model-status" :class="`is-${view.state}`">
     <div class="model-status-head">
       <span class="model-status-dot" aria-hidden="true"></span>
@@ -7,6 +8,16 @@
         <span class="model-status-title">{{ view.title }}</span>
         <span class="model-status-desc" :class="{ 'is-mono': view.state === 'ready' }">{{ view.message }}</span>
       </div>
+      <BaseButton
+        v-if="view.state === 'ready'"
+        class="model-status-release"
+        variant="outline"
+        size="sm"
+        :loading="releasing"
+        @click="emit('release')"
+      >
+        释放内存
+      </BaseButton>
     </div>
 
     <!-- 加载中：底边一道扫过的金色光带（与选中卡片同款） -->
@@ -138,10 +149,14 @@ const props = defineProps({
   vadWarning: {
     type: String,
     default: ''
+  },
+  releasing: {
+    type: Boolean,
+    default: false
   }
 })
 
-defineEmits(['download', 'cancel', 'delete', 'reveal'])
+const emit = defineEmits(['download', 'cancel', 'delete', 'reveal', 'release'])
 
 // 详情按原顺序排成「说明 / 命令块」，命令单独成块便于复制
 const blocks = computed(() => hintBlocks(props.view.detail))
@@ -186,7 +201,7 @@ function lastProblem(model) {
 
 .model-status-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--s-3);
 }
 
@@ -210,6 +225,11 @@ function lastProblem(model) {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.model-status-release {
+  flex: none;
+  align-self: center;
 }
 
 .model-status-title {
@@ -447,5 +467,16 @@ function lastProblem(model) {
 @media (prefers-reduced-motion: reduce) {
   .model-status.is-loading .model-status-dot { animation: none; }
   .model-status-bar { animation: none; left: 0; width: 100%; opacity: 0.5; }
+}
+
+@media (max-width: 560px) {
+  .model-status-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .model-status-release {
+    margin-left: calc(6px + var(--s-3));
+  }
 }
 </style>

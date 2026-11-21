@@ -7,10 +7,20 @@ import {
   hintBlocks,
   hintSummary,
   localEngineView,
+  normalizeLocalModelIdleMinutes,
   recordingModeConflict,
   recordingModeOptions,
   splitHint
 } from '../src/components/settings/asrEngineStatus.mjs'
+
+test('本地模型空闲释放：缺省 15 分钟，0 关闭，无效值兜底', () => {
+  assert.equal(normalizeLocalModelIdleMinutes(undefined), 15)
+  assert.equal(normalizeLocalModelIdleMinutes(''), 15)
+  assert.equal(normalizeLocalModelIdleMinutes('not-a-number'), 15)
+  assert.equal(normalizeLocalModelIdleMinutes(0), 0)
+  assert.equal(normalizeLocalModelIdleMinutes('2.6'), 3)
+  assert.equal(normalizeLocalModelIdleMinutes(-3), 0)
+})
 
 test('录音模式：流式只有豆包可选，其余引擎置灰并说明原因', () => {
   const doubao = recordingModeOptions('doubao_asr')

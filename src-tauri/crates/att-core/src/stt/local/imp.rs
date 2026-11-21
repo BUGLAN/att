@@ -16,6 +16,7 @@ use att_qwen::{LocalQwen, QwenConfig, SileroVad};
 use att_whisper::{LocalWhisper, WhisperConfig, SAMPLE_RATE};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// 本地 Whisper 的 provider 标识（与设置 `asr_provider` 一致）。
 pub const WHISPER: &str = "whisper";
@@ -92,6 +93,9 @@ pub struct LocalEngine {
     /// 仅供 Whisper：先把非语音段剔掉（Silero VAD）
     vad: Option<Arc<SileroVad>>,
     model_dir: PathBuf,
+    /// 句柄存活期间计入活跃使用；后台空闲回收看到它就不会卸载。
+    #[allow(dead_code)]
+    use_guard: Option<Arc<UseGuard>>,
 }
 
 impl LocalEngine {
@@ -102,6 +106,7 @@ impl LocalEngine {
             whisper: Some(engine),
             qwen: None,
             vad,
+            use_guard: None,
         }
     }
 
@@ -112,7 +117,13 @@ impl LocalEngine {
             whisper: None,
             qwen: Some(engine),
             vad: None,
+            use_guard: None,
         }
+    }
+
+    fn with_use_guard(mut self, guard: Arc<UseGuard>) -> Self {
+        self.use_guard = Some(guard);
+        self
     }
 
     pub fn kind(&self) -> LocalKind {
@@ -327,6 +338,59 @@ struct Cached<T> {
     fingerprint: String,
 }
 
+#[derive(Debug, Default)]
+struct ModelUsage {
+    last_used: Option<Instant>,
+    active: usize,
+}
+
+#[derive(Debug, Default)]
+struct ModelActivity {
+    whisper: ModelUsage,
+    qwen: ModelUsage,
+}
+
+fn usage_mut(activity: &mut ModelActivity, kind: LocalKind) -> &mut ModelUsage {
+    match kind {
+        LocalKind::Whisper => &mut activity.whisper,
+        LocalKind::Qwen => &mut activity.qwen,
+    }
+}
+
+#[derive(Debug)]
+struct UseGuard {
+    activity: Arc<Mutex<ModelActivity>>,
+    kind: LocalKind,
+}
+
+impl Drop for UseGuard {
+    fn drop(&mut self) {
+        let mut activity = self.activity.lock().unwrap_or_else(|error| error.into_inner());
+        let usage = usage_mut(&mut activity, self.kind);
+        usage.active = usage.active.saturating_sub(1);
+        usage.last_used = Some(Instant::now());
+    }
+}
+
+fn begin_use(activity: &Arc<Mutex<ModelActivity>>, state: &mut ModelActivity, kind: LocalKind) -> Arc<UseGuard> {
+    let usage = usage_mut(state, kind);
+    usage.active += 1;
+    usage.last_used = Some(Instant::now());
+    Arc::new(UseGuard { activity: activity.clone(), kind })
+}
+
+fn reset_usage(state: &mut ModelActivity, kind: LocalKind) {
+    *usage_mut(state, kind) = ModelUsage::default();
+}
+
+fn idle_for(usage: &ModelUsage, now: Instant, threshold: Duration) -> Option<Duration> {
+    if threshold.is_zero() || usage.active > 0 {
+        return None;
+    }
+    let idle = now.saturating_duration_since(usage.last_used?);
+    (idle >= threshold).then_some(idle)
+}
+
 /// 本地引擎常驻池（懒加载、设置变化自动重建、可显式卸载）。
 #[derive(Default)]
 pub struct LocalModels {
@@ -343,6 +407,8 @@ pub struct LocalModels {
     queued: Mutex<Option<LocalKind>>,
     /// 最近一次加载失败：(引擎, 设置指纹, 原因)；设置一变指纹就对不上，自动作废
     failure: Mutex<Option<(LocalKind, String, String)>>,
+    /// 每个引擎最后一次使用时间和活跃句柄数。
+    activity: Arc<Mutex<ModelActivity>>,
 }
 
 /// 加载期间把 `loading` 置位，离开作用域（含 panic 展开）时复位，避免状态卡在「加载中」。
@@ -467,17 +533,31 @@ impl LocalModels {
         let settings = core.settings();
         let expected = fingerprint(kind, &settings, &core.models_dir);
         // 快路径：已加载且设置未变
-        if let Some(engine) = self.cached(kind, &expected) {
+        if let Some(engine) = self.acquire_cached(kind, &expected) {
             return Ok(engine);
         }
         let _guard = self.load_gate.lock().unwrap_or_else(|error| error.into_inner());
         // 二次检查：等锁期间可能已被其它请求加载
-        if let Some(engine) = self.cached(kind, &expected) {
+        if let Some(engine) = self.acquire_cached(kind, &expected) {
             return Ok(engine);
         }
         self.invalidate(kind);
         let _mark = LoadingMark::new(&self.loading, kind);
+        let started = Instant::now();
         let result = self.load(core, kind, expected.clone());
+        match &result {
+            Ok(engine) => tracing::info!(
+                "本地模型加载完成：{}（{}），耗时 {:.2}s",
+                kind.label(),
+                engine.device(),
+                started.elapsed().as_secs_f64()
+            ),
+            Err(error) => tracing::warn!(
+                "本地模型加载失败：{}，耗时 {:.2}s：{error}",
+                kind.label(),
+                started.elapsed().as_secs_f64()
+            ),
+        }
         let mut failure = self.failure.lock().unwrap_or_else(|error| error.into_inner());
         match &result {
             Ok(_) => *failure = None,
@@ -491,15 +571,19 @@ impl LocalModels {
             LocalKind::Whisper => {
                 let engine = Arc::new(LocalWhisper::load(&whisper_config(core))?);
                 let vad = self.vad(core);
-                *self.whisper.lock().unwrap_or_else(|error| error.into_inner()) =
-                    Some(Cached { engine: engine.clone(), fingerprint });
-                Ok(LocalEngine::whisper(engine, vad))
+                let mut slot = self.whisper.lock().unwrap_or_else(|error| error.into_inner());
+                let mut activity = self.activity.lock().unwrap_or_else(|error| error.into_inner());
+                let use_guard = begin_use(&self.activity, &mut activity, kind);
+                *slot = Some(Cached { engine: engine.clone(), fingerprint });
+                Ok(LocalEngine::whisper(engine, vad).with_use_guard(use_guard))
             }
             LocalKind::Qwen => {
                 let engine = Arc::new(LocalQwen::load(&qwen_config(core))?);
-                *self.qwen.lock().unwrap_or_else(|error| error.into_inner()) =
-                    Some(Cached { engine: engine.clone(), fingerprint });
-                Ok(LocalEngine::qwen(engine))
+                let mut slot = self.qwen.lock().unwrap_or_else(|error| error.into_inner());
+                let mut activity = self.activity.lock().unwrap_or_else(|error| error.into_inner());
+                let use_guard = begin_use(&self.activity, &mut activity, kind);
+                *slot = Some(Cached { engine: engine.clone(), fingerprint });
+                Ok(LocalEngine::qwen(engine).with_use_guard(use_guard))
             }
         }
     }
@@ -544,23 +628,111 @@ impl LocalModels {
         }
     }
 
+    /// 取缓存并在同一次槽位锁内登记活跃使用，避免回收线程在取用与登记之间清空句柄。
+    fn acquire_cached(&self, kind: LocalKind, expected: &str) -> Option<LocalEngine> {
+        match kind {
+            LocalKind::Whisper => {
+                let guard = self.whisper.lock().unwrap_or_else(|error| error.into_inner());
+                let cached = guard.as_ref().filter(|cached| cached.fingerprint == expected)?;
+                let mut activity = self.activity.lock().unwrap_or_else(|error| error.into_inner());
+                let use_guard = begin_use(&self.activity, &mut activity, kind);
+                let vad = self.vad.lock().unwrap_or_else(|error| error.into_inner()).clone();
+                Some(LocalEngine::whisper(cached.engine.clone(), vad).with_use_guard(use_guard))
+            }
+            LocalKind::Qwen => {
+                let guard = self.qwen.lock().unwrap_or_else(|error| error.into_inner());
+                let cached = guard.as_ref().filter(|cached| cached.fingerprint == expected)?;
+                let mut activity = self.activity.lock().unwrap_or_else(|error| error.into_inner());
+                let use_guard = begin_use(&self.activity, &mut activity, kind);
+                Some(LocalEngine::qwen(cached.engine.clone()).with_use_guard(use_guard))
+            }
+        }
+    }
+
     fn invalidate(&self, kind: LocalKind) {
         match kind {
-            LocalKind::Whisper => *self.whisper.lock().unwrap_or_else(|error| error.into_inner()) = None,
-            LocalKind::Qwen => *self.qwen.lock().unwrap_or_else(|error| error.into_inner()) = None,
+            LocalKind::Whisper => {
+                *self.whisper.lock().unwrap_or_else(|error| error.into_inner()) = None;
+            }
+            LocalKind::Qwen => {
+                *self.qwen.lock().unwrap_or_else(|error| error.into_inner()) = None;
+            }
         }
     }
 
     /// 卸载（`None` = 全部）：`/api/model-service/stop` 与设置页「释放模型」用。
     pub fn unload(&self, kind: Option<LocalKind>) {
         match kind {
-            Some(kind) => self.invalidate(kind),
+            Some(kind) => {
+                self.invalidate(kind);
+                if kind == LocalKind::Whisper {
+                    *self.vad.lock().unwrap_or_else(|error| error.into_inner()) = None;
+                }
+                tracing::info!("本地模型手动卸载：{}", kind.label());
+            }
             None => {
                 self.invalidate(LocalKind::Whisper);
                 self.invalidate(LocalKind::Qwen);
                 *self.vad.lock().unwrap_or_else(|error| error.into_inner()) = None;
+                tracing::info!("本地模型手动卸载：全部引擎");
             }
         }
+    }
+
+    /// 空闲回收：外部任务忙、正在加载或仍有活跃推理时都不卸载。
+    ///
+    /// 返回本次卸载的引擎数量；日志包含引擎与空闲时长，便于现场确认回收是否发生。
+    pub fn unload_idle(&self, threshold: Duration, externally_busy: bool) -> usize {
+        if externally_busy || threshold.is_zero() {
+            return 0;
+        }
+        let now = Instant::now();
+        [LocalKind::Whisper, LocalKind::Qwen]
+            .into_iter()
+            .filter(|&kind| self.unload_kind_if_idle(kind, threshold, now))
+            .count()
+    }
+
+    fn unload_kind_if_idle(&self, kind: LocalKind, threshold: Duration, now: Instant) -> bool {
+        if self.is_loading(kind) {
+            return false;
+        }
+        let idle = match kind {
+            LocalKind::Whisper => {
+                let mut slot = self.whisper.lock().unwrap_or_else(|error| error.into_inner());
+                if slot.as_ref().is_none() {
+                    return false;
+                }
+                let mut activity = self.activity.lock().unwrap_or_else(|error| error.into_inner());
+                let Some(idle) = idle_for(usage_mut(&mut activity, kind), now, threshold) else {
+                    return false;
+                };
+                *slot = None;
+                reset_usage(&mut activity, kind);
+                *self.vad.lock().unwrap_or_else(|error| error.into_inner()) = None;
+                idle
+            }
+            LocalKind::Qwen => {
+                let mut slot = self.qwen.lock().unwrap_or_else(|error| error.into_inner());
+                if slot.as_ref().is_none() {
+                    return false;
+                }
+                let mut activity = self.activity.lock().unwrap_or_else(|error| error.into_inner());
+                let Some(idle) = idle_for(usage_mut(&mut activity, kind), now, threshold) else {
+                    return false;
+                };
+                *slot = None;
+                reset_usage(&mut activity, kind);
+                idle
+            }
+        };
+        tracing::info!(
+            "本地模型空闲卸载：{}，空闲 {:.1} 分钟（阈值 {:.1} 分钟）",
+            kind.label(),
+            idle.as_secs_f64() / 60.0,
+            threshold.as_secs_f64() / 60.0
+        );
+        true
     }
 
     /// 就绪性探测：只看文件与池状态，绝不加载模型。
@@ -759,5 +931,43 @@ mod tests {
         assert!(models.vad(&core).is_none());
         assert!(!models.vad_loaded());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 空闲超时卸载_活跃使用与关闭自动释放时不卸载() {
+        let now = Instant::now();
+        let threshold = Duration::from_secs(60);
+        let mut usage = ModelUsage { last_used: Some(now - Duration::from_secs(61)), active: 0 };
+
+        assert_eq!(idle_for(&usage, now, threshold), Some(Duration::from_secs(61)));
+
+        usage.active = 1;
+        assert_eq!(idle_for(&usage, now, threshold), None, "活跃推理必须阻止卸载");
+
+        usage.active = 0;
+        assert_eq!(idle_for(&usage, now, Duration::ZERO), None, "0 分钟表示关闭自动卸载");
+        assert_eq!(
+            idle_for(&ModelUsage { last_used: Some(now - Duration::from_secs(59)), active: 0 }, now, threshold),
+            None,
+            "未到阈值不卸载"
+        );
+    }
+
+    #[test]
+    fn 使用守卫释放时刷新最后使用时间() {
+        let activity = Arc::new(Mutex::new(ModelActivity::default()));
+        let guard = {
+            let mut state = activity.lock().unwrap();
+            begin_use(&activity, &mut state, LocalKind::Qwen)
+        };
+        {
+            let state = activity.lock().unwrap();
+            assert_eq!(state.qwen.active, 1);
+            assert!(state.qwen.last_used.is_some());
+        }
+        drop(guard);
+        let state = activity.lock().unwrap();
+        assert_eq!(state.qwen.active, 0);
+        assert!(state.qwen.last_used.is_some());
     }
 }

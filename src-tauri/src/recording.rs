@@ -355,6 +355,10 @@ fn record_hotkey_step(action: HotkeyAction, key_phase: KeyPhase, phase: Phase, h
     }
 }
 
+fn recording_state_uses_asr(state: &Value) -> bool {
+    matches!(state.get("phase").and_then(Value::as_str), Some("connecting" | "recording" | "finalizing"))
+}
+
 #[derive(Clone)]
 pub struct RecordingController {
     tx: mpsc::UnboundedSender<Cmd>,
@@ -418,6 +422,13 @@ impl RecordingController {
     /// 最近一次发出的状态（前端挂载时同步用）。
     pub fn state(&self) -> Value {
         self.snapshot.lock().map(|s| s.clone()).unwrap_or_else(|_| json!({ "phase": "idle" }))
+    }
+
+    /// 录音会话是否仍需要或正在使用 ASR（采集、收尾转写阶段）。
+    ///
+    /// LLM 自动优化阶段已经拿到转写正文，不再占用本地 ASR 模型，因此允许空闲回收。
+    pub fn is_using_asr(&self) -> bool {
+        recording_state_uses_asr(&self.state())
     }
 }
 
@@ -2134,6 +2145,7 @@ async fn multi_task(
 
 #[cfg(test)]
 mod tests {
+    use super::recording_state_uses_asr;
     use super::{
         abort_multi_segments, batch_plan, cancel_binding_modifiers, compose_voice_rewrite_raw_text, counts_as_timeout,
         finalize_budget, join_multi_texts, missing_voice, no_voice_state, parse_multi_drain_fallback,
@@ -2218,6 +2230,16 @@ mod tests {
             settings.binding_of(Record).unwrap().modifiers,
             "普通录音仍跟随按住录音"
         );
+    }
+
+    #[test]
+    fn 录音状态_asr使用中判定覆盖采集与收尾() {
+        for phase in ["connecting", "recording", "finalizing"] {
+            assert!(recording_state_uses_asr(&json!({ "phase": phase })), "{phase}");
+        }
+        for phase in ["idle", "optimizing", "completed", "cancelled", "error"] {
+            assert!(!recording_state_uses_asr(&json!({ "phase": phase })), "{phase}");
+        }
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 use crate::state::CoreState;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// 本地 Whisper 的 provider 标识（与设置 `asr_provider` 一致）。
 pub const WHISPER: &str = "whisper";
@@ -150,6 +151,10 @@ impl LocalModels {
     pub fn finish_preload(&self, _kind: LocalKind) {}
 
     pub fn unload(&self, _kind: Option<LocalKind>) {}
+
+    pub fn unload_idle(&self, _threshold: Duration, _externally_busy: bool) -> usize {
+        0
+    }
 
     pub fn status(&self, _core: &CoreState, _kind: LocalKind) -> LocalStatus {
         LocalStatus {
