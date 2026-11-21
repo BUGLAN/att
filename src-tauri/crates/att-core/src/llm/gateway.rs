@@ -443,9 +443,7 @@ pub async fn chat_stream(
                 on_delta(&text);
                 got_text = true;
             }
-            if endpoint.spec.protocol == Protocol::Anthropic
-                && event.get("type").and_then(Value::as_str) == Some("message_stop")
-            {
+            if stream_ended(endpoint.spec.protocol, &event) {
                 done = true;
                 break;
             }
@@ -453,6 +451,9 @@ pub async fn chat_stream(
         if got_text {
             deadline = Instant::now() + budget.chunk_idle;
         }
+    }
+    if !done {
+        return Err(LlmError::new(CODE_PROVIDER, "流式响应在收到结束标记前中断，已收到的内容不完整"));
     }
     if result.finish_reason.is_empty() {
         result.finish_reason = "stop".into();
@@ -463,6 +464,16 @@ pub async fn chat_stream(
     result.latency_ms = started.elapsed().as_millis() as i64;
     log_success(model_string, &result, options);
     Ok(result)
+}
+
+/// 上游是否已明确结束本次流：`[DONE]` 在调用处单独处理，这里判断协议内的终止事件。
+fn stream_ended(protocol: Protocol, event: &Value) -> bool {
+    match protocol {
+        Protocol::OpenAiCompat => {
+            event.pointer("/choices/0/finish_reason").and_then(Value::as_str).is_some_and(|reason| !reason.is_empty())
+        }
+        Protocol::Anthropic => event.get("type").and_then(Value::as_str) == Some("message_stop"),
+    }
 }
 
 /// 解析一条 SSE 事件：返回正文增量，并把 finish_reason / usage 记进结果。
@@ -614,10 +625,92 @@ pub async fn list_remote_models(endpoint: &Endpoint) -> Result<Vec<String>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::testing::stub_server;
+    use crate::llm::testing::{stub_routes, stub_server, StubRoute};
 
     fn endpoint(provider: &str, base: &str, key: &str) -> Endpoint {
         Endpoint::resolve(registry::get(provider).unwrap(), Some(base), key, &BTreeMap::new()).unwrap()
+    }
+
+    fn stream_args() -> (Vec<ChatMessage>, ChatOptions, StreamBudget) {
+        (
+            vec![ChatMessage::new("user", "Hi")],
+            ChatOptions {
+                max_tokens: 64,
+                temperature: None,
+                timeout: Duration::from_secs(5),
+                retries: 0,
+                reasoning_effort: String::new(),
+            },
+            StreamBudget { first_token: Duration::from_secs(2), chunk_idle: Duration::from_secs(2) },
+        )
+    }
+
+    #[tokio::test]
+    async fn 流式收到_done_正常完成() {
+        let (base, _requests) = stub_routes(vec![StubRoute::sse(
+            "POST /chat/completions",
+            &[r#"{"choices":[{"delta":{"content":"你好"}}]}"#],
+        )])
+        .await;
+        let (messages, options, budget) = stream_args();
+        let result = chat_stream(&endpoint("custom", &base, ""), "openai/m", &messages, &options, budget, |_| {})
+            .await
+            .expect("DONE 应正常完成");
+        assert_eq!(result.text, "你好");
+        assert_eq!(result.finish_reason, "stop");
+    }
+
+    #[tokio::test]
+    async fn 流式只有_openai_finish_reason_正常完成() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":\"stop\"}]}\n\n";
+        let (base, _requests) = stub_routes(vec![StubRoute::sse_raw("POST /chat/completions", body)]).await;
+        let (messages, options, budget) = stream_args();
+        let result = chat_stream(&endpoint("custom", &base, ""), "openai/m", &messages, &options, budget, |_| {})
+            .await
+            .expect("finish_reason 应正常完成");
+        assert_eq!(result.text, "你好");
+        assert_eq!(result.finish_reason, "stop");
+    }
+
+    #[tokio::test]
+    async fn 流式_anthropic_message_stop_正常完成() {
+        let body = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let (base, _requests) = stub_routes(vec![StubRoute::sse_raw("POST /v1/messages", body)]).await;
+        let (messages, options, budget) = stream_args();
+        let result = chat_stream(
+            &endpoint("anthropic", &base, "ak-test"),
+            "anthropic/claude-x",
+            &messages,
+            &options,
+            budget,
+            |_| {},
+        )
+        .await
+        .expect("message_stop 应正常完成");
+        assert_eq!(result.text, "你好");
+        assert_eq!(result.finish_reason, "stop");
+        assert_eq!(result.total_tokens, 5);
+    }
+
+    #[tokio::test]
+    async fn 流式无终止事件直接_eof_返回不完整错误() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"半截\"}}]}\n\n";
+        let (base, _requests) = stub_routes(vec![StubRoute::sse_raw("POST /chat/completions", body)]).await;
+        let (messages, options, budget) = stream_args();
+        let mut received = String::new();
+        let error = chat_stream(&endpoint("custom", &base, ""), "openai/m", &messages, &options, budget, |delta| {
+            received.push_str(delta)
+        })
+        .await
+        .expect_err("缺少终止事件时不得按成功返回");
+        assert_eq!(error.code, CODE_PROVIDER);
+        assert!(error.message.contains("不完整"), "{}", error.message);
+        assert_eq!(received, "半截", "已收到的增量仍应回调，由上层决定不复用半截结果");
     }
 
     #[tokio::test]

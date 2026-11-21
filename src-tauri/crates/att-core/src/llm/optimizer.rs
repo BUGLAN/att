@@ -236,6 +236,7 @@ async fn run(
             on_event(OptimizeEvent::Delta(text.clone()));
             (text, result, true)
         }
+        // 已有增量时不重跑：保留已流出的内容，但必须报错并让上层把记录复位为已转写。
         Err(error) => return Err(error),
     };
     let success = OptimizeSuccess {
@@ -419,6 +420,36 @@ mod tests {
         };
         assert!(success.degraded);
         assert_eq!(deltas.lock().unwrap().as_slice(), ["明天开会。"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn 流式有增量后提前_eof_不回退且记录复位() {
+        let (base, mut requests) = stub_routes(vec![
+            StubRoute::sse_raw(
+                "POST /v1/chat/completions",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"半截优化\"}}]}\n\n",
+            ),
+            StubRoute::json(
+                "POST /v1/chat/completions",
+                200,
+                r#"{"choices":[{"message":{"content":"完整结果"},"finish_reason":"stop"}]}"#,
+            ),
+        ])
+        .await;
+        let (core, root) = setup(&base, "early-eof");
+        let (deltas, on_event) = collect();
+        let outcome = optimize_record(&core, "rec-1", "嗯那个明天开会", on_event).await;
+        let OptimizeOutcome::Failed(message) = outcome else { panic!("应报错: {outcome:?}") };
+        assert!(message.contains("不完整"), "{message}");
+        assert_eq!(deltas.lock().unwrap().as_slice(), ["半截优化"]);
+
+        let record = core.records.get("rec-1").unwrap();
+        assert_eq!(record.status, RecordStatus::Transcribed);
+        assert!(record.optimized_text.is_none(), "不得把半截结果落盘为 optimized");
+        assert!(record.error.unwrap().contains("不完整"));
+        requests.recv().await.unwrap();
+        assert!(requests.try_recv().is_err(), "已有增量时不得回退非流式重跑");
         let _ = std::fs::remove_dir_all(&root);
     }
 

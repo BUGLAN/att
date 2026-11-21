@@ -30,12 +30,17 @@ impl StubRoute {
 
     pub fn sse(request_line: &'static str, events: &[&str]) -> Self {
         let body = events.iter().map(|e| format!("data: {e}\n\n")).collect::<String>() + "data: [DONE]\n\n";
+        Self::sse_raw(request_line, body)
+    }
+
+    /// 原样返回 SSE 正文：调用方可自行决定是否带 `[DONE]` / `message_stop`。
+    pub fn sse_raw(request_line: &'static str, body: impl Into<String>) -> Self {
         Self {
             request_line,
             body_contains: Some(r#""stream":true"#),
             status: 200,
             content_type: "text/event-stream",
-            body,
+            body: body.into(),
             delay: Duration::ZERO,
         }
     }
