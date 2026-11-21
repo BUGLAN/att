@@ -266,6 +266,18 @@ export function useElectron() {
     return invoke('open_permission_settings', { id })
   }
 
+  // macOS 更新后首次启动的权限引导：{ show, previous_version, current_version, items }（浏览器模式没有）
+  async function getUpdatePermissionNotice() {
+    if (!isDesktop) return null
+    return invoke('get_update_permission_notice')
+  }
+
+  // 关掉更新后的权限引导（本次启动内不再提示）
+  async function dismissUpdatePermissionNotice() {
+    if (!isDesktop) return
+    return invoke('dismiss_update_permission_notice')
+  }
+
   // 设置页「诊断」「关于」：{ version, data_dir, log_file, prompts_dir, backend_port }
   async function getAppInfo() {
     if (!isDesktop) return null
@@ -358,6 +370,8 @@ export function useElectron() {
     getHotkeyStatus,
     getPermissionStatus,
     openPermissionSettings,
+    getUpdatePermissionNotice,
+    dismissUpdatePermissionNotice,
     getAppInfo,
     revealAppPath,
     onUpdateReady,

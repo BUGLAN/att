@@ -90,7 +90,9 @@ export const useAppStore = defineStore('app', () => {
     presetEdit: false,
     llmWizard: false,
     llmModelEdit: false,
-    llmProviderEdit: false
+    llmProviderEdit: false,
+    // macOS 更新后首次启动的权限引导（见 useUpdatePermissionGuide）
+    updatePermissionGuide: false
   })
 
   // Toast 队列：每条消息有独立 tone 与独立计时，最多同时展示 3 条

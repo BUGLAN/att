@@ -49,6 +49,7 @@
     <LLMWizardModal v-if="modals.llmWizard" />
     <LLMModelEditModal v-if="modals.llmModelEdit" />
     <LLMProviderEditModal v-if="modals.llmProviderEdit" />
+    <UpdatePermissionGuideModal v-if="modals.updatePermissionGuide" />
 
     <Toast />
   </div>
@@ -74,10 +75,12 @@ import PresetEditModal from '@/components/modals/PresetEditModal.vue'
 import LLMWizardModal from '@/components/modals/LLMWizardModal.vue'
 import LLMModelEditModal from '@/components/modals/LLMModelEditModal.vue'
 import LLMProviderEditModal from '@/components/modals/LLMProviderEditModal.vue'
+import UpdatePermissionGuideModal from '@/components/modals/UpdatePermissionGuideModal.vue'
 import Toast from '@/components/common/Toast.vue'
 
 import { useElectron } from '@/composables/useElectron'
 import { useTrayIcon } from '@/composables/useTrayIcon'
+import { useUpdatePermissionGuide } from '@/composables/useUpdatePermissionGuide'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
@@ -97,6 +100,7 @@ const {
 
 // 托盘图标：录音 / 转写由 useRecorder 直接切，这里补上"后端断连"那条边
 useTrayIcon()
+const { checkOnStartup: checkUpdatePermissions } = useUpdatePermissionGuide()
 
 const currentPage = computed(() => appStore.currentPage)
 const sidebarDisplayCollapsed = computed(() => appStore.sidebarDisplayCollapsed)
@@ -141,6 +145,9 @@ onMounted(async () => {
       }
     })
     .catch(() => {})
+
+  // macOS 更新后首次启动：输入监控 / 辅助功能没生效时弹一次重新授权的引导
+  void checkUpdatePermissions()
 
   await settingsStore.loadSettings()
 

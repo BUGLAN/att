@@ -21,6 +21,13 @@
             </BaseButton>
           </div>
         </div>
+        <div v-if="isDesktop && isMac" class="permission-update-note">
+          <span class="permission-update-note__title">更新后快捷键或自动粘贴失效？</span>
+          <span>{{ UPDATE_PERMISSION_REASON }}处理方法：</span>
+          <ol>
+            <li v-for="step in UPDATE_PERMISSION_STEPS" :key="step">{{ step }}</li>
+          </ol>
+        </div>
         <div v-if="isDesktop" class="settings-note">
           <span>{{ isDevBuild && platform === 'darwin' ? '开发态权限归属启动 tauri dev 的终端；授权后自动刷新。' : '授权后自动刷新。' }}</span>
           <BaseButton variant="ghost" size="sm" :loading="loading" @click="refresh">重新检测</BaseButton>
@@ -31,11 +38,12 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import { useAppStore } from '@/stores/app'
 import { useElectron } from '@/composables/useElectron'
+import { UPDATE_PERMISSION_REASON, UPDATE_PERMISSION_STEPS } from '@/components/settings/permissionGuide.mjs'
 
 const STATE_LABEL = { granted: '已授权', denied: '未授权', unknown: '未确认', not_required: '无需授权' }
 const STATE_TONE = { granted: 'ok', denied: 'warn', unknown: 'neutral', not_required: 'neutral' }
@@ -46,11 +54,16 @@ const { isDesktop, platform, getPermissionStatus, openPermissionSettings } = use
 const isDevBuild = import.meta.env.DEV
 const items = ref([])
 const loading = ref(false)
+// 更新后权限失效只发生在 macOS（Windows 的授权不按签名绑定）：以后端返回的平台为准，拿到之前按 UA 推断
+const reportedPlatform = ref('')
+const isMac = computed(() => (reportedPlatform.value || platform) === 'darwin')
 
 async function refresh() {
   loading.value = true
   try {
-    items.value = (await getPermissionStatus())?.items || []
+    const status = await getPermissionStatus()
+    items.value = status?.items || []
+    reportedPlatform.value = status?.platform || ''
   } catch (error) {
     console.warn('[Settings] 读取权限状态失败：', error)
   } finally {
@@ -84,5 +97,27 @@ onUnmounted(() => {
 <style scoped>
 .permission-actions {
   justify-content: flex-end;
+}
+
+.permission-update-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: var(--s-3);
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+.permission-update-note__title {
+  color: var(--text-1);
+}
+
+.permission-update-note ol {
+  margin: 0;
+  padding-left: 1.4em;
 }
 </style>

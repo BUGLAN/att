@@ -136,6 +136,9 @@ pub struct UserSettings {
     /// Windows 主窗口关闭行为：`tray` 隐藏到托盘，`quit` 直接退出。
     #[serde(default)]
     pub main_window_close_action: String,
+    /// 上次运行的应用版本：启动时与当前版本比较，判断是不是「更新后首次启动」（macOS 更新后权限可能失效）。
+    /// 只由启动流程写入，不在 PUT 白名单里；旧数据缺字段 = 空串
+    pub last_run_version: String,
     /// 剪贴板悬浮框里按回车：`paste` 粘贴到唤起前的应用；`copy` 只复制。
     /// 开关与快捷键存在 `hotkeys` 的 ClipboardPanel 绑定里（enabled 即开关）
     pub clipboard_panel_enter_action: String,
@@ -212,6 +215,7 @@ impl UserSettings {
             auto_download_updates: false,
             launch_at_login: false,
             main_window_close_action: "tray".into(),
+            last_run_version: String::new(),
             clipboard_panel_enter_action: "paste".into(),
             clipboard_panel_height: 244,
             clipboard_panel_max_width: 1280,
@@ -866,6 +870,25 @@ mod tests {
         apply_settings_update(&mut settings, &json!({"deepseek_asr_api_key_clear": true}), Platform::Windows, &crypto)
             .unwrap();
         assert!(settings.deepseek_asr_api_key_encrypted.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 上次运行版本_旧数据为空串_前端保存带回来也不改() {
+        let dir = temp_dir("last-run-version");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"asr_provider":"doubao_asr"}"#).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Macos);
+        assert_eq!(settings.last_run_version, "", "旧数据没有该字段 = 空串");
+
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        apply_settings_update(&mut settings, &json!({ "last_run_version": "9.9.9" }), Platform::Macos, &crypto)
+            .unwrap();
+        assert_eq!(settings.last_run_version, "", "只由启动流程写入，不在 PUT 白名单里");
+
+        settings.last_run_version = "2.9.0".into();
+        settings.save(&path).unwrap();
+        assert_eq!(UserSettings::load(&path, Platform::Macos).last_run_version, "2.9.0");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

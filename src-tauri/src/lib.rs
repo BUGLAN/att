@@ -45,6 +45,8 @@ pub struct AppState {
     pub recorder: recording::RecordingController,
     /// 全局热键不可用的原因（权限缺失等），前端挂载后可查询
     pub hotkey_error: std::sync::Mutex<Option<String>>,
+    /// 更新后首次启动时记下的更新前版本（没记过版本号的旧版本为空串）；不是更新后首次启动或引导关掉后为 None
+    pub update_notice: std::sync::Mutex<Option<String>>,
 }
 
 pub fn run() {
@@ -126,6 +128,8 @@ pub fn run() {
                 );
             }
 
+            // 启动前就有 settings.json = 不是全新安装（判断「从没记过版本号的旧版本升级上来」用）
+            let had_settings = data_dir.join("settings.json").is_file();
             let mut core = CoreState::init(&data_dir, Platform::current())
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
             // 提示词预设：开发态用仓库 prompts/，打包版用随包资源（bundle.resources）
@@ -137,6 +141,21 @@ pub fn run() {
                 Ok(true) => tracing::info!("开机自启：系统登录项已启用"),
                 Ok(false) => tracing::debug!("开机自启：系统登录项未启用"),
                 Err(error) => tracing::warn!("{error}"),
+            }
+            // 更新后首次启动：记下更新前的版本，主窗口据此检查权限并引导重新授权（见 permissions::update_notice）
+            let updated_from = permissions::previous_version_if_updated(
+                &core.settings().last_run_version,
+                &core.app_version,
+                had_settings,
+            );
+            if core.settings().last_run_version != core.app_version {
+                let version = core.app_version.clone();
+                if let Err(error) = core.update_settings(|settings| settings.last_run_version = version) {
+                    tracing::warn!("记录本次运行版本失败: {error}");
+                }
+            }
+            if let Some(previous) = &updated_from {
+                tracing::info!("更新后首次启动：{} → {}", if previous.is_empty() { "旧版本" } else { previous }, core.app_version);
             }
             let core = Arc::new(core);
             // 上次退出时还在「重新识别」的记录：后台任务随进程没了，标成失败（文字不动），免得一直显示「转写中」。
@@ -210,6 +229,7 @@ pub fn run() {
                 shutdown_tx,
                 recorder,
                 hotkey_error: std::sync::Mutex::new(hotkey_error),
+                update_notice: std::sync::Mutex::new(updated_from),
             });
 
             // 主窗口在 setup 里手工创建（而非 tauri.conf 声明）：
@@ -296,6 +316,8 @@ pub fn run() {
             commands::allow_transcribe_path,
             commands::get_permission_status,
             commands::open_permission_settings,
+            commands::get_update_permission_notice,
+            commands::dismiss_update_permission_notice,
             commands::get_app_info,
             commands::reveal_app_path,
         ])

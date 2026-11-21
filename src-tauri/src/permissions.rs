@@ -2,6 +2,10 @@
 //!
 //! 只查询、不触发系统弹窗（弹窗由真正使用该能力时触发）；「打开系统设置」直达对应的隐私面板。
 //! 开发态这些权限归属启动 `tauri dev` 的终端应用。
+//!
+//! 更新后首次启动的引导：macOS 的「输入监控」「辅助功能」授权按代码签名绑定，ad-hoc 签名每次构建都变，
+//! 应用内更新后旧授权不再生效，系统设置里旧条目却仍显示开启。启动时比较上次运行的版本，
+//! 更新后首次启动且这两项没生效时，主窗口弹一次引导（见 [`update_notice`]）。
 
 use serde_json::{json, Value};
 
@@ -86,6 +90,50 @@ pub fn status() -> Value {
     json!({ "platform": att_core::Platform::current().as_str(), "items": items })
 }
 
+/// 更新后可能失效、要引导重新授权的两项（授权按代码签名绑定）。
+const RELAUNCH_SENSITIVE: [&str; 2] = ["input_monitoring", "accessibility"];
+
+/// 本次启动是不是「更新后首次启动」：是则返回更新前的版本（更早的版本没记过版本号时为空串）。
+///
+/// `had_settings`：启动前数据目录里已有 settings.json——没记过版本号时据此区分「全新安装」与「从旧版本升级」。
+pub fn previous_version_if_updated(last_run: &str, current: &str, had_settings: bool) -> Option<String> {
+    let last = last_run.trim();
+    if last.is_empty() {
+        return had_settings.then(String::new);
+    }
+    (last != current.trim()).then(|| last.to_string())
+}
+
+/// 从权限清单里挑出要引导重新授权的项：输入监控、辅助功能里没生效的。
+fn relaunch_items(items: &[Value]) -> Vec<Value> {
+    items
+        .iter()
+        .filter(|item| {
+            let id = item["id"].as_str().unwrap_or_default();
+            RELAUNCH_SENSITIVE.contains(&id) && item["state"] != "granted" && item["state"] != "not_required"
+        })
+        .cloned()
+        .collect()
+}
+
+/// 更新后首次启动的权限引导：`previous` 为 None 表示不是更新后首次启动（或引导已关掉）。
+/// `show` 为 true 时 `items` 是要重新授权的项；权限都正常就不提示。
+pub fn update_notice(previous: Option<&str>, current: &str) -> Value {
+    let items = match previous {
+        Some(_) if cfg!(target_os = "macos") => {
+            let status = status();
+            relaunch_items(status["items"].as_array().map(Vec::as_slice).unwrap_or_default())
+        }
+        _ => Vec::new(),
+    };
+    json!({
+        "show": !items.is_empty(),
+        "previous_version": previous,
+        "current_version": current,
+        "items": items,
+    })
+}
+
 /// 打开对应的系统隐私设置面板。
 pub fn open_settings(id: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -124,4 +172,42 @@ pub fn reveal(path: &std::path::Path) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", windows)))]
     let result = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn();
     result.map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 更新后首次启动_按上次运行版本判断() {
+        assert_eq!(previous_version_if_updated("2.8.0", "2.9.0", true).as_deref(), Some("2.8.0"));
+        assert_eq!(previous_version_if_updated("2.9.0", "2.9.0", true), None, "同一版本再次启动不算");
+        assert_eq!(previous_version_if_updated("", "2.9.0", false), None, "全新安装不算");
+        assert_eq!(
+            previous_version_if_updated("", "2.9.0", true).as_deref(),
+            Some(""),
+            "从没记过版本号的旧版本升级上来算，更新前版本未知"
+        );
+    }
+
+    #[test]
+    fn 引导项_只挑输入监控与辅助功能里没生效的() {
+        let items = vec![
+            item("microphone", "麦克风", "", "denied"),
+            item("input_monitoring", "输入监控", "", "denied"),
+            item("accessibility", "辅助功能", "", "granted"),
+        ];
+        let picked = relaunch_items(&items);
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0]["id"], "input_monitoring");
+        assert!(relaunch_items(&[item("accessibility", "辅助功能", "", "not_required")]).is_empty());
+    }
+
+    #[test]
+    fn 不是更新后首次启动_不提示() {
+        let notice = update_notice(None, "2.9.0");
+        assert_eq!(notice["show"], false);
+        assert_eq!(notice["items"], json!([]));
+        assert_eq!(notice["current_version"], "2.9.0");
+    }
 }

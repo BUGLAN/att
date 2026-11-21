@@ -402,6 +402,20 @@ pub fn open_permission_settings(id: String) -> Result<(), String> {
     crate::permissions::open_settings(&id)
 }
 
+/// 更新后首次启动的权限引导：`{ show, previous_version, current_version, items }`。
+/// 不是更新后首次启动、引导已关掉、或权限都正常时 `show` 为 false。
+#[tauri::command]
+pub fn get_update_permission_notice(app: AppHandle, state: State<'_, AppState>) -> Value {
+    let previous = state.update_notice.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    crate::permissions::update_notice(previous.as_deref(), &app.package_info().version.to_string())
+}
+
+/// 关掉更新后的权限引导（本次启动内不再提示；下次启动版本号已一致，也不会再出现）。
+#[tauri::command]
+pub fn dismiss_update_permission_notice(state: State<'_, AppState>) {
+    *state.update_notice.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 /// 诊断信息：版本、数据目录、日志文件、提示词目录、数据面端口。
 #[tauri::command]
 pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> Value {
