@@ -270,11 +270,20 @@ pub fn run() {
             }
             if let Some(state) = app.try_state::<AppState>() {
                 clipboard::start(state.core.clone());
-                // 剪贴板历史上限：每小时检查一次（启动时先查一次，应用关着的那些天也算进保留天数）
-                let prune_core = state.core.clone();
-                let _ = std::thread::Builder::new().name("att-clipboard-prune".into()).spawn(move || loop {
-                    prune_core.prune_clipboard();
-                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                // 定期清理（启动时先跑一次，应用关着的那些天也算进保留期）：
+                // 剪贴板历史上限每小时一次，录音音频保留期每天一次；不限 / 永久时什么都不做
+                let housekeeping_core = state.core.clone();
+                let _ = std::thread::Builder::new().name("att-housekeeping".into()).spawn(move || {
+                    const HOUR: std::time::Duration = std::time::Duration::from_secs(3600);
+                    let mut last_audio_prune: Option<std::time::Instant> = None;
+                    loop {
+                        housekeeping_core.prune_clipboard();
+                        if last_audio_prune.is_none_or(|at| at.elapsed() >= HOUR * 24) {
+                            housekeeping_core.prune_record_audio();
+                            last_audio_prune = Some(std::time::Instant::now());
+                        }
+                        std::thread::sleep(HOUR);
+                    }
                 });
             }
 

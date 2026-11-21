@@ -363,6 +363,7 @@ function normalizeSettings(value = {}) {
     clipboard_panel_enter_action: value.clipboard_panel_enter_action === 'copy' ? 'copy' : 'paste',
     clipboard_max_items: normalizeLimit(value.clipboard_max_items),
     clipboard_retention_days: normalizeLimit(value.clipboard_retention_days),
+    audio_retention_days: normalizeLimit(value.audio_retention_days),
     rewrite_enabled: value.rewrite_enabled ?? true,
     rewrite_hotkey: normalizeHotkeyConfig(value.rewrite_hotkey, getDefaultRewriteHotkey()),
     // 空串 = 跟随默认优化预设
@@ -412,6 +413,7 @@ function buildSettingsPayload() {
     clipboard_panel_enter_action: form.value.clipboard_panel_enter_action,
     clipboard_max_items: normalizeLimit(form.value.clipboard_max_items),
     clipboard_retention_days: normalizeLimit(form.value.clipboard_retention_days),
+    audio_retention_days: normalizeLimit(form.value.audio_retention_days),
     rewrite_enabled: Boolean(form.value.rewrite_enabled),
     rewrite_hotkey: normalizeHotkeyConfig(form.value.rewrite_hotkey, getDefaultRewriteHotkey()),
     rewrite_preset_id: form.value.rewrite_preset_id || '',

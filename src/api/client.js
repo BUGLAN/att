@@ -467,6 +467,12 @@ export const api = {
   checkAsrCredential: (provider) => request('POST', '/asr/credential-check', { body: { provider }, timeout: SLOW_TIMEOUT_MS }),
   // 全部识别引擎能不能用（凭据齐备 / 本地模型就位，不发网络请求）：{ current, engines: [{ provider, label, available, error }] }
   getAsrEngines: () => request('GET', '/asr/engines'),
+  // 数据占用（缓存 1 分钟，refresh 时重新统计）：{ items: [{ key, label, path, files, bytes }], total_bytes, measured_at }
+  getStorageUsage: (refresh = false) => request('GET', `/storage${refresh ? '?refresh=true' : ''}`, {
+    timeout: SLOW_TIMEOUT_MS
+  }),
+  // 清空 audio/orphans/（迁移隔离的未认领录音）：{ deleted, bytes }
+  clearOrphanAudio: () => request('POST', '/storage/orphans/clear', { timeout: SLOW_TIMEOUT_MS }),
   getStreamingServiceStatus: () => request('GET', '/model-service'),
   startStreamingService: (waitUntilReady = true) => request('POST', '/model-service/start', {
     timeout: SLOW_TIMEOUT_MS,

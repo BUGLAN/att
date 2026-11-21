@@ -60,6 +60,8 @@ pub const CLIPBOARD_PANEL_HEIGHT_RANGE: (i64, i64) = (200, 480);
 pub const CLIPBOARD_MAX_ITEMS_LIMIT: i64 = 100_000;
 /// 剪贴板历史保留天数的最大可设值（0 = 永久）。
 pub const CLIPBOARD_RETENTION_DAYS_LIMIT: i64 = 3650;
+/// 录音音频保留天数的最大可设值（0 = 永久）。
+pub const AUDIO_RETENTION_DAYS_LIMIT: i64 = 3650;
 /// 剪贴板悬浮框最大宽度的允许范围（逻辑像素）；0 单独表示铺满屏幕。
 pub const CLIPBOARD_PANEL_WIDTH_RANGE: (i64, i64) = (720, 3840);
 
@@ -163,6 +165,9 @@ pub struct UserSettings {
     /// 剪贴板历史保留天数（0 = 永久，见 [`CLIPBOARD_RETENTION_DAYS_LIMIT`]）：超过天数没再复制过的删除，置顶和收藏除外
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub clipboard_retention_days: i64,
+    /// 录音音频保留天数（0 = 永久，见 [`AUDIO_RETENTION_DAYS_LIMIT`]）：超过天数的记录只删音频文件，记录与文字保留；收藏的不删
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub audio_retention_days: i64,
     /// 透明透传键：仅存在于 PUT 白名单（与 Python 行为一致），UI 选择后原样保存。
     pub audio_input_device: Option<String>,
     // ---- 录音 ----
@@ -232,6 +237,7 @@ impl UserSettings {
             clipboard_panel_bottom_offset: 0,
             clipboard_max_items: 0,
             clipboard_retention_days: 0,
+            audio_retention_days: 0,
             audio_input_device: None,
             recording_mode: "single".into(),
             silence_threshold: 1.5,
@@ -525,6 +531,16 @@ pub fn apply_settings_update(
                     ));
                 }
                 settings.clipboard_retention_days = parsed;
+            }
+            "audio_retention_days" => {
+                let mut parsed = 0;
+                set_i64(&mut parsed, key, value, &type_error)?;
+                if !(0..=AUDIO_RETENTION_DAYS_LIMIT).contains(&parsed) {
+                    return Err(format!(
+                        "字段 audio_retention_days 必须在 0~{AUDIO_RETENTION_DAYS_LIMIT} 之间（0 = 永久）"
+                    ));
+                }
+                settings.audio_retention_days = parsed;
             }
             "main_window_close_action" => {
                 let action = value.as_str().ok_or_else(|| type_error("字符串"))?;
@@ -930,6 +946,22 @@ mod tests {
         settings.save(&path).unwrap();
         let reloaded = UserSettings::load(&path, Platform::Macos);
         assert_eq!((reloaded.clipboard_max_items, reloaded.clipboard_retention_days), (50, 30));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 录音音频保留天数_默认永久_范围校验() {
+        let dir = temp_dir("audio-retention");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"asr_provider":"doubao_asr"}"#).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Macos);
+        assert_eq!(settings.audio_retention_days, 0, "旧数据 = 永久保留");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        apply_settings_update(&mut settings, &json!({ "audio_retention_days": 30 }), Platform::Macos, &crypto).unwrap();
+        assert_eq!(settings.audio_retention_days, 30);
+        assert!(apply_settings_update(&mut settings, &json!({ "audio_retention_days": -1 }), Platform::Macos, &crypto)
+            .is_err());
+        assert_eq!(settings.audio_retention_days, 30, "越界值不能留下");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -14,6 +14,7 @@
 //! - 模型服务三端点（在线引擎凭据配齐即就绪；凭据验证确定失败时不就绪）
 //! - /api/asr/credential-check：在线引擎凭据验证（见 [`asr`]）
 //! - /api/update：检查更新与安装包下载（见 [`update`]）
+//! - /api/storage：数据占用统计与清理孤儿音频（见 [`storage`]）
 //! - 录音由 Rust 录音 Actor 直接完成（Tauri 命令），没有录音上传 / 多段会话类 HTTP 端点
 //!
 //! 两个 WebSocket 端点（/api/ws、/api/asr/stream）按 D4 决策**移除**：
@@ -22,6 +23,7 @@
 mod asr;
 mod clipboard;
 mod llm;
+mod storage;
 mod transcribe;
 mod update;
 
@@ -94,6 +96,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .merge(asr::routes())
         // 检查更新（设置页「关于」）
         .merge(update::routes())
+        // 存储管理（设置页「诊断」）
+        .merge(storage::routes())
         .layer(middleware::from_fn(move |req, next| {
             let token = guard_token.clone();
             async move { data_plane_guard(token, req, next).await }
@@ -498,6 +502,11 @@ async fn settings_put(
             if body.get("clipboard_max_items").is_some() || body.get("clipboard_retention_days").is_some() {
                 let core = state.core.clone();
                 tokio::task::spawn_blocking(move || core.prune_clipboard());
+            }
+            // 改了录音音频保留天数：立即按新天数删一次过期音频（永久保留时什么都不做）
+            if body.get("audio_retention_days").is_some() {
+                let core = state.core.clone();
+                tokio::task::spawn_blocking(move || core.prune_record_audio());
             }
             if !outcome.runtime_keys_changed.is_empty() {
                 tracing::info!("运行时设置变更: {:?}", outcome.runtime_keys_changed);
@@ -1318,6 +1327,34 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(error["detail"]["manual_only"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn 存储_各部分占用_清理孤儿音频后重算() {
+        let state = test_state("storage").await;
+        std::fs::write(state.core.records.audio_dir().join("a.flac"), vec![0u8; 300]).unwrap();
+        let orphans = state.core.data_dir.join("audio").join("orphans");
+        std::fs::create_dir_all(&orphans).unwrap();
+        std::fs::write(orphans.join("old.wav"), vec![0u8; 50]).unwrap();
+
+        let (status, report) = get_json(&state, "/api/storage?refresh=true").await;
+        assert_eq!(status, StatusCode::OK, "{report}");
+        let item = |report: &Value, key: &str| {
+            report["items"].as_array().unwrap().iter().find(|i| i["key"] == key).cloned().unwrap()
+        };
+        let keys: Vec<&str> = report["items"].as_array().unwrap().iter().map(|i| i["key"].as_str().unwrap()).collect();
+        assert_eq!(keys, ["audio", "records", "clipboard", "logs", "orphans", "models"]);
+        assert_eq!(item(&report, "audio")["bytes"], json!(300));
+        assert_eq!(item(&report, "orphans")["files"], json!(1));
+        assert!(report["total_bytes"].as_u64().unwrap() >= 350);
+
+        let (status, cleared) = request_with_body(&state, "POST", "/api/storage/orphans/clear", json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(cleared, json!({ "deleted": 1, "bytes": 50 }));
+        // 清理后作废缓存：不带 refresh 也能看到新数字
+        let (_, report) = get_json(&state, "/api/storage").await;
+        assert_eq!(item(&report, "orphans")["bytes"], json!(0));
+        assert!(orphans.is_dir(), "孤儿音频目录本身保留");
     }
 
     #[tokio::test]

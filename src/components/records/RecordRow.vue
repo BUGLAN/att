@@ -101,7 +101,7 @@
       <span v-if="record.is_favorite" class="record-row-fav" title="已收藏" aria-hidden="true">{{ G.favorite }}</span>
       <div v-if="!selectMode" class="ui-hover-actions" :class="{ 'is-pinned': isPlaying }" @click.stop>
         <button
-          v-if="!isTextRecord"
+          v-if="hasAudio"
           class="ui-gbtn"
           :class="{ 'is-on': isPlaying }"
           type="button"

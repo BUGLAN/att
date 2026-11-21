@@ -435,6 +435,44 @@ impl RecordRepo {
         }
     }
 
+    /// 录音音频保留期：删除 `days` 天前（按创建时间）建的非收藏记录的音频文件，记录与文字保留（`audio_path` 置空）。
+    /// 音频文件本来就不在的同样把 `audio_path` 置空；创建时间读不出来的不动。返回删掉的音频文件数。
+    pub fn prune_audio(&self, days: i64, now: chrono::DateTime<chrono::Utc>) -> Result<usize, RecordError> {
+        if days <= 0 {
+            return Ok(0);
+        }
+        let cutoff = now - chrono::Duration::days(days);
+        let expired = |record: &Record| {
+            !record.is_favorite
+                && !record.audio_path.is_empty()
+                && chrono::DateTime::parse_from_rfc3339(&record.created_at).is_ok_and(|created| created < cutoff)
+        };
+        let mut index = self.guard();
+        index.refresh(scan_records);
+        let ids: Vec<String> = index.items().iter().filter(|record| expired(record)).map(|r| r.id.clone()).collect();
+        let mut removed = 0;
+        for id in ids {
+            // 锁内按文件再核对一次（索引可能比文件旧）
+            let Ok(mut record) = json_store::read_json_file::<Record>(&self.record_path(&id)) else { continue };
+            if !expired(&record) {
+                continue;
+            }
+            let audio = self.resolve_audio_path(&record.audio_path);
+            if audio.starts_with(&self.audio_dir) && audio.is_file() {
+                if let Err(error) = std::fs::remove_file(&audio) {
+                    tracing::warn!("按保留期删除录音失败 {}: {error}", audio.display());
+                    continue;
+                }
+                removed += 1;
+            }
+            record.audio_path = String::new();
+            record.revision += 1;
+            record.updated_at = now_rfc3339();
+            self.write_locked(&mut index, &record)?;
+        }
+        Ok(removed)
+    }
+
     /// 列出处于「识别中」的记录 id（启动时恢复被中断的重新识别用）。
     pub fn transcribing_ids(&self) -> Vec<String> {
         let mut index = self.guard();
@@ -574,6 +612,43 @@ mod tests {
         assert_eq!(record.revision, 0);
         assert_eq!(record.engine, None, "旧记录没有识别引擎字段");
         assert_eq!(record.language, None, "旧记录没有识别语言字段");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 音频保留期_只删过期非收藏记录的音频_文字保留() {
+        let (repo, dir) = repo("audio-retention");
+        let now = chrono::Utc::now();
+        let put = |id: &str, days_ago: i64, favorite: bool| {
+            let name = format!("{id}.flac");
+            std::fs::write(repo.audio_dir().join(&name), b"fLaC").unwrap();
+            repo.insert(Record {
+                id: id.into(),
+                audio_path: name,
+                raw_text: Some(format!("{id} 的文字")),
+                is_favorite: favorite,
+                ..Default::default()
+            })
+            .unwrap();
+            let created = (now - chrono::Duration::days(days_ago)).to_rfc3339();
+            repo.patch(id, |r| r.created_at = created.clone()).unwrap();
+        };
+        put("rec-old", 2, false);
+        put("rec-old-fav", 2, true);
+        put("rec-new", 0, false);
+
+        assert_eq!(repo.prune_audio(0, now).unwrap(), 0, "0 = 永久保留，不删任何文件");
+        assert!(repo.audio_dir().join("rec-old.flac").exists());
+
+        assert_eq!(repo.prune_audio(1, now).unwrap(), 1);
+        let old = repo.get("rec-old").unwrap();
+        assert_eq!(old.audio_path, "", "音频删掉后 audio_path 置空");
+        assert_eq!(old.raw_text.as_deref(), Some("rec-old 的文字"), "文字保留");
+        assert!(!repo.audio_dir().join("rec-old.flac").exists());
+        assert_eq!(repo.get("rec-old-fav").unwrap().audio_path, "rec-old-fav.flac", "收藏的不删");
+        assert!(repo.audio_dir().join("rec-old-fav.flac").exists());
+        assert_eq!(repo.get("rec-new").unwrap().audio_path, "rec-new.flac", "没过期的不删");
+        assert_eq!(repo.prune_audio(1, now).unwrap(), 0, "再跑一次没有可删的");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

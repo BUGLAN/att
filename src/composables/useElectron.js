@@ -92,6 +92,8 @@ export function useElectron() {
     getAsrCredentialCheck: (provider) => httpApi.getAsrCredentialCheck(provider),
     checkAsrCredential: (provider) => httpApi.checkAsrCredential(provider),
     getAsrEngines: () => httpApi.getAsrEngines(),
+    getStorageUsage: (refresh) => httpApi.getStorageUsage(refresh),
+    clearOrphanAudio: () => httpApi.clearOrphanAudio(),
     getStreamingServiceStatus: () => httpApi.getStreamingServiceStatus(),
     startStreamingService: (waitUntilReady = true) => httpApi.startStreamingService(waitUntilReady),
     stopStreamingService: () => httpApi.stopStreamingService(),

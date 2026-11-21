@@ -36,6 +36,8 @@ pub struct CoreState {
     pub optimizer: OptimizationHub,
     /// 进行中的「重新识别」（同记录互斥；启动恢复时据此区分被中断的记录）
     pub retranscribe: crate::records::retranscribe::RetranscribeJobs,
+    /// 数据占用统计的缓存（设置 → 诊断 →「存储」）
+    pub storage_usage: crate::storage::usage::UsageCache,
     /// 本地文件转写（任务表 / 单并发闸门 / 结果缓存）
     pub transcriber: crate::transcribe::FileTranscriber,
     /// 本机用户确认过、允许文件转写的精确路径白名单（只在内存里）
@@ -107,6 +109,7 @@ impl CoreState {
             clipboard: ClipboardRepo::new(data_dir),
             optimizer: OptimizationHub::default(),
             retranscribe: Default::default(),
+            storage_usage: Default::default(),
             transcriber: Default::default(),
             transcribe_allowed: Mutex::new(HashSet::new()),
             local_models: Default::default(),
@@ -154,6 +157,30 @@ impl CoreState {
             self.events.publish(crate::events::AppEvent::ClipboardRemoved { count: removed });
         }
         removed
+    }
+
+    /// 按设置的录音音频保留天数删过期音频（每天一次、改了设置时）；0 = 永久保留，什么都不做。返回删掉的文件数。
+    pub fn prune_record_audio(&self) -> usize {
+        let days = self.settings().audio_retention_days;
+        match self.records.prune_audio(days, chrono::Utc::now()) {
+            Ok(0) => 0,
+            Ok(removed) => {
+                tracing::info!("录音音频按保留期（{days} 天）删除了 {removed} 个文件");
+                self.storage_usage.invalidate();
+                removed
+            }
+            Err(error) => {
+                tracing::warn!("按保留期删除录音失败: {error}");
+                0
+            }
+        }
+    }
+
+    /// 清理孤儿音频（`audio/orphans/`）：返回（删掉的文件数, 字节数）。
+    pub fn clear_orphan_audio(&self) -> std::io::Result<(u64, u64)> {
+        let result = crate::storage::usage::clear_dir_files(&crate::storage::usage::orphan_audio_dir(&self.data_dir));
+        self.storage_usage.invalidate();
+        result
     }
 
     /// GET /api/settings：脱敏公共视图。
