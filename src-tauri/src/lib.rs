@@ -353,9 +353,11 @@ fn start_hotkey_listener(
     recorder: recording::RecordingController,
 ) -> Option<String> {
     use att_core::settings::hotkey::HotkeyAction;
+    let cancel_binding = recorder.cancel_binding();
     let binding_core = core.clone();
+    let binding_cancel = cancel_binding.clone();
     let bindings: att_hotkey::listener::BindingSource = Arc::new(move || {
-        binding_core
+        let mut specs: Vec<att_hotkey::HotkeySpec> = binding_core
             .settings()
             .hotkeys
             .iter()
@@ -370,9 +372,19 @@ fn start_hotkey_listener(
                     )
             })
             .map(att_hotkey::HotkeySpec::from_binding)
-            .collect()
+            .collect();
+        // 录音会话期间的内部绑定，不来自设置项：非 Idle 时 Esc 取消并吞键
+        if let Some(spec) = binding_cancel.spec() {
+            specs.push(spec);
+        }
+        specs
     });
     let sink: att_hotkey::listener::EventSink = Arc::new(move |action, phase| match action {
+        HotkeyAction::CancelRecording => {
+            if phase == att_hotkey::KeyPhase::Pressed {
+                recorder.cancel();
+            }
+        }
         HotkeyAction::ClipboardPanel => {
             // 不在键盘钩子线程里同步操作窗口：可拦截的监听回调超时会被系统停用
             if phase == att_hotkey::KeyPhase::Pressed {
@@ -393,7 +405,7 @@ fn start_hotkey_listener(
                     .unwrap_or_else(|| "未设置".into())
             };
             tracing::info!(
-                "全局快捷键已启用: 按住录音 {} / 点按录音 {} / 剪贴板悬浮框 {} / 优化选中文本 {}",
+                "全局快捷键已启用: 按住录音 {} / 点按录音 {} / 剪贴板悬浮框 {} / 优化选中文本 {} / 录音中 Esc 取消",
                 combo(HotkeyAction::Record),
                 combo(HotkeyAction::RecordToggle),
                 combo(HotkeyAction::ClipboardPanel),

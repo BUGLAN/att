@@ -63,6 +63,33 @@ fn mods_label(mods: ModSet) -> String {
 pub type BindingSource = Arc<dyn Fn() -> Vec<HotkeySpec> + Send + Sync>;
 pub type EventSink = Arc<dyn Fn(HotkeyAction, KeyPhase) + Send + Sync>;
 
+/// 录音会话期间的内部 Esc 取消绑定。
+///
+/// `None` = 不在会话中，Esc 完全不受影响；`Some(modifiers)` = 按 Esc 取消并吞掉本次按键。
+/// 修饰键取当前录音方式实际按着的集合：点按录音为空；按住录音取录音快捷键的修饰键，
+/// 否则用户还按着快捷键时按 Esc 会因为修饰键不匹配而失效。
+#[derive(Clone, Default)]
+pub struct CancelBinding {
+    modifiers: Arc<Mutex<Option<ModSet>>>,
+}
+
+impl CancelBinding {
+    /// 会话开始时传 `Some`，回到 Idle 时传 `None`。
+    pub fn set_modifiers(&self, modifiers: Option<ModSet>) {
+        *self.modifiers.lock().unwrap_or_else(|error| error.into_inner()) = modifiers;
+    }
+
+    /// 当前应追加到监听器的内部绑定（不来自设置项）。
+    pub fn spec(&self) -> Option<HotkeySpec> {
+        let modifiers = *self.modifiers.lock().unwrap_or_else(|error| error.into_inner());
+        modifiers.map(|modifiers| HotkeySpec {
+            action: HotkeyAction::CancelRecording,
+            modifiers,
+            hid_key: Some(crate::HID_ESCAPE),
+        })
+    }
+}
+
 pub struct Shared {
     /// 出现过的动作各留一台：绑定被停用后它仍跟踪键态，重新启用时不会带着过期的「已按下」
     matchers: Mutex<BTreeMap<HotkeyAction, Matcher>>,
@@ -213,5 +240,59 @@ mod tests {
             *fired.lock().unwrap(),
             vec![(HotkeyAction::Record, KeyPhase::Pressed), (HotkeyAction::Record, KeyPhase::Released)]
         );
+    }
+
+    #[test]
+    fn 录音取消绑定_只在会话激活时匹配并吞掉_esc() {
+        const KEY_ESC: u32 = 0x35;
+        let cancel = CancelBinding::default();
+        let binding_cancel = cancel.clone();
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let sink_log = fired.clone();
+        let shared = Shared {
+            matchers: Mutex::new(BTreeMap::new()),
+            bindings: Arc::new(move || binding_cancel.spec().into_iter().collect()),
+            sink: Arc::new(move |action, phase| sink_log.lock().unwrap().push((action, phase))),
+        };
+
+        assert!(!shared.on_key(KEY_ESC, Some(crate::HID_ESCAPE), true), "Idle 时 Esc 不受影响");
+        assert!(!shared.on_key(KEY_ESC, Some(crate::HID_ESCAPE), false));
+
+        cancel.set_modifiers(Some(ModSet::default()));
+        assert!(shared.on_key(KEY_ESC, Some(crate::HID_ESCAPE), true), "会话中点按录音：无修饰 Esc 命中并吞键");
+        assert!(shared.on_key(KEY_ESC, Some(crate::HID_ESCAPE), false), "松开也吞，不留半次按键给前台");
+        assert_eq!(
+            *fired.lock().unwrap(),
+            vec![
+                (HotkeyAction::CancelRecording, KeyPhase::Pressed),
+                (HotkeyAction::CancelRecording, KeyPhase::Released)
+            ]
+        );
+
+        fired.lock().unwrap().clear();
+        cancel.set_modifiers(None);
+        assert!(!shared.on_key(KEY_ESC, Some(crate::HID_ESCAPE), true), "回到 Idle 立即停用");
+    }
+
+    #[test]
+    fn 录音取消绑定_按住录音时允许快捷键自身的修饰键() {
+        const KEY_ESC: u32 = 0x35;
+        const KEY_R: u32 = 0x0F;
+        const CMD_SHIFT: ModSet = ModSet { ctrl: false, alt: false, shift: true, meta: true };
+        let hid_r = hid_from_char('r');
+        let cancel = CancelBinding::default();
+        let binding_cancel = cancel.clone();
+        let shared = Shared {
+            matchers: Mutex::new(BTreeMap::new()),
+            bindings: Arc::new(move || binding_cancel.spec().into_iter().collect()),
+            sink: Arc::new(|_, _| {}),
+        };
+
+        cancel.set_modifiers(Some(CMD_SHIFT));
+        assert!(!shared.on_key(KEY_ESC, Some(crate::HID_ESCAPE), true), "没有按住录音快捷键时不命中");
+        shared.on_modifiers(CMD_SHIFT, Source::Modifiers);
+        assert!(!shared.on_key(KEY_R, hid_r, true), "录音主键仍在按着，不单独触发取消");
+        assert!(shared.on_key(KEY_ESC, Some(crate::HID_ESCAPE), true), "按住 ⌘⇧ 录音时 Esc 同样能取消");
+        assert!(shared.on_key(KEY_ESC, Some(crate::HID_ESCAPE), false));
     }
 }

@@ -24,6 +24,9 @@ pub enum HotkeyAction {
     ClipboardPanel,
     /// 优化选中文本：取前台应用的选中文字，按「选中文本优化」预设改写后流式输回原处（点按触发）
     RewriteSelection,
+    /// 录音会话期间的内部取消键（Esc）。不是设置项，也不会写进 `settings.json`；
+    /// 只由键盘监听在录音 Actor 非 Idle 时临时追加。
+    CancelRecording,
 }
 
 impl HotkeyAction {
@@ -48,6 +51,7 @@ impl HotkeyAction {
             HotkeyAction::ShowMainWindow => "显示主窗口",
             HotkeyAction::ClipboardPanel => "剪贴板悬浮框",
             HotkeyAction::RewriteSelection => "优化选中文本",
+            HotkeyAction::CancelRecording => "取消录音",
         }
     }
 }

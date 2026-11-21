@@ -87,6 +87,15 @@ fn char_from_keycode(code: i64) -> Option<char> {
     TABLE.iter().find(|(k, _)| *k == code).map(|(_, c)| *c)
 }
 
+/// macOS 虚拟键码 → HID：设置项只录入字母数字；Esc 由内部取消绑定单独使用。
+fn hid_from_keycode(code: i64) -> Option<u16> {
+    if code == 0x35 {
+        Some(crate::HID_ESCAPE)
+    } else {
+        char_from_keycode(code).and_then(hid_from_char)
+    }
+}
+
 /// 本进程发出的事件：发键处打了 [`SYNTHETIC_EVENT_TAG`]；来源进程号兜底（漏打标记的发键点同样跳过）。
 fn is_own_event(event: &CGEvent) -> bool {
     event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == SYNTHETIC_EVENT_TAG
@@ -119,7 +128,7 @@ fn make_tap(shared: Arc<Shared>, options: CGEventTapOptions) -> Result<CGEventTa
                 }
                 CGEventType::KeyDown | CGEventType::KeyUp => {
                     let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
-                    let hid = char_from_keycode(code).and_then(hid_from_char);
+                    let hid = hid_from_keycode(code);
                     shared.on_modifiers(mods_from_flags(event.get_flags()), Source::Key);
                     if shared.on_key(code as u32, hid, matches!(event_type, CGEventType::KeyDown)) {
                         // 只读监听下 Drop 无效，事件照常送达
@@ -174,4 +183,15 @@ pub fn spawn(shared: Arc<Shared>) -> Result<(), String> {
         })
         .map_err(|e| format!("无法启动热键线程: {e}"))?;
     ready_rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or_else(|_| Err("键盘监听启动超时".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hid_from_keycode;
+
+    #[test]
+    fn esc_映射到_hid_供内部取消绑定使用() {
+        assert_eq!(hid_from_keycode(0x35), Some(crate::HID_ESCAPE));
+        assert_eq!(hid_from_keycode(0x0F), att_core::settings::hotkey::hid_from_char('r'));
+    }
 }

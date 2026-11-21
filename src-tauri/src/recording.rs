@@ -9,6 +9,7 @@
 //!                                         └─(auto_optimize)→ Optimizing ─optimized→ Idle（completed）
 //! 任意非 Idle ─cancel→ Idle（cancelled；Optimizing 下取消的是优化，保留原文）
 //! ```
+//! 录音 / 收尾 / 优化中的 Esc 走同一条取消路径（键盘监听里的内部绑定，不占设置项；生效时吞掉这次 Esc）。
 //!
 //! 两种录音快捷键（可分键，同键时只能启用一种）：
 //! - 按住录音 [`HotkeyAction::Record`]：按下开始、松开结束；
@@ -44,9 +45,10 @@ use crate::typing::StreamTyping;
 use att_core::llm::cleaning;
 use att_core::llm::optimizer::{self, OptimizeEvent, OptimizeOutcome};
 use att_core::records::{Record, RecordStatus};
-use att_core::settings::hotkey::HotkeyAction;
+use att_core::settings::hotkey::{HotkeyAction, ModSet};
 use att_core::state::CoreState;
 use att_core::stt::{self, deepseek, doubao};
+use att_hotkey::listener::CancelBinding;
 use att_hotkey::KeyPhase;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -99,6 +101,16 @@ impl Mode {
             Mode::Batch => "single",
             Mode::Multi => "multi",
         }
+    }
+}
+
+/// 录音会话内部 Esc 取消绑定当前应允许的修饰键；`None` 表示回到 Idle、绑定停用。
+fn cancel_binding_modifiers(phase: Phase, held_modifiers: ModSet) -> Option<ModSet> {
+    match phase {
+        Phase::Idle => None,
+        // 转写结束后的优化不再按着录音快捷键；Esc 保持无修饰键，避免吞掉系统快捷键。
+        Phase::Optimizing => Some(ModSet::default()),
+        Phase::Connecting | Phase::Recording | Phase::Finalizing => Some(held_modifiers),
     }
 }
 
@@ -247,17 +259,21 @@ fn record_hotkey_step(action: HotkeyAction, key_phase: KeyPhase, phase: Phase, h
 pub struct RecordingController {
     tx: mpsc::UnboundedSender<Cmd>,
     snapshot: Arc<Mutex<Value>>,
+    cancel_binding: CancelBinding,
 }
 
 impl RecordingController {
     pub fn spawn(app: AppHandle, core: Arc<CoreState>) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let snapshot = Arc::new(Mutex::new(json!({ "phase": "idle" })));
+        let cancel_binding = CancelBinding::default();
         let actor = Actor {
             app,
             core,
             tx: tx.clone(),
             phase: Phase::Idle,
+            cancel_binding: cancel_binding.clone(),
+            cancel_modifiers: ModSet::default(),
             active: None,
             optimizing: None,
             next_id: 0,
@@ -265,7 +281,7 @@ impl RecordingController {
             snapshot: snapshot.clone(),
         };
         tauri::async_runtime::spawn(actor.run(rx));
-        Self { tx, snapshot }
+        Self { tx, snapshot, cancel_binding }
     }
 
     pub fn start(&self) {
@@ -284,6 +300,11 @@ impl RecordingController {
         let _ = self.tx.send(Cmd::Hotkey(action, phase));
     }
 
+    /// 录音会话内部 Esc 取消绑定的开关（由 Actor 的相位变化推进）。
+    pub fn cancel_binding(&self) -> CancelBinding {
+        self.cancel_binding.clone()
+    }
+
     /// 最近一次发出的状态（前端挂载时同步用）。
     pub fn state(&self) -> Value {
         self.snapshot.lock().map(|s| s.clone()).unwrap_or_else(|_| json!({ "phase": "idle" }))
@@ -295,6 +316,9 @@ struct Actor {
     core: Arc<CoreState>,
     tx: mpsc::UnboundedSender<Cmd>,
     phase: Phase,
+    cancel_binding: CancelBinding,
+    /// 当前会话允许 Esc 带着的修饰键：按住录音时是录音快捷键的修饰键
+    cancel_modifiers: ModSet,
     active: Option<Active>,
     optimizing: Option<PendingOptimization>,
     next_id: u64,
@@ -313,7 +337,7 @@ impl Actor {
                 Cmd::Hotkey(action, key_phase) => self.on_hotkey(action, key_phase).await,
                 Cmd::Connected(id) => {
                     if self.is_current(id) && self.phase == Phase::Connecting {
-                        self.phase = Phase::Recording;
+                        self.set_phase(Phase::Recording);
                         self.emit_state("recording", json!({ "message": "豆包语音转写中" }));
                     }
                 }
@@ -339,6 +363,12 @@ impl Actor {
 
     fn is_current(&self, id: u64) -> bool {
         self.active.as_ref().map(|a| a.id == id).unwrap_or(false)
+    }
+
+    /// 相位唯一写入口：同步录音会话内部的 Esc 取消绑定。
+    fn set_phase(&mut self, phase: Phase) {
+        self.phase = phase;
+        self.cancel_binding.set_modifiers(cancel_binding_modifiers(phase, self.cancel_modifiers));
     }
 
     fn emit_state(&self, phase: &str, extra: Value) {
@@ -469,7 +499,7 @@ impl Actor {
 
     fn fail_start(&mut self, message: String) {
         tracing::warn!("录音无法开始: {message}");
-        self.phase = Phase::Idle;
+        self.set_phase(Phase::Idle);
         self.active = None;
         self.emit_state("error", json!({ "message": message }));
     }
@@ -484,7 +514,7 @@ impl Actor {
                     pending.detached.store(true, Ordering::SeqCst);
                     // 新录音的文字要进新的输入框：上一段别再往里打
                     pending.typing_halt.store(true, Ordering::SeqCst);
-                    self.phase = Phase::Idle;
+                    self.set_phase(Phase::Idle);
                 }
                 _ => {
                     tracing::info!("单段优化中按下录音键，忽略");
@@ -502,6 +532,15 @@ impl Actor {
             return;
         }
         let settings = self.core.settings();
+        self.cancel_modifiers = if held {
+            settings
+                .binding_of(HotkeyAction::Record)
+                .filter(|binding| binding.enabled)
+                .map(|binding| binding.modifiers)
+                .unwrap_or_default()
+        } else {
+            ModSet::default()
+        };
         // 本地引擎不在这里等模型加载（只校验文件并在后台预加载），录音按下即开始，推理时再等加载完成
         let engine = match stt::Engine::resolve(&self.core) {
             Ok(engine) => engine,
@@ -584,7 +623,7 @@ impl Actor {
         let tx = self.tx.clone();
         match mode {
             Mode::Streaming => {
-                self.phase = Phase::Connecting;
+                self.set_phase(Phase::Connecting);
                 self.emit_state("connecting", json!({ "message": "正在连接豆包语音服务" }));
                 let app = self.app.clone();
                 let config = streaming_config.expect("流式模式已校验为豆包");
@@ -593,12 +632,12 @@ impl Actor {
                 ));
             }
             Mode::Batch => {
-                self.phase = Phase::Recording;
+                self.set_phase(Phase::Recording);
                 self.emit_state("recording", json!({ "message": "正在录音" }));
                 tauri::async_runtime::spawn(batch_task(id, engine, language, audio_rx, cancel_rx, tx));
             }
             Mode::Multi => {
-                self.phase = Phase::Recording;
+                self.set_phase(Phase::Recording);
                 self.emit_state("recording", json!({ "message": "静音切段监听中" }));
                 let segmenter =
                     att_core::audio::Segmenter::new(settings.silence_level as f64, settings.silence_threshold);
@@ -632,7 +671,7 @@ impl Actor {
         if !matches!(self.phase, Phase::Connecting | Phase::Recording) {
             return;
         }
-        self.phase = Phase::Finalizing;
+        self.set_phase(Phase::Finalizing);
         let Some(active) = self.active.as_mut() else { return };
         active.live.store(false, Ordering::SeqCst);
         if let Some(capture) = active.capture.take() {
@@ -728,7 +767,7 @@ impl Actor {
             std::thread::spawn(move || capture.stop());
         }
         let id = active.id;
-        self.phase = Phase::Finalizing;
+        self.set_phase(Phase::Finalizing);
         // 点了 ✕ 当场收起；会话任务回来后照常发 cancelled（主窗口据此复位）
         crate::floating::hide(&self.app);
         self.arm_watchdog(id, None);
@@ -747,7 +786,7 @@ impl Actor {
         if active.muted_by_us {
             tokio::task::spawn_blocking(|| crate::desktop::set_output_muted(false));
         }
-        self.phase = Phase::Idle;
+        self.set_phase(Phase::Idle);
         // 让 emit_state 仍能带上本次模式
         let mode = active.mode;
         let (quiet_end, timed_out) = (active.quiet_end, active.timed_out);
@@ -873,7 +912,7 @@ impl Actor {
             OptimizeSource::Recording => "转写完成，正在优化",
             OptimizeSource::Selection => "正在优化选中文本",
         };
-        self.phase = Phase::Optimizing;
+        self.set_phase(Phase::Optimizing);
         self.optimizing = Some(PendingOptimization {
             session_id,
             mode,
@@ -958,7 +997,7 @@ impl Actor {
             return;
         }
 
-        self.phase = Phase::Idle;
+        self.set_phase(Phase::Idle);
         // 用户主动取消优化：与旧版一致只保留原文，不粘贴；已打出的字保留，不再补打。
         // 优化选中文本时已打出的字替换掉了选区：把原文放进剪贴板，用户能贴回去
         let (copied, pasted, copy_error) = if cancelled {
@@ -1536,12 +1575,13 @@ async fn multi_task(
 #[cfg(test)]
 mod tests {
     use super::{
-        batch_plan, counts_as_timeout, finalize_budget, join_multi_texts, missing_voice, no_voice_state,
-        processing_seconds, quiet_end_reason, record_hotkey_step, recorded_until, spawn_multi_segment, BatchPlan, Mode,
-        Phase, RecordHotkeyStep, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, MULTI_TRANSCRIBE_CONCURRENCY,
-        NO_VOICE_MESSAGE, WATCHDOG_SLACK,
+        batch_plan, cancel_binding_modifiers, counts_as_timeout, finalize_budget, join_multi_texts, missing_voice,
+        no_voice_state, processing_seconds, quiet_end_reason, record_hotkey_step, recorded_until, spawn_multi_segment,
+        BatchPlan, Mode, Phase, RecordHotkeyStep, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS,
+        MULTI_TRANSCRIBE_CONCURRENCY, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
     };
     use att_core::settings::hotkey::HotkeyAction::{ClipboardPanel, Record, RecordToggle};
+    use att_core::settings::hotkey::ModSet;
     use att_hotkey::KeyPhase::{Pressed, Released};
     use serde_json::{json, Value};
     use std::time::{Duration, Instant};
@@ -1584,6 +1624,20 @@ mod tests {
         assert_eq!(record_hotkey_step(RecordToggle, Pressed, Phase::Recording, true), RecordHotkeyStep::Stop);
         // 非录音动作不归这里管
         assert_eq!(record_hotkey_step(ClipboardPanel, Pressed, Phase::Idle, false), RecordHotkeyStep::Ignore);
+    }
+
+    #[test]
+    fn 录音取消绑定_只在非_idle_相位启用() {
+        let held = ModSet::new(false, false, true, true);
+        assert_eq!(cancel_binding_modifiers(Phase::Idle, held), None);
+        assert_eq!(cancel_binding_modifiers(Phase::Connecting, held), Some(held));
+        assert_eq!(cancel_binding_modifiers(Phase::Recording, held), Some(held));
+        assert_eq!(cancel_binding_modifiers(Phase::Finalizing, held), Some(held));
+        assert_eq!(
+            cancel_binding_modifiers(Phase::Optimizing, held),
+            Some(ModSet::default()),
+            "优化阶段不再按着录音快捷键，Esc 保持无修饰键"
+        );
     }
 
     #[test]

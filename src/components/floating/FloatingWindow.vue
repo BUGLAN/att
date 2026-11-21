@@ -56,7 +56,7 @@
         </Transition>
 
         <Transition name="slot" @before-leave="detachOnLeave">
-          <button v-if="showCancel" type="button" class="cancel" aria-label="取消" title="取消" @click="cancel">
+          <button v-if="showCancel" type="button" class="cancel" aria-label="取消（Esc）" title="取消（Esc）" @click="cancel">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
           </button>
         </Transition>

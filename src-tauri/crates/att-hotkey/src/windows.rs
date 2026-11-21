@@ -29,6 +29,7 @@ const VK_LMENU: u32 = 0xA4;
 const VK_RMENU: u32 = 0xA5;
 const VK_LWIN: u32 = 0x5B;
 const VK_RWIN: u32 = 0x5C;
+const VK_ESCAPE: u32 = 0x1B;
 /// 未分配的虚拟键码：吞掉 Alt / Win 组合的主键后补发一次，免得单独的 Alt / Win 松开时激活菜单栏或开始菜单
 const VK_MASK_KEY: u16 = 0xE8;
 
@@ -51,6 +52,15 @@ fn is_modifier(vk: u32) -> bool {
 
 fn is_down(vk: u32) -> bool {
     unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
+}
+
+/// Windows 虚拟键码 → HID：设置项只录入字母数字；Esc 由内部取消绑定单独使用。
+fn hid_from_key(vk: u32) -> Option<u16> {
+    if vk == VK_ESCAPE {
+        Some(crate::HID_ESCAPE)
+    } else {
+        char::from_u32(vk).filter(|c| c.is_ascii_alphanumeric()).and_then(hid_from_char)
+    }
 }
 
 /// 系统真实修饰键状态（防粘滞轮询用）。
@@ -106,7 +116,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 } else {
                     // 非修饰键事件也顺带校正一次修饰键（与 macOS 每个事件带完整 flags 对齐）
                     shared.on_modifiers(modifiers_with(None), Source::Key);
-                    let hid = char::from_u32(vk).filter(|c| c.is_ascii_alphanumeric()).and_then(hid_from_char);
+                    let hid = hid_from_key(vk);
                     if shared.on_key(vk, hid, down) {
                         if down {
                             let mods = modifiers_with(None);
@@ -165,4 +175,15 @@ pub fn spawn(shared: Arc<Shared>) -> Result<(), String> {
         })
         .map_err(|e| format!("无法启动热键线程: {e}"))?;
     ready_rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or_else(|_| Err("键盘监听启动超时".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hid_from_key;
+
+    #[test]
+    fn esc_映射到_hid_供内部取消绑定使用() {
+        assert_eq!(hid_from_key(super::VK_ESCAPE), Some(crate::HID_ESCAPE));
+        assert_eq!(hid_from_key(b'R' as u32), att_core::settings::hotkey::hid_from_char('r'));
+    }
 }

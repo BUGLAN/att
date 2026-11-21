@@ -6,7 +6,7 @@
 //! - 纯修饰键组合锁存期间按下其他键：只要修饰键集合不变就保持（不误发 release）。
 //! - 键自动重复不会重复触发（锁存去重，替代旧版 250ms 防抖）。
 
-use crate::{HotkeySpec, KeyPhase};
+use crate::{HotkeyAction, HotkeySpec, KeyPhase};
 use att_core::settings::hotkey::ModSet;
 use std::collections::BTreeSet;
 
@@ -100,6 +100,8 @@ impl Matcher {
         }
         match spec.hid_key {
             None => self.keys.is_empty(),
+            // 内部取消键要在按住录音主键（如 ⌘⇧R）时也能按 Esc：只要求 Esc 按着，其他非修饰键不参与判断。
+            Some(key) if spec.action == HotkeyAction::CancelRecording => self.hid_keys.contains(&key),
             Some(key) => self.keys.len() == 1 && self.hid_keys.len() == 1 && self.hid_keys.contains(&key),
         }
     }

@@ -26,6 +26,9 @@ use std::sync::mpsc;
 /// 这些修饰键状态若被当成用户的真实键态，按住录音时就会被判成「松开」，紧接着又被判成「按下」开出新的一段。
 pub const SYNTHETIC_EVENT_TAG: i64 = 0x4154_5453;
 
+/// USB HID Usage ID：Escape（键盘页 0x07）。平台钩子把各自的键码映射到它。
+pub const HID_ESCAPE: u16 = 0x29;
+
 /// 绑定句柄（unregister 用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BindingId(pub u32);
