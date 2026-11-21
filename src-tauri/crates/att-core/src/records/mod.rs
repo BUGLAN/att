@@ -5,10 +5,12 @@
 //! - 旧数据缺 `error`/`revision` 字段可读（serde 默认兜底）
 //! - revision 乐观锁：PUT 冲突返回 [`RecordError::Conflict`]（HTTP 409）
 //!
-//! 「重新识别」（读记录音频 → 选引擎整段识别 → 写回）见 [`retranscribe`]；批量导出的文件格式见 [`export`]。
+//! 「重新识别」（读记录音频 → 选引擎整段识别 → 写回）见 [`retranscribe`]；批量导出的文件格式见 [`export`]；
+//! 按天汇总的用量统计见 [`stats`]。
 
 pub mod export;
 pub mod retranscribe;
+pub mod stats;
 
 use crate::now_rfc3339;
 use crate::storage::dir_index::DirIndex;
@@ -72,6 +74,10 @@ pub struct Record {
     /// 「转文字」页转写的原文件名（不含目录）；录音与旧记录没有这个字段
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_file: Option<String>,
+    /// 这条记录的 LLM 优化累计用掉的 token（每次优化成功都累加，重新识别不清零：用掉的就是用掉了）；
+    /// 旧记录、没优化过或服务商没报用量时没有这个字段，统计按 0 计
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimize_tokens: Option<u64>,
 }
 
 impl Default for Record {
@@ -94,6 +100,7 @@ impl Default for Record {
             engine: None,
             language: None,
             source_file: None,
+            optimize_tokens: None,
         }
     }
 }
@@ -544,6 +551,13 @@ impl RecordRepo {
         Ok(removed)
     }
 
+    /// GET /api/stats：按本机日期汇总用量（走内存索引，见 [`stats`]）。
+    pub fn usage_stats(&self, range: stats::StatsRange, today: chrono::NaiveDate) -> stats::UsageStats {
+        let mut index = self.guard();
+        index.refresh(scan_records);
+        stats::summarize(index.items(), range, today)
+    }
+
     /// 列出处于「识别中」的记录 id（启动时恢复被中断的重新识别用）。
     pub fn transcribing_ids(&self) -> Vec<String> {
         let mut index = self.guard();
@@ -684,6 +698,8 @@ mod tests {
         assert_eq!(record.engine, None, "旧记录没有识别引擎字段");
         assert_eq!(record.language, None, "旧记录没有识别语言字段");
         assert_eq!(record.source_file, None, "旧记录没有来源文件字段");
+        assert_eq!(record.optimize_tokens, None, "旧记录没有优化 token 字段");
+        assert!(serde_json::to_value(&record).unwrap().get("optimize_tokens").is_none(), "没有时不写出");
         // 没有来源文件时不写出这个字段（旧版本读得回来）
         assert!(serde_json::to_value(&record).unwrap().get("source_file").is_none());
         let _ = std::fs::remove_dir_all(&dir);

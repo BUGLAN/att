@@ -170,6 +170,11 @@ fn finish_optimization(
             let saved = core.records.patch(record_id, |record| {
                 record.optimized_text = Some(success.optimized_text.clone());
                 record.optimize_time = Some((success.processing_time * 100.0).round() / 100.0);
+                // token 用量累加（同一条记录多次优化都算进用量统计）；服务商没报用量时不动
+                if success.tokens_used > 0 {
+                    record.optimize_tokens =
+                        Some(record.optimize_tokens.unwrap_or(0).saturating_add(success.tokens_used as u64));
+                }
                 record.status = RecordStatus::Optimized;
                 record.error = None;
             });
@@ -435,6 +440,29 @@ mod tests {
         let after = core.records.get("rec-1").unwrap();
         assert_eq!(after.processing_time, Some(0.6), "自动优化共用这条链路，不能把优化时长写进处理耗时");
         assert!(after.optimize_time.is_some(), "优化耗时另存 optimize_time");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn 优化完成_token用量累加写进记录() {
+        let (base, _requests) = stub_routes(vec![StubRoute::sse(
+            "POST /v1/chat/completions",
+            &[
+                r#"{"choices":[{"delta":{"content":"明天开会。"},"finish_reason":"stop"}]}"#,
+                r#"{"choices":[],"usage":{"prompt_tokens":30,"completion_tokens":12,"total_tokens":42}}"#,
+            ],
+        )])
+        .await;
+        let (core, root) = setup(&base, "tokens");
+        assert_eq!(core.records.get("rec-1").unwrap().optimize_tokens, None, "没优化过时没有 token 字段");
+
+        let outcome = optimize_record(&core, "rec-1", "嗯那个明天开会", |_| {}).await;
+        assert!(matches!(outcome, OptimizeOutcome::Completed(_)), "{outcome:?}");
+        assert_eq!(core.records.get("rec-1").unwrap().optimize_tokens, Some(42));
+
+        let outcome = optimize_record(&core, "rec-1", "嗯那个明天开会", |_| {}).await;
+        assert!(matches!(outcome, OptimizeOutcome::Completed(_)), "{outcome:?}");
+        assert_eq!(core.records.get("rec-1").unwrap().optimize_tokens, Some(84), "再次优化累加，不覆盖");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -16,6 +16,7 @@
 //! - /api/asr/credential-check：在线引擎凭据验证（见 [`asr`]）
 //! - /api/update：检查更新与安装包下载（见 [`update`]）
 //! - /api/storage：数据占用统计与清理孤儿音频（见 [`storage`]）
+//! - GET /api/stats?range=7d|30d|all：按天汇总录音条数、时长、识别字数与优化 token（见 `att_core::records::stats`）
 //! - 录音由 Rust 录音 Actor 直接完成（Tauri 命令），没有录音上传 / 多段会话类 HTTP 端点
 //!
 //! 两个 WebSocket 端点（/api/ws、/api/asr/stream）按 D4 决策**移除**：
@@ -84,6 +85,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/api/records/{id}/audio", get(records_audio))
         .route("/api/records/{id}/export", get(records_export))
         .route("/api/records/{id}/retranscribe", post(records_retranscribe))
+        // 用量统计（记录集顶部）
+        .route("/api/stats", get(usage_stats))
         // 模型服务（骨架）
         .route("/api/model-service", get(model_service_status))
         .route("/api/model-service/start", post(model_service_start))
@@ -580,6 +583,24 @@ async fn records_list(
     }
     // 裸数组响应（契约：非 {items,total} 包装）
     Json(serde_json::to_value(records).unwrap_or_default())
+}
+
+/// GET /api/stats?range=7d|30d|all（默认 7d）：按本机日期汇总用量，走记录仓库的内存索引。
+async fn usage_stats(
+    State(state): State<Arc<ServerState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, axum::response::Response> {
+    let range = match params.get("range").map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        None => att_core::records::stats::StatsRange::Days7,
+        Some(value) => att_core::records::stats::StatsRange::parse(value).ok_or_else(|| {
+            err(StatusCode::UNPROCESSABLE_ENTITY, format!("range 只能是 7d、30d 或 all，收到：{value}")).into_response()
+        })?,
+    };
+    let today = chrono::Local::now().date_naive();
+    let stats = blocking(move || state.core.records.usage_stats(range, today))
+        .await
+        .ok_or_else(|| err(StatusCode::INTERNAL_SERVER_ERROR, "统计用量失败".into()).into_response())?;
+    Ok(Json(serde_json::to_value(stats).unwrap_or_default()))
 }
 
 /// 记录状态的合法取值（筛选参数校验用）。
@@ -1221,6 +1242,40 @@ mod tests {
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn 用量统计_默认近七天_含优化token_非法范围422() {
+        let state = test_state("usage-stats").await;
+        state
+            .core
+            .records
+            .insert(att_core::records::Record {
+                id: "rec-tokens".into(),
+                duration: 2.5,
+                raw_text: Some("明天 开会".into()),
+                optimize_tokens: Some(42),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let (status, body) = get_json(&state, "/api/stats").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["range"], "7d");
+        assert_eq!(body["days"].as_array().unwrap().len(), 7);
+        // rec-x（「你好」，没有 token）+ rec-tokens
+        assert_eq!(body["today"]["count"], 2);
+        assert_eq!(body["today"]["chars"], 6);
+        assert_eq!(body["today"]["tokens"], 42);
+        assert_eq!(body["today"]["duration"], 2.5);
+        assert_eq!(body["total"], body["today"]);
+
+        let (status, body) = get_json(&state, "/api/stats?range=all").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["days"].as_array().unwrap().len(), 1, "全部：从最早一天到今天");
+
+        let (status, _) = get_json(&state, "/api/stats?range=1y").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     async fn get_raw(

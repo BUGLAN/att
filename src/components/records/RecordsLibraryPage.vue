@@ -2,6 +2,9 @@
   <div class="ui-page records-library-page">
     <PageHeader crumb="首页 / 记录集" title="记录集" />
 
+    <!-- 用量统计：今天 / 近 7 天一行，点开看按天的柱状图 -->
+    <RecordsUsageStats />
+
     <div class="ui-toolbar">
       <label class="ui-search">
         <span class="ui-search-glyph" aria-hidden="true">{{ G.search }}</span>
@@ -141,6 +144,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import RecordRow from './RecordRow.vue'
 import ExportFormatMenu from './ExportFormatMenu.vue'
+import RecordsUsageStats from './RecordsUsageStats.vue'
 import { DATE_RANGE_OPTIONS, STATUS_FILTER_OPTIONS, dateRangeFor, groupRecordsByDay } from './recordListModel.mjs'
 import { buildBatchExportFilename, downloadFromUrl } from '@/utils/exportDownload.mjs'
 import { RETRANSCRIBE_CONFIRM, needsRetranscribeConfirm } from './retranscribeModel.mjs'

@@ -79,6 +79,7 @@ export function useElectron() {
   const api = {
     getRecords: (params) => httpApi.getRecords(params),
     searchRecords: (params) => httpApi.searchRecords(params),
+    getUsageStats: (range) => httpApi.getUsageStats(range),
     getRecord: (id) => httpApi.getRecord(id),
     updateRecord: (id, data) => httpApi.updateRecord(id, data),
     deleteRecord: (id) => httpApi.deleteRecord(id),

@@ -277,6 +277,10 @@ fn request_body(
             if let Some(temperature) = options.temperature {
                 body["temperature"] = json!(temperature);
             }
+            if stream {
+                // 流式默认不带用量：要了才会在结束后多发一条只有 usage 的事件（用量统计靠它）；上游不认时 open 会去掉重试
+                body["stream_options"] = json!({ "include_usage": true });
+            }
             apply_reasoning_effort(&mut body, endpoint.spec, &options.reasoning_effort);
             (format!("{}/chat/completions", endpoint.openai_root()), body)
         }
@@ -340,7 +344,8 @@ fn rejects_param(message: &str, param: &str) -> bool {
 
 /// 发起请求并确认成功状态；上游拒绝可选参数时调整后重试：
 /// - `max_tokens` → `max_completion_tokens`（OpenAI 新一代推理模型）；
-/// - 去掉 `reasoning_effort` / `thinking`（性能开关绝不能把原本可用的模型变成不可用）。
+/// - 去掉 `reasoning_effort` / `thinking`（性能开关绝不能把原本可用的模型变成不可用）；
+/// - 去掉 `stream_options`（只为拿流式用量，不能因此让请求失败）。
 async fn open(
     endpoint: &Endpoint,
     url: &str,
@@ -366,7 +371,7 @@ async fn open(
             object.insert("max_completion_tokens".into(), max_tokens);
             continue;
         }
-        let reasoning = ["reasoning_effort", "thinking"]
+        let reasoning = ["reasoning_effort", "thinking", "stream_options"]
             .into_iter()
             .find(|p| object.contains_key(*p) && rejects_param(&error.message, p));
         if let Some(param) = reasoning {
@@ -379,8 +384,13 @@ async fn open(
     Err(LlmError::new(CODE_PROVIDER, "上游持续拒绝请求参数"))
 }
 
+/// OpenAI 兼容流在 `finish_reason` 之后、`[DONE]` 之前才发用量事件；收到结束事件还没有用量时最多再等这么久。
+const STREAM_USAGE_GRACE: Duration = Duration::from_millis(1500);
+
 /// 流式补全：每条正文增量回调 `on_delta`；返回汇总结果。
 ///
+/// 收到协议内的结束事件即视为完整：OpenAI 兼容流这时还没给用量的，再短暂读一会儿尾部的 usage 事件，
+/// 等不到、连接断开都按已完成返回（只是没有用量）。
 /// 看门狗：开流后 `first_token` 内必须收到首条正文增量，之后相邻增量间隔不超过 `chunk_idle`；
 /// 总时长受 `options.timeout` 约束。思考增量（reasoning_content / thinking）不计入正文。
 pub async fn chat_stream(
@@ -399,10 +409,13 @@ pub async fn chat_stream(
     let mut deadline = Instant::now() + budget.first_token;
     let mut got_text = false;
     let mut done = false;
+    // 已收到结束事件、正在等尾部用量（之后超时 / 断开都按完成处理）
+    let mut ended = false;
 
     while !done {
         let now = Instant::now();
         let chunk = match tokio::time::timeout(deadline.saturating_duration_since(now), response.chunk()).await {
+            Err(_) | Ok(Err(_)) if ended => break,
             Err(_) if got_text => {
                 return Err(LlmError::new(
                     CODE_TIMEOUT,
@@ -443,16 +456,25 @@ pub async fn chat_stream(
                 on_delta(&text);
                 got_text = true;
             }
-            if stream_ended(endpoint.spec.protocol, &event) {
+            if ended && result.total_tokens > 0 {
+                done = true;
+                break;
+            }
+            if !ended && stream_ended(endpoint.spec.protocol, &event) {
+                if endpoint.spec.protocol == Protocol::OpenAiCompat && result.total_tokens == 0 {
+                    ended = true;
+                    deadline = Instant::now() + STREAM_USAGE_GRACE.min(budget.chunk_idle);
+                    continue;
+                }
                 done = true;
                 break;
             }
         }
-        if got_text {
+        if got_text && !ended {
             deadline = Instant::now() + budget.chunk_idle;
         }
     }
-    if !done {
+    if !done && !ended {
         return Err(LlmError::new(CODE_PROVIDER, "流式响应在收到结束标记前中断，已收到的内容不完整"));
     }
     if result.finish_reason.is_empty() {
@@ -670,6 +692,49 @@ mod tests {
             .expect("finish_reason 应正常完成");
         assert_eq!(result.text, "你好");
         assert_eq!(result.finish_reason, "stop");
+    }
+
+    #[tokio::test]
+    async fn 流式_openai_结束后读尾部用量_请求带_include_usage() {
+        let (base, mut requests) = stub_routes(vec![StubRoute::sse(
+            "POST /chat/completions",
+            &[
+                r#"{"choices":[{"delta":{"content":"你好"},"finish_reason":"stop"}]}"#,
+                r#"{"choices":[],"usage":{"prompt_tokens":30,"completion_tokens":12,"total_tokens":42}}"#,
+            ],
+        )])
+        .await;
+        let (messages, options, budget) = stream_args();
+        let result = chat_stream(&endpoint("custom", &base, ""), "openai/m", &messages, &options, budget, |_| {})
+            .await
+            .expect("应正常完成");
+        assert_eq!(result.text, "你好");
+        assert_eq!(result.total_tokens, 42, "finish_reason 之后的用量事件也要读到");
+        assert!(requests.recv().await.unwrap().contains(r#""stream_options":{"include_usage":true}"#));
+    }
+
+    #[tokio::test]
+    async fn 流式_上游不认_stream_options_去掉重试() {
+        let (base, mut requests) = stub_routes(vec![
+            StubRoute::json(
+                "POST /chat/completions",
+                400,
+                r#"{"error":{"message":"Unrecognized request argument supplied: stream_options"}}"#,
+            )
+            .when_body("stream_options"),
+            StubRoute::sse(
+                "POST /chat/completions",
+                &[r#"{"choices":[{"delta":{"content":"你好"},"finish_reason":"stop"}]}"#],
+            ),
+        ])
+        .await;
+        let (messages, options, budget) = stream_args();
+        let result = chat_stream(&endpoint("custom", &base, ""), "openai/m", &messages, &options, budget, |_| {})
+            .await
+            .expect("去掉 stream_options 后应成功");
+        assert_eq!(result.text, "你好");
+        assert!(requests.recv().await.unwrap().contains("stream_options"));
+        assert!(!requests.recv().await.unwrap().contains("stream_options"), "重试时去掉了 stream_options");
     }
 
     #[tokio::test]

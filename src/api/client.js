@@ -383,6 +383,8 @@ export const api = {
     const query = searchParams.toString()
     return request('GET', `/records/search${query ? `?${query}` : ''}`)
   },
+  // 用量统计（按本机日期汇总）：{ range, from, to, today, total, days: [{ date, count, duration, chars, tokens }] }
+  getUsageStats: (range = '7d') => request('GET', `/stats?range=${encodeURIComponent(range)}`),
   getRecord: (id) => request('GET', `/records/${id}`),
   updateRecord: (id, data) => request('PUT', `/records/${id}`, { body: data }),
   deleteRecord: (id) => request('DELETE', `/records/${id}`),
