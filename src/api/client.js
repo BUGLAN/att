@@ -3,6 +3,7 @@
  * 直接访问 Python FastAPI 后端，不经过 IPC 中转。
  */
 import { createNdjsonParser } from '@/utils/ndjson.mjs'
+import { buildRecordsExportQuery } from '@/utils/exportDownload.mjs'
 
 let backendPort = null
 // Tauri 注入的端口是「本次启动的权威值」：网络错误后重解析时优先复用，
@@ -370,6 +371,10 @@ export const api = {
     if (params.favorite_only) searchParams.set('favorite_only', 'true')
     if (params.page) searchParams.set('page', String(params.page))
     if (params.page_size) searchParams.set('page_size', String(params.page_size))
+    // 状态与本地日期筛选（YYYY-MM-DD，含两端）
+    if (params.status) searchParams.set('status', params.status)
+    if (params.date_from) searchParams.set('date_from', params.date_from)
+    if (params.date_to) searchParams.set('date_to', params.date_to)
 
     const query = searchParams.toString()
     return request('GET', `/records/search${query ? `?${query}` : ''}`)
@@ -444,6 +449,14 @@ export const api = {
     const baseUrl = await getBaseUrl()
     const token = await getBackendToken()
     return appendToken(`${baseUrl}/records/${id}/export?format=${format}`, token)
+  },
+
+  // 批量导出的下载地址：选中的 ids 或筛选条件（与 searchRecords 同名参数）二选一；
+  // 走 GET + ?token=，与单条导出同一种下载方式
+  async getRecordsExportUrl(options = {}) {
+    const baseUrl = await getBaseUrl()
+    const token = await getBackendToken()
+    return appendToken(`${baseUrl}/records/export?${buildRecordsExportQuery(options)}`, token)
   },
 
   async getRecordAudio(id) {

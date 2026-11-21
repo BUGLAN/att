@@ -35,3 +35,41 @@ export function buildExportFilename(record, format) {
   const shortId = String(record?.id || '').replace(/-/g, '').slice(0, 8) || 'record'
   return `att-${stamp}-${shortId}.${format}`
 }
+
+/** 批量导出可选的格式（记录集「导出当前结果」「导出选中」的弹出菜单） */
+export const EXPORT_FORMATS = Object.freeze([
+  { value: 'md', label: 'Markdown（.md）' },
+  { value: 'txt', label: '纯文本（.txt）' },
+  { value: 'json', label: 'JSON（.json）' },
+  { value: 'csv', label: '表格（.csv）' }
+])
+
+/**
+ * 批量导出的查询串（GET /api/records/export）：选中的 id（逗号分隔）或筛选条件二选一；不含令牌。
+ * filter 与 /records/search 的参数同名：q、search_type、favorite_only、status、date_from、date_to。
+ */
+export function buildRecordsExportQuery({ ids = null, filter = {}, format = 'md', useOptimized = true } = {}) {
+  const params = new URLSearchParams()
+  params.set('format', format)
+  params.set('use_optimized', useOptimized ? 'true' : 'false')
+  if (Array.isArray(ids)) {
+    params.set('ids', ids.join(','))
+    return params.toString()
+  }
+  const value = filter || {}
+  if (value.q) params.set('q', value.q)
+  if (value.search_type && value.search_type !== 'all') params.set('search_type', value.search_type)
+  if (value.favorite_only) params.set('favorite_only', 'true')
+  if (value.status) params.set('status', value.status)
+  if (value.date_from) params.set('date_from', value.date_from)
+  if (value.date_to) params.set('date_to', value.date_to)
+  return params.toString()
+}
+
+/** 批量导出的保存文件名：att-records-{日期时间}-{条数}.{扩展名}（与后端 Content-Disposition 同形） */
+export function buildBatchExportFilename(format, count, now = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0')
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
+  return `att-records-${stamp}-${Math.max(0, Number(count) || 0)}.${format}`
+}
+

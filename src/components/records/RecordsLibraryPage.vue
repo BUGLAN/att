@@ -20,6 +20,24 @@
       </button>
     </div>
 
+    <!-- 第二行：日期 / 状态筛选与「导出当前结果」（导出全部筛选结果，不受分页限制） -->
+    <div class="ui-toolbar records-filters">
+      <BaseSelect v-model="dateRange" class="records-filter" aria-label="按日期筛选">
+        <option v-for="option in DATE_RANGE_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
+      </BaseSelect>
+      <template v-if="dateRange === 'custom'">
+        <input v-model="customFrom" class="records-date" type="date" aria-label="开始日期">
+        <span class="ui-meta">至</span>
+        <input v-model="customTo" class="records-date" type="date" aria-label="结束日期">
+      </template>
+      <BaseSelect v-model="statusFilter" class="records-filter" aria-label="按状态筛选">
+        <option v-for="option in STATUS_FILTER_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
+      </BaseSelect>
+      <button v-if="hasExtraFilters" class="ui-tbtn" type="button" @click="clearExtraFilters">清空筛选</button>
+      <span class="records-filters-spacer"></span>
+      <ExportFormatMenu label="导出当前结果" :disabled="!total || exporting" @select="exportCurrent" />
+    </div>
+
     <section class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">
@@ -68,19 +86,27 @@
         </div>
       </div>
 
-      <!-- 选择模式：底部一条操作栏 -->
-      <div v-if="selectMode" class="records-select-bar">
-        <button class="ui-tbtn" type="button" @click="toggleSelectAll">{{ isAllSelected ? '取消全选' : '全选本页' }}</button>
-        <button
-          class="ui-tbtn is-danger"
-          type="button"
-          :disabled="!selectedIds.size"
-          @click="pendingDelete = [...selectedIds]"
-        >
-          <span class="ui-tbtn-glyph">{{ G.delete }}</span>删除选中（{{ selectedIds.size }}）
-        </button>
-      </div>
     </section>
+
+    <!-- 选择模式：底部一条操作栏。放在卡片外面：.settings-section 的 overflow: hidden 会让 sticky 失效 -->
+    <div v-if="selectMode" class="records-select-bar">
+      <span class="ui-meta">已选 {{ selectedIds.size }} 条</span>
+      <button class="ui-tbtn" type="button" @click="toggleSelectAll">{{ isAllSelected ? '取消全选' : '全选本页' }}</button>
+      <ExportFormatMenu
+        :label="`导出选中（${selectedIds.size}）`"
+        placement="up"
+        :disabled="!selectedIds.size || exporting"
+        @select="exportSelected"
+      />
+      <button
+        class="ui-tbtn is-danger"
+        type="button"
+        :disabled="!selectedIds.size"
+        @click="pendingDelete = [...selectedIds]"
+      >
+        <span class="ui-tbtn-glyph">{{ G.delete }}</span>删除选中（{{ selectedIds.size }}）
+      </button>
+    </div>
 
     <ConfirmDialog
       :model-value="pendingDelete.length > 0"
@@ -114,7 +140,9 @@ import BaseSelect from '@/components/common/BaseSelect.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import RecordRow from './RecordRow.vue'
-import { groupRecordsByDay } from './recordListModel.mjs'
+import ExportFormatMenu from './ExportFormatMenu.vue'
+import { DATE_RANGE_OPTIONS, STATUS_FILTER_OPTIONS, dateRangeFor, groupRecordsByDay } from './recordListModel.mjs'
+import { buildBatchExportFilename, downloadFromUrl } from '@/utils/exportDownload.mjs'
 import { RETRANSCRIBE_CONFIRM, needsRetranscribeConfirm } from './retranscribeModel.mjs'
 import { createLatestRequestGuard, runLatest } from '@/utils/latestRequest.mjs'
 
@@ -137,6 +165,56 @@ const {
 const recordSearch = ref('')
 const recordSearchType = ref('all')
 const favoriteOnly = ref(false)
+// 日期（预设 / 自定义）与状态筛选
+const dateRange = ref('all')
+const customFrom = ref('')
+const customTo = ref('')
+const statusFilter = ref('')
+const exporting = ref(false)
+const hasExtraFilters = computed(() => dateRange.value !== 'all' || Boolean(statusFilter.value))
+
+function clearExtraFilters() {
+  dateRange.value = 'all'
+  customFrom.value = ''
+  customTo.value = ''
+  statusFilter.value = ''
+}
+
+/** 当前筛选条件（与 /records/search 同名参数；导出当前结果也用它） */
+function currentFilter() {
+  return {
+    q: recordSearch.value,
+    search_type: recordSearchType.value,
+    favorite_only: favoriteOnly.value,
+    status: statusFilter.value,
+    ...dateRangeFor(dateRange.value, new Date(), { from: customFrom.value, to: customTo.value })
+  }
+}
+
+async function runExport(options, count) {
+  exporting.value = true
+  try {
+    const url = await api.getRecordsExportUrl(options)
+    downloadFromUrl(url, buildBatchExportFilename(options.format, count))
+    appStore.showToast(`已导出 ${count} 条记录（${options.format.toUpperCase()}）`, { tone: 'success' })
+  } catch (error) {
+    console.error('Failed to export records:', error)
+    appStore.showToast('导出失败', { tone: 'error' })
+  } finally {
+    exporting.value = false
+  }
+}
+
+function exportCurrent(format) {
+  void runExport({ filter: currentFilter(), format }, total.value)
+}
+
+function exportSelected(format) {
+  const ids = [...selectedIds.value]
+  if (ids.length) {
+    void runExport({ ids, format }, ids.length)
+  }
+}
 const records = ref([])
 const isLoading = ref(false)
 const currentPage = ref(1)
@@ -162,9 +240,7 @@ function mergeRecordWithStore(record) {
 
 async function loadRecordsPage() {
   const outcome = await runLatest(recordsRequest, () => api.searchRecords({
-    q: recordSearch.value,
-    search_type: recordSearchType.value,
-    favorite_only: favoriteOnly.value,
+    ...currentFilter(),
     page: currentPage.value,
     page_size: pageSize
   }), {
@@ -314,7 +390,7 @@ function goToPage(page) {
 
 const debouncedLoadRecords = debounce(loadRecordsPage, 300)
 
-watch([recordSearch, recordSearchType, favoriteOnly], () => {
+watch([recordSearch, recordSearchType, favoriteOnly, dateRange, customFrom, customTo, statusFilter], () => {
   currentPage.value = 1
   debouncedLoadRecords()
 })
@@ -342,14 +418,48 @@ onMounted(async () => {
   margin-top: var(--s-4);
 }
 
+.records-filters {
+  flex-wrap: wrap;
+}
+
+.records-filter {
+  width: 128px;
+  flex: none;
+}
+
+.records-date {
+  height: 36px;
+  padding: 0 var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-raise);
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-sm);
+  color-scheme: dark;
+}
+
+.records-filters-spacer {
+  flex: 1;
+}
+
 .records-select-bar {
   position: sticky;
   bottom: 0;
+  z-index: 2;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: var(--s-2);
-  padding: var(--s-3) var(--s-6);
-  border-top: 1px solid var(--line);
+  margin-top: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, var(--r-sm));
   background: var(--bg-surface);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.records-select-bar .ui-meta {
+  margin-right: auto;
 }
 </style>

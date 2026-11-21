@@ -1,6 +1,11 @@
 // 测试：导出文件名构造（src/utils/exportDownload.mjs）
 import assert from 'node:assert/strict'
-import { buildExportFilename } from '../src/utils/exportDownload.mjs'
+import {
+  buildBatchExportFilename,
+  buildExportFilename,
+  buildRecordsExportQuery,
+  EXPORT_FORMATS
+} from '../src/utils/exportDownload.mjs'
 
 function main() {
   // 正常时间戳 + uuid id
@@ -21,6 +26,30 @@ function main() {
   // 非法时间字符串同样回落
   const badTime = buildExportFilename({ id: 'x', created_at: 'not-a-date' }, 'txt')
   assert.match(badTime, /^att-export-x\.txt$/, `非法时间应回落：${badTime}`)
+
+  // 批量导出：选中的 id 与筛选条件二选一
+  const byIds = new URLSearchParams(buildRecordsExportQuery({ ids: ['a', 'b'], format: 'md' }))
+  assert.equal(byIds.get('ids'), 'a,b')
+  assert.equal(byIds.get('format'), 'md')
+  assert.equal(byIds.get('use_optimized'), 'true')
+  assert.equal(byIds.get('status'), null, '按 id 导出时不带筛选条件')
+
+  const byFilter = new URLSearchParams(buildRecordsExportQuery({
+    filter: { q: '会议', search_type: 'all', favorite_only: true, status: 'failed', date_from: '2026-11-01', date_to: '2026-11-21' },
+    format: 'csv',
+    useOptimized: false
+  }))
+  assert.equal(byFilter.get('ids'), null)
+  assert.equal(byFilter.get('q'), '会议')
+  assert.equal(byFilter.get('search_type'), null, '默认范围不重复传')
+  assert.equal(byFilter.get('favorite_only'), 'true')
+  assert.equal(byFilter.get('status'), 'failed')
+  assert.equal(byFilter.get('date_from'), '2026-11-01')
+  assert.equal(byFilter.get('date_to'), '2026-11-21')
+  assert.equal(byFilter.get('use_optimized'), 'false')
+
+  assert.equal(buildBatchExportFilename('csv', 12, new Date(2026, 10, 21, 9, 5)), 'att-records-20261121-0905-12.csv')
+  assert.deepEqual(EXPORT_FORMATS.map((item) => item.value), ['md', 'txt', 'json', 'csv'])
 
   console.log('[export-download] 全部断言通过')
 }

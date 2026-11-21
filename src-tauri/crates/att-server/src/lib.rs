@@ -8,7 +8,8 @@
 //! 端点一览：
 //! - GET /api/health（前端 runtimeStatus：model_service_* 与 streaming_*）
 //! - GET/PUT /api/settings（白名单/脱敏契约保真）
-//! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出、重新识别）
+//! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出、重新识别）；
+//!   搜索支持状态与本地日期筛选，/api/records/export 批量导出（Markdown / TXT / JSON / CSV）
 //! - /api/prompts：列出（内置 + 自定义）、新建 / 修改 / 删除自定义预设、PUT /api/prompts/default 设默认
 //! - /api/llm/* LLM v2 全套（服务商目录 / 档案 / 模型 / 验证，见 [`llm`]）
 //! - 模型服务三端点（在线引擎凭据配齐即就绪；凭据验证确定失败时不就绪）
@@ -27,7 +28,8 @@ mod storage;
 mod transcribe;
 mod update;
 
-use att_core::records::{RecordError, RecordUpdate};
+use att_core::records::export::{self as record_export, ExportFormat};
+use att_core::records::{RecordError, RecordFilter, RecordUpdate};
 use att_core::state::CoreState;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, Method, StatusCode};
@@ -72,6 +74,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         // 记录
         .route("/api/records", get(records_list))
         .route("/api/records/search", get(records_search))
+        // 静态段 export 优先于 {id}；GET 供下载链接用（带不了请求体），POST 与 GET 参数等价
+        .route("/api/records/export", get(records_export_batch_get).post(records_export_batch_post))
         .route("/api/records/{id}", get(records_get).put(records_put).delete(records_delete))
         .route("/api/records/{id}/status", get(records_status))
         .route("/api/records/{id}/audio", get(records_audio))
@@ -553,28 +557,156 @@ async fn records_list(
     Json(serde_json::to_value(records).unwrap_or_default())
 }
 
+/// 记录状态的合法取值（筛选参数校验用）。
+const RECORD_STATUSES: [&str; 6] = ["pending", "transcribing", "transcribed", "optimizing", "optimized", "failed"];
+
+/// 搜索 / 批量导出共用的筛选参数：q、search_type、favorite_only、status、date_from、date_to（本地日期 YYYY-MM-DD）。
+fn record_filter(params: &HashMap<String, String>) -> Result<RecordFilter, String> {
+    let text = |key: &str| params.get(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let date = |key: &str| -> Result<Option<chrono::NaiveDate>, String> {
+        text(key)
+            .map(|value| {
+                chrono::NaiveDate::parse_from_str(&value, "%Y-%m-%d")
+                    .map_err(|_| format!("{key} 必须是 YYYY-MM-DD 格式的日期：{value}"))
+            })
+            .transpose()
+    };
+    let status = text("status");
+    if let Some(status) = status.as_deref().filter(|s| !RECORD_STATUSES.contains(s)) {
+        return Err(format!("status 只能是 {}：{status}", RECORD_STATUSES.join(" / ")));
+    }
+    Ok(RecordFilter {
+        query: params.get("q").cloned().unwrap_or_default(),
+        search_type: text("search_type").unwrap_or_else(|| "all".into()),
+        favorite_only: params.get("favorite_only").map(|v| v == "true" || v == "1").unwrap_or(false),
+        status,
+        date_from: date("date_from")?,
+        date_to: date("date_to")?,
+    })
+}
+
 async fn records_search(
     State(state): State<Arc<ServerState>>,
     Query(params): Query<HashMap<String, String>>,
-) -> Json<Value> {
-    let query = params.get("q").cloned().unwrap_or_default();
-    let search_type = params.get("search_type").cloned().unwrap_or_else(|| "all".into());
-    let favorite_only = params.get("favorite_only").map(|v| v == "true" || v == "1").unwrap_or(false);
+) -> Result<Json<Value>, axum::response::Response> {
+    let filter =
+        record_filter(&params).map_err(|message| err(StatusCode::UNPROCESSABLE_ENTITY, message).into_response())?;
     let page = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
     let page_size = parse_usize(&params, "page_size", 100, 200);
 
     let (items, total) =
-        blocking(move || state.core.records.search(&query, &search_type, favorite_only, page, page_size))
-            .await
-            .unwrap_or_default();
+        blocking(move || state.core.records.search_filtered(&filter, page, page_size)).await.unwrap_or_default();
     let total_pages = if total == 0 { 0 } else { (total + page_size - 1) / page_size };
-    Json(json!({
+    Ok(Json(json!({
         "items": serde_json::to_value(items).unwrap_or_default(),
         "total": total,
         "page": page,
         "page_size": page_size,
         "total_pages": total_pages,
-    }))
+    })))
+}
+
+/// 批量导出要导出哪些记录：选中的 id，或筛选条件下的全部结果（不分页）。
+enum ExportTarget {
+    Ids(Vec<String>),
+    Filter(RecordFilter),
+}
+
+/// 批量导出：按目标取记录 → 生成文件 → 以附件返回（Content-Disposition 带文件名）。
+async fn export_records(
+    state: Arc<ServerState>,
+    target: ExportTarget,
+    format: ExportFormat,
+    use_optimized: bool,
+) -> axum::response::Response {
+    let records = blocking(move || match target {
+        ExportTarget::Ids(ids) => state.core.records.get_many(&ids),
+        ExportTarget::Filter(filter) => state.core.records.filtered(&filter),
+    })
+    .await
+    .unwrap_or_default();
+    if records.is_empty() {
+        return err(StatusCode::NOT_FOUND, "没有可导出的记录".into()).into_response();
+    }
+    let body = record_export::render(&records, format, use_optimized);
+    let filename = record_export::file_name(format, records.len(), chrono::Local::now());
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, format.content_type().parse().unwrap());
+    if let Ok(disposition) = format!("attachment; filename=\"{filename}\"").parse() {
+        headers.insert(header::CONTENT_DISPOSITION, disposition);
+    }
+    (StatusCode::OK, headers, body).into_response()
+}
+
+fn export_format(value: Option<&str>) -> Result<ExportFormat, axum::response::Response> {
+    let value = value.unwrap_or("");
+    ExportFormat::parse(value).ok_or_else(|| {
+        err(StatusCode::UNPROCESSABLE_ENTITY, format!("format 只能是 md / txt / json / csv：{value}")).into_response()
+    })
+}
+
+/// GET /api/records/export?format=&use_optimized=&ids=a,b,c 或筛选参数（与 /records/search 相同）：
+/// 下载链接带不了请求体，前端用这个（令牌走 ?token=）。
+async fn records_export_batch_get(
+    State(state): State<Arc<ServerState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> axum::response::Response {
+    let format = match export_format(params.get("format").map(String::as_str)) {
+        Ok(format) => format,
+        Err(response) => return response,
+    };
+    let use_optimized = params.get("use_optimized").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let target = match params.get("ids") {
+        Some(ids) => {
+            ExportTarget::Ids(ids.split(',').map(str::trim).filter(|id| !id.is_empty()).map(String::from).collect())
+        }
+        None => match record_filter(&params) {
+            Ok(filter) => ExportTarget::Filter(filter),
+            Err(message) => return err(StatusCode::UNPROCESSABLE_ENTITY, message).into_response(),
+        },
+    };
+    export_records(state, target, format, use_optimized).await
+}
+
+/// POST /api/records/export `{ ids?: [...], query?: {同 /records/search 的筛选条件}, format, use_optimized }`：
+/// ids 与 query 二选一（query = 当前筛选的全部结果，不受分页限制）。
+async fn records_export_batch_post(
+    State(state): State<Arc<ServerState>>,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    let format = match export_format(body.get("format").and_then(Value::as_str)) {
+        Ok(format) => format,
+        Err(response) => return response,
+    };
+    let use_optimized = body.get("use_optimized").and_then(Value::as_bool).unwrap_or(true);
+    let target = match (body.get("ids").filter(|v| !v.is_null()), body.get("query").filter(|v| !v.is_null())) {
+        (Some(ids), None) => match ids.as_array() {
+            Some(ids) if ids.iter().all(Value::is_string) => {
+                ExportTarget::Ids(ids.iter().filter_map(Value::as_str).map(String::from).collect())
+            }
+            _ => return err(StatusCode::UNPROCESSABLE_ENTITY, "ids 必须是字符串数组".into()).into_response(),
+        },
+        (None, Some(Value::Object(query))) => {
+            let params: HashMap<String, String> = query
+                .iter()
+                .filter_map(|(key, value)| match value {
+                    Value::String(text) => Some((key.clone(), text.clone())),
+                    Value::Bool(flag) => Some((key.clone(), flag.to_string())),
+                    Value::Number(number) => Some((key.clone(), number.to_string())),
+                    _ => None,
+                })
+                .collect();
+            match record_filter(&params) {
+                Ok(filter) => ExportTarget::Filter(filter),
+                Err(message) => return err(StatusCode::UNPROCESSABLE_ENTITY, message).into_response(),
+            }
+        }
+        _ => {
+            return err(StatusCode::UNPROCESSABLE_ENTITY, "ids 与 query 必须二选一（query 是筛选条件对象）".into())
+                .into_response()
+        }
+    };
+    export_records(state, target, format, use_optimized).await
 }
 
 async fn records_get(
@@ -1327,6 +1459,132 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(error["detail"]["manual_only"], json!(true));
+    }
+
+    /// 原样取回响应体（导出是文件，不是 JSON）。
+    async fn request_raw(
+        state: &Arc<ServerState>,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, HeaderMap, String) {
+        let mut builder = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("x-att-token", "test-token")
+            .header("host", "127.0.0.1");
+        if body.is_some() {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+        }
+        let request = builder.body(Body::from(body.map(|b| b.to_string()).unwrap_or_default())).unwrap();
+        let response = router(state.clone()).oneshot(request).await.unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    /// 250 条记录（超过一页）：每 10 条一条失败的，其余已识别；时间依次往前推一分钟。
+    fn insert_many_records(core: &CoreState) {
+        let now = chrono::Utc::now();
+        for n in 0..250 {
+            let id = format!("rec-batch-{n:03}");
+            let status = if n % 10 == 0 {
+                att_core::records::RecordStatus::Failed
+            } else {
+                att_core::records::RecordStatus::Transcribed
+            };
+            core.records
+                .insert(att_core::records::Record {
+                    id: id.clone(),
+                    raw_text: Some(format!("第 {n} 条")),
+                    status,
+                    ..Default::default()
+                })
+                .unwrap();
+            let created = (now - chrono::Duration::minutes(n)).to_rfc3339();
+            core.records.patch(&id, |r| r.created_at = created.clone()).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn records_搜索_状态与日期筛选_与分页总数同步() {
+        let state = test_state("search-filters").await;
+        insert_many_records(&state.core);
+        let (status, body) = get_json(&state, "/api/records/search?status=failed&page_size=10").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["total"], json!(25), "250 条里每 10 条一条失败");
+        assert_eq!(body["total_pages"], json!(3));
+        assert!(body["items"].as_array().unwrap().iter().all(|r| r["status"] == "failed"));
+
+        let today = chrono::Local::now().date_naive();
+        let tomorrow = today + chrono::Duration::days(1);
+        let (_, body) = get_json(&state, &format!("/api/records/search?date_from={tomorrow}")).await;
+        assert_eq!(body["total"], json!(0), "明天起没有记录");
+        let (_, body) = get_json(
+            &state,
+            &format!("/api/records/search?date_from={}&date_to={today}", today - chrono::Duration::days(1)),
+        )
+        .await;
+        assert_eq!(body["total"], json!(251), "250 条加 test_state 的 rec-x 都在这两天内");
+
+        let (status, _) = get_json(&state, "/api/records/search?date_from=2026-13-40").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, _) = get_json(&state, "/api/records/search?status=nope").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn records_批量导出_选中与当前结果_超过一页也完整() {
+        let state = test_state("batch-export").await;
+        insert_many_records(&state.core);
+
+        // 选中的几条 → Markdown
+        let (status, headers, body) = request_raw(
+            &state,
+            "POST",
+            "/api/records/export",
+            Some(json!({ "ids": ["rec-batch-001", "rec-batch-002"], "format": "md", "use_optimized": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/markdown"));
+        let disposition = headers[header::CONTENT_DISPOSITION].to_str().unwrap();
+        assert!(disposition.contains("attachment") && disposition.contains("-2.md"), "{disposition}");
+        assert_eq!(body.matches("\n## ").count(), 2, "{body}");
+        assert!(body.contains("第 1 条") && body.contains("第 2 条"));
+
+        // 当前筛选的全部结果（失败的 25 条，超过一页 10 条）→ CSV
+        let (status, _, csv) = request_raw(
+            &state,
+            "POST",
+            "/api/records/export",
+            Some(json!({ "query": { "status": "failed" }, "format": "csv" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(csv.trim_end().split("\r\n").count(), 26, "表头 + 25 行");
+
+        // 下载链接用的 GET：ids 逗号分隔
+        let (status, _, json_body) =
+            request_raw(&state, "GET", "/api/records/export?format=json&ids=rec-batch-003,rec-batch-004", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(serde_json::from_str::<Value>(&json_body).unwrap().as_array().unwrap().len(), 2);
+        // GET 不带 ids：按筛选参数导出全部（这里是全部 251 条）
+        let (status, _, txt) = request_raw(&state, "GET", "/api/records/export?format=txt", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(txt.matches("\n[").count() + 1, 251);
+
+        // 参数错误与空结果
+        for (body, expected) in [
+            (json!({ "ids": ["rec-batch-001"], "format": "docx" }), StatusCode::UNPROCESSABLE_ENTITY),
+            (json!({ "format": "md" }), StatusCode::UNPROCESSABLE_ENTITY),
+            (json!({ "ids": ["a"], "query": {}, "format": "md" }), StatusCode::UNPROCESSABLE_ENTITY),
+            (json!({ "ids": ["missing"], "format": "md" }), StatusCode::NOT_FOUND),
+        ] {
+            let (status, _, text) = request_raw(&state, "POST", "/api/records/export", Some(body.clone())).await;
+            assert_eq!(status, expected, "{body} → {text}");
+        }
     }
 
     #[tokio::test]

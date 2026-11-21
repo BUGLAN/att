@@ -5,8 +5,9 @@
 //! - 旧数据缺 `error`/`revision` 字段可读（serde 默认兜底）
 //! - revision 乐观锁：PUT 冲突返回 [`RecordError::Conflict`]（HTTP 409）
 //!
-//! 「重新识别」（读记录音频 → 选引擎整段识别 → 写回）见 [`retranscribe`]。
+//! 「重新识别」（读记录音频 → 选引擎整段识别 → 写回）见 [`retranscribe`]；批量导出的文件格式见 [`export`]。
 
+pub mod export;
 pub mod retranscribe;
 
 use crate::now_rfc3339;
@@ -213,6 +214,45 @@ fn scan_records(dir: &Path) -> (Vec<Record>, usize) {
     (records, skipped)
 }
 
+/// 记录集的筛选条件（搜索、收藏、状态、本地日期范围），列表分页与批量导出共用。
+#[derive(Debug, Clone, Default)]
+pub struct RecordFilter {
+    /// 关键词（不区分大小写；空 = 不限）
+    pub query: String,
+    /// 搜索范围：`all` / `raw` / `optimized`
+    pub search_type: String,
+    pub favorite_only: bool,
+    /// 只要这个状态（`transcribed` / `optimized` / `failed` …）；None = 不限
+    pub status: Option<String>,
+    /// 创建日期范围（本机时区的日期，含两端）；None = 不限
+    pub date_from: Option<chrono::NaiveDate>,
+    pub date_to: Option<chrono::NaiveDate>,
+}
+
+impl RecordFilter {
+    fn matches(&self, record: &Record, q: &str) -> bool {
+        if self.favorite_only && !record.is_favorite {
+            return false;
+        }
+        if self.status.as_deref().is_some_and(|status| record.status.as_str() != status) {
+            return false;
+        }
+        if self.date_from.is_some() || self.date_to.is_some() {
+            // 创建时间读不出来的记录不落在任何日期范围里
+            let Some(day) = local_date(&record.created_at) else { return false };
+            if self.date_from.is_some_and(|from| day < from) || self.date_to.is_some_and(|to| day > to) {
+                return false;
+            }
+        }
+        matches_query(record, q, &self.search_type)
+    }
+}
+
+/// 记录创建时间对应的本机日期（按日期筛选用；时间读不出来时为 None）。
+pub fn local_date(created_at: &str) -> Option<chrono::NaiveDate> {
+    chrono::DateTime::parse_from_rfc3339(created_at).ok().map(|time| time.with_timezone(&chrono::Local).date_naive())
+}
+
 /// 搜索命中判定（`q` 已转小写；空串视为全部命中）。
 fn matches_query(record: &Record, q: &str, search_type: &str) -> bool {
     if q.is_empty() {
@@ -315,18 +355,40 @@ impl RecordRepo {
         page: usize,
         page_size: usize,
     ) -> (Vec<Record>, usize) {
-        let q = query.to_lowercase();
+        let filter = RecordFilter {
+            query: query.to_string(),
+            search_type: search_type.to_string(),
+            favorite_only,
+            ..Default::default()
+        };
+        self.search_filtered(&filter, page, page_size)
+    }
+
+    /// GET /api/records/search（带状态 / 日期筛选）：按 created_at 倒序分页，第二项是筛选后的总数。
+    pub fn search_filtered(&self, filter: &RecordFilter, page: usize, page_size: usize) -> (Vec<Record>, usize) {
+        let q = filter.query.to_lowercase();
         let mut index = self.guard();
         index.refresh(scan_records);
-        let matched: Vec<&Record> = index
-            .items()
-            .iter()
-            .filter(|r| !favorite_only || r.is_favorite)
-            .filter(|r| matches_query(r, &q, search_type))
-            .collect();
+        let matched: Vec<&Record> = index.items().iter().filter(|r| filter.matches(r, &q)).collect();
         let total = matched.len();
         let items = matched.into_iter().skip((page.max(1) - 1) * page_size).take(page_size).cloned().collect();
         (items, total)
+    }
+
+    /// 筛选结果的全部记录（批量导出「当前结果」用，不分页；按 created_at 倒序）。
+    pub fn filtered(&self, filter: &RecordFilter) -> Vec<Record> {
+        let q = filter.query.to_lowercase();
+        let mut index = self.guard();
+        index.refresh(scan_records);
+        index.items().iter().filter(|r| filter.matches(r, &q)).cloned().collect()
+    }
+
+    /// 按 id 取多条记录（批量导出「选中」用；不存在的跳过，按 created_at 倒序）。
+    pub fn get_many(&self, ids: &[String]) -> Vec<Record> {
+        let wanted: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let mut index = self.guard();
+        index.refresh(scan_records);
+        index.items().iter().filter(|r| wanted.contains(r.id.as_str())).cloned().collect()
     }
 
     pub fn get(&self, id: &str) -> Result<Record, RecordError> {
@@ -726,6 +788,45 @@ mod tests {
 
         let (_, fav_total) = repo.search("", "all", true, 1, 100);
         assert_eq!(fav_total, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 筛选_状态与本地日期范围_与关键词收藏组合() {
+        let (repo, dir) = repo("filter");
+        let today = chrono::Local::now();
+        let put = |id: &str, days_ago: i64, status: RecordStatus, text: &str| {
+            repo.insert(Record { id: id.into(), raw_text: Some(text.into()), status, ..Default::default() }).unwrap();
+            let created = (today - chrono::Duration::days(days_ago)).with_timezone(&chrono::Utc).to_rfc3339();
+            repo.patch(id, |r| r.created_at = created.clone()).unwrap();
+        };
+        put("rec-today", 0, RecordStatus::Transcribed, "今天的会议");
+        put("rec-week", 5, RecordStatus::Failed, "");
+        put("rec-month", 20, RecordStatus::Optimized, "上个月的会议");
+        let ids = |filter: &RecordFilter| -> Vec<String> {
+            let (items, total) = repo.search_filtered(filter, 1, 100);
+            assert_eq!(items.len(), total);
+            items.into_iter().map(|r| r.id).collect()
+        };
+        let day = |n: i64| (today - chrono::Duration::days(n)).date_naive();
+
+        let failed = RecordFilter { status: Some("failed".into()), ..Default::default() };
+        assert_eq!(ids(&failed), ["rec-week"], "选「失败」能列出识别失败的记录");
+        let last_7 = RecordFilter { date_from: Some(day(6)), date_to: Some(day(0)), ..Default::default() };
+        assert_eq!(ids(&last_7), ["rec-today", "rec-week"]);
+        let only_today = RecordFilter { date_from: Some(day(0)), date_to: Some(day(0)), ..Default::default() };
+        assert_eq!(ids(&only_today), ["rec-today"]);
+        let older = RecordFilter { date_to: Some(day(10)), query: "会议".into(), ..Default::default() };
+        assert_eq!(ids(&older), ["rec-month"], "日期与关键词组合");
+        assert_eq!(repo.filtered(&RecordFilter::default()).len(), 3, "导出当前结果不分页");
+        assert_eq!(
+            repo.get_many(&["rec-month".into(), "missing".into(), "rec-today".into()])
+                .into_iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>(),
+            ["rec-today", "rec-month"],
+            "按 id 取多条：跳过不存在的，按时间倒序"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -87,6 +87,7 @@ export function useElectron() {
     cancelOptimizeRecord: (id) => httpApi.cancelOptimizeRecord(id),
     retranscribeRecord: (id, provider) => httpApi.retranscribeRecord(id, provider),
     exportRecord: (id, format) => httpApi.exportRecord(id, format),
+    getRecordsExportUrl: (options) => httpApi.getRecordsExportUrl(options),
     getRecordAudio: (id) => httpApi.getRecordAudio(id),
     getHealth: (probeRuntime = false) => httpApi.getHealth(probeRuntime),
     getAsrCredentialCheck: (provider) => httpApi.getAsrCredentialCheck(provider),

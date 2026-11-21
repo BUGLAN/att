@@ -4,10 +4,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  DATE_RANGE_OPTIONS,
+  STATUS_FILTER_OPTIONS,
+  dateRangeFor,
   dayLabel,
   formatClock,
   formatRecordDuration,
   groupRecordsByDay,
+  localDateString,
   recordStatusMeta
 } from '../src/components/records/recordListModel.mjs'
 
@@ -59,3 +63,21 @@ test('行内状态：没听到人声的记录带原因标记', () => {
   assert.equal(meta.title, note)
   assert.equal(recordStatusMeta({ status: 'transcribed', error: '网络错误' }), null)
 })
+
+test('日期筛选：预设换算成本地日期范围，自定义可只填一端、颠倒自动对调', () => {
+  const at = new Date(2026, 10, 21, 0, 30) // 2026-11-21 00:30，本地时间
+  assert.equal(localDateString(at), '2026-11-21')
+  assert.deepEqual(dateRangeFor('all', at), { date_from: '', date_to: '' })
+  assert.deepEqual(dateRangeFor('today', at), { date_from: '2026-11-21', date_to: '2026-11-21' })
+  assert.deepEqual(dateRangeFor('7d', at), { date_from: '2026-11-15', date_to: '2026-11-21' })
+  assert.deepEqual(dateRangeFor('30d', at), { date_from: '2026-10-23', date_to: '2026-11-21' })
+  assert.deepEqual(dateRangeFor('custom', at, { from: '2026-11-10' }), { date_from: '2026-11-10', date_to: '' })
+  assert.deepEqual(dateRangeFor('custom', at, { from: '2026-11-20', to: '2026-11-01' }), {
+    date_from: '2026-11-01',
+    date_to: '2026-11-20'
+  })
+  assert.deepEqual(dateRangeFor('custom', at, { from: 'bad' }), { date_from: '', date_to: '' })
+  assert.deepEqual(DATE_RANGE_OPTIONS.map((option) => option.value), ['all', 'today', '7d', '30d', 'custom'])
+  assert.deepEqual(STATUS_FILTER_OPTIONS.map((option) => option.value), ['', 'transcribed', 'optimized', 'failed'])
+})
+

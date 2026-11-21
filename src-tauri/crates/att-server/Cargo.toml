@@ -19,6 +19,8 @@ tower-http = { version = "0.6", features = ["cors"] }
 # NDJSON 流式响应（记录优化）
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tracing = { workspace = true }
+# 记录筛选的本地日期与批量导出文件名的时间
+chrono = { workspace = true }
 
 [dev-dependencies]
 att-core = { path = "../att-core", default-features = false, features = ["test-support"] }
