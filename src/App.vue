@@ -89,6 +89,7 @@ const {
   isElectron,
   onPasteText,
   onNavigateSettings,
+  onDefaultPresetChanged,
   onDesktopPermissionRequired,
   onDesktopAgentError,
   onUpdateReady,
@@ -118,6 +119,11 @@ onMounted(async () => {
 
   onNavigateSettings(() => {
     appStore.openSettings()
+  })
+
+  // 快捷键 / 托盘切换了默认优化预设（后端已写入设置）：设置页与首页同步显示
+  onDefaultPresetChanged((payload) => {
+    settingsStore.applyDefaultPreset(payload?.default_preset_id)
   })
 
   onDesktopPermissionRequired((payload) => {
@@ -165,6 +171,7 @@ onMounted(async () => {
 onUnmounted(() => {
   removeAllListeners('paste-text')
   removeAllListeners('navigate:settings')
+  removeAllListeners('settings:default-preset')
   removeAllListeners('desktop:permission-required')
   removeAllListeners('desktop:agent-error')
   removeAllListeners('update:ready')

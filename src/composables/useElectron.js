@@ -221,6 +221,11 @@ export function useElectron() {
     void addChannelListener('navigate:settings', callback)
   }
 
+  /** 默认优化预设在桌面端被切换（快捷键 / 托盘）：payload { default_preset_id, name } */
+  function onDefaultPresetChanged(callback) {
+    void addChannelListener('settings:default-preset', callback)
+  }
+
   function onClipboardChanged(callback) {
     void addChannelListener('clipboard:changed', callback)
   }
@@ -404,6 +409,7 @@ export function useElectron() {
     onUpdateReady,
     onPasteText,
     onNavigateSettings,
+    onDefaultPresetChanged,
     onClipboardChanged,
     onFileDrop,
     onDesktopPermissionRequired,

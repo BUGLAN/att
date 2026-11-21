@@ -34,9 +34,37 @@ button {
   width: 100%;
   height: 100%;
   display: flex;
-  align-items: flex-end;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
   padding-bottom: 8px;
+}
+
+/* 自动优化要用的预设名：胶囊上方的小字（窗口顶部留给入场位移的那截空间，不改变胶囊大小） */
+.preset-tag {
+  flex: none;
+  max-width: 220px;
+  margin-bottom: 2px;
+  padding: 0 6px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: rgba(22, 23, 27, 0.86);
+  color: rgba(243, 210, 122, 0.88);
+  font-size: 10px;
+  line-height: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.tag-enter-active,
+.tag-leave-active {
+  transition: opacity 180ms ease;
+}
+
+.tag-enter-from,
+.tag-leave-to {
+  opacity: 0;
 }
 
 .capsule {
@@ -87,6 +115,7 @@ button {
 .capsule[data-seal='converting'] { --seal-bg: #4257d3; --seal-fg: #f3d27a; }
 .capsule[data-seal='success'] { --seal-bg: #2e9e6b; --seal-fg: #eafbf1; }
 .capsule[data-seal='failure'] { --seal-bg: #6b2a26; --seal-fg: #f6c9bf; }
+.capsule[data-seal='preset'] { --seal-bg: #c9a227; --seal-fg: #3a2a05; }
 
 /* 按自然尺寸排版、贴左下角；胶囊用过渡追它的大小，内容先到位、被胶囊逐步「揭开」 */
 .content {
@@ -191,6 +220,10 @@ button {
 .line.reason {
   text-overflow: ellipsis;
   color: rgba(246, 201, 191, 0.92);
+}
+
+.line.reason.notice {
+  color: var(--text-1);
 }
 
 .capsule.clickable {

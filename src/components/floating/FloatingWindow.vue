@@ -13,10 +13,14 @@
       出字：到字先进缓冲，按稳定节拍逐字放出、每个字墨晕洇开；超宽后整行平滑左移（见 floatingView.mjs 的 paceStep）。
       胶囊本身不参与排版：内层 .content 排好，胶囊量出它的大小后用过渡追上去。
     -->
+    <!-- 自动优化要用的预设：录音 / 识别 / 优化中在胶囊上方用小字显示，不改变胶囊大小 -->
+    <Transition name="tag">
+      <span v-if="presetTag" class="preset-tag" aria-hidden="true">{{ presetTag }}</span>
+    </Transition>
     <section
       :key="sessionKey"
       class="capsule"
-      :class="{ sized, settling: !view.active, leaving: leaving || view.seal === 'idle', clickable: Boolean(reason) }"
+      :class="{ sized, settling: !view.active, leaving: leaving || view.seal === 'idle', clickable: view.seal === 'failure' && Boolean(reason) }"
       :data-seal="view.seal"
       :style="capsuleStyle"
       :title="view.detail || undefined"
@@ -34,7 +38,7 @@
             </span>
           </Transition>
         </span>
-        <span class="sr-only">{{ SEAL_LABELS[view.seal] }}{{ view.detail ? `：${view.detail}` : '' }}</span>
+        <span class="sr-only">{{ SEAL_LABELS[view.seal] }}{{ view.detail ? `：${view.detail}` : '' }}{{ view.notice ? `：${view.notice}` : '' }}{{ presetTag ? `（优化预设：${presetTag}）` : '' }}</span>
 
         <!--
           离场的元素一律先钉在原位、脱离排版（detachOnLeave），在原地淡出：
@@ -43,7 +47,7 @@
         -->
         <Transition name="line" @before-leave="detachOnLeave">
           <span v-if="expanded" key="line" ref="lineEl" class="line" :class="{ clipped }"><span ref="trackEl" class="track" :style="{ transform: `translateX(${-shift}px)` }"><span v-for="(c, index) in shownChars" :key="c.id" class="ch" :class="{ pending: index >= pendingFrom }">{{ c.ch }}</span></span></span>
-          <span v-else-if="reason" key="reason" class="line reason">{{ reason }}</span>
+          <span v-else-if="reason" key="reason" class="line reason" :class="{ notice: view.seal === 'preset' }">{{ reason }}</span>
         </Transition>
 
         <Transition name="slot" @before-leave="detachOnLeave">
@@ -69,7 +73,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { deriveFloatingView, glideToward, nextVoiceState, paceStep, reconcileLine, sealGlyphNudge, startsNewSession } from './floatingView.mjs'
 
-const SEAL_LABELS = { idle: '待命', listening: '录音中', converting: '处理中', success: '已完成', failure: '失败' }
+const SEAL_LABELS = { idle: '待命', listening: '录音中', converting: '处理中', success: '已完成', failure: '失败', preset: '已切换优化预设' }
 const WAVE_BARS = 7
 /** 安静时声纹收成的小点高度（px） */
 const WAVE_REST = 2
@@ -125,8 +129,13 @@ const pendingFrom = computed(() => Array.from(view.value.text).length - Array.fr
 const targetChars = computed(() => (expanded.value ? Array.from(view.value.text) : []))
 // 开头被裁掉时左侧渐隐，提示前面还有内容
 const clipped = computed(() => shift.value > 0.5)
-// 失败原因直接显示在印章旁（完整内容仍在 title 里）
-const reason = computed(() => (view.value.seal === 'failure' ? view.value.detail : ''))
+// 失败原因直接显示在印章旁（完整内容仍在 title 里）；切换预设的提示同样把预设名写在印章旁
+const reason = computed(() => {
+  if (view.value.seal === 'failure') return view.value.detail
+  return view.value.seal === 'preset' ? view.value.notice : ''
+})
+// 胶囊上方的预设小字：只在工作态（录音 / 识别 / 优化中）且胶囊没在淡出时显示
+const presetTag = computed(() => (view.value.active && !leaving.value ? view.value.preset : ''))
 const showCancel = computed(() => view.value.cancellable && (expanded.value || hovered.value))
 // 声纹：录音中音量第一次过门限时出现（不必等出字）
 const showWave = computed(() => voiced.value && view.value.seal === 'listening')
@@ -269,7 +278,7 @@ function scheduleHide(delay) {
 }
 
 function onCapsuleClick() {
-  if (reason.value) {
+  if (view.value.seal === 'failure' && reason.value) {
     window.floatingAPI?.openMain?.()
   }
 }

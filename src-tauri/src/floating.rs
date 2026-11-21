@@ -155,9 +155,34 @@ fn phase_of(state: Option<&Value>) -> &str {
     state.and_then(|s| s["phase"].as_str()).unwrap_or("idle")
 }
 
-/// 会话已结束（待命 / 成 / 敗）：只有这时才允许悬浮窗自己收起。
+/// 会话已结束（待命 / 成 / 敗 / 切换预设的提示）：只有这时才允许悬浮窗自己收起。
 fn is_settled(state: Option<&Value>) -> bool {
-    matches!(phase_of(state), "idle" | "complete" | "error")
+    matches!(phase_of(state), "idle" | "complete" | "error" | "notice")
+}
+
+/// 同一会话的后续状态（中间结果等）沿用上一条带的预设名：它只在相位变化时由 Actor 算一次。
+fn carry_preset(mut next: Value, last: Option<&Value>) -> Value {
+    if next.get("preset").is_none() {
+        if let Some(preset) = last.and_then(|last| last.get("preset")).filter(|p| p.is_string()) {
+            next["preset"] = preset.clone();
+        }
+    }
+    next
+}
+
+/// 切换优化预设的提示：会话进行中不打断，只更新胶囊上方的预设名（小字）；
+/// 空闲时弹出一枚「潤」+ 预设名，停留片刻后收起（与成 / 敗同样由页面计时发起收起）。
+pub fn preset_notice(app: &AppHandle, name: &str) {
+    let active = !is_settled(Some(&last_state()));
+    if active {
+        publish(app, |last| {
+            let mut next = last.filter(|last| !is_settled(Some(last)))?.clone();
+            next["preset"] = json!(name);
+            Some(next)
+        });
+        return;
+    }
+    update(app, json!({ "phase": "notice", "text": name, "duration": 0 }), true);
 }
 
 /// 建连成功（connecting → recording）在悬浮窗里是同一个状态：沿用已经出来的字，
@@ -213,7 +238,7 @@ pub fn update(app: &AppHandle, state: Value, show: bool) {
 /// 识别中间结果（流式 / 多段）：只在悬浮窗仍处于「聽」时生效。
 /// 识别回调与录音 Actor 不在同一线程，松开后 Actor 已推「轉」，晚到的中间结果不能再把它推回「聽」。
 pub fn update_partial(app: &AppHandle, state: Value) {
-    publish(app, |last| (phase_of(last) == "recording").then_some(state));
+    publish(app, |last| (phase_of(last) == "recording").then(|| carry_preset(state, last)));
 }
 
 /// 收起（取消 / 没说话 / 托盘切换）：页面先回到待命淡出胶囊，淡完再隐藏窗口。
@@ -273,11 +298,20 @@ pub fn from_recording_state(payload: &Value) -> Option<(Value, bool)> {
     let mode = payload["mode"].as_str().unwrap_or("single");
     let message = payload["message"].as_str().unwrap_or("");
     let state = |phase: &str, text: &str| json!({ "phase": phase, "mode": mode, "text": text, "duration": 0 });
+    // 自动优化开启时 Actor 带上当前优化预设名，悬浮窗在胶囊上方用小字显示
+    let preset = payload["preset"].as_str().filter(|name| !name.is_empty());
+    let working = |phase: &str| {
+        let mut next = state(phase, "");
+        if let Some(name) = preset {
+            next["preset"] = json!(name);
+        }
+        next
+    };
     match payload["phase"].as_str()? {
-        "connecting" | "recording" => Some((state("recording", ""), true)),
-        "finalizing" => Some((state("transcribing", ""), true)),
+        "connecting" | "recording" => Some((working("recording"), true)),
+        "finalizing" => Some((working("transcribing"), true)),
         "optimizing" => {
-            let mut optimizing = state("optimizing", "");
+            let mut optimizing = working("optimizing");
             optimizing["draft"] = json!(payload["text"].as_str().unwrap_or(""));
             Some((optimizing, true))
         }
@@ -302,7 +336,7 @@ pub fn from_recording_state(payload: &Value) -> Option<(Value, bool)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{carry_live_text, from_recording_state, hits, is_settled};
+    use super::{carry_live_text, carry_preset, from_recording_state, hits, is_settled};
     use serde_json::json;
 
     #[test]
@@ -322,6 +356,26 @@ mod tests {
         let partial =
             carry_live_text(json!({ "phase": "recording", "mode": "streaming", "text": "你好" }), Some(&last));
         assert_eq!(partial["text"], "你好");
+    }
+
+    #[test]
+    fn 预设名_随录音状态带出_中间结果沿用() {
+        let (state, _) =
+            from_recording_state(&json!({ "phase": "recording", "mode": "streaming", "preset": "程序员模式" }))
+                .unwrap();
+        assert_eq!(state["preset"], "程序员模式");
+        let (optimizing, _) =
+            from_recording_state(&json!({ "phase": "optimizing", "text": "原文", "preset": "会议记录" })).unwrap();
+        assert_eq!(optimizing["preset"], "会议记录");
+        // 自动优化没开（不带 preset）时不显示
+        let (plain, _) = from_recording_state(&json!({ "phase": "recording", "mode": "streaming" })).unwrap();
+        assert!(plain.get("preset").is_none());
+
+        let partial = carry_preset(json!({ "phase": "recording", "text": "你好" }), Some(&state));
+        assert_eq!(partial["preset"], "程序员模式", "中间结果沿用上一条的预设名");
+        assert!(carry_preset(json!({ "phase": "recording" }), Some(&plain)).get("preset").is_none());
+        // 切换预设的提示与成 / 敗一样算已结束，页面计时到了可以收起
+        assert!(is_settled(Some(&json!({ "phase": "notice", "text": "程序员模式" }))));
     }
 
     #[test]

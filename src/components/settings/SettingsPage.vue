@@ -161,6 +161,7 @@ const isCapturingPanelHotkey = computed(() => captureTarget.value === 'clipboard
 const isCapturingRewriteHotkey = computed(() => captureTarget.value === 'rewrite_hotkey')
 const isCapturingShowMainWindowHotkey = computed(() => captureTarget.value === 'show_main_window_hotkey')
 const isCapturingVoiceRewriteHotkey = computed(() => captureTarget.value === 'voice_rewrite_hotkey')
+const isCapturingCyclePresetHotkey = computed(() => captureTarget.value === 'cycle_preset_hotkey')
 const hotkeyError = ref('')
 
 const selectedPresetId = ref('')
@@ -225,6 +226,11 @@ const rewriteHotkeyDisplay = computed(() => {
 const voiceRewriteHotkeyDisplay = computed(() => {
   return isHotkeyEnabled(form.value, 'voice_rewrite_hotkey')
     ? form.value.voice_rewrite_hotkey?.display || ''
+    : ''
+})
+const cyclePresetHotkeyDisplay = computed(() => {
+  return isHotkeyEnabled(form.value, 'cycle_preset_hotkey')
+    ? form.value.cycle_preset_hotkey?.display || ''
     : ''
 })
 
@@ -389,6 +395,9 @@ function normalizeSettings(value = {}) {
     // 语音改写默认没有组合键；服务端 disabled 时返回空 display，不能落回录音默认键
     voice_rewrite_enabled: value.voice_rewrite_enabled ?? false,
     voice_rewrite_hotkey: normalizeHotkeyConfig(value.voice_rewrite_hotkey, null),
+    // 切换优化预设同样默认没有组合键
+    cycle_preset_enabled: value.cycle_preset_enabled ?? false,
+    cycle_preset_hotkey: normalizeHotkeyConfig(value.cycle_preset_hotkey, null),
     // 空串 = 跟随默认优化预设
     rewrite_preset_id: value.rewrite_preset_id || '',
     recording_mode: value.recording_mode || 'single',
@@ -444,6 +453,8 @@ function buildSettingsPayload() {
     rewrite_hotkey: normalizeHotkeyConfig(form.value.rewrite_hotkey, getDefaultRewriteHotkey()),
     voice_rewrite_enabled: Boolean(form.value.voice_rewrite_enabled),
     voice_rewrite_hotkey: normalizeHotkeyConfig(form.value.voice_rewrite_hotkey, null),
+    cycle_preset_enabled: Boolean(form.value.cycle_preset_enabled),
+    cycle_preset_hotkey: normalizeHotkeyConfig(form.value.cycle_preset_hotkey, null),
     rewrite_preset_id: form.value.rewrite_preset_id || '',
     recording_mode: form.value.recording_mode,
     silence_threshold: form.value.silence_threshold,
@@ -834,6 +845,8 @@ provide(SETTINGS_CTX, {
   isCapturingRewriteHotkey,
   voiceRewriteHotkeyDisplay,
   isCapturingVoiceRewriteHotkey,
+  cyclePresetHotkeyDisplay,
+  isCapturingCyclePresetHotkey,
   hotkeyError,
   startHotkeyCapture,
   resetHotkey,

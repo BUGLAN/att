@@ -21,6 +21,7 @@ const REWRITE = { modifiers: ['alt'], key: 'a' }
 const TOGGLE = { modifiers: ['cmd', 'shift'], key: 't', display: '⌘⇧T' }
 const SHOW_WINDOW = { modifiers: ['ctrl', 'shift'], key: 'm', display: '⌃⇧M' }
 const VOICE = { modifiers: ['ctrl', 'shift'], key: 'y', display: '⌃⇧Y' }
+const CYCLE = { modifiers: ['ctrl', 'alt'], key: 'p', display: '⌃⌥P' }
 
 function form(overrides = {}) {
   return {
@@ -36,11 +37,13 @@ function form(overrides = {}) {
     show_main_window_enabled: false,
     voice_rewrite_hotkey: VOICE,
     voice_rewrite_enabled: false,
+    cycle_preset_hotkey: CYCLE,
+    cycle_preset_enabled: false,
     ...overrides
   }
 }
 
-test('快捷键清单：按住录音 / 点按录音 / 剪贴板悬浮框 / 优化选中文本 / 显示主窗口 / 语音改写', () => {
+test('快捷键清单：按住录音 / 点按录音 / 剪贴板悬浮框 / 优化选中文本 / 显示主窗口 / 语音改写 / 切换优化预设', () => {
   assert.deepEqual(
     HOTKEY_TARGETS.map((target) => target.field),
     [
@@ -49,7 +52,8 @@ test('快捷键清单：按住录音 / 点按录音 / 剪贴板悬浮框 / 优�
       'clipboard_panel_hotkey',
       'rewrite_hotkey',
       'show_main_window_hotkey',
-      'voice_rewrite_hotkey'
+      'voice_rewrite_hotkey',
+      'cycle_preset_hotkey'
     ]
   )
 })
@@ -183,4 +187,20 @@ test('首页待命提示：列出启用的录音快捷键，为空的不列', ()
   )
   assert.equal(recordHotkeySummary({ hotkey: hold, hotkey_enabled: false }), '')
   assert.equal(recordHotkeySummary(undefined), '')
+})
+
+test('切换优化预设：默认为空，录入即启用，清空只关开关，恢复默认清空；参与撞键判定', () => {
+  assert.equal(isHotkeyEnabled(form(), 'cycle_preset_hotkey'), false)
+  assert.deepEqual(captureHotkey(form(), 'cycle_preset_hotkey', CYCLE), {
+    patch: { cycle_preset_hotkey: CYCLE, cycle_preset_enabled: true }
+  })
+  assert.deepEqual(clearHotkey('cycle_preset_hotkey'), { cycle_preset_enabled: false })
+  assert.deepEqual(resetHotkey(form({ cycle_preset_enabled: true }), 'cycle_preset_hotkey', RECORD), {
+    patch: { cycle_preset_enabled: false }
+  })
+  assert.equal(findHotkeyConflict(form(), 'hotkey', CYCLE), null, '默认关闭，不算撞键')
+  assert.deepEqual(findHotkeyConflict(form({ cycle_preset_enabled: true }), 'rewrite_hotkey', CYCLE), {
+    field: 'cycle_preset_hotkey',
+    label: '切换优化预设'
+  })
 })

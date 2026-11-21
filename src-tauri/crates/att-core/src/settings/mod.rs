@@ -256,6 +256,7 @@ impl UserSettings {
                 HotkeyBinding::default_for(HotkeyAction::RewriteSelection, platform),
                 HotkeyBinding::default_for(HotkeyAction::ShowMainWindow, platform),
                 HotkeyBinding::default_for(HotkeyAction::VoiceRewriteSelection, platform),
+                HotkeyBinding::default_for(HotkeyAction::CyclePreset, platform),
             ],
             settings_revision: SETTINGS_REVISION,
         }
@@ -304,6 +305,7 @@ impl UserSettings {
             HotkeyAction::RewriteSelection,
             HotkeyAction::ShowMainWindow,
             HotkeyAction::VoiceRewriteSelection,
+            HotkeyAction::CyclePreset,
         ] {
             if self.binding_of(action).is_none() {
                 self.hotkeys.push(HotkeyBinding::default_for(action, platform));
@@ -427,6 +429,7 @@ const EXTRA_HOTKEY_FIELDS: &[(HotkeyAction, &str, &str)] = &[
     (HotkeyAction::RewriteSelection, "rewrite_hotkey", "rewrite_enabled"),
     (HotkeyAction::ShowMainWindow, "show_main_window_hotkey", "show_main_window_enabled"),
     (HotkeyAction::VoiceRewriteSelection, "voice_rewrite_hotkey", "voice_rewrite_enabled"),
+    (HotkeyAction::CyclePreset, "cycle_preset_hotkey", "cycle_preset_enabled"),
 ];
 
 /// 设置更新结果：变更的运行时键（供上层触发停服务/重建 provider）。
@@ -660,12 +663,11 @@ pub fn apply_settings_update(
         }
     }
 
-    // 语音改写默认没有组合键；若界面只打开了开关却没录入按键，不能让空组合进入监听
-    if settings
-        .binding_of(HotkeyAction::VoiceRewriteSelection)
-        .is_some_and(|b| b.enabled && b.modifiers.is_empty() && b.hid_key.is_none())
-    {
-        return Err("语音改写选中文本的快捷键不能为空，请先录入组合键".into());
+    // 语音改写、切换优化预设默认没有组合键；若界面只打开了开关却没录入按键，不能让空组合进入监听
+    for action in [HotkeyAction::VoiceRewriteSelection, HotkeyAction::CyclePreset] {
+        if settings.binding_of(action).is_some_and(|b| b.enabled && b.modifiers.is_empty() && b.hid_key.is_none()) {
+            return Err(format!("{}的快捷键不能为空，请先录入组合键", action.label()));
+        }
     }
 
     // 两个全局快捷键撞键时只会触发其中一个：直接拒绝，让用户换一个

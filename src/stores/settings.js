@@ -113,7 +113,7 @@ function normalizeHotkey(hotkey) {
 }
 
 export const useSettingsStore = defineStore('settings', () => {
-  const { api, isDesktop, getDesktopSettings, saveDesktopSettings } = useElectron()
+  const { api, isDesktop, getDesktopSettings, saveDesktopSettings, tray } = useElectron()
   let streamingServicePollPromise = null
 
   const settings = ref({
@@ -517,6 +517,16 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function setDefaultPreset(id) {
     await api.setDefaultPreset(id)
+    applyDefaultPreset(id)
+    // 托盘「优化预设」子菜单的勾选跟着变
+    tray.updateMenu()
+  }
+
+  /** 默认优化预设已在别处改好（快捷键 / 托盘切换，后端已写入设置）：只同步界面状态，不再调接口。 */
+  function applyDefaultPreset(id) {
+    if (!id) {
+      return
+    }
     defaultPresetId.value = id
     settings.value.default_preset_id = id
     settings.value.last_used_preset_id = id
@@ -671,6 +681,7 @@ export const useSettingsStore = defineStore('settings', () => {
     stopStreamingService,
     saveSettings,
     loadPresets,
+    applyDefaultPreset,
     setDefaultPreset,
     createPreset,
     updatePreset,

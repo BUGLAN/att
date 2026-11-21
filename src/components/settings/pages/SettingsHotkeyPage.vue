@@ -220,6 +220,47 @@
       </div>
     </section>
 
+    <section class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">切换优化预设</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">按一下切到下一个优化预设</span>
+            <span class="setting-desc">按预设列表顺序循环切换录音后自动优化用的默认预设，悬浮窗会显示新预设名；录音中切换对这一段生效。托盘菜单「优化预设」里也能直接选。</span>
+          </div>
+          <div class="hotkey-input-wrapper">
+            <BaseInput
+              :value="cyclePresetHotkeyDisplay"
+              class="hotkey-input"
+              :class="{ listening: isCapturingCyclePresetHotkey }"
+              type="text"
+              readonly
+              aria-label="切换优化预设快捷键"
+              placeholder="未设置 · 点击录入"
+              @click="startHotkeyCapture('cycle_preset_hotkey')"
+            />
+            <BaseButton
+              v-if="cyclePresetHotkeyDisplay"
+              variant="ghost"
+              icon
+              title="清空快捷键"
+              aria-label="清空切换优化预设快捷键"
+              @click="clearHotkey('cycle_preset_hotkey')"
+            >
+              <template #icon>
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </template>
+            </BaseButton>
+          </div>
+        </div>
+        <div v-if="!cyclePresetHotkeyDisplay" class="settings-note">
+          <span>默认未设置；录入组合键后启用。</span>
+        </div>
+      </div>
+    </section>
+
     <div v-if="hotkeyError" class="settings-note warn">
       <span>{{ hotkeyError }}</span>
     </div>
@@ -245,6 +286,8 @@ const {
   isCapturingRewriteHotkey,
   voiceRewriteHotkeyDisplay,
   isCapturingVoiceRewriteHotkey,
+  cyclePresetHotkeyDisplay,
+  isCapturingCyclePresetHotkey,
   hotkeyError,
   startHotkeyCapture,
   resetHotkey,

@@ -101,6 +101,19 @@ pub fn default_id(presets: &[Preset]) -> Option<String> {
     presets.first().map(|p| p.id.clone())
 }
 
+/// 当前生效的默认预设 id：设置里的还在就用它，否则回退 [`default_id`]（与 GET /api/prompts 同一规则）。
+pub fn effective_default_id(presets: &[Preset], configured: Option<&str>) -> Option<String> {
+    configured.filter(|id| presets.iter().any(|p| p.id == *id)).map(str::to_string).or_else(|| default_id(presets))
+}
+
+/// 「切换优化预设」的下一个：按列表顺序（内置按名称在前、自定义按创建顺序在后，与设置页一致）
+/// 取当前生效默认预设的下一个，到末尾回到第一个；没有任何预设时为 None。
+pub fn next_preset<'a>(presets: &'a [Preset], configured: Option<&str>) -> Option<&'a Preset> {
+    let current = effective_default_id(presets, configured)?;
+    let index = presets.iter().position(|p| p.id == current)?;
+    presets.get((index + 1) % presets.len())
+}
+
 // ---------------- 自定义预设 ----------------
 
 /// `custom_prompts.json` 里的一条；字段全部可缺省（缺字段兜底）。
@@ -354,6 +367,26 @@ mod tests {
             lib.resolve_template(&[Some("custom-已删"), Some("preset-程序员模式")]).as_deref(),
             Some("程序员模板 {text}")
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 切换预设_按列表顺序循环_设置里的不存在时从默认预设往后() {
+        let root = temp_root();
+        let lib = PromptLibrary::new(root.join("prompts"), &root.join("data"));
+        let custom = lib.create(&draft("会议记录", "会议模板")).unwrap();
+        let presets = lib.load_all();
+        let ids: Vec<&str> = presets.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["preset-程序员模式", "preset-通用优化", custom.id.as_str()], "内置按名称在前，自定义在后");
+
+        let next = |configured: Option<&str>| next_preset(&presets, configured).map(|p| p.id.clone());
+        assert_eq!(next(Some("preset-程序员模式")).as_deref(), Some("preset-通用优化"));
+        assert_eq!(next(Some("preset-通用优化")), Some(custom.id.clone()));
+        assert_eq!(next(Some(&custom.id)).as_deref(), Some("preset-程序员模式"), "末尾回到第一个");
+        // 没设置 / 设置里的被删了：当前生效的是「通用优化」，下一个是它后面那个
+        assert_eq!(effective_default_id(&presets, Some("custom-已删")).as_deref(), Some("preset-通用优化"));
+        assert_eq!(next(None), Some(custom.id.clone()));
+        assert_eq!(next_preset(&[], None).map(|p| p.id.clone()), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

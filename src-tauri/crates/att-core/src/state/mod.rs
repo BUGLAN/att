@@ -261,6 +261,33 @@ impl CoreState {
         crate::prompts::PromptLibrary::new(&self.prompts_dir, &self.data_dir)
     }
 
+    /// 当前生效的默认优化预设（录音后自动优化用；设置里的已不存在时回退内置默认）。
+    pub fn default_preset(&self) -> Option<crate::prompts::Preset> {
+        let presets = self.prompt_library().load_all();
+        let id = crate::prompts::effective_default_id(&presets, self.settings().default_preset_id.as_deref())?;
+        presets.into_iter().find(|p| p.id == id)
+    }
+
+    /// 把默认优化预设设为 `id`（同时记为最近使用，与设置页「默认预设」同一字段）；预设不存在时返回 None、不改设置。
+    pub fn select_default_preset(&self, id: &str) -> Result<Option<crate::prompts::Preset>, CoreError> {
+        let Some(preset) = self.prompt_library().find(id) else { return Ok(None) };
+        self.update_settings(|s| {
+            s.default_preset_id = Some(preset.id.clone());
+            s.last_used_preset_id = Some(preset.id.clone());
+        })?;
+        Ok(Some(preset))
+    }
+
+    /// 「切换优化预设」快捷键：按预设列表顺序把默认优化预设换成下一个；没有任何预设时返回 None。
+    pub fn cycle_default_preset(&self) -> Result<Option<crate::prompts::Preset>, CoreError> {
+        let presets = self.prompt_library().load_all();
+        let Some(next) = crate::prompts::next_preset(&presets, self.settings().default_preset_id.as_deref()) else {
+            return Ok(None);
+        };
+        let id = next.id.clone();
+        self.select_default_preset(&id)
+    }
+
     /// 删除自定义预设；它正被选用时回退：
     /// - 录音默认预设（`default_preset_id` / `last_used_preset_id`）→ 内置默认（「通用优化」，没有则第一个）
     /// - 「优化选中文本」预设（`rewrite_preset_id`）→ None，即跟随默认预设
@@ -301,6 +328,41 @@ mod tests {
     use super::*;
     use crate::settings::hotkey::HotkeyAction;
     use serde_json::json;
+
+    #[test]
+    fn 切换默认优化预设_写回设置_不存在的预设不改() {
+        let dir = std::env::temp_dir().join(format!("att-core-cycle-{}", uuid::Uuid::new_v4()));
+        let mut core = CoreState::init(&dir, Platform::Macos).unwrap();
+        let prompts = dir.join("prompts-test");
+        std::fs::create_dir_all(&prompts).unwrap();
+        std::fs::write(prompts.join("通用优化.txt"), "通用").unwrap();
+        std::fs::write(prompts.join("程序员模式.txt"), "程序员").unwrap();
+        core.prompts_dir = prompts;
+
+        assert_eq!(core.default_preset().unwrap().name, "通用优化", "没设置时生效的是内置默认");
+        assert_eq!(core.cycle_default_preset().unwrap().unwrap().name, "程序员模式", "通用优化之后回到第一个");
+        assert_eq!(core.settings().default_preset_id.as_deref(), Some("preset-程序员模式"));
+        assert_eq!(core.settings().last_used_preset_id.as_deref(), Some("preset-程序员模式"));
+        assert_eq!(core.cycle_default_preset().unwrap().unwrap().name, "通用优化");
+
+        assert!(core.select_default_preset("preset-不存在").unwrap().is_none());
+        assert_eq!(core.settings().default_preset_id.as_deref(), Some("preset-通用优化"), "不存在的预设不改设置");
+        assert_eq!(core.select_default_preset("preset-程序员模式").unwrap().unwrap().name, "程序员模式");
+
+        // 快捷键默认为空；只开开关不录入组合会被拒绝
+        assert!(!core.settings().binding_of(HotkeyAction::CyclePreset).unwrap().enabled);
+        let err = core.apply_settings_update(&json!({"cycle_preset_enabled": true})).unwrap_err();
+        assert!(err.contains("切换优化预设的快捷键不能为空"), "{err}");
+        core.apply_settings_update(
+            &json!({"cycle_preset_hotkey": {"modifiers": ["ctrl", "alt"], "key": "p"}, "cycle_preset_enabled": true}),
+        )
+        .unwrap();
+        let settings = core.settings();
+        let binding = settings.binding_of(HotkeyAction::CyclePreset).unwrap();
+        assert!(binding.enabled);
+        assert_eq!(binding.display(Platform::Macos), "⌃⌥P");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn 初始化_目录_密钥_设置默认值() {

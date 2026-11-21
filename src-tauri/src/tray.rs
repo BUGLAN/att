@@ -1,12 +1,13 @@
 //! 系统托盘：四态图标（待命 = 品牌标「墨」，录音 / 转写 / 断开 = 状态章「聽 轉 斷」）+
-//! 开始 / 停止录音、打开主窗口 + 最近 10 条记录菜单（点击 = 复制并粘贴）+ 设置 + 退出。
+//! 开始 / 停止录音、打开主窗口 + 最近 10 条记录菜单（点击 = 复制并粘贴）+「优化预设」子菜单
+//! （全部预设，当前默认打勾，点选即切换）+ 设置 + 退出。
 //!
 //! 菜单直接读 Rust 记录库（不依赖主窗口前端是否加载），录音/优化落库后由 Actor 调 [`refresh`]；
 //! 前端的 `update_tray_menu` 也只触发一次重建。
 
 use att_core::state::CoreState;
 use std::sync::Mutex;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -154,10 +155,53 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     if has_records {
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
+    if let Some(submenu) = preset_menu(app)? {
+        menu.append(&submenu)?;
+    }
     menu.append(&MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?)?;
     Ok(menu)
+}
+
+/// 「优化预设」子菜单：列表顺序与设置页一致，当前生效的默认预设打勾；没有预设时不显示。
+fn preset_menu(app: &AppHandle) -> tauri::Result<Option<Submenu<tauri::Wry>>> {
+    let Some(core) = app.try_state::<crate::AppState>().map(|state| state.core.clone()) else { return Ok(None) };
+    let presets = core.prompt_library().load_all();
+    if presets.is_empty() {
+        return Ok(None);
+    }
+    let current = att_core::prompts::effective_default_id(&presets, core.settings().default_preset_id.as_deref());
+    let submenu = Submenu::with_id(app, "presets", "优化预设", true)?;
+    for preset in &presets {
+        let checked = current.as_deref() == Some(preset.id.as_str());
+        let label = truncate(&preset.name, LABEL_MAX_CHARS);
+        submenu.append(&CheckMenuItem::with_id(
+            app,
+            preset_item_id(&preset.id),
+            label,
+            true,
+            checked,
+            None::<&str>,
+        )?)?;
+    }
+    Ok(Some(submenu))
+}
+
+const PRESET_ITEM_PREFIX: &str = "preset:";
+
+fn preset_item_id(id: &str) -> String {
+    format!("{PRESET_ITEM_PREFIX}{id}")
+}
+
+/// 托盘点选预设：设为默认优化预设并广播（勾选、悬浮窗、设置页同步）；预设已被删时只重建菜单。
+fn select_preset(app: &AppHandle, id: &str) {
+    let Some(core) = app.try_state::<crate::AppState>().map(|state| state.core.clone()) else { return };
+    match core.select_default_preset(id) {
+        Ok(Some(preset)) => crate::announce_default_preset(app, &preset),
+        Ok(None) => refresh(app),
+        Err(error) => tracing::warn!("托盘切换优化预设失败: {error}"),
+    }
 }
 
 /// 当前录音相位（Actor 维护的最新快照；没有状态时按空闲处理）。
@@ -202,6 +246,12 @@ fn on_menu(app: &AppHandle, id: &str) {
         "settings" => {
             crate::show_main_window(app);
             let _ = app.emit_to("main", "navigate:settings", ());
+        }
+        _ if id.starts_with(PRESET_ITEM_PREFIX) => {
+            let preset_id = id[PRESET_ITEM_PREFIX.len()..].to_string();
+            // 菜单回调在主线程：写设置、重建菜单放到后台线程
+            let app = app.clone();
+            std::thread::spawn(move || select_preset(&app, &preset_id));
         }
         _ => {
             let Some(record_id) = id.strip_prefix("record:") else { return };
@@ -263,6 +313,15 @@ mod tests {
         assert_eq!(truncate(&"字".repeat(45), 40), format!("{}...", "字".repeat(40)));
         assert_eq!(normalize("weird"), "idle");
         assert_eq!(format_time("not-a-time"), "");
+    }
+
+    #[test]
+    fn 预设菜单项_id_带前缀可还原() {
+        let id = preset_item_id("custom-1234");
+        assert_eq!(id, "preset:custom-1234");
+        assert_eq!(&id[PRESET_ITEM_PREFIX.len()..], "custom-1234");
+        // 内置预设 id 本身以 preset- 开头，不会和记录菜单的 record: 混淆
+        assert!(preset_item_id("preset-通用优化").starts_with(PRESET_ITEM_PREFIX));
     }
 
     #[test]

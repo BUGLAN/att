@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 
 import {
   FAILURE_HOLD_MS,
+  NOTICE_HOLD_MS,
   PACE_CPS,
   PACE_MAX_LAG_S,
   SUCCESS_HOLD_MS,
@@ -81,6 +82,27 @@ test('没听到人声：敗 + 检查麦克风提示，不沿用识别出的杂�
   assert.equal(view.detail, '没有听到声音，检查麦克风')
   assert.equal(view.text, '', '识别出的杂音不再显示')
   assert.equal(view.hideAfterMs, FAILURE_HOLD_MS)
+})
+
+test('切换优化预设：空闲时「潤」+ 预设名，停留片刻收起；不可取消', () => {
+  const notice = deriveFloatingView({ phase: 'notice', text: '程序员模式' })
+  assert.equal(notice.glyph, '潤')
+  assert.equal(notice.seal, 'preset')
+  assert.equal(notice.active, false)
+  assert.equal(notice.notice, '程序员模式')
+  assert.equal(notice.text, '', '不走出字通道')
+  assert.equal(notice.cancellable, false)
+  assert.equal(notice.hideAfterMs, NOTICE_HOLD_MS)
+  // 之后按下录音：提示不算进行中的会话，新录音照常从头开始
+  assert.ok(startsNewSession({ wasActive: notice.active, prevSeal: notice.seal, next: deriveFloatingView({ phase: 'recording', mode: 'streaming' }) }))
+})
+
+test('录音 / 识别 / 优化中带上预设名（胶囊上方小字）；结果态与没开自动优化时不带', () => {
+  assert.equal(deriveFloatingView({ phase: 'recording', mode: 'single', preset: '会议记录' }).preset, '会议记录')
+  assert.equal(deriveFloatingView({ phase: 'recording', mode: 'streaming', text: '你好', preset: '会议记录' }).preset, '会议记录')
+  assert.equal(deriveFloatingView({ phase: 'optimizing', draft: '原文', preset: '程序员模式' }).preset, '程序员模式')
+  assert.equal(deriveFloatingView({ phase: 'recording', mode: 'streaming' }).preset, '')
+  assert.equal(deriveFloatingView({ phase: 'complete', ok: true, preset: '会议记录' }).preset, '')
 })
 
 test('未知相位回到待命：錄、不自动隐藏', () => {

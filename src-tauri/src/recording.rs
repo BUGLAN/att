@@ -564,6 +564,9 @@ impl Actor {
         self.core.set_recording_active(matches!(phase, "connecting" | "recording" | "finalizing"));
         let mode = self.active.as_ref().map(|a| a.mode.as_str()).unwrap_or("streaming");
         let mut payload = json!({ "phase": phase, "mode": mode });
+        if let Some(name) = self.preset_tag(phase) {
+            payload["preset"] = json!(name);
+        }
         if let (Some(target), Some(source)) = (payload.as_object_mut(), extra.as_object()) {
             for (key, value) in source {
                 target.insert(key.clone(), value.clone());
@@ -579,6 +582,22 @@ impl Actor {
         // 托盘菜单顶部的「开始 / 停止录音」跟随相位切换
         crate::tray::refresh(&self.app);
         let _ = self.app.emit("recording:state", payload);
+    }
+
+    /// 悬浮窗上的预设名：只在这段录音转写后会用默认优化预设自动优化时给（录音 / 收尾 / 优化中）；
+    /// 优化选中文本、语音改写用的不是默认预设，不显示。
+    fn preset_tag(&self, phase: &str) -> Option<String> {
+        let recording = match phase {
+            "connecting" | "recording" | "finalizing" => {
+                self.active.as_ref().is_some_and(|active| active.voice_rewrite_selection.is_none())
+            }
+            "optimizing" => self.optimizing.as_ref().is_some_and(|pending| pending.source == OptimizeSource::Recording),
+            _ => false,
+        };
+        if !recording || !(self.core.settings().auto_optimize && optimizer::has_default_model(&self.core)) {
+            return None;
+        }
+        self.core.default_preset().map(|preset| preset.name)
     }
 
     async fn on_hotkey(&mut self, action: HotkeyAction, key_phase: KeyPhase) {

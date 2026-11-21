@@ -351,6 +351,29 @@ pub fn run() {
 }
 
 /// 显示并聚焦主窗口（二次启动 / Dock 唤起 / 悬浮窗「设置」按钮共用）。
+/// 默认优化预设变了（快捷键切换 / 托盘选择）：托盘重建勾选、悬浮窗提示预设名、主窗口同步设置页。
+pub fn announce_default_preset(app: &tauri::AppHandle, preset: &att_core::prompts::Preset) {
+    use tauri::Emitter;
+    tracing::info!("默认优化预设切换为「{}」", preset.name);
+    tray::refresh(app);
+    floating::preset_notice(app, &preset.name);
+    let _ = app.emit_to(
+        "main",
+        "settings:default-preset",
+        serde_json::json!({ "default_preset_id": preset.id, "name": preset.name }),
+    );
+}
+
+/// 「切换优化预设」快捷键：按预设列表顺序切到下一个。
+fn cycle_default_preset(app: &tauri::AppHandle) {
+    let Some(core) = app.try_state::<AppState>().map(|state| state.core.clone()) else { return };
+    match core.cycle_default_preset() {
+        Ok(Some(preset)) => announce_default_preset(app, &preset),
+        Ok(None) => floating::preset_notice(app, "还没有优化预设"),
+        Err(error) => tracing::warn!("切换优化预设失败: {error}"),
+    }
+}
+
 pub fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -457,6 +480,7 @@ fn start_hotkey_listener(
                             | HotkeyAction::RewriteSelection
                             | HotkeyAction::ShowMainWindow
                             | HotkeyAction::VoiceRewriteSelection
+                            | HotkeyAction::CyclePreset
                     )
             })
             .map(att_hotkey::HotkeySpec::from_binding)
@@ -487,6 +511,13 @@ fn start_hotkey_listener(
                 std::thread::spawn(move || toggle_main_window(&app));
             }
         }
+        HotkeyAction::CyclePreset => {
+            // 写设置、重建托盘、推悬浮窗都不在键盘钩子线程里做；录音中切换同样生效（优化时才读默认预设）
+            if phase == att_hotkey::KeyPhase::Pressed {
+                let app = app.clone();
+                std::thread::spawn(move || cycle_default_preset(&app));
+            }
+        }
         _ => recorder.hotkey(action, phase),
     });
     match att_hotkey::listener::start(bindings, sink) {
@@ -500,13 +531,14 @@ fn start_hotkey_listener(
                     .unwrap_or_else(|| "未设置".into())
             };
             tracing::info!(
-                "全局快捷键已启用: 按住录音 {} / 点按录音 {} / 剪贴板悬浮框 {} / 优化选中文本 {} / 显示主窗口 {} / 语音改写选中文本 {} / 录音中 Esc 取消",
+                "全局快捷键已启用: 按住录音 {} / 点按录音 {} / 剪贴板悬浮框 {} / 优化选中文本 {} / 显示主窗口 {} / 语音改写选中文本 {} / 切换优化预设 {} / 录音中 Esc 取消",
                 combo(HotkeyAction::Record),
                 combo(HotkeyAction::RecordToggle),
                 combo(HotkeyAction::ClipboardPanel),
                 combo(HotkeyAction::RewriteSelection),
                 combo(HotkeyAction::ShowMainWindow),
-                combo(HotkeyAction::VoiceRewriteSelection)
+                combo(HotkeyAction::VoiceRewriteSelection),
+                combo(HotkeyAction::CyclePreset)
             );
             None
         }

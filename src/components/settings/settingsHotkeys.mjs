@@ -25,6 +25,14 @@ export const HOTKEY_TARGETS = Object.freeze([
     enabledField: 'voice_rewrite_enabled',
     clearable: true,
     defaultEmpty: true
+  },
+  // 切换优化预设默认为空：录入即启用；点按一下切到下一个预设
+  {
+    field: 'cycle_preset_hotkey',
+    label: '切换优化预设',
+    enabledField: 'cycle_preset_enabled',
+    clearable: true,
+    defaultEmpty: true
   }
 ])
 
@@ -93,7 +101,7 @@ export function clearHotkey(field) {
 }
 
 /**
- * 恢复默认：默认为空的快捷键（显示主窗口、语音改写）关闭开关，其余回到传入的平台默认组合。
+ * 恢复默认：默认为空的快捷键（显示主窗口、语音改写、切换优化预设）关闭开关，其余回到传入的平台默认组合。
  * @returns {{ patch: object } | { error: string }}
  */
 export function resetHotkey(form, field, defaultHotkey) {

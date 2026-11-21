@@ -29,6 +29,8 @@ pub enum HotkeyAction {
     CancelRecording,
     /// 语音改写选中文本：按住说出改写要求，识别后与选中文字一起送 LLM（按住触发，默认空）
     VoiceRewriteSelection,
+    /// 切换优化预设：按预设列表顺序把录音后自动优化用的默认预设换成下一个（点按触发，默认空）
+    CyclePreset,
 }
 
 impl HotkeyAction {
@@ -56,6 +58,7 @@ impl HotkeyAction {
             HotkeyAction::RewriteSelection => "优化选中文本",
             HotkeyAction::CancelRecording => "取消录音",
             HotkeyAction::VoiceRewriteSelection => "语音改写选中文本",
+            HotkeyAction::CyclePreset => "切换优化预设",
         }
     }
 }
@@ -195,6 +198,14 @@ impl HotkeyBinding {
             HotkeyAction::VoiceRewriteSelection => {
                 Self { action, trigger: TriggerMode::Hold, modifiers: ModSet::default(), hid_key: None, enabled: false }
             }
+            // 切换优化预设同样默认留空：录入后才启用
+            HotkeyAction::CyclePreset => Self {
+                action,
+                trigger: TriggerMode::Toggle,
+                modifiers: ModSet::default(),
+                hid_key: None,
+                enabled: false,
+            },
             // 点按录音默认不启用（快捷键为空）：组合与按住录音的默认值相同，用户录入新键后才启用
             HotkeyAction::RecordToggle => {
                 Self { action, trigger: TriggerMode::Toggle, enabled: false, ..Self::default_binding(platform) }
@@ -417,6 +428,19 @@ mod tests {
         assert_eq!(HotkeyAction::VoiceRewriteSelection.trigger(), TriggerMode::Hold);
         assert_eq!(HotkeyAction::VoiceRewriteSelection.label(), "语音改写选中文本");
         assert_eq!(serde_json::to_value(HotkeyAction::VoiceRewriteSelection).unwrap(), "voice_rewrite_selection");
+    }
+
+    #[test]
+    fn 切换优化预设默认_点按且为空() {
+        for platform in [Platform::Macos, Platform::Windows, Platform::Linux] {
+            let binding = HotkeyBinding::default_for(HotkeyAction::CyclePreset, platform);
+            assert!(!binding.enabled, "默认快捷键为空");
+            assert_eq!(binding.trigger, TriggerMode::Toggle);
+            assert_eq!(binding.display(platform), "");
+        }
+        assert_eq!(HotkeyAction::CyclePreset.trigger(), TriggerMode::Toggle);
+        assert_eq!(HotkeyAction::CyclePreset.label(), "切换优化预设");
+        assert_eq!(serde_json::to_value(HotkeyAction::CyclePreset).unwrap(), "cycle_preset");
     }
 
     #[test]
