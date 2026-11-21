@@ -103,6 +103,7 @@
     <div v-if="modelsDir" class="model-dir-row">
       <span class="model-dir-label">模型目录</span>
       <code class="model-dir-path">{{ modelsDir }}</code>
+      <slot name="directory-actions" />
       <BaseButton v-if="isDesktop" variant="outline" size="sm" @click="$emit('reveal')">
         在文件管理器中显示
       </BaseButton>
@@ -446,8 +447,8 @@ function lastProblem(model) {
 }
 
 .model-dir-path {
-  flex: 1;
-  min-width: 0;
+  flex: 1 0 12rem;
+  min-width: 12rem;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: var(--fs-cap);
   color: var(--text-2);

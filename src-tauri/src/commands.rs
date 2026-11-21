@@ -454,6 +454,19 @@ pub fn restart_app(app: AppHandle) {
     });
 }
 
+/// 设置页「更改…」：选择本地模型根目录；用户取消返回 None。
+#[tauri::command]
+pub async fn open_models_directory(app: AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog().file().set_title("选择本地模型目录").blocking_pick_folder()
+    })
+    .await
+    .ok()
+    .flatten()?;
+    picked.into_path().ok().map(|path| path.to_string_lossy().into_owned())
+}
+
 /// 允许转写一个本机文件：用户在界面里选择 / 拖入 / 手动确认路径后由前端调用。
 ///
 /// 这是 HTTP 转写接口的精确白名单入口；外部网页与进程无法调用 Tauri 命令，

@@ -222,7 +222,7 @@
           :view="localView"
           :models="engineModels"
           :job="modelJob"
-          :models-dir="modelsDir"
+          :models-dir="modelsDirectoryPath"
           :is-desktop="isDesktop"
           :starting-model-id="startingModelId"
           :vad-warning="modelVadWarning"
@@ -232,7 +232,11 @@
           @delete="askDeleteModel"
           @reveal="revealModels"
           @release="releaseLocalModel"
-        />
+        >
+          <template #directory-actions>
+            <ModelsDirectorySetting />
+          </template>
+        </LocalModelStatus>
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">模型</span>
@@ -265,7 +269,7 @@
           :view="localView"
           :models="engineModels"
           :job="modelJob"
-          :models-dir="modelsDir"
+          :models-dir="modelsDirectoryPath"
           :is-desktop="isDesktop"
           :starting-model-id="startingModelId"
           :vad-warning="modelVadWarning"
@@ -275,7 +279,11 @@
           @delete="askDeleteModel"
           @reveal="revealModels"
           @release="releaseLocalModel"
-        />
+        >
+          <template #directory-actions>
+            <ModelsDirectorySetting />
+          </template>
+        </LocalModelStatus>
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">下载源</span>
@@ -386,6 +394,8 @@ import BaseTextarea from '@/components/common/BaseTextarea.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { useAppStore } from '@/stores/app'
 import LocalModelStatus from '../LocalModelStatus.vue'
+import ModelsDirectorySetting from '../ModelsDirectorySetting.vue'
+import { modelsDirectoryView } from '../modelsDirectory.mjs'
 import { useSettingsStore } from '@/stores/settings'
 import { useElectron } from '@/composables/useElectron'
 import { SETTINGS_CTX } from '../settingsContext.js'
@@ -451,6 +461,14 @@ const localView = computed(() => {
 const engineModels = computed(() => modelsForProvider(settingsStore.modelCatalog.models, form.value.asr_provider))
 const modelJob = computed(() => settingsStore.modelCatalog.job)
 const modelsDir = computed(() => settingsStore.modelCatalog.models_dir || '')
+const modelsDirectoryPath = computed(() => modelsDirectoryView({
+  savedDir: settingsStore.settings.models_dir,
+  draftDir: form.value.models_dir,
+  effectiveDir: settingsStore.settings.models_dir_effective,
+  nextDir: settingsStore.settings.models_dir_next,
+  envOverride: Boolean(settingsStore.settings.models_dir_env_override),
+  desktop: isDesktop
+}).path || modelsDir.value)
 const downloadSources = DOWNLOAD_SOURCES
 const modelVadWarning = computed(() => {
   if (localView.value.tip.includes('未安装 VAD')) {

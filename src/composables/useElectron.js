@@ -338,7 +338,6 @@ export function useElectron() {
     return invoke('save_desktop_settings', { payload: toPlainObject(settings) })
   }
 
-  // 「转文字」页：系统文件选择对话框（Rust 侧 dialog 插件）；取消返回 null
   // 「转文字」页：系统文件对话框（可多选）；取消或浏览器环境返回 []
   async function openMediaFiles() {
     if (!isDesktop) return []
@@ -359,6 +358,12 @@ export function useElectron() {
   async function restartApp() {
     if (!isDesktop) return
     return invoke('restart_app')
+  }
+
+  // 设置页：系统目录选择对话框（模型目录仅在重启后生效）
+  async function openModelsDirectory() {
+    if (!isDesktop) return null
+    return invoke('open_models_directory')
   }
 
   // 「转文字」页：把用户选择 / 拖入 / 手动确认的本地文件登记进转写白名单（HTTP 接口只接受登记过的文件）
@@ -424,6 +429,7 @@ export function useElectron() {
     openMediaFiles,
     chooseBackupExportPath,
     chooseBackupImportPath,
+    openModelsDirectory,
     restartApp,
     allowTranscribePath,
     filePathForFile,

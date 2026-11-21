@@ -64,7 +64,7 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 
 - `cargo` 命令要在 `src-tauri/` 目录内执行（Windows 的 `+crt-static` 配置只在该目录下生效）。
 - 首次构建会编译 CTranslate2（约 10~20 分钟），macOS 需先 `brew install cmake`。
-- 本地 Whisper / Qwen 的模型不随仓库分发；选择对应引擎后在「设置 → 识别引擎」里应用内下载（Whisper 会自动装 Silero VAD，Qwen 走 GitHub Release），模型目录默认 `models/`，可用 `ATT_MODELS_DIR` 改位置。开发态 Qwen 推理库默认放 `models/sherpa-onnx/`，也可用 `ATT_SHERPA_ONNX_DIR` 覆盖；安装包使用随包的 `resources/sherpa-onnx/`。
+- 本地 Whisper / Qwen 的模型不随仓库分发；选择对应引擎后在「设置 → 识别引擎」里应用内下载（Whisper 会自动装 Silero VAD，Qwen 走 GitHub Release），模型目录默认 `models/`，可在设置页更改并重启应用生效，也可用启动前环境变量 `ATT_MODELS_DIR` 指定；两者同时存在时环境变量优先。开发态 Qwen 推理库默认放 `models/sherpa-onnx/`，也可用 `ATT_SHERPA_ONNX_DIR` 覆盖；安装包使用随包的 `resources/sherpa-onnx/`。
 - 开发态的 macOS 权限归属启动 `tauri dev` 的终端应用。
 - 更多开发约定与常见陷阱见 [`AGENTS.md`](AGENTS.md)。
 
@@ -73,7 +73,7 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 | 变量 | 作用 |
 | --- | --- |
 | `ATT_DATA_DIR` | 数据目录（默认：开发态为仓库 `data/`，安装版为系统应用数据目录） |
-| `ATT_MODELS_DIR` / `ATT_SHERPA_ONNX_DIR` | 本地模型根目录 / sherpa-onnx 动态库目录 |
+| `ATT_MODELS_DIR` / `ATT_SHERPA_ONNX_DIR` | 本地模型根目录（优先于设置页，重启生效） / sherpa-onnx 动态库目录 |
 | `ATT_SILERO_VAD` | Silero VAD 模型文件（默认在模型目录里找 `silero_vad.onnx`） |
 | `ATT_WHISPER_COMPUTE_TYPE` | Whisper 计算精度（默认 `auto`：CUDA 用 float16，CPU 用 int8） |
 | `ATT_QWEN_THREADS` | Qwen 推理线程数（默认 2） |

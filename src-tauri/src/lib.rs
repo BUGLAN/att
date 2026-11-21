@@ -336,6 +336,7 @@ pub fn run() {
             commands::open_media_files,
             commands::choose_backup_export_path,
             commands::choose_backup_import_path,
+            commands::open_models_directory,
             commands::restart_app,
             commands::allow_transcribe_path,
             commands::get_permission_status,
