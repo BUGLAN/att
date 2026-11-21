@@ -57,6 +57,13 @@ export const SETTINGS_SECTIONS = Object.freeze([
     keywords: ['提示词', '预设', 'prompt', '默认预设', '自定义', '新增预设', '编辑预设']
   },
   {
+    id: 'startup-window',
+    group: '系统',
+    label: '启动与窗口',
+    desc: '登录系统时自动启动，以及关闭主窗口后的驻留方式。',
+    keywords: ['开机自启', '登录时启动', '启动', '登录项', '关闭窗口', '托盘', '后台', '退出']
+  },
+  {
     id: 'permissions',
     group: '系统',
     label: '权限',

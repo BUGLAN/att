@@ -113,7 +113,7 @@ function normalizeHotkey(hotkey) {
 }
 
 export const useSettingsStore = defineStore('settings', () => {
-  const { api, getDesktopSettings, saveDesktopSettings } = useElectron()
+  const { api, isDesktop, getDesktopSettings, saveDesktopSettings } = useElectron()
   let streamingServicePollPromise = null
 
   const settings = ref({
@@ -151,6 +151,8 @@ export const useSettingsStore = defineStore('settings', () => {
     auto_optimize: false,
     auto_copy_to_clipboard: true,
     auto_download_updates: false,
+    launch_at_login: false,
+    main_window_close_action: 'tray',
     audio_input_device: 'default',
     hotkey: getDefaultHotkey(),
     // 统一浮层已下线：clipboard_overlay_* 键一并移除，
@@ -220,7 +222,9 @@ export const useSettingsStore = defineStore('settings', () => {
         ...settings.value,
         ...result,
         hotkey: normalizeHotkey(desktopSettings?.hotkey || result.hotkey),
-        pause_audio_on_recording: desktopSettings?.pause_audio_on_recording ?? result.pause_audio_on_recording ?? settings.value.pause_audio_on_recording
+        pause_audio_on_recording: desktopSettings?.pause_audio_on_recording ?? result.pause_audio_on_recording ?? settings.value.pause_audio_on_recording,
+        launch_at_login: desktopSettings?.launch_at_login ?? result.launch_at_login ?? settings.value.launch_at_login,
+        main_window_close_action: desktopSettings?.main_window_close_action ?? result.main_window_close_action ?? settings.value.main_window_close_action
       }
       defaultPresetId.value = settings.value.default_preset_id || defaultPresetId.value || null
       return settings.value
@@ -244,16 +248,22 @@ export const useSettingsStore = defineStore('settings', () => {
       try {
         desktopSettings = await saveDesktopSettings?.({
           hotkey: payload.hotkey,
-          pause_audio_on_recording: payload.pause_audio_on_recording
+          pause_audio_on_recording: payload.pause_audio_on_recording,
+          launch_at_login: payload.launch_at_login
         })
       } catch (desktopError) {
         console.warn('[Settings] Failed to save desktop settings:', desktopError)
+        if (isDesktop) {
+          throw new Error(`同步系统启动设置失败：${desktopError?.message || desktopError}`)
+        }
       }
       settings.value = {
         ...settings.value,
         ...result,
         hotkey: normalizeHotkey(desktopSettings?.hotkey || (isValidHotkey(result.hotkey) ? result.hotkey : payload.hotkey)),
-        pause_audio_on_recording: desktopSettings?.pause_audio_on_recording ?? result.pause_audio_on_recording ?? payload.pause_audio_on_recording
+        pause_audio_on_recording: desktopSettings?.pause_audio_on_recording ?? result.pause_audio_on_recording ?? payload.pause_audio_on_recording,
+        launch_at_login: desktopSettings?.launch_at_login ?? result.launch_at_login ?? payload.launch_at_login,
+        main_window_close_action: desktopSettings?.main_window_close_action ?? result.main_window_close_action ?? payload.main_window_close_action
       }
       defaultPresetId.value = settings.value.default_preset_id || defaultPresetId.value || null
       await loadRuntimeStatus(true)

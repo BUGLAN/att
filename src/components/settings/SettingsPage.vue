@@ -85,6 +85,7 @@ import SettingsOutputPage from './pages/SettingsOutputPage.vue'
 import SettingsAsrPage from './pages/SettingsAsrPage.vue'
 import SettingsLlmPage from './pages/SettingsLlmPage.vue'
 import SettingsPresetsPage from './pages/SettingsPresetsPage.vue'
+import SettingsStartupWindowPage from './pages/SettingsStartupWindowPage.vue'
 import SettingsPermissionsPage from './pages/SettingsPermissionsPage.vue'
 import SettingsDiagnosticsPage from './pages/SettingsDiagnosticsPage.vue'
 import SettingsAboutPage from './pages/SettingsAboutPage.vue'
@@ -97,6 +98,7 @@ const SECTION_COMPONENTS = {
   asr: SettingsAsrPage,
   llm: SettingsLlmPage,
   presets: SettingsPresetsPage,
+  'startup-window': SettingsStartupWindowPage,
   permissions: SettingsPermissionsPage,
   diagnostics: SettingsDiagnosticsPage,
   about: SettingsAboutPage
@@ -110,6 +112,7 @@ const SECTION_ICONS = {
   asr: 'M3 12h2M7 8v8M11 5v14M15 9v6M19 7v10',
   llm: 'M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4',
   presets: 'M4 6h16M4 12h10M4 18h7',
+  'startup-window': 'M5 5h14v10H5zM8 19h8M12 15v4M8 9h8M12 7v4',
   permissions: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z',
   diagnostics: 'M3 12h4l3-7 4 14 3-7h4',
   about: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v6M12 7.5h.01'
@@ -346,6 +349,8 @@ function normalizeSettings(value = {}) {
     auto_optimize: value.auto_optimize ?? false,
     auto_copy_to_clipboard: value.auto_copy_to_clipboard ?? true,
     auto_download_updates: value.auto_download_updates ?? false,
+    launch_at_login: value.launch_at_login ?? false,
+    main_window_close_action: value.main_window_close_action === 'quit' ? 'quit' : 'tray',
     audio_input_device: value.audio_input_device || 'default',
     hotkey: normalizedHotkey,
     hotkey_enabled: value.hotkey_enabled ?? true,
@@ -392,6 +397,8 @@ function buildSettingsPayload() {
     auto_optimize: form.value.auto_optimize,
     auto_copy_to_clipboard: form.value.auto_copy_to_clipboard,
     auto_download_updates: Boolean(form.value.auto_download_updates),
+    launch_at_login: Boolean(form.value.launch_at_login),
+    main_window_close_action: form.value.main_window_close_action === 'quit' ? 'quit' : 'tray',
     audio_input_device: form.value.audio_input_device,
     hotkey: normalizeHotkeyConfig(form.value.hotkey),
     hotkey_enabled: form.value.hotkey_enabled !== false,

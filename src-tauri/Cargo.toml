@@ -46,6 +46,8 @@ att-server = { path = "crates/att-server" }
 # macos-private-api：悬浮窗透明背景（macOS 需要私有 API）
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-single-instance = "2"
+# 开机自启：Windows 登录项 / macOS LaunchAgent
+tauri-plugin-autostart = "2"
 # 「转文字」页的系统选择文件对话框
 tauri-plugin-dialog = "2"
 tokio = { workspace = true }

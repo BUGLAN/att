@@ -39,6 +39,12 @@ test('搜索：关键词大小写不敏感，只保留命中页并去掉空分�
   const clipboard = buildNavGroups('悬浮框')
   assert.deepEqual(clipboard.flatMap((group) => group.items.map((item) => item.id)), ['clipboard'])
 
+  const startup = buildNavGroups('开机自启')
+  assert.deepEqual(startup.flatMap((group) => group.items.map((item) => item.id)), ['startup-window'])
+
+  const systemIds = buildNavGroups().find((group) => group.label === '系统').items.map((item) => item.id)
+  assert.deepEqual(systemIds, ['startup-window', 'permissions', 'diagnostics', 'about'])
+
   assert.deepEqual(buildNavGroups('完全不存在的设置'), [])
   assert.ok(sectionMatches(findSection('permissions'), '辅助功能'))
 })

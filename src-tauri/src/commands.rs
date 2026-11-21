@@ -55,23 +55,30 @@ pub fn window_close(app: AppHandle) {
 
 // ---------------- 桌面设置（单一真相源 = data/settings.json）----------------
 
-/// 旧版 userData/desktop-settings.json 的兼容形状：{hotkey, pause_audio_on_recording}。
+/// 旧版 userData/desktop-settings.json 的兼容形状，并补充启动与窗口桌面设置。
 pub fn desktop_settings_view(state: &AppState) -> Value {
     let settings = state.core.settings();
     json!({
         "hotkey": settings.legacy_hotkey_view(state.core.platform),
         "pause_audio_on_recording": settings.pause_audio_on_recording,
+        "launch_at_login": settings.launch_at_login,
+        "main_window_close_action": settings.main_window_close_action,
     })
 }
 
 #[tauri::command]
-pub fn get_desktop_settings(state: State<'_, AppState>) -> Value {
-    desktop_settings_view(&state)
+pub fn get_desktop_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+    crate::launch::reconcile_launch_at_login(&app, &state.core)?;
+    Ok(desktop_settings_view(&state))
 }
 
-/// 保存桌面设置（hotkey 旧形状 + 静音策略），写回唯一真相源。
+/// 保存桌面设置（hotkey 旧形状 + 静音策略 + 开机自启），写回唯一真相源。
 #[tauri::command]
-pub fn save_desktop_settings(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
+pub fn save_desktop_settings(app: AppHandle, state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
+    if let Some(value) = payload.get("launch_at_login").filter(|value| !value.is_null()) {
+        let enabled = value.as_bool().ok_or("字段 launch_at_login 类型非法，期望布尔值")?;
+        crate::launch::set_launch_at_login(&app, &state.core, enabled)?;
+    }
     let result = state.core.update_settings(|settings| {
         if let Some(hotkey) = payload.get("hotkey").filter(|h| h.is_object()) {
             settings.update_record_binding_from_legacy(state.core.platform, hotkey);

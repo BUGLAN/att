@@ -14,6 +14,7 @@ pub mod clipboard_panel;
 pub mod commands;
 pub mod desktop;
 pub mod floating;
+pub mod launch;
 #[cfg(target_os = "macos")]
 mod menu;
 pub mod permissions;
@@ -52,11 +53,18 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder.menu(menu::build);
     builder
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // 二次启动：唤起主窗口（与旧版 second-instance 行为一致）
-            show_main_window(app);
+            // 系统登录项触发的二次启动仍保持后台，不把已打开的主窗口带到前台。
+            if !args.iter().any(|arg| arg == launch::AUTOSTART_ARG) {
+                show_main_window(app);
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![launch::AUTOSTART_ARG]),
+        ))
         // 应用内更新：下载经签名校验的更新包，安装后重启（见 app_update.rs）
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
@@ -85,7 +93,12 @@ pub fn run() {
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                if cfg!(target_os = "macos") {
+                let close_action = window
+                    .app_handle()
+                    .try_state::<AppState>()
+                    .map(|state| state.core.settings().main_window_close_action)
+                    .unwrap_or_else(|| "tray".into());
+                if launch::should_hide_main_window(Platform::current(), &close_action) {
                     let _ = window.hide();
                 } else {
                     window.app_handle().exit(0);
@@ -120,6 +133,11 @@ pub fn run() {
             tracing::info!("提示词目录: {}", core.prompts_dir.display());
             // 检查更新用打包版本号（与「关于」页显示的版本一致）
             core.app_version = app.package_info().version.to_string();
+            match launch::reconcile_launch_at_login(app.handle(), &core) {
+                Ok(true) => tracing::info!("开机自启：系统登录项已启用"),
+                Ok(false) => tracing::debug!("开机自启：系统登录项未启用"),
+                Err(error) => tracing::warn!("{error}"),
+            }
             let core = Arc::new(core);
             // 上次退出时还在「重新识别」的记录：后台任务随进程没了，标成失败（文字不动），免得一直显示「转写中」。
             // 放后台线程：要扫一遍记录目录，不挡启动
@@ -205,6 +223,7 @@ pub fn run() {
                 .title("落墨")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(800.0, 600.0)
+                .visible(!launch::started_from_autostart())
                 .decorations(false)
                 .center()
                 .background_color(tauri::window::Color(10, 10, 11, 255))
@@ -224,6 +243,10 @@ pub fn run() {
             // 托盘（四态图标 + 最近记录菜单）与剪贴板后台监控
             if let Err(error) = tray::create(app.handle()) {
                 tracing::warn!("创建托盘失败: {error}");
+                // 自启本应完全后台驻留；托盘不可用时至少显示主窗口，避免进程不可访问。
+                if launch::started_from_autostart() {
+                    show_main_window(app.handle());
+                }
             }
             if let Some(state) = app.try_state::<AppState>() {
                 clipboard::start(state.core.clone());

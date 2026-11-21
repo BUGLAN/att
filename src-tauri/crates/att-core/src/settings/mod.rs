@@ -130,6 +130,12 @@ pub struct UserSettings {
     pub auto_copy_to_clipboard: bool,
     /// 检查到新版本时自动下载安装包（开启后启动时也会检查一次）；旧数据缺字段 = 关闭
     pub auto_download_updates: bool,
+    /// 跟随系统登录项：`true` 时以 `--autostart` 后台启动并只驻留托盘。
+    #[serde(default)]
+    pub launch_at_login: bool,
+    /// Windows 主窗口关闭行为：`tray` 隐藏到托盘，`quit` 直接退出。
+    #[serde(default)]
+    pub main_window_close_action: String,
     /// 剪贴板悬浮框里按回车：`paste` 粘贴到唤起前的应用；`copy` 只复制。
     /// 开关与快捷键存在 `hotkeys` 的 ClipboardPanel 绑定里（enabled 即开关）
     pub clipboard_panel_enter_action: String,
@@ -204,6 +210,8 @@ impl UserSettings {
             auto_optimize: false,
             auto_copy_to_clipboard: true,
             auto_download_updates: false,
+            launch_at_login: false,
+            main_window_close_action: "tray".into(),
             clipboard_panel_enter_action: "paste".into(),
             clipboard_panel_height: 244,
             clipboard_panel_max_width: 1280,
@@ -481,6 +489,13 @@ pub fn apply_settings_update(
                 }
                 settings.clipboard_panel_enter_action = action.into();
             }
+            "main_window_close_action" => {
+                let action = value.as_str().ok_or_else(|| type_error("字符串"))?;
+                if !matches!(action, "tray" | "quit") {
+                    return Err(format!("字段 main_window_close_action 取值非法: {action}"));
+                }
+                settings.main_window_close_action = action.into();
+            }
 
             // ---- 字符串键 ----
             "asr_provider" => set_string(&mut settings.asr_provider, key, value, &type_error)?,
@@ -558,6 +573,7 @@ pub fn apply_settings_update(
             "auto_optimize" => set_bool(&mut settings.auto_optimize, key, value, &type_error)?,
             "auto_copy_to_clipboard" => set_bool(&mut settings.auto_copy_to_clipboard, key, value, &type_error)?,
             "auto_download_updates" => set_bool(&mut settings.auto_download_updates, key, value, &type_error)?,
+            "launch_at_login" => set_bool(&mut settings.launch_at_login, key, value, &type_error)?,
 
             // 未知键：静默丢弃（契约如此）
             _ => {}
@@ -731,6 +747,8 @@ mod tests {
         assert!(settings.auto_optimize);
         // 默认值兜底：未出现的键全部有值
         assert_eq!(settings.whisper_model, "large-v3");
+        assert!(!settings.launch_at_login);
+        assert_eq!(settings.main_window_close_action, "tray");
         // 旧热键迁移：Ctrl+Shift+R 保持
         let binding = settings.binding_of(HotkeyAction::Record).unwrap();
         assert_eq!(binding.display(Platform::Linux), "Ctrl+Shift+R");
@@ -804,6 +822,8 @@ mod tests {
         assert_eq!(view["chatgpt_asr_api_key_set"], json!(false));
         assert_eq!(view["deepseek_asr_api_key_set"], json!(false));
         assert!(view["hotkey"].is_object(), "旧 hotkey 兼容字段必须存在");
+        assert_eq!(view["launch_at_login"], json!(false));
+        assert_eq!(view["main_window_close_action"], json!("tray"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -876,6 +896,8 @@ mod tests {
             "asr_provider": "qwen_asr",
             "recording_mode": "streaming",
             "silence_threshold": 2.5,
+            "launch_at_login": true,
+            "main_window_close_action": "quit",
             "auto_optimize": null,                 // null = 未提供
             "unknown_future_key": 123,             // 未知键静默丢弃
             "doubao_asr_api_key": "sk-test-token"
@@ -883,6 +905,8 @@ mod tests {
         let outcome = apply_settings_update(&mut settings, &body, Platform::Windows, &crypto).unwrap();
         assert_eq!(settings.asr_provider, "qwen_asr");
         assert_eq!(settings.recording_mode, "streaming");
+        assert!(settings.launch_at_login);
+        assert_eq!(settings.main_window_close_action, "quit");
         assert!(!settings.auto_optimize, "null 未提供 → 保持原值");
         assert!(outcome.runtime_keys_changed.contains(&"asr_provider"));
         let cipher = settings.doubao_asr_api_key_encrypted.clone().unwrap();
@@ -892,6 +916,9 @@ mod tests {
         let bad = serde_json::json!({"auto_optimize": "yes"});
         let err = apply_settings_update(&mut settings, &bad, Platform::Windows, &crypto).unwrap_err();
         assert!(err.contains("auto_optimize") && err.contains("布尔"), "错误信息应包含字段名与期望类型: {err}");
+        let bad = serde_json::json!({"main_window_close_action": "sleep"});
+        let err = apply_settings_update(&mut settings, &bad, Platform::Windows, &crypto).unwrap_err();
+        assert!(err.contains("main_window_close_action") && err.contains("取值非法"), "错误信息应说明非法取值: {err}");
 
         // 清除密钥
         let clear = serde_json::json!({"doubao_asr_api_key_clear": true});
