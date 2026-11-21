@@ -2470,6 +2470,8 @@ mod tests {
         .expect("在途分段没有启动");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), MULTI_TRANSCRIBE_CONCURRENCY);
 
+        // 先关闭信号量，避免 abort 释放在途 permit 时，排队任务抢到许可后短暂进入桩函数。
+        semaphore.close();
         abort_multi_segments(&mut tasks).await;
         let after_abort = calls.load(std::sync::atomic::Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(50)).await;
