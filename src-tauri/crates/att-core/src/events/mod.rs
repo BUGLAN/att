@@ -22,6 +22,8 @@ pub enum AppEvent {
     },
     /// 剪贴板捕获（→ clipboard:changed）
     ClipboardCaptured { item_id: String },
+    /// 剪贴板条目被删（自动清理 / 批量删除 / 清空；→ clipboard:changed，列表据此刷新）
+    ClipboardRemoved { count: usize },
     /// 桌面权限缺失提示（→ desktop:permission-required）
     DesktopPermission { message: String },
 }
@@ -31,7 +33,7 @@ impl AppEvent {
     pub fn frontend_event_name(&self) -> &'static str {
         match self {
             AppEvent::RecordChanged { .. } => "record:changed",
-            AppEvent::ClipboardCaptured { .. } => "clipboard:changed",
+            AppEvent::ClipboardCaptured { .. } | AppEvent::ClipboardRemoved { .. } => "clipboard:changed",
             AppEvent::DesktopPermission { .. } => "desktop:permission-required",
         }
     }

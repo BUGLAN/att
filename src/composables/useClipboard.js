@@ -96,6 +96,18 @@ export function useClipboard() {
     await api.deleteClipboardItem(itemId)
   }
 
+  /** 批量删除，返回删掉的条数 */
+  async function removeItems(itemIds) {
+    const result = await api.deleteClipboardItems(itemIds)
+    return result?.deleted ?? 0
+  }
+
+  /** 清空历史（置顶与收藏保留），返回 { deleted, kept } */
+  async function clearHistory() {
+    const result = await api.clearClipboardHistory()
+    return { deleted: result?.deleted ?? 0, kept: result?.kept ?? 0 }
+  }
+
   async function copyItemContent(item) {
     try {
       if (item?.item_type === 'image' && item?.metadata?.image_path) {
@@ -127,6 +139,8 @@ export function useClipboard() {
     toggleFavorite,
     togglePin,
     removeItem,
+    removeItems,
+    clearHistory,
     copyItemContent
   }
 }

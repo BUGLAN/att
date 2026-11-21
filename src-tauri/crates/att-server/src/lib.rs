@@ -494,6 +494,11 @@ async fn settings_put(
 ) -> Result<Json<Value>, impl IntoResponse> {
     match state.core.apply_settings_update(&body) {
         Ok(outcome) => {
+            // 改了剪贴板历史上限：立即按新上限清理一次（不限时什么都不做）
+            if body.get("clipboard_max_items").is_some() || body.get("clipboard_retention_days").is_some() {
+                let core = state.core.clone();
+                tokio::task::spawn_blocking(move || core.prune_clipboard());
+            }
             if !outcome.runtime_keys_changed.is_empty() {
                 tracing::info!("运行时设置变更: {:?}", outcome.runtime_keys_changed);
                 // 切到本地引擎（或改了它的模型/设备）就在后台预加载，设置页据 /api/health 的
@@ -1313,6 +1318,58 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(error["detail"]["manual_only"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn 剪贴板_批量删除_清空保留置顶收藏_改上限立即清理() {
+        let state = test_state("clip-bulk").await;
+        let mut ids = Vec::new();
+        for n in 0..5 {
+            let (status, item) =
+                request_with_body(&state, "POST", "/api/clipboard/items", json!({ "content": format!("条目 {n}") }))
+                    .await;
+            assert_eq!(status, StatusCode::OK, "{item}");
+            ids.push(item["id"].as_str().unwrap().to_string());
+        }
+        request_with_body(&state, "PUT", &format!("/api/clipboard/items/{}", ids[0]), json!({ "is_pinned": true }))
+            .await;
+        request_with_body(&state, "PUT", &format!("/api/clipboard/items/{}", ids[1]), json!({ "is_favorite": true }))
+            .await;
+        let count = |state: Arc<ServerState>| async move {
+            get_json(&state, "/api/clipboard/items?limit=500").await.1.as_array().map(Vec::len).unwrap_or(0)
+        };
+
+        let (status, body) =
+            request_with_body(&state, "DELETE", "/api/clipboard/items", json!({ "ids": [ids[2], "missing"] })).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["deleted"], json!(1));
+        assert_eq!(count(state.clone()).await, 4);
+
+        let (status, _) = request_with_body(&state, "DELETE", "/api/clipboard/items", json!({ "ids": "x" })).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        // 改上限：立即清理（后台跑），置顶 + 收藏占 2 个名额，普通条目至少留最新的一条
+        let (status, _) = request_with_body(&state, "PUT", "/api/settings", json!({ "clipboard_max_items": 3 })).await;
+        assert_eq!(status, StatusCode::OK);
+        let mut remaining = 0;
+        for _ in 0..50 {
+            remaining = count(state.clone()).await;
+            if remaining == 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(remaining, 3, "超出上限的最旧普通条目被清掉");
+
+        let (status, body) = request_with_body(&state, "DELETE", "/api/clipboard/items", json!({ "all": true })).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "deleted": 1, "kept": 2 }));
+        let (_, items) = get_json(&state, "/api/clipboard/items?limit=500").await;
+        let mut kept: Vec<&str> = items.as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
+        kept.sort();
+        let mut expected = vec![ids[0].as_str(), ids[1].as_str()];
+        expected.sort();
+        assert_eq!(kept, expected, "清空后置顶与收藏还在");
     }
 
     #[tokio::test]

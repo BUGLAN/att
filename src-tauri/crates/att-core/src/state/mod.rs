@@ -137,6 +137,25 @@ impl CoreState {
             .map_err(|e| e.to_string())?
     }
 
+    /// 剪贴板历史的自动清理上限（设置里 0 = 不限）。
+    pub fn clipboard_limits(&self) -> crate::clipboard::RetentionLimits {
+        let settings = self.settings();
+        crate::clipboard::RetentionLimits {
+            max_items: settings.clipboard_max_items.max(0) as usize,
+            retention_days: settings.clipboard_retention_days.max(0),
+        }
+    }
+
+    /// 按设置的上限清理剪贴板历史（入库后、每小时、改了上限时）；删了条目就通知列表刷新。返回删掉的条数。
+    pub fn prune_clipboard(&self) -> usize {
+        let removed = self.clipboard.prune(self.clipboard_limits());
+        if removed > 0 {
+            tracing::info!("剪贴板历史按上限清理了 {removed} 条");
+            self.events.publish(crate::events::AppEvent::ClipboardRemoved { count: removed });
+        }
+        removed
+    }
+
     /// GET /api/settings：脱敏公共视图。
     pub fn public_settings(&self) -> serde_json::Value {
         self.settings().public_view(self.platform)

@@ -19,7 +19,7 @@ type Shared = State<Arc<ServerState>>;
 
 pub fn routes() -> Router<Arc<ServerState>> {
     Router::new()
-        .route("/api/clipboard/items", get(list).post(create))
+        .route("/api/clipboard/items", get(list).post(create).delete(remove_many))
         .route("/api/clipboard/stats", get(stats))
         .route("/api/clipboard/items/{id}", get(item).put(update).delete(remove))
         .route("/api/clipboard/items/{id}/image", get(image))
@@ -87,7 +87,33 @@ async fn create(State(state): Shared, Json(body): Json<Value>) -> Result<Json<Va
     let item =
         state.core.clipboard.capture(request).map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
     state.core.events.publish(AppEvent::ClipboardCaptured { item_id: item.id.clone() });
+    let core = state.core.clone();
+    crate::blocking(move || core.prune_clipboard()).await;
     Ok(Json(json!(item)))
+}
+
+/// DELETE /api/clipboard/items：`{ ids: [...] }` 批量删除，或 `{ all: true }` 清空历史（置顶与收藏保留）。
+/// 连同不再被引用的图片与缩略图一起删；返回 `{ deleted }`，清空时另带 `kept`（保留下来的条数）。
+async fn remove_many(State(state): Shared, body: Option<Json<Value>>) -> Result<Json<Value>, Response> {
+    let body = body.map(|Json(value)| value).unwrap_or_default();
+    let core = state.core.clone();
+    let reply = if body.get("all").and_then(Value::as_bool) == Some(true) {
+        let (deleted, kept) = crate::blocking(move || core.clipboard.clear()).await.unwrap_or_default();
+        json!({ "deleted": deleted, "kept": kept })
+    } else {
+        let ids: Vec<String> = match body.get("ids").and_then(Value::as_array) {
+            Some(ids) if ids.iter().all(Value::is_string) => {
+                ids.iter().filter_map(Value::as_str).map(str::to_string).collect()
+            }
+            _ => return Err(detail(StatusCode::UNPROCESSABLE_ENTITY, "需要 ids（字符串数组）或 all: true")),
+        };
+        let deleted = crate::blocking(move || core.clipboard.delete_many(&ids)).await.unwrap_or_default();
+        json!({ "deleted": deleted })
+    };
+    if let Some(count) = reply["deleted"].as_u64().filter(|count| *count > 0) {
+        state.core.events.publish(AppEvent::ClipboardRemoved { count: count as usize });
+    }
+    Ok(Json(reply))
 }
 
 async fn item(State(state): Shared, Path(id): Path<String>) -> Result<Json<Value>, Response> {

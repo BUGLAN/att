@@ -100,6 +100,8 @@ export function useElectron() {
     createClipboardItem: (payload) => httpApi.createClipboardItem(payload),
     updateClipboardItem: (id, data) => httpApi.updateClipboardItem(id, data),
     deleteClipboardItem: (id) => httpApi.deleteClipboardItem(id),
+    deleteClipboardItems: (ids) => httpApi.deleteClipboardItems(ids),
+    clearClipboardHistory: () => httpApi.clearClipboardHistory(),
     getSettings: () => httpApi.getSettings(),
     saveSettings: (settings) => httpApi.saveSettings(settings),
     // LLM v2（供应商档案 + 模型条目）

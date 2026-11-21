@@ -56,6 +56,10 @@ pub const MODEL_RUNTIME_KEYS: &[&str] = &[
 
 /// 剪贴板悬浮框高度的允许范围（逻辑像素）：再矮放不下卡片内容，再高就挡住大半个屏幕。
 pub const CLIPBOARD_PANEL_HEIGHT_RANGE: (i64, i64) = (200, 480);
+/// 剪贴板历史条数上限的最大可设值（0 = 不限）。
+pub const CLIPBOARD_MAX_ITEMS_LIMIT: i64 = 100_000;
+/// 剪贴板历史保留天数的最大可设值（0 = 永久）。
+pub const CLIPBOARD_RETENTION_DAYS_LIMIT: i64 = 3650;
 /// 剪贴板悬浮框最大宽度的允许范围（逻辑像素）；0 单独表示铺满屏幕。
 pub const CLIPBOARD_PANEL_WIDTH_RANGE: (i64, i64) = (720, 3840);
 
@@ -153,6 +157,12 @@ pub struct UserSettings {
     /// 剪贴板悬浮框离屏幕底边的距离（逻辑像素，0 = 贴底）；同样只由悬浮框拖动写入，显示时再按屏幕高度夹取
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub clipboard_panel_bottom_offset: i64,
+    /// 剪贴板历史最多保留多少条（0 = 不限，见 [`CLIPBOARD_MAX_ITEMS_LIMIT`]）：超出时删最旧的，置顶和收藏永不自动删除
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub clipboard_max_items: i64,
+    /// 剪贴板历史保留天数（0 = 永久，见 [`CLIPBOARD_RETENTION_DAYS_LIMIT`]）：超过天数没再复制过的删除，置顶和收藏除外
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub clipboard_retention_days: i64,
     /// 透明透传键：仅存在于 PUT 白名单（与 Python 行为一致），UI 选择后原样保存。
     pub audio_input_device: Option<String>,
     // ---- 录音 ----
@@ -220,6 +230,8 @@ impl UserSettings {
             clipboard_panel_height: 244,
             clipboard_panel_max_width: 1280,
             clipboard_panel_bottom_offset: 0,
+            clipboard_max_items: 0,
+            clipboard_retention_days: 0,
             audio_input_device: None,
             recording_mode: "single".into(),
             silence_threshold: 1.5,
@@ -492,6 +504,27 @@ pub fn apply_settings_update(
                     return Err(format!("字段 clipboard_panel_enter_action 取值非法: {action}"));
                 }
                 settings.clipboard_panel_enter_action = action.into();
+            }
+            // 先校验再赋值：出错时整个请求返回错误，但这里不能把越界值留在设置里（之后会照常落盘）
+            "clipboard_max_items" => {
+                let mut parsed = 0;
+                set_i64(&mut parsed, key, value, &type_error)?;
+                if !(0..=CLIPBOARD_MAX_ITEMS_LIMIT).contains(&parsed) {
+                    return Err(format!(
+                        "字段 clipboard_max_items 必须在 0~{CLIPBOARD_MAX_ITEMS_LIMIT} 之间（0 = 不限）"
+                    ));
+                }
+                settings.clipboard_max_items = parsed;
+            }
+            "clipboard_retention_days" => {
+                let mut parsed = 0;
+                set_i64(&mut parsed, key, value, &type_error)?;
+                if !(0..=CLIPBOARD_RETENTION_DAYS_LIMIT).contains(&parsed) {
+                    return Err(format!(
+                        "字段 clipboard_retention_days 必须在 0~{CLIPBOARD_RETENTION_DAYS_LIMIT} 之间（0 = 永久）"
+                    ));
+                }
+                settings.clipboard_retention_days = parsed;
             }
             "main_window_close_action" => {
                 let action = value.as_str().ok_or_else(|| type_error("字符串"))?;
@@ -870,6 +903,33 @@ mod tests {
         apply_settings_update(&mut settings, &json!({"deepseek_asr_api_key_clear": true}), Platform::Windows, &crypto)
             .unwrap();
         assert!(settings.deepseek_asr_api_key_encrypted.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 剪贴板上限_默认不限_范围校验() {
+        let dir = temp_dir("clipboard-limits");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"asr_provider":"doubao_asr"}"#).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Macos);
+        assert_eq!((settings.clipboard_max_items, settings.clipboard_retention_days), (0, 0), "旧数据 = 不限");
+
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        apply_settings_update(
+            &mut settings,
+            &json!({ "clipboard_max_items": 50, "clipboard_retention_days": 30.0 }),
+            Platform::Macos,
+            &crypto,
+        )
+        .unwrap();
+        assert_eq!((settings.clipboard_max_items, settings.clipboard_retention_days), (50, 30));
+        for bad in [json!({ "clipboard_max_items": -1 }), json!({ "clipboard_retention_days": 99_999 })] {
+            assert!(apply_settings_update(&mut settings, &bad, Platform::Macos, &crypto).is_err(), "{bad}");
+        }
+        assert_eq!((settings.clipboard_max_items, settings.clipboard_retention_days), (50, 30), "越界值不能留下");
+        settings.save(&path).unwrap();
+        let reloaded = UserSettings::load(&path, Platform::Macos);
+        assert_eq!((reloaded.clipboard_max_items, reloaded.clipboard_retention_days), (50, 30));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

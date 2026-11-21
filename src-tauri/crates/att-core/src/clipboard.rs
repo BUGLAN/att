@@ -6,6 +6,8 @@
 //! - 图片路径一律解析到 `data/clipboard/images/` 内，越界拒绝（防借图片接口读任意文件）；
 //! - 缩略图：`data/clipboard/thumbnails/<原图文件名>`，长边不超过 [`THUMBNAIL_MAX`]，
 //!   新图入库时顺手生成，旧图首次请求时生成；原图本身够小就直接用原图。
+//! - 删除（单条、批量、清空、按上限自动清理）连同不再被其他条目引用的图片与缩略图一起删；
+//!   图片按内容哈希命名、可能被多条共用，按引用判断。置顶和收藏的条目永不自动删除。
 
 use crate::records::is_safe_identifier;
 use crate::storage::dir_index::DirIndex;
@@ -14,6 +16,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
@@ -201,6 +204,65 @@ fn build_summary(content: &str) -> String {
     let normalized = normalize_text(content);
     let single_line = normalized.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
     single_line.chars().take(240).collect()
+}
+
+/// 剪贴板历史的自动清理上限（来自设置；0 = 不限）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetentionLimits {
+    /// 最多保留多少条：置顶、收藏也占名额，但永不自动删除
+    pub max_items: usize,
+    /// 超过多少天没再复制过的删除
+    pub retention_days: i64,
+}
+
+impl RetentionLimits {
+    pub fn is_unlimited(&self) -> bool {
+        self.max_items == 0 && self.retention_days <= 0
+    }
+}
+
+/// 置顶或收藏：永不自动删除，「清空历史」也保留。
+fn is_protected(item: &ClipboardItem) -> bool {
+    item.is_pinned || item.is_favorite
+}
+
+/// 图片条目引用的图片文件名（`images/` 下的单层文件名，缩略图同名）；不是图片或认不出时返回 None。
+fn image_file_name(item: &ClipboardItem) -> Option<String> {
+    if item.item_type != "image" {
+        return None;
+    }
+    let text = |key: &str| item.metadata.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let stored = text("stored_file_name");
+    let name = if stored.is_empty() {
+        text("image_path").replace('\\', "/").rsplit('/').next().unwrap_or("").to_string()
+    } else {
+        stored
+    };
+    is_safe_file_name(&name).then_some(name)
+}
+
+/// 按上限要自动删除的条目 id（纯函数）：超过天数没再复制过的、超出条数的最旧条目；
+/// 置顶和收藏永不删除（但占条数名额），最新的一条非置顶非收藏条目总会留下（刚复制的不会立刻消失）。
+fn prune_candidates(items: &[ClipboardItem], limits: RetentionLimits, now: chrono::NaiveDateTime) -> Vec<String> {
+    let mut normal: Vec<&ClipboardItem> = items.iter().filter(|item| !is_protected(item)).collect();
+    // 新的在前；时间解析不了的排到最后（当作最旧）
+    normal.sort_by_cached_key(|item| std::cmp::Reverse(parse_time(&item.updated_at)));
+    let mut doomed = HashSet::new();
+    if limits.retention_days > 0 {
+        let cutoff = now - chrono::Duration::days(limits.retention_days);
+        for item in &normal {
+            // 时间解析不了的不按天数删（宁可留着）
+            if parse_time(&item.updated_at).is_some_and(|time| time < cutoff) {
+                doomed.insert(item.id.as_str());
+            }
+        }
+    }
+    if limits.max_items > 0 {
+        let protected = items.len() - normal.len();
+        let keep = limits.max_items.saturating_sub(protected).max(1);
+        doomed.extend(normal.iter().skip(keep).map(|item| item.id.as_str()));
+    }
+    normal.iter().filter(|item| doomed.contains(item.id.as_str())).map(|item| item.id.clone()).collect()
 }
 
 /// 剪贴板仓库：列表 / 去重 / 统计走内存索引（[`DirIndex`]），写入在同一把锁下同步索引；
@@ -443,14 +505,82 @@ impl ClipboardRepo {
     }
 
     pub fn delete(&self, id: &str) -> bool {
-        let Some(path) = self.item_path(id) else { return false };
         let mut index = self.guard();
-        index.before_write();
-        if std::fs::remove_file(path).is_err() {
-            return false;
+        self.remove_locked(&mut index, &HashSet::from([id.to_string()])) == 1
+    }
+
+    /// 批量删除（剪贴板页「删除选中」）；返回删掉的条数。
+    pub fn delete_many(&self, ids: &[String]) -> usize {
+        let ids: HashSet<String> = ids.iter().cloned().collect();
+        let mut index = self.guard();
+        self.remove_locked(&mut index, &ids)
+    }
+
+    /// 清空历史：置顶和收藏的保留。返回（删掉的条数, 保留的条数）。
+    pub fn clear(&self) -> (usize, usize) {
+        let mut index = self.guard();
+        index.refresh(scan_items);
+        let ids: HashSet<String> =
+            index.items().iter().filter(|item| !is_protected(item)).map(|item| item.id.clone()).collect();
+        let removed = self.remove_locked(&mut index, &ids);
+        index.refresh(scan_items);
+        (removed, index.items().len())
+    }
+
+    /// 按上限自动清理（入库后与每小时一次）；不限时什么都不做。返回删掉的条数。
+    pub fn prune(&self, limits: RetentionLimits) -> usize {
+        if limits.is_unlimited() {
+            return 0;
         }
-        index.after_write(|items| items.retain(|i| i.id != id));
-        true
+        let mut index = self.guard();
+        index.refresh(scan_items);
+        let ids: HashSet<String> =
+            prune_candidates(index.items(), limits, chrono::Local::now().naive_local()).into_iter().collect();
+        self.remove_locked(&mut index, &ids)
+    }
+
+    /// 锁内删除一批条目，再删掉其中不再被剩余条目引用的图片与缩略图。返回删掉的条数。
+    fn remove_locked(&self, index: &mut DirIndex<ClipboardItem>, ids: &HashSet<String>) -> usize {
+        if ids.is_empty() {
+            return 0;
+        }
+        index.refresh(scan_items);
+        let doomed: Vec<ClipboardItem> = index.items().iter().filter(|item| ids.contains(&item.id)).cloned().collect();
+        if doomed.is_empty() {
+            return 0;
+        }
+        index.before_write();
+        let mut removed = HashSet::new();
+        for item in &doomed {
+            let Some(path) = self.item_path(&item.id) else { continue };
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    removed.insert(item.id.clone());
+                }
+                Err(error) => tracing::warn!("删除剪贴板条目失败 {}: {error}", path.display()),
+            }
+        }
+        index.after_write(|items| items.retain(|item| !removed.contains(&item.id)));
+        // 写入前发现外部变化时缓存已作废：重新扫一遍再判断引用，免得误删别的条目还在用的图片
+        index.refresh(scan_items);
+        let still_used: HashSet<String> = index.items().iter().filter_map(image_file_name).collect();
+        let orphans: HashSet<String> = doomed
+            .iter()
+            .filter(|item| removed.contains(&item.id))
+            .filter_map(image_file_name)
+            .filter(|name| !still_used.contains(name))
+            .collect();
+        for name in orphans {
+            for dir in [self.images_dir(), self.thumbnails_dir()] {
+                let path = dir.join(&name);
+                if path.is_file() {
+                    if let Err(error) = std::fs::remove_file(&path) {
+                        tracing::warn!("删除剪贴板图片失败 {}: {error}", path.display());
+                    }
+                }
+            }
+        }
+        removed.len()
     }
 
     pub fn stats(&self) -> Value {
@@ -656,6 +786,135 @@ mod tests {
             })
             .unwrap();
         assert!(repo.image_path(&evil.id).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 直接写一条条目文件（指定更新时间 / 置顶 / 收藏 / 图片），模拟已有的历史。
+    fn put(repo_dir: &Path, id: &str, minutes_ago: i64, pinned: bool, favorite: bool, image: Option<&str>) {
+        let time = (chrono::Local::now() - chrono::Duration::minutes(minutes_ago)).format("%Y-%m-%dT%H:%M:%S%.6f");
+        let mut metadata = Map::new();
+        if let Some(name) = image {
+            metadata.insert("image_path".into(), json!(format!("images/{name}")));
+            metadata.insert("stored_file_name".into(), json!(name));
+        }
+        let item = ClipboardItem {
+            id: id.into(),
+            created_at: time.to_string(),
+            updated_at: time.to_string(),
+            item_type: if image.is_some() { "image".into() } else { "text".into() },
+            content: if image.is_some() { format!("image:{id}") } else { format!("内容 {id}") },
+            title: id.into(),
+            summary: String::new(),
+            source: "test".into(),
+            is_favorite: favorite,
+            is_pinned: pinned,
+            content_size: 1,
+            duplicate_count: 1,
+            content_hash: String::new(),
+            metadata,
+        };
+        json_store::write_json_atomic(&repo_dir.join("clipboard").join(format!("{id}.json")), &item).unwrap();
+    }
+
+    fn put_image_files(dir: &Path, name: &str) {
+        std::fs::create_dir_all(dir.join("clipboard").join("thumbnails")).unwrap();
+        std::fs::write(dir.join("clipboard").join("images").join(name), b"png").unwrap();
+        std::fs::write(dir.join("clipboard").join("thumbnails").join(name), b"png").unwrap();
+    }
+
+    fn ids(repo: &ClipboardRepo) -> Vec<String> {
+        let mut ids: Vec<String> =
+            repo.list(&ListQuery { limit: 1000, ..Default::default() }).into_iter().map(|item| item.id).collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn 条数上限_删最旧的非置顶非收藏_连同它独占的图片() {
+        let (repo, dir) = repo("prune-count");
+        // c-0 最新 … c-49 最旧；c-49 是独占图片的图片条目，c-48 置顶、c-47 收藏（都更旧但不能删）
+        for n in 0..47 {
+            put(&dir, &format!("c-{n:02}"), n, false, false, None);
+        }
+        put(&dir, "c-47", 47, false, true, None);
+        put(&dir, "c-48", 48, true, false, None);
+        put(&dir, "c-49", 49, false, false, Some("old.png"));
+        put_image_files(&dir, "old.png");
+        assert_eq!(repo.prune(RetentionLimits { max_items: 50, retention_days: 0 }), 0, "没超出不删");
+
+        // 复制第 51 条
+        repo.capture(CaptureRequest { content: "第 51 条".into(), ..Default::default() }).unwrap();
+        assert_eq!(repo.prune(RetentionLimits { max_items: 50, retention_days: 0 }), 1);
+        let remaining = ids(&repo);
+        assert_eq!(remaining.len(), 50);
+        assert!(!remaining.contains(&"c-49".to_string()), "最旧的非置顶非收藏条目被删");
+        assert!(remaining.contains(&"c-48".to_string()) && remaining.contains(&"c-47".to_string()));
+        assert!(!dir.join("clipboard/images/old.png").exists(), "独占的图片一并删除");
+        assert!(!dir.join("clipboard/thumbnails/old.png").exists(), "缩略图一并删除");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 保留天数_置顶收藏不受影响_默认不限不删() {
+        let (repo, dir) = repo("prune-days");
+        let day = 24 * 60;
+        put(&dir, "fresh", 10, false, false, None);
+        put(&dir, "old", 3 * day, false, false, None);
+        put(&dir, "old-pinned", 3 * day, true, false, None);
+        put(&dir, "old-favorite", 3 * day, false, true, None);
+        assert_eq!(repo.prune(RetentionLimits::default()), 0, "默认不限：不删任何条目");
+        assert_eq!(ids(&repo).len(), 4);
+
+        assert_eq!(repo.prune(RetentionLimits { max_items: 0, retention_days: 2 }), 1);
+        assert_eq!(ids(&repo), ["fresh", "old-favorite", "old-pinned"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 上限候选_置顶收藏占名额但不删_最新一条总会留下() {
+        let now = chrono::Local::now().naive_local();
+        let item = |id: &str, minutes: i64, protected: bool| ClipboardItem {
+            id: id.into(),
+            created_at: String::new(),
+            updated_at: (now - chrono::Duration::minutes(minutes)).format("%Y-%m-%dT%H:%M:%S%.6f").to_string(),
+            item_type: "text".into(),
+            content: String::new(),
+            title: String::new(),
+            summary: String::new(),
+            source: String::new(),
+            is_favorite: protected,
+            is_pinned: false,
+            content_size: 0,
+            duplicate_count: 1,
+            content_hash: String::new(),
+            metadata: Map::new(),
+        };
+        let items = vec![item("p1", 5, true), item("p2", 6, true), item("n1", 1, false), item("n2", 2, false)];
+        // 上限 2、置顶收藏已有 2 条：普通条目也至少留最新一条
+        assert_eq!(prune_candidates(&items, RetentionLimits { max_items: 2, retention_days: 0 }, now), ["n2"]);
+        assert_eq!(prune_candidates(&items, RetentionLimits { max_items: 3, retention_days: 0 }, now), ["n2"]);
+        assert!(prune_candidates(&items, RetentionLimits { max_items: 4, retention_days: 0 }, now).is_empty());
+    }
+
+    #[test]
+    fn 批量删除与清空_图片按引用判断_清空保留置顶收藏() {
+        let (repo, dir) = repo("bulk-delete");
+        put_image_files(&dir, "shared.png");
+        put(&dir, "img-a", 1, false, false, Some("shared.png"));
+        put(&dir, "img-b", 2, false, false, Some("shared.png"));
+        put(&dir, "text-a", 3, false, false, None);
+        put(&dir, "pinned", 4, true, false, None);
+        put(&dir, "favorite", 5, false, true, None);
+
+        assert_eq!(repo.delete_many(&["img-a".into(), "missing".into()]), 1);
+        assert!(dir.join("clipboard/images/shared.png").exists(), "还被 img-b 引用的图片不能删");
+        assert!(repo.delete("img-b"));
+        assert!(!dir.join("clipboard/images/shared.png").exists(), "最后一个引用删掉后图片一并删除");
+        assert!(!dir.join("clipboard/thumbnails/shared.png").exists());
+        assert!(!repo.delete("img-b"), "已删的再删返回 false（404）");
+
+        assert_eq!(repo.clear(), (1, 2), "清空只删普通条目");
+        assert_eq!(ids(&repo), ["favorite", "pinned"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

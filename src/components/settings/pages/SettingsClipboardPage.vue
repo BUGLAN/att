@@ -78,9 +78,52 @@
       </div>
     </section>
 
+    <section class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">剪贴板历史</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">最多保留</span>
+            <span class="setting-desc">超出时自动删除最旧的记录（图片一并删除）；置顶和收藏的不会被自动删除。</span>
+          </div>
+          <BaseSelect
+            :key="`max-items-${limitSelectKey}`"
+            :model-value="form.clipboard_max_items"
+            aria-label="剪贴板历史最多保留条数"
+            @update:model-value="(value) => requestLimit('clipboard_max_items', value)"
+          >
+            <option v-for="option in maxItemsChoices" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </BaseSelect>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">保留天数</span>
+            <span class="setting-desc">超过天数没再复制过的记录自动删除，每小时检查一次；置顶和收藏的除外。</span>
+          </div>
+          <BaseSelect
+            :key="`retention-${limitSelectKey}`"
+            :model-value="form.clipboard_retention_days"
+            aria-label="剪贴板历史保留天数"
+            @update:model-value="(value) => requestLimit('clipboard_retention_days', value)"
+          >
+            <option v-for="option in retentionChoices" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </BaseSelect>
+        </div>
+      </div>
+    </section>
+
     <div v-if="hotkeyError" class="settings-note warn">
       <span>{{ hotkeyError }}</span>
     </div>
+
+    <ConfirmDialog
+      :model-value="Boolean(pendingLimit)"
+      :title="pendingLimitCopy.title"
+      :description="pendingLimitCopy.description"
+      confirm-text="确定"
+      @update:model-value="(open) => { if (!open) closeLimitConfirm() }"
+      @confirm="applyPendingLimit"
+    />
   </div>
 </template>
 
@@ -89,7 +132,15 @@ import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import BaseInput from '@/components/common/BaseInput.vue'
 import BaseSelect from '@/components/common/BaseSelect.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { useElectron } from '@/composables/useElectron'
+import {
+  isTighter,
+  maxItemsOptions,
+  normalizeLimit,
+  retentionOptions,
+  tightenConfirm
+} from '../clipboardLimits.mjs'
 import { SETTINGS_CTX } from '../settingsContext.js'
 
 const DEFAULT_SIZE = { max_width: 1280, height: 244 }
@@ -104,6 +155,40 @@ const {
 } = inject(SETTINGS_CTX)
 const { clipboardPanel, platform } = useElectron()
 const modKey = platform === 'darwin' ? '⌘' : 'Ctrl+'
+
+// ---- 剪贴板历史上限：改紧了会立即删除超出的记录，先确认再写进表单（表单变化即自动保存） ----
+const maxItemsChoices = computed(() => maxItemsOptions(form.value.clipboard_max_items))
+const retentionChoices = computed(() => retentionOptions(form.value.clipboard_retention_days))
+const pendingLimit = ref(null)
+const pendingLimitCopy = computed(() => (
+  pendingLimit.value
+    ? tightenConfirm(pendingLimit.value.key === 'clipboard_retention_days' ? 'days' : 'items', pendingLimit.value.value)
+    : { title: '', description: '' }
+))
+
+function requestLimit(key, raw) {
+  const value = normalizeLimit(raw)
+  if (isTighter(form.value[key], value)) {
+    pendingLimit.value = { key, value }
+    return
+  }
+  form.value[key] = value
+}
+
+function applyPendingLimit() {
+  const pending = pendingLimit.value
+  pendingLimit.value = null
+  if (pending) {
+    form.value[pending.key] = pending.value
+  }
+}
+
+// 下拉框在确认前已经显示了新选项：取消时表单值没变，Vue 不会回写，重建一次让它按表单值显示
+const limitSelectKey = ref(0)
+function closeLimitConfirm() {
+  pendingLimit.value = null
+  limitSelectKey.value += 1
+}
 
 // 尺寸与位置由悬浮框拖动写入、不在设置表单里：这里只读显示，回到本窗口时刷新一次
 const layout = ref({ ...DEFAULT_SIZE, bottom_offset: 0 })

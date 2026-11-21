@@ -153,6 +153,9 @@ export const useSettingsStore = defineStore('settings', () => {
     auto_download_updates: false,
     launch_at_login: false,
     main_window_close_action: 'tray',
+    // 剪贴板历史上限：0 = 不限（条数）/ 永久（天数）
+    clipboard_max_items: 0,
+    clipboard_retention_days: 0,
     audio_input_device: 'default',
     hotkey: getDefaultHotkey(),
     // 统一浮层已下线：clipboard_overlay_* 键一并移除，

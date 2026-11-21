@@ -132,7 +132,11 @@ pub fn start(core: Arc<CoreState>) {
                 Content::Image { width, height, rgba } => capture_image(&core, width, height, rgba),
             };
             match captured {
-                Ok(item) => core.events.publish(AppEvent::ClipboardCaptured { item_id: item.id }),
+                Ok(item) => {
+                    core.events.publish(AppEvent::ClipboardCaptured { item_id: item.id });
+                    // 设了条数 / 天数上限时，入库后顺手清掉超出的（不限时什么都不做）
+                    core.prune_clipboard();
+                }
                 Err(error) => tracing::warn!("剪贴板入库失败: {error}"),
             }
         }

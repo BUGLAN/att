@@ -436,6 +436,9 @@ export const api = {
   },
   updateClipboardItem: (id, data) => request('PUT', `/clipboard/items/${id}`, { body: data }),
   deleteClipboardItem: (id) => request('DELETE', `/clipboard/items/${id}`),
+  // 批量删除 / 清空历史（置顶与收藏保留）：连同不再被引用的图片一起删，返回 { deleted, kept? }
+  deleteClipboardItems: (ids) => request('DELETE', '/clipboard/items', { body: { ids } }),
+  clearClipboardHistory: () => request('DELETE', '/clipboard/items', { body: { all: true } }),
 
   async exportRecord(id, format = 'txt') {
     const baseUrl = await getBaseUrl()

@@ -5,7 +5,7 @@
   -->
   <div
     class="ui-row clipboard-row"
-    :class="{ 'is-pinned': item.is_pinned, 'is-zoomable': isImageItem }"
+    :class="{ 'is-pinned': item.is_pinned, 'is-zoomable': isImageItem || selectMode, 'is-selected': selected }"
     :tabindex="isImageItem ? 0 : undefined"
     :aria-label="isImageItem ? `查看图片：${displayTitle}` : undefined"
     @mouseenter="handleRowEnter"
@@ -13,6 +13,15 @@
     @click="handleRowClick"
     @keydown.enter.self="handleRowClick"
   >
+    <input
+      v-if="selectMode"
+      class="clipboard-row-check"
+      type="checkbox"
+      :checked="selected"
+      :aria-label="`选择：${displayTitle}`"
+      @click.stop
+      @change="emit('select', item)"
+    >
     <span ref="typeRef" class="clipboard-row-type">
       <span class="ui-glyph-tile" :class="{ 'is-accent': item.is_pinned }" :title="typeLabel">{{ typeGlyph }}</span>
     </span>
@@ -38,7 +47,7 @@
     </div>
 
     <span v-if="item.is_favorite" class="clipboard-row-fav" title="已收藏" aria-hidden="true">{{ G.favorite }}</span>
-    <div class="ui-hover-actions">
+    <div v-if="!selectMode" class="ui-hover-actions">
       <button class="ui-gbtn" type="button" title="复制" aria-label="复制" @click.stop="emit('copy', item)">{{ G.copy }}</button>
       <button
         class="ui-gbtn"
@@ -89,10 +98,19 @@ const props = defineProps({
       favorite: false,
       pin: false
     })
+  },
+  // 选择模式（剪贴板页「选择 → 删除选中」）：点整行切换选中，不打开看图器、不显示悬停操作
+  selectMode: {
+    type: Boolean,
+    default: false
+  },
+  selected: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['copy', 'delete', 'toggle-favorite', 'toggle-pin', 'view-image'])
+const emit = defineEmits(['copy', 'delete', 'toggle-favorite', 'toggle-pin', 'view-image', 'select'])
 
 // 缩略图尺寸：宽度固定，图片最高 280px；上下哪边空间大就浮在哪边
 const PEEK_WIDTH = 240
@@ -227,6 +245,10 @@ function handleRowLeave() {
 }
 
 async function handleRowClick(event) {
+  if (props.selectMode) {
+    emit('select', props.item)
+    return
+  }
   if (!isImageItem.value || event.target.closest?.('.ui-hover-actions')) {
     return
   }
@@ -299,6 +321,17 @@ function blobToDataUrl(blob) {
 </script>
 
 <style scoped>
+.clipboard-row.is-selected {
+  border-color: var(--accent-line);
+  background: var(--accent-veil);
+}
+
+.clipboard-row-check {
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .clipboard-row-type {
   position: relative;
   display: inline-flex;

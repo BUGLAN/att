@@ -270,6 +270,12 @@ pub fn run() {
             }
             if let Some(state) = app.try_state::<AppState>() {
                 clipboard::start(state.core.clone());
+                // 剪贴板历史上限：每小时检查一次（启动时先查一次，应用关着的那些天也算进保留天数）
+                let prune_core = state.core.clone();
+                let _ = std::thread::Builder::new().name("att-clipboard-prune".into()).spawn(move || loop {
+                    prune_core.prune_clipboard();
+                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                });
             }
 
             Ok(())

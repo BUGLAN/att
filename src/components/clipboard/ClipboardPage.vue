@@ -11,6 +11,12 @@
       <button class="ui-tbtn" type="button" :disabled="isLoading" @click="refreshCurrentView">
         <span class="ui-tbtn-glyph">{{ G.refresh }}</span>刷新
       </button>
+      <button class="ui-tbtn" :class="{ 'is-gold': selectMode }" type="button" @click="toggleSelectMode">
+        <span class="ui-tbtn-glyph">{{ G.select }}</span>{{ selectMode ? '退出选择' : '选择' }}
+      </button>
+      <button class="ui-tbtn is-danger" type="button" :disabled="!stats.total" @click="isClearConfirmVisible = true">
+        <span class="ui-tbtn-glyph">{{ G.delete }}</span>清空历史
+      </button>
     </div>
 
     <section class="settings-section clipboard-section">
@@ -42,6 +48,9 @@
             :key="item.id"
             :item="item"
             :item-action-state="getItemActionState(item.id)"
+            :select-mode="selectMode"
+            :selected="selectedIds.has(item.id)"
+            @select="toggleSelected(item.id)"
             @copy="handleCopy"
             @delete="requestDelete"
             @toggle-favorite="handleToggleFavorite"
@@ -51,6 +60,17 @@
         </template>
       </div>
     </section>
+
+    <!-- 选择模式：底部一条操作栏。放在卡片外面：.settings-section 的 overflow: hidden 会让 sticky 失效 -->
+    <div v-if="selectMode" class="clipboard-select-bar">
+      <span class="ui-meta">已选 {{ selectedIds.size }} 条</span>
+      <button class="ui-tbtn" type="button" :disabled="!items.length" @click="toggleSelectAll">
+        {{ isAllSelected ? '取消全选' : '全选本页' }}
+      </button>
+      <button class="ui-tbtn is-danger" type="button" :disabled="!selectedIds.size" @click="isBulkConfirmVisible = true">
+        <span class="ui-tbtn-glyph">{{ G.delete }}</span>删除选中（{{ selectedIds.size }}）
+      </button>
+    </div>
 
     <ImageViewer
       :src="viewer?.src || ''"
@@ -67,6 +87,22 @@
       description="删除后无法恢复，再次复制会重新产生记录。"
       confirm-text="删除"
       @confirm="confirmDelete"
+    />
+
+    <ConfirmDialog
+      v-model="isBulkConfirmVisible"
+      :title="`删除选中的 ${selectedIds.size} 条剪贴板记录？`"
+      description="图片会一并删除，删除后无法恢复。"
+      confirm-text="删除"
+      @confirm="confirmBulkDelete"
+    />
+
+    <ConfirmDialog
+      v-model="isClearConfirmVisible"
+      title="清空剪贴板历史？"
+      description="置顶和收藏的记录会保留，其余记录（含图片）全部删除，无法恢复。"
+      confirm-text="清空"
+      @confirm="confirmClear"
     />
   </section>
 </template>
@@ -94,6 +130,8 @@ const {
   toggleFavorite,
   togglePin,
   removeItem,
+  removeItems,
+  clearHistory,
   copyItemContent
 } = useClipboard()
 
@@ -113,6 +151,71 @@ const tabs = computed(() => [
 ])
 const pendingDeleteItem = ref(null)
 const isDeleteConfirmVisible = ref(false)
+const isBulkConfirmVisible = ref(false)
+const isClearConfirmVisible = ref(false)
+
+// ---- 选择模式 ----
+const selectMode = ref(false)
+const selectedIds = ref(new Set())
+const isAllSelected = computed(() => items.value.length > 0 && items.value.every((item) => selectedIds.value.has(item.id)))
+
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value
+  selectedIds.value = new Set()
+}
+
+function toggleSelected(id) {
+  const next = new Set(selectedIds.value)
+  if (next.has(id)) {
+    next.delete(id)
+  } else {
+    next.add(id)
+  }
+  selectedIds.value = next
+}
+
+function toggleSelectAll() {
+  selectedIds.value = isAllSelected.value ? new Set() : new Set(items.value.map((item) => item.id))
+}
+
+// 列表刷新（筛选、自动清理、别处删除）后，已经不在列表里的条目不再算选中
+watch(items, (list) => {
+  const visible = new Set(list.map((item) => item.id))
+  const kept = [...selectedIds.value].filter((id) => visible.has(id))
+  if (kept.length !== selectedIds.value.size) {
+    selectedIds.value = new Set(kept)
+  }
+})
+
+async function confirmBulkDelete() {
+  const ids = [...selectedIds.value]
+  if (!ids.length) {
+    return
+  }
+  try {
+    const deleted = await removeItems(ids)
+    appStore.showToast(`已删除 ${deleted} 条剪贴板记录`, { tone: 'success' })
+    selectedIds.value = new Set()
+    selectMode.value = false
+  } catch (error) {
+    console.error('[Clipboard] Failed to delete items:', error)
+    appStore.showToast('批量删除失败', { tone: 'error' })
+  }
+  await refreshCurrentView()
+}
+
+async function confirmClear() {
+  try {
+    const { deleted, kept } = await clearHistory()
+    appStore.showToast(kept ? `已清空 ${deleted} 条，保留置顶与收藏 ${kept} 条` : `已清空 ${deleted} 条`, { tone: 'success' })
+    selectedIds.value = new Set()
+    selectMode.value = false
+  } catch (error) {
+    console.error('[Clipboard] Failed to clear history:', error)
+    appStore.showToast('清空剪贴板历史失败', { tone: 'error' })
+  }
+  await refreshCurrentView()
+}
 // 看图器当前展示的图片：{ item, src, title, meta }，null 表示关闭
 const viewer = ref(null)
 
@@ -259,5 +362,25 @@ onUnmounted(() => {
 <style scoped>
 .clipboard-tabs {
   margin-bottom: var(--s-4);
+}
+
+.clipboard-select-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, var(--r-sm));
+  background: var(--bg-surface);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.clipboard-select-bar .ui-meta {
+  margin-right: auto;
 }
 </style>
