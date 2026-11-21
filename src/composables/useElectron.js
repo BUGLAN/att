@@ -314,6 +314,17 @@ export function useElectron() {
     return invoke('open_media_file')
   }
 
+  // 设置页：系统目录选择对话框与完整应用重启（模型目录仅在重启后生效）
+  async function openModelsDirectory() {
+    if (!isDesktop) return null
+    return invoke('open_models_directory')
+  }
+
+  async function restartApp() {
+    if (!isDesktop) return
+    return invoke('restart_app')
+  }
+
   // 「转文字」页：把用户选择 / 拖入 / 手动确认的本地文件登记进转写白名单（HTTP 接口只接受登记过的文件）
   async function allowTranscribePath(path) {
     if (!isDesktop) return ''
@@ -372,6 +383,8 @@ export function useElectron() {
     getDesktopSettings,
     saveDesktopSettings,
     openMediaFile,
+    openModelsDirectory,
+    restartApp,
     allowTranscribePath,
     filePathForFile,
     getPlatform,

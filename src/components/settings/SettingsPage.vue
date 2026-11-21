@@ -310,6 +310,10 @@ function normalizeSettings(value = {}) {
   form.value = {
     asr_provider: value.asr_provider || 'whisper',
     asr_language: value.asr_language || 'zh',
+    models_dir: value.models_dir || '',
+    models_dir_effective: value.models_dir_effective || '',
+    models_dir_next: value.models_dir_next || value.models_dir_effective || '',
+    models_dir_env_override: value.models_dir_env_override === true,
     // 文本框原文：解析结果与服务端一致时保留用户正在敲的内容（见 hotwordsText）
     asr_hotwords_text: hotwordsText(value.asr_hotwords, form.value?.asr_hotwords_text),
     whisper_model: value.whisper_model || 'large-v3',
@@ -369,6 +373,7 @@ function buildSettingsPayload() {
   const payload = {
     asr_provider: form.value.asr_provider,
     asr_language: form.value.asr_language,
+    models_dir: String(form.value.models_dir || '').trim(),
     asr_hotwords: parseHotwords(form.value.asr_hotwords_text),
     whisper_model: form.value.whisper_model,
     whisper_device: form.value.whisper_device,

@@ -261,6 +261,8 @@ pub fn run() {
             commands::get_floating_state,
             commands::open_main_settings,
             commands::open_media_file,
+            commands::open_models_directory,
+            commands::restart_app,
             commands::allow_transcribe_path,
             commands::get_permission_status,
             commands::open_permission_settings,

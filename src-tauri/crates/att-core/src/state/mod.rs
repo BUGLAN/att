@@ -21,7 +21,7 @@ pub enum CoreError {
 /// 核心状态：settings 读写锁持有当前用户设置；其余组件无内部可变态。
 pub struct CoreState {
     pub data_dir: PathBuf,
-    /// 本地模型根目录（`models/`）：`ATT_MODELS_DIR` > 数据目录同级的 `models/` > `<数据目录>/models`
+    /// 本地模型根目录：`ATT_MODELS_DIR` > 用户设置 > 数据目录同级的 `models/` > `<数据目录>/models`
     pub models_dir: PathBuf,
     pub settings_path: PathBuf,
     pub platform: Platform,
@@ -51,12 +51,22 @@ pub struct CoreState {
     pub events: EventBus,
 }
 
-/// 解析本地模型根目录：环境变量优先，其次数据目录同级的 `models/`（仓库里 `data/` 与 `models/` 平级）。
-pub fn resolve_models_dir(data_dir: &Path) -> PathBuf {
-    if let Ok(dir) = std::env::var("ATT_MODELS_DIR") {
-        if !dir.trim().is_empty() {
-            return tidy(PathBuf::from(dir));
-        }
+/// 环境变量是否锁定了模型目录；设置页据此禁用目录选择。
+pub fn models_dir_env_override() -> bool {
+    std::env::var("ATT_MODELS_DIR").is_ok_and(|dir| !dir.trim().is_empty())
+}
+
+/// 解析本地模型根目录：环境变量优先，其次用户设置，再走现有默认。
+pub fn resolve_models_dir(data_dir: &Path, configured: Option<&str>) -> PathBuf {
+    resolve_models_dir_with_env(data_dir, configured, std::env::var("ATT_MODELS_DIR").ok().as_deref())
+}
+
+fn resolve_models_dir_with_env(data_dir: &Path, configured: Option<&str>, env_dir: Option<&str>) -> PathBuf {
+    if let Some(dir) = env_dir.filter(|dir| !dir.trim().is_empty()) {
+        return tidy(PathBuf::from(dir.trim()));
+    }
+    if let Some(dir) = configured.filter(|dir| !dir.trim().is_empty()) {
+        return tidy(PathBuf::from(dir.trim()));
     }
     if let Some(parent) = data_dir.parent() {
         let sibling = parent.join("models");
@@ -82,6 +92,10 @@ pub(crate) fn tidy(path: PathBuf) -> PathBuf {
 impl CoreState {
     /// 初始化（迁移已在此前完成）：建目录 → 加载密钥 → 加载设置。
     pub fn init(data_dir: &Path, platform: Platform) -> Result<Self, CoreError> {
+        Self::init_with_models_env(data_dir, platform, std::env::var("ATT_MODELS_DIR").ok().as_deref())
+    }
+
+    fn init_with_models_env(data_dir: &Path, platform: Platform, models_env: Option<&str>) -> Result<Self, CoreError> {
         let records = RecordRepo::new(data_dir);
         records.ensure_dirs()?;
         for dir in ["audio/temp", "audio/permanent", "clipboard/images", "sessions"] {
@@ -95,7 +109,7 @@ impl CoreState {
         let settings = UserSettings::load(&settings_path, platform);
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
-            models_dir: resolve_models_dir(data_dir),
+            models_dir: resolve_models_dir_with_env(data_dir, settings.models_dir.as_deref(), models_env),
             settings_path,
             platform,
             settings: Mutex::new(settings),
@@ -136,7 +150,13 @@ impl CoreState {
 
     /// GET /api/settings：脱敏公共视图。
     pub fn public_settings(&self) -> serde_json::Value {
-        self.settings().public_view(self.platform)
+        let settings = self.settings();
+        let next_models_dir = resolve_models_dir(&self.data_dir, settings.models_dir.as_deref());
+        let mut view = settings.public_view(self.platform);
+        view["models_dir_effective"] = serde_json::json!(self.models_dir.display().to_string());
+        view["models_dir_next"] = serde_json::json!(next_models_dir.display().to_string());
+        view["models_dir_env_override"] = serde_json::json!(models_dir_env_override());
+        view
     }
 
     /// 登记一个允许转写的文件（精确白名单）。
@@ -221,5 +241,60 @@ mod tests {
         let reloaded = CoreState::init(&dir, Platform::Windows).unwrap();
         assert_eq!(reloaded.settings().asr_provider, "qwen_asr");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 模型目录_环境变量_设置_现有默认依次优先() {
+        let root = std::env::temp_dir().join(format!("att-models-dir-{}", uuid::Uuid::new_v4()));
+        let data_dir = root.join("data");
+        let configured = root.join("configured");
+        let sibling = root.join("models");
+        let env_dir = root.join("env");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&configured).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::create_dir_all(&env_dir).unwrap();
+
+        assert_eq!(
+            resolve_models_dir_with_env(&data_dir, Some(configured.to_str().unwrap()), Some(env_dir.to_str().unwrap())),
+            tidy(env_dir.clone()),
+            "环境变量必须覆盖用户设置"
+        );
+        assert_eq!(
+            resolve_models_dir_with_env(&data_dir, Some(configured.to_str().unwrap()), None),
+            tidy(configured.clone()),
+            "用户设置必须覆盖现有默认"
+        );
+        assert_eq!(
+            resolve_models_dir_with_env(&data_dir, None, None),
+            tidy(sibling.clone()),
+            "同级 models/ 存在时沿用现有默认"
+        );
+        std::fs::remove_dir(&sibling).unwrap();
+        assert_eq!(
+            resolve_models_dir_with_env(&data_dir, Some(""), Some("  ")),
+            data_dir.join("models"),
+            "空设置与空环境变量都回落到数据目录内的 models/"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 模型目录_保存设置后下一次初始化使用新目录() {
+        let root = std::env::temp_dir().join(format!("att-models-restart-{}", uuid::Uuid::new_v4()));
+        let data_dir = root.join("data");
+        let configured = root.join("models-on-another-drive");
+        std::fs::create_dir_all(&configured).unwrap();
+
+        let core = CoreState::init_with_models_env(&data_dir, Platform::Windows, None).unwrap();
+        core.apply_settings_update(&serde_json::json!({
+            "models_dir": configured.to_string_lossy()
+        }))
+        .unwrap();
+        drop(core);
+
+        let restarted = CoreState::init_with_models_env(&data_dir, Platform::Windows, None).unwrap();
+        assert_eq!(restarted.models_dir, tidy(configured));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

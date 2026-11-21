@@ -89,6 +89,9 @@ pub struct UserSettings {
     // ---- ASR 基础 ----
     pub asr_provider: String, // whisper | qwen_asr | doubao_asr | chatgpt_asr | deepseek_asr
     pub asr_language: String, // zh | en | ja | ko
+    /// 本地模型根目录；空值走现有默认查找。仅启动时生效，环境变量 `ATT_MODELS_DIR` 优先。
+    #[serde(default)]
+    pub models_dir: Option<String>,
     /// 个人词表（热词）：与引擎无关地保存，目前只有豆包会发送（见 `stt::hotwords`）。
     /// 宽容读：结构异常只丢这一项，不能拖垮整份设置
     #[serde(default, deserialize_with = "deserialize_hotwords_lenient")]
@@ -179,6 +182,7 @@ impl UserSettings {
             // 老用户 settings.json 里已有值，不受影响；缺这个键的旧文件按新默认值补齐
             asr_provider: "doubao_asr".into(),
             asr_language: "zh".into(),
+            models_dir: None,
             asr_hotwords: Vec::new(),
             whisper_model: "large-v3".into(),
             whisper_device: "auto".into(),
@@ -485,6 +489,11 @@ pub fn apply_settings_update(
             // ---- 字符串键 ----
             "asr_provider" => set_string(&mut settings.asr_provider, key, value, &type_error)?,
             "asr_language" => set_string(&mut settings.asr_language, key, value, &type_error)?,
+            "models_dir" => {
+                let dir = value.as_str().ok_or_else(|| type_error("字符串"))?;
+                let dir = dir.trim();
+                settings.models_dir = (!dir.is_empty()).then(|| dir.to_string());
+            }
             "asr_hotwords" => {
                 let words = value.as_array().ok_or_else(|| type_error("字符串数组"))?;
                 settings.asr_hotwords = crate::stt::hotwords::normalize(words.iter().filter_map(Value::as_str));
@@ -804,6 +813,30 @@ mod tests {
         assert_eq!(view["chatgpt_asr_api_key_set"], json!(false));
         assert_eq!(view["deepseek_asr_api_key_set"], json!(false));
         assert!(view["hotkey"].is_object(), "旧 hotkey 兼容字段必须存在");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 模型目录_旧数据可选_更新空串清空且类型错误拒绝() {
+        let dir = temp_dir("models-dir");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, json!({ "asr_provider": "whisper" }).to_string()).unwrap();
+        assert!(UserSettings::load(&path, Platform::Windows).models_dir.is_none());
+
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Windows);
+        apply_settings_update(&mut settings, &json!({ "models_dir": "  D:/ATT Models  " }), Platform::Windows, &crypto)
+            .unwrap();
+        assert_eq!(settings.models_dir.as_deref(), Some("D:/ATT Models"));
+        settings.save(&path).unwrap();
+        assert_eq!(UserSettings::load(&path, Platform::Windows).models_dir.as_deref(), Some("D:/ATT Models"));
+
+        apply_settings_update(&mut settings, &json!({ "models_dir": "   " }), Platform::Windows, &crypto).unwrap();
+        assert!(settings.models_dir.is_none(), "空串恢复默认目录");
+
+        let error = apply_settings_update(&mut settings, &json!({ "models_dir": 123 }), Platform::Windows, &crypto)
+            .unwrap_err();
+        assert!(error.contains("models_dir") && error.contains("字符串"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -219,6 +219,7 @@
       <div class="settings-group">
         <h3 class="settings-group-title">faster-whisper · 本地模型</h3>
         <LocalModelStatus :view="localView" />
+        <ModelsDirectorySetting />
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">模型</span>
@@ -239,6 +240,7 @@
       <div class="settings-group">
         <h3 class="settings-group-title">Qwen3-ASR · 本地模型</h3>
         <LocalModelStatus :view="localView" />
+        <ModelsDirectorySetting />
         <!-- 模型目录自动查找（models/ 下的 Qwen3-ASR ONNX），推理固定走 CPU；
              旧版的设备 / dtype / 时间戳 / 强制对齐器选项在 Rust 引擎里没有作用，已从界面移除（字段保留兼容旧数据） -->
         <details class="settings-advanced">
@@ -309,6 +311,7 @@ import BaseSelect from '@/components/common/BaseSelect.vue'
 import BaseTextarea from '@/components/common/BaseTextarea.vue'
 import { useAppStore } from '@/stores/app'
 import LocalModelStatus from '../LocalModelStatus.vue'
+import ModelsDirectorySetting from '../ModelsDirectorySetting.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { SETTINGS_CTX } from '../settingsContext.js'
 import {
