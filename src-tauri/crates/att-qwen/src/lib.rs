@@ -10,8 +10,9 @@
 //! | 长文件按 `max_audio_seconds` 静音分块（`_silence_cut_points` + `_plan_chunks`） | 同算法复刻 |
 //! | 语言可指定（`language="Chinese"`） | sherpa 的 Qwen3-ASR 配置没有语言参数，由模型自行判定 |
 //!
-//! 推理库与模型都不随仓库分发：推理库放 `models/sherpa-onnx/`（或 `ATT_SHERPA_ONNX_DIR`），
-//! 模型放 `models/qwen3-asr-0.6B-int8/`（或 `ATT_MODELS_DIR`），缺失时给出可直接照做的提示。
+//! 推理库在安装包里随 `bundle.resources` 分发；开发态放 `models/sherpa-onnx/`，也可用
+//! `ATT_SHERPA_ONNX_DIR` 覆盖。模型仍不随包：放 `models/qwen3-asr-0.6B-int8/`（或 `ATT_MODELS_DIR`），
+//! 缺失时给出可直接照做的提示。
 
 use std::ffi::{c_char, CStr, CString};
 use std::path::{Path, PathBuf};
@@ -51,6 +52,8 @@ pub struct QwenConfig {
     pub models_dir: PathBuf,
     /// 推理库目录覆盖；`None` 时按 [`resolve_lib_dir`] 探测。
     pub lib_dir: Option<PathBuf>,
+    /// 随安装包分发的推理库目录（壳层由 `resource_dir/sherpa-onnx` 传入）；`None` 时跳过。
+    pub bundled_lib_dir: Option<PathBuf>,
 }
 
 impl QwenConfig {
@@ -62,6 +65,7 @@ impl QwenConfig {
             num_threads: 2,
             models_dir: models_dir.into(),
             lib_dir: None,
+            bundled_lib_dir: None,
         }
     }
 }
@@ -153,18 +157,26 @@ pub fn resolve_model_dir(config: &QwenConfig) -> Result<PathBuf, String> {
     ))
 }
 
-/// 解析 sherpa-onnx 推理库目录：显式配置 > `ATT_SHERPA_ONNX_DIR` > `<models>/sherpa-onnx`。
-pub fn resolve_lib_dir(config: &QwenConfig) -> Result<PathBuf, String> {
+/// 列出推理库候选目录（不判存在）：显式配置 > `ATT_SHERPA_ONNX_DIR` > 安装包资源 > `<models>/sherpa-onnx`。
+fn lib_dir_candidates(config: &QwenConfig, env_dir: Option<PathBuf>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(dir) = &config.lib_dir {
         candidates.push(dir.clone());
     }
-    if let Ok(dir) = std::env::var("ATT_SHERPA_ONNX_DIR") {
-        if !dir.trim().is_empty() {
-            candidates.push(PathBuf::from(dir));
-        }
+    if let Some(dir) = env_dir {
+        candidates.push(dir);
+    }
+    if let Some(dir) = &config.bundled_lib_dir {
+        candidates.push(dir.clone());
     }
     candidates.push(config.models_dir.join("sherpa-onnx"));
+    candidates
+}
+
+/// 解析 sherpa-onnx 推理库目录：显式配置 > `ATT_SHERPA_ONNX_DIR` > 安装包资源 > `<models>/sherpa-onnx`。
+pub fn resolve_lib_dir(config: &QwenConfig) -> Result<PathBuf, String> {
+    let env_dir = std::env::var("ATT_SHERPA_ONNX_DIR").ok().filter(|dir| !dir.trim().is_empty()).map(PathBuf::from);
+    let candidates = lib_dir_candidates(config, env_dir);
     let library = library_file_name();
     for candidate in &candidates {
         if candidate.join(library).is_file() {
@@ -177,13 +189,35 @@ pub fn resolve_lib_dir(config: &QwenConfig) -> Result<PathBuf, String> {
         "未找到 sherpa-onnx 推理库 {library}，已尝试：{}",
         candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("、")
     );
-    Err(format!(
-        "{LIB_MISSING}\n\
-         缺少 {library}，用下面的命令下载到推理库目录：\n\
-         \twget https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/{package}\n\
-         \tmkdir -p \"{dir}\" && tar xvf {package} --strip-components=2 -C \"{dir}\"",
-        dir = target.display(),
-    ))
+    Err(missing_lib_hint(library, package, &target))
+}
+
+/// 开发态缺推理库时的安装提示。Windows 用 PowerShell 可直接执行的 `curl.exe` / `tar.exe`；
+/// 旧提示里的 `wget` 在 PowerShell 5.1 中只是 `Invoke-WebRequest` 的别名、不会落盘，`&&` 也不是合法运算符。
+fn missing_lib_hint(library: &str, package: &str, target: &Path) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        format!(
+            "{LIB_MISSING}\n\
+             缺少 {library}，用下面的 PowerShell 命令下载到推理库目录：\n\
+             \tNew-Item -ItemType Directory -Force -Path \"{}\" | Out-Null\n\
+             \tcurl.exe -L \"https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/{package}\" -o \"$env:TEMP\\{package}\"\n\
+             \ttar.exe -xjf \"$env:TEMP\\{package}\" --strip-components=2 -C \"{}\"",
+            target.display(),
+            target.display(),
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        format!(
+            "{LIB_MISSING}\n\
+             缺少 {library}，用下面的命令下载到推理库目录：\n\
+             \twget https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/{package}\n\
+             \tmkdir -p \"{}\" && tar xvf {package} --strip-components=2 -C \"{}\"",
+            target.display(),
+            target.display(),
+        )
+    }
 }
 
 /// 当前平台对应的 sherpa-onnx 共享库发布包（Release 页 assets 名）。
@@ -540,12 +574,44 @@ mod tests {
         let error = resolve_lib_dir(&config).unwrap_err();
         assert_eq!(error.lines().next(), Some(LIB_MISSING), "没有库时就该报错，首行只放结论：{error}");
         assert!(error.contains(library_file_name()), "{error}");
-        assert_eq!(error.lines().filter(|line| line.starts_with('\t')).count(), 2, "{error}");
+        let expected_commands = if cfg!(target_os = "windows") { 3 } else { 2 };
+        assert_eq!(error.lines().filter(|line| line.starts_with('\t')).count(), expected_commands, "{error}");
         let lib = root.join("sherpa-onnx");
         std::fs::create_dir_all(&lib).unwrap();
         std::fs::write(lib.join(library_file_name()), b"x").unwrap();
         assert_eq!(resolve_lib_dir(&config).unwrap(), lib);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 推理库目录顺序_显式_环境_安装包_模型() {
+        let root = temp_dir("lib-order");
+        let explicit = root.join("explicit");
+        let env = root.join("env");
+        let bundled = root.join("bundle").join("sherpa-onnx");
+        let config = QwenConfig {
+            lib_dir: Some(explicit.clone()),
+            bundled_lib_dir: Some(bundled.clone()),
+            ..QwenConfig::new("m", &root)
+        };
+        assert_eq!(
+            lib_dir_candidates(&config, Some(env.clone())),
+            vec![explicit, env, bundled, root.join("sherpa-onnx")],
+            "显式配置 > 环境变量 > 安装包资源 > 开发态模型目录"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_缺库提示使用_powershell_可执行命令() {
+        let error =
+            resolve_lib_dir(&QwenConfig::new("m", std::env::temp_dir().join("att-qwen-missing-lib"))).unwrap_err();
+        assert!(error.contains("curl.exe -L"), "{error}");
+        assert!(error.contains("tar.exe -xjf"), "{error}");
+        assert!(error.contains("New-Item -ItemType Directory -Force"), "{error}");
+        assert!(!error.contains("wget"), "{error}");
+        assert!(!error.contains("&&"), "{error}");
     }
 
     #[test]

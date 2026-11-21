@@ -49,7 +49,8 @@ macOS 需要授予三项权限：「麦克风」（录音）、「输入监控�
 
 按住录音与点按录音可以设成不同的键同时使用；想用同一个键，先清空其中一个，同一个键只能启用一种录音方式。
 
-本地识别模型不随安装包分发；用本地 Whisper / Qwen 时在「设置 → 识别引擎」里直接下载（带进度、取消、断点续传、SHA-256 校验与源站固定版本，国内可切 hf-mirror.com 镜像），装好后可查看占用并删除；Whisper 会一并安装 Silero VAD。
+本地识别模型不随安装包分发；Qwen3-ASR 所需的 sherpa-onnx / ONNX Runtime 推理库已包含在安装包里。
+用本地 Whisper / Qwen 时在「设置 → 识别引擎」里直接下载模型（带进度、取消、断点续传、SHA-256 校验与源站固定版本，国内可切 hf-mirror.com 镜像），装好后可查看占用并删除；Whisper 会一并安装 Silero VAD。
 
 ## 开发
 
@@ -57,12 +58,13 @@ macOS 需要授予三项权限：「麦克风」（录音）、「输入监控�
 npm install
 npm run tauri:dev        # 开发运行：Vite(8090) + Tauri 壳 + 内嵌数据面，数据目录 = 仓库 data/
 npm run tauri:build      # 本地打包
+npm run prepare:sherpa   # 单独下载并校验当前平台的 sherpa-onnx 推理库（tauri:build 会自动执行）
 npm test                 # = test:node（前端纯逻辑用例）+ test:rust（cargo test --workspace）
 ```
 
 - `cargo` 命令要在 `src-tauri/` 目录内执行（Windows 的 `+crt-static` 配置只在该目录下生效）。
 - 首次构建会编译 CTranslate2（约 10~20 分钟），macOS 需先 `brew install cmake`。
-- 本地 Whisper / Qwen 的模型与推理库不随仓库分发；选择对应引擎后在「设置 → 识别引擎」里应用内下载（Whisper 会自动装 Silero VAD，Qwen 走 GitHub Release），模型目录默认 `models/`，可用 `ATT_MODELS_DIR` / `ATT_SHERPA_ONNX_DIR` 改位置。
+- 本地 Whisper / Qwen 的模型不随仓库分发；选择对应引擎后在「设置 → 识别引擎」里应用内下载（Whisper 会自动装 Silero VAD，Qwen 走 GitHub Release），模型目录默认 `models/`，可用 `ATT_MODELS_DIR` 改位置。开发态 Qwen 推理库默认放 `models/sherpa-onnx/`，也可用 `ATT_SHERPA_ONNX_DIR` 覆盖；安装包使用随包的 `resources/sherpa-onnx/`。
 - 开发态的 macOS 权限归属启动 `tauri dev` 的终端应用。
 - 更多开发约定与常见陷阱见 [`AGENTS.md`](AGENTS.md)。
 
@@ -86,7 +88,8 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 录音回放 / 图片 / 导出等 `<audio>`、`<img>` 无法带请求头的地址改用 `?token=`。文件转写还要求
 路径在界面里选择 / 拖入 / 手动确认过的精确白名单内，HTTP 调用不能自行扩大范围。
 
-发布：版本号写在 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`（及对应 lock 文件），
+发布：`scripts/prepare-sherpa-onnx.mjs` 会按目标平台下载 sherpa-onnx v2.0.1、校验固定 SHA-256 后放进安装包资源；
+版本号写在 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`（及对应 lock 文件），
 用 `npm run version:bump -- 2.8.0` 一次改齐（`node scripts/bump-version.mjs --check` 只校验，Node 测试里也会校验）；
 推送 `v*` 注释标签后，`.github/workflows/release.yml` 自动打包 macOS / Windows 安装包并发布 Release，
 标签注释正文即版本说明。

@@ -9,7 +9,7 @@
 //! `models/silero_vad.onnx`（或 `ATT_SILERO_VAD` 指定），上层按 [`SileroVad::speech_ranges`]
 //! 得到的区间逐个送 Whisper。
 
-use crate::resolve_lib_dir;
+use crate::{resolve_lib_dir, QwenConfig};
 use serde::Deserialize;
 use std::ffi::{c_char, CStr, CString};
 use std::path::{Path, PathBuf};
@@ -86,12 +86,10 @@ impl std::fmt::Debug for SileroVad {
 struct RawRange(i64, i64);
 
 impl SileroVad {
-    /// 加载 VAD（需要推理库目录；`lib_dir` 为 `None` 时按 [`crate::resolve_lib_dir`] 探测）。
-    pub fn load(models_dir: &Path, lib_dir: Option<&Path>) -> Result<Self, String> {
-        let model = resolve_vad_model(models_dir)?;
-        let config =
-            crate::QwenConfig { lib_dir: lib_dir.map(Path::to_path_buf), ..crate::QwenConfig::new("", models_dir) };
-        let lib = resolve_lib_dir(&config)?;
+    /// 加载 VAD：模型从配置的模型根目录找，推理库走 Qwen 同一套查找顺序。
+    pub fn load(config: &QwenConfig) -> Result<Self, String> {
+        let model = resolve_vad_model(&config.models_dir)?;
+        let lib = resolve_lib_dir(config)?;
         let lib_c = CString::new(lib.to_string_lossy().to_string()).map_err(|_| "推理库路径含非法字符".to_string())?;
         let model_c =
             CString::new(model.to_string_lossy().to_string()).map_err(|_| "VAD 模型路径含非法字符".to_string())?;

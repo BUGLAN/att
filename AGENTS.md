@@ -37,16 +37,18 @@ src-tauri/
                        transcribe（文件转写·校对）/ clipboard / prompts（内置 + 自定义预设）/ update（检查更新）/
                        storage（原子写·Fernet）/ migration
   crates/att-whisper/  本地 faster-whisper：ct2rs（CTranslate2）绑定，兼容应用内下载目录与旧 CT2 目录
-  crates/att-qwen/     本地 Qwen3-ASR：sherpa-onnx C API（运行期 dlopen）+ ONNX 模型；C 桥见 src/shim.c
+  crates/att-qwen/     本地 Qwen3-ASR：sherpa-onnx C API（运行期 dlopen）+ ONNX 模型；C 桥见 src/shim.c，
+                       推理库版本/哈希见 vendor/sherpa-onnx-libs.json
   crates/att-server/   axum 数据面（仅回环），HTTP 契约与旧 Python 版一致
   crates/att-audio/    cpal 麦克风采集
   crates/att-hotkey/   全局热键（macOS CGEventTap / Windows RegisterHotKey + WH_KEYBOARD_LL）
 src/                   Vue 前端；桌面能力只经 composables/useElectron.js，HTTP 只经 api/client.js
 prompts/*.txt          内置提示词预设（只读，打包时作为资源随包）；用户自定义预设在 data/custom_prompts.json
+src-tauri/resources/sherpa-onnx/  打包时由 scripts/prepare-sherpa-onnx.mjs 下载的推理库（不入库，随包分发）
 data/                  用户数据（开发态即仓库 data/），不入库
 models/                本地模型（不入库）：faster-whisper-<短名>/（应用内下载；旧 faster_whisper/ 仍兼容）、
                        qwen3-asr-0.6B-int8/（sherpa ONNX）、silero_vad.onnx、.downloads/（可续传暂存）、
-                       sherpa-onnx/（sherpa-onnx 动态库 + onnxruntime）；可用 ATT_MODELS_DIR / ATT_SHERPA_ONNX_DIR 改位置
+                       sherpa-onnx/（开发态可选推理库；安装包用随包资源）；可用 ATT_MODELS_DIR / ATT_SHERPA_ONNX_DIR 改位置
 ```
 
 ## 3. 硬约束
@@ -75,7 +77,8 @@ models/                本地模型（不入库）：faster-whisper-<短名>/（
 | macOS 构建本地引擎 | 需要 `brew install cmake`；macOS 上 ct2rs 走 Accelerate + ruy（Apple Clang 无 OpenMP，`openmp-runtime-comp` 会去链不存在的 `gomp`），见 `att-whisper/Cargo.toml` |
 | dev 下 Whisper 慢 9 倍 | cmake crate 在 opt-level=0 时按 Debug 编 CTranslate2；根 `Cargo.toml` 用 `[profile.dev.package.ct2rs]` 等强制优化，别删 |
 | 本地引擎首次构建慢 | `att-core` 依赖 `att-whisper`，首次会 CMake 编译 CTranslate2 + oneDNN（约 10~20 分钟）；之后走缓存 |
-| Qwen 引擎与系统 ORT 冲突 | Windows 上 `C:\Windows\System32\onnxruntime.dll`（旧版）会抢占依赖解析导致崩溃；`shim.c` 已按绝对路径预加载 `models/sherpa-onnx/` 里的 ORT，改动加载逻辑时别丢掉这一步 |
+| Qwen 引擎与系统 ORT 冲突 | Windows 上 `C:\Windows\System32\onnxruntime.dll`（旧版）会抢占依赖解析导致崩溃；`shim.c` 已按实际推理库目录（安装包资源或 `models/sherpa-onnx/`）绝对路径预加载 ORT，改动加载逻辑时别丢掉这一步 |
+| sherpa-onnx 推理库随包 | 打包前 `scripts/prepare-sherpa-onnx.mjs` 按目标平台下载并校验 `vendor/sherpa-onnx-libs.json` 里的资产；升级动态库必须同步 `vendor/c-api.h`、该清单和提示里的包名/版本 |
 | 本地引擎没有模型时 | 设置页可在应用内下载（进度、取消、断点续传、SHA-256 校验、解压、删除，Whisper 会一并装 Silero VAD；国内可切 `hf-mirror.com`）；缺模型时接口只给 409 + 可照做的提示，不 panic；模型不入库，路径见上文「代码布局」 |
 | 图片写剪贴板 | Windows 上必须自己写 `CF_DIB`(BI_RGB) + `CF_DIBV5`(BI_RGB) + `PNG`（`src-tauri/src/clipboard_image.rs`）；换回 arboard 的 BI_BITFIELDS 写法会让 Chromium 系应用粘不出图 |
 | 新增模拟按键 | 自动输入 / 粘贴等自己发出的键盘事件必须打 `att_hotkey::SYNTHETIC_EVENT_TAG`（macOS `EVENT_SOURCE_USER_DATA`、Windows `dwExtraInfo`），否则热键监听会把它清零的修饰键当成用户松开，按住录音时被打断又自动开新一段 |

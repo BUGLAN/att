@@ -9,6 +9,7 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "prepare:sherpa": "node scripts/prepare-sherpa-onnx.mjs",
     "test": "npm run test:node && npm run test:rust",
     "test:node": "node scripts/run-node-tests.mjs",
     "test:rust": "cd src-tauri && cargo test --workspace",

@@ -1,0 +1,21 @@
+{
+  "version": "2.0.1",
+  "release": "v2.0.1",
+  "assets": {
+    "linux-x64": {
+      "file": "sherpa-onnx-v2.0.1-linux-x64-shared-lib.tar.bz2",
+      "size": 9710131,
+      "sha256": "532c45bbd41036d83cd70606797529aa8086c2053395a58967736c727625b120"
+    },
+    "macos-universal2": {
+      "file": "sherpa-onnx-v2.0.1-osx-universal2-shared-lib.tar.bz2",
+      "size": 18735839,
+      "sha256": "a3aa3e8a6c78bc06d98f8a5792a924e3d2a7c308c76db68aef358b9278366ac7"
+    },
+    "windows-x64": {
+      "file": "sherpa-onnx-v2.0.1-win-x64-shared-MD-Release-lib.tar.bz2",
+      "size": 7289630,
+      "sha256": "c3c78220db8bebf97d5f932496165bb3897b163410427d7c021013439c80f183"
+    }
+  }
+}

@@ -24,6 +24,8 @@ pub struct CoreState {
     pub data_dir: PathBuf,
     /// 本地模型根目录（`models/`）：`ATT_MODELS_DIR` > 数据目录同级的 `models/` > `<数据目录>/models`
     pub models_dir: PathBuf,
+    /// 安装包资源根目录（Tauri `resource_dir()`）：Qwen 推理库等随包资源从这里找；开发态可能为 `None`
+    pub resource_dir: Option<PathBuf>,
     pub settings_path: PathBuf,
     pub platform: Platform,
     settings: Mutex<UserSettings>,
@@ -113,6 +115,7 @@ impl CoreState {
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             models_dir: models_dir.clone(),
+            resource_dir: None,
             settings_path,
             platform,
             settings: Mutex::new(settings),

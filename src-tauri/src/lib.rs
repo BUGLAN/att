@@ -132,8 +132,10 @@ pub fn run() {
             let had_settings = data_dir.join("settings.json").is_file();
             let mut core = CoreState::init(&data_dir, Platform::current())
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
-            // 提示词预设：开发态用仓库 prompts/，打包版用随包资源（bundle.resources）
-            core.prompts_dir = att_core::prompts::resolve_dir(&data_dir, app.path().resource_dir().ok().as_deref());
+            // 随包资源：开发态提示词用仓库 prompts/，打包版用安装资源；Qwen 推理库同理优先用安装资源
+            let resource_dir = app.path().resource_dir().ok();
+            core.prompts_dir = att_core::prompts::resolve_dir(&data_dir, resource_dir.as_deref());
+            core.resource_dir = resource_dir;
             tracing::info!("提示词目录: {}", core.prompts_dir.display());
             // 检查更新用打包版本号（与「关于」页显示的版本一致）
             core.app_version = app.package_info().version.to_string();

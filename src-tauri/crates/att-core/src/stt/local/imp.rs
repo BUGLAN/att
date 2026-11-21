@@ -427,6 +427,7 @@ fn whisper_config(core: &CoreState) -> WhisperConfig {
 fn qwen_config(core: &CoreState) -> QwenConfig {
     let settings = core.settings();
     let mut config = QwenConfig::new(settings.qwen_asr_model.clone(), core.models_dir.clone());
+    config.bundled_lib_dir = core.resource_dir.as_ref().map(|dir| dir.join("sherpa-onnx"));
     config.max_new_tokens = settings.qwen_asr_max_new_tokens;
     config.max_audio_seconds = settings.qwen_asr_max_audio_seconds;
     // 默认 2 线程：与 sherpa-onnx 官方示例一致，再高在 CPU 上收益有限
@@ -448,7 +449,7 @@ impl LocalModels {
         if let Some(vad) = self.vad.lock().unwrap_or_else(|error| error.into_inner()).as_ref() {
             return Some(vad.clone());
         }
-        match SileroVad::load(&core.models_dir, None) {
+        match SileroVad::load(&qwen_config(core)) {
             Ok(vad) => {
                 let vad = Arc::new(vad);
                 *self.vad.lock().unwrap_or_else(|error| error.into_inner()) = Some(vad.clone());
