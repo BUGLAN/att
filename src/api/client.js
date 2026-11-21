@@ -384,6 +384,11 @@ export const api = {
     timeout: options.timeout ?? SLOW_TIMEOUT_MS
   }),
   cancelOptimizeRecord: (id) => request('POST', `/records/${id}/optimize/cancel`, { timeout: 10000 }),
+  // 重新识别：受理后 202 返回置为 transcribing 的记录，识别在后台跑，用 getRecord 轮询结果；
+  // provider 为空用当前设置的引擎
+  retranscribeRecord: (id, provider = '') => request('POST', `/records/${id}/retranscribe`, {
+    body: provider ? { provider } : {}
+  }),
 
   async getClipboardItems(params = {}) {
     const searchParams = new URLSearchParams()
@@ -457,6 +462,8 @@ export const api = {
   // 在线识别引擎凭据验证：GET 取最近一次结论（不发网络请求），POST 立即验证（豆包握手约 1～2 秒）
   getAsrCredentialCheck: (provider) => request('GET', `/asr/credential-check?provider=${encodeURIComponent(provider)}`),
   checkAsrCredential: (provider) => request('POST', '/asr/credential-check', { body: { provider }, timeout: SLOW_TIMEOUT_MS }),
+  // 全部识别引擎能不能用（凭据齐备 / 本地模型就位，不发网络请求）：{ current, engines: [{ provider, label, available, error }] }
+  getAsrEngines: () => request('GET', '/asr/engines'),
   getStreamingServiceStatus: () => request('GET', '/model-service'),
   startStreamingService: (waitUntilReady = true) => request('POST', '/model-service/start', {
     timeout: SLOW_TIMEOUT_MS,

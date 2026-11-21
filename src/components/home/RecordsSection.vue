@@ -20,7 +20,8 @@
         :record="record"
         :expanded="expandedId === record.id"
         :is-playing="isPlaying(record.id)"
-        @toggle="expandedId = expandedId === record.id ? null : record.id"
+        :asr-engines="asrEngines"
+        @toggle="toggleExpanded(record.id)"
         @edit="openEditModal(record)"
         @copy="copyText(record)"
         @export="(format) => exportRecord(record, format)"
@@ -29,6 +30,7 @@
         @optimize="optimizeRecord(record.id)"
         @cancel-optimize="cancelOptimize(record.id)"
         @toggle-favorite="toggleFavorite(record)"
+        @retranscribe="(provider) => requestRetranscribe(record, provider)"
       />
 
       <div v-if="!records.length" class="ui-empty">
@@ -46,6 +48,16 @@
     @update:model-value="(open) => { if (!open) pendingDelete = null }"
     @confirm="confirmDelete"
   />
+
+  <ConfirmDialog
+    :model-value="Boolean(pendingRetranscribe)"
+    title="重新识别这条记录？"
+    :description="RETRANSCRIBE_CONFIRM"
+    confirm-text="重新识别"
+    tone="default"
+    @update:model-value="(open) => { if (!open) pendingRetranscribe = null }"
+    @confirm="confirmRetranscribe"
+  />
 </template>
 
 <script setup>
@@ -55,6 +67,7 @@ import { useAppStore } from '@/stores/app'
 import { NAV_GLYPHS } from '@/components/common/glyphs.mjs'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import RecordRow from '@/components/records/RecordRow.vue'
+import { RETRANSCRIBE_CONFIRM, needsRetranscribeConfirm } from '@/components/records/retranscribeModel.mjs'
 
 /** 首页只展示最新的几条 */
 const RECENT_LIMIT = 6
@@ -69,11 +82,39 @@ const {
   cancelOptimize,
   exportRecord,
   toggleAudio,
-  isPlaying
+  isPlaying,
+  asrEngines,
+  loadAsrEngines,
+  retranscribeRecord
 } = useRecords()
 
 const expandedId = ref(null)
 const pendingDelete = ref(null)
+const pendingRetranscribe = ref(null)
+
+function toggleExpanded(id) {
+  expandedId.value = expandedId.value === id ? null : id
+  if (expandedId.value) {
+    loadAsrEngines()
+  }
+}
+
+// 重新识别：会覆盖已有文字的先确认；首页列表就是 store，结果随 store 更新
+function requestRetranscribe(record, provider) {
+  if (needsRetranscribeConfirm(record)) {
+    pendingRetranscribe.value = { record, provider }
+    return
+  }
+  retranscribeRecord(record, provider)
+}
+
+function confirmRetranscribe() {
+  const pending = pendingRetranscribe.value
+  pendingRetranscribe.value = null
+  if (pending) {
+    retranscribeRecord(pending.record, pending.provider)
+  }
+}
 const recentRecords = computed(() => records.value.slice(0, RECENT_LIMIT))
 
 function openEditModal(record) {

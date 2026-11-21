@@ -45,7 +45,8 @@
               :is-playing="isPlaying(record.id)"
               :select-mode="selectMode"
               :selected="selectedIds.has(record.id)"
-              @toggle="expandedId = expandedId === record.id ? null : record.id"
+              :asr-engines="asrEngines"
+              @toggle="toggleExpanded(record.id)"
               @select="toggleSelected(record.id)"
               @edit="openRecord(record)"
               @copy="copyText(record)"
@@ -55,6 +56,7 @@
               @optimize="optimizeRecord(record.id)"
               @cancel-optimize="cancelOptimize(record.id)"
               @toggle-favorite="handleToggleFavorite(record)"
+              @retranscribe="(provider) => requestRetranscribe(record, provider)"
             />
           </template>
         </template>
@@ -88,6 +90,16 @@
       @update:model-value="(open) => { if (!open) pendingDelete = [] }"
       @confirm="confirmDelete"
     />
+
+    <ConfirmDialog
+      :model-value="Boolean(pendingRetranscribe)"
+      title="重新识别这条记录？"
+      :description="RETRANSCRIBE_CONFIRM"
+      confirm-text="重新识别"
+      tone="default"
+      @update:model-value="(open) => { if (!open) pendingRetranscribe = null }"
+      @confirm="confirmRetranscribe"
+    />
   </div>
 </template>
 
@@ -103,6 +115,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import RecordRow from './RecordRow.vue'
 import { groupRecordsByDay } from './recordListModel.mjs'
+import { RETRANSCRIBE_CONFIRM, needsRetranscribeConfirm } from './retranscribeModel.mjs'
 import { createLatestRequestGuard, runLatest } from '@/utils/latestRequest.mjs'
 
 const appStore = useAppStore()
@@ -115,7 +128,10 @@ const {
   optimizeRecord,
   cancelOptimize,
   toggleAudio,
-  isPlaying
+  isPlaying,
+  asrEngines,
+  loadAsrEngines,
+  retranscribeRecord
 } = useRecords()
 
 const recordSearch = ref('')
@@ -202,6 +218,42 @@ async function handleToggleFavorite(record) {
 
 // ---- 展开 / 选择 / 删除 ----
 const expandedId = ref(null)
+
+function toggleExpanded(id) {
+  expandedId.value = expandedId.value === id ? null : id
+  if (expandedId.value) {
+    // 展开后才用得上「重新识别」的引擎列表
+    loadAsrEngines()
+  }
+}
+
+// ---- 重新识别：会覆盖已有文字的先确认 ----
+const pendingRetranscribe = ref(null)
+
+function requestRetranscribe(record, provider) {
+  if (needsRetranscribeConfirm(record)) {
+    pendingRetranscribe.value = { record, provider }
+    return
+  }
+  runRetranscribe(record, provider)
+}
+
+function confirmRetranscribe() {
+  const pending = pendingRetranscribe.value
+  pendingRetranscribe.value = null
+  if (pending) {
+    runRetranscribe(pending.record, pending.provider)
+  }
+}
+
+function runRetranscribe(record, provider) {
+  // 记录集是服务端分页：不在 store 最近列表里的记录，结果直接回填到本页
+  retranscribeRecord(record, provider, {
+    onUpdate: (updated) => {
+      records.value = records.value.map((item) => (item.id === updated.id ? { ...item, ...updated } : item))
+    }
+  })
+}
 const selectMode = ref(false)
 const selectedIds = ref(new Set())
 const pendingDelete = ref([])

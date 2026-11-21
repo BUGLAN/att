@@ -4,6 +4,10 @@
 //! - 字段名/取值与 Python `Record.to_dict` 完全一致（前端依赖）
 //! - 旧数据缺 `error`/`revision` 字段可读（serde 默认兜底）
 //! - revision 乐观锁：PUT 冲突返回 [`RecordError::Conflict`]（HTTP 409）
+//!
+//! 「重新识别」（读记录音频 → 选引擎整段识别 → 写回）见 [`retranscribe`]。
+
+pub mod retranscribe;
 
 use crate::now_rfc3339;
 use crate::storage::dir_index::DirIndex;
@@ -58,6 +62,12 @@ pub struct Record {
     pub is_favorite: bool,
     pub error: Option<String>,
     pub revision: u64,
+    /// 识别引擎（provider 标识，如 `doubao_asr`、`whisper`）；旧记录与文本记录没有这个字段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// 识别语言（录音时的设置 `asr_language`，如 `zh`）；旧记录与文本记录没有这个字段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 impl Default for Record {
@@ -77,6 +87,8 @@ impl Default for Record {
             is_favorite: false,
             error: None,
             revision: 0,
+            engine: None,
+            language: None,
         }
     }
 }
@@ -423,6 +435,13 @@ impl RecordRepo {
         }
     }
 
+    /// 列出处于「识别中」的记录 id（启动时恢复被中断的重新识别用）。
+    pub fn transcribing_ids(&self) -> Vec<String> {
+        let mut index = self.guard();
+        index.refresh(scan_records);
+        index.items().iter().filter(|r| r.status == RecordStatus::Transcribing).map(|r| r.id.clone()).collect()
+    }
+
     /// 音频错位修复用（migration 模块）：按 id 直接改写 audio_path 字段。
     pub fn set_audio_path(&self, id: &str, audio_file_name: &str) -> Result<(), RecordError> {
         if !is_safe_identifier(id) {
@@ -553,7 +572,24 @@ mod tests {
         assert_eq!(record.optimize_time, None, "旧记录没有 optimize_time 时按 None 读");
         assert!(record.error.is_none());
         assert_eq!(record.revision, 0);
+        assert_eq!(record.engine, None, "旧记录没有识别引擎字段");
+        assert_eq!(record.language, None, "旧记录没有识别语言字段");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 识别引擎与语言_有值才写入json() {
+        let plain = serde_json::to_value(sample("rec-x", "文本")).unwrap();
+        assert!(plain.get("engine").is_none() && plain.get("language").is_none(), "没有值时不写这两个字段");
+
+        let record =
+            Record { engine: Some("whisper".into()), language: Some("zh".into()), ..sample("rec-y", "文本") };
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["engine"], "whisper");
+        assert_eq!(value["language"], "zh");
+        let back: Record = serde_json::from_value(value).unwrap();
+        assert_eq!(back.engine.as_deref(), Some("whisper"));
+        assert_eq!(back.language.as_deref(), Some("zh"));
     }
 
     /// 回归锁：历史 audio_path 三种形态必须归一化到 audio_dir 下的同一文件

@@ -121,6 +121,15 @@ pub fn run() {
             // 检查更新用打包版本号（与「关于」页显示的版本一致）
             core.app_version = app.package_info().version.to_string();
             let core = Arc::new(core);
+            // 上次退出时还在「重新识别」的记录：后台任务随进程没了，标成失败（文字不动），免得一直显示「转写中」。
+            // 放后台线程：要扫一遍记录目录，不挡启动
+            let recover_core = core.clone();
+            std::thread::spawn(move || {
+                let recovered = att_core::records::retranscribe::recover_interrupted(&recover_core);
+                if recovered > 0 {
+                    tracing::info!("{recovered} 条记录的重新识别被上次退出打断，已标为失败");
+                }
+            });
 
             // 数据面：先用同步 bind 占住端口（优先固定端口，占用时依次 +1，仍失败才回退随机），
             // 再把 accept 循环显式 spawn 到 Tauri 的运行时里。

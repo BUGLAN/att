@@ -34,6 +34,8 @@ pub struct CoreState {
     pub clipboard: ClipboardRepo,
     /// 活动中的记录优化（取消 / 同记录互斥）
     pub optimizer: OptimizationHub,
+    /// 进行中的「重新识别」（同记录互斥；启动恢复时据此区分被中断的记录）
+    pub retranscribe: crate::records::retranscribe::RetranscribeJobs,
     /// 本地文件转写（任务表 / 单并发闸门 / 结果缓存）
     pub transcriber: crate::transcribe::FileTranscriber,
     /// 本机用户确认过、允许文件转写的精确路径白名单（只在内存里）
@@ -104,6 +106,7 @@ impl CoreState {
             llm,
             clipboard: ClipboardRepo::new(data_dir),
             optimizer: OptimizationHub::default(),
+            retranscribe: Default::default(),
             transcriber: Default::default(),
             transcribe_allowed: Mutex::new(HashSet::new()),
             local_models: Default::default(),

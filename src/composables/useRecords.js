@@ -4,6 +4,11 @@ import { useAppStore } from '@/stores/app'
 import { useOptimizationStreamStore } from '@/stores/optimizationStream'
 import { useElectron } from './useElectron'
 import { buildExportFilename, downloadFromUrl } from '@/utils/exportDownload.mjs'
+import {
+  RETRANSCRIBE_MAX_WAIT_MS,
+  RETRANSCRIBE_POLL_INTERVAL_MS,
+  retranscribeResultToast
+} from '@/components/records/retranscribeModel.mjs'
 
 // 当前播放的音频对象
 const currentAudio = ref(null)
@@ -11,6 +16,16 @@ const currentAudio = ref(null)
 const playingRecordId = ref(null)
 // 手动优化的 AbortController：取消按钮 / 组件卸载时中断 fetch 流
 let activeOptimizationController = null
+// 「重新识别」可选的引擎（GET /api/asr/engines）：首页与记录集共用，展开记录时按需刷新
+const asrEngines = ref({ current: '', engines: [], loaded: false })
+let asrEnginesLoadedAt = 0
+const ASR_ENGINES_TTL_MS = 10_000
+// 正在轮询重新识别结果的记录 id（同一条不重复轮询）
+const retranscribingIds = new Set()
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 export function useRecords() {
   const recordsStore = useRecordsStore()
@@ -191,6 +206,76 @@ export function useRecords() {
     }
   }
 
+  /** 拉取「重新识别」可选引擎；10 秒内拉过就不再请求（force 时总是请求） */
+  async function loadAsrEngines({ force = false } = {}) {
+    if (!force && Date.now() - asrEnginesLoadedAt < ASR_ENGINES_TTL_MS) {
+      return asrEngines.value
+    }
+    try {
+      const result = await api.getAsrEngines()
+      asrEngines.value = {
+        current: result?.current || '',
+        engines: Array.isArray(result?.engines) ? result.engines : [],
+        loaded: true
+      }
+      asrEnginesLoadedAt = Date.now()
+    } catch (error) {
+      console.warn('Failed to load ASR engines:', error)
+    }
+    return asrEngines.value
+  }
+
+  /** 同步一条记录的最新内容：store（首页 / 托盘）、编辑弹窗、调用方自己的列表（记录集分页） */
+  function syncRecord(record, onUpdate) {
+    if (!record?.id) {
+      return
+    }
+    recordsStore.updateRecordStatus(record.id, record)
+    if (appStore.currentRecord?.id === record.id) {
+      appStore.setCurrentRecord({ ...appStore.currentRecord, ...record })
+    }
+    onUpdate?.(record)
+  }
+
+  /** 轮询到记录离开「识别中」，返回最终记录；超时抛错 */
+  async function waitForTranscription(id) {
+    const deadline = Date.now() + RETRANSCRIBE_MAX_WAIT_MS
+    while (Date.now() < deadline) {
+      await sleep(RETRANSCRIBE_POLL_INTERVAL_MS)
+      const record = await api.getRecord(id)
+      if (record?.status !== 'transcribing') {
+        return record
+      }
+    }
+    throw new Error('重新识别超过 15 分钟仍未结束，稍后刷新记录查看结果')
+  }
+
+  /**
+   * 用记录的录音重新识别（provider 为空 = 当前设置的引擎）。
+   * 成功覆盖原文并清空优化结果；失败时记录标为失败、原有文字不动。onUpdate 收到每次的最新记录。
+   */
+  async function retranscribeRecord(record, provider = '', { onUpdate } = {}) {
+    if (!record?.id || retranscribingIds.has(record.id)) {
+      return
+    }
+    retranscribingIds.add(record.id)
+    try {
+      const accepted = await api.retranscribeRecord(record.id, provider)
+      syncRecord(accepted, onUpdate)
+      appStore.showToast('正在重新识别…')
+      const finished = await waitForTranscription(record.id)
+      syncRecord(finished, onUpdate)
+      const { message, tone } = retranscribeResultToast(finished)
+      appStore.showToast(message, { tone, duration: tone === 'success' ? undefined : 6000 })
+      return finished
+    } catch (error) {
+      appStore.showToast(error?.message || '重新识别失败', { tone: 'error', duration: 6000 })
+      return null
+    } finally {
+      retranscribingIds.delete(record.id)
+    }
+  }
+
   async function copyText(record) {
     const text = record.optimized_text || record.raw_text
     if (!text) {
@@ -309,6 +394,9 @@ export function useRecords() {
     deleteSelected,
     optimizeRecord,
     cancelOptimize,
+    asrEngines,
+    loadAsrEngines,
+    retranscribeRecord,
     copyText,
     toggleFavorite,
     exportRecord,

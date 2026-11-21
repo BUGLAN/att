@@ -8,7 +8,7 @@
 //! 端点一览：
 //! - GET /api/health（前端 runtimeStatus：model_service_* 与 streaming_*）
 //! - GET/PUT /api/settings（白名单/脱敏契约保真）
-//! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出）
+//! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出、重新识别）
 //! - /api/prompts：列出（内置 + 自定义）、新建 / 修改 / 删除自定义预设、PUT /api/prompts/default 设默认
 //! - /api/llm/* LLM v2 全套（服务商目录 / 档案 / 模型 / 验证，见 [`llm`]）
 //! - 模型服务三端点（在线引擎凭据配齐即就绪；凭据验证确定失败时不就绪）
@@ -74,6 +74,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/api/records/{id}/status", get(records_status))
         .route("/api/records/{id}/audio", get(records_audio))
         .route("/api/records/{id}/export", get(records_export))
+        .route("/api/records/{id}/retranscribe", post(records_retranscribe))
         // 模型服务（骨架）
         .route("/api/model-service", get(model_service_status))
         .route("/api/model-service/start", post(model_service_start))
@@ -667,6 +668,26 @@ async fn records_export(
         headers.insert(header::CONTENT_DISPOSITION, disposition);
     }
     (StatusCode::OK, headers, body).into_response()
+}
+
+/// POST /api/records/{id}/retranscribe `{provider?}`：用记录的录音重新识别（不给 provider 用当前设置的引擎）。
+///
+/// 检查都过了返回 202 + 置为 `transcribing` 的记录，识别在后台跑，前端按记录状态轮询；
+/// 记录或音频不在 404、引擎不可用（缺模型 / 未配凭据）或正在识别 409、引擎不认识 / 音频解不了码 422。
+async fn records_retranscribe(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+    body: Option<Json<Value>>,
+) -> axum::response::Response {
+    let provider =
+        body.as_ref().and_then(|Json(value)| value.get("provider")).and_then(Value::as_str).map(str::to_string);
+    match att_core::records::retranscribe::start(state.core.clone(), &id, provider.as_deref()).await {
+        Ok(record) => (StatusCode::ACCEPTED, Json(serde_json::to_value(record).unwrap_or_default())).into_response(),
+        Err(error) => {
+            let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            err(status, error.message()).into_response()
+        }
+    }
 }
 
 // ---- 模型服务（在线引擎：凭据配齐即就绪；本地引擎：start 真正加载并预热、stop 释放） ----
@@ -1431,6 +1452,130 @@ mod tests {
 
         let (status, _) = request_with_body(&state, "PUT", "/api/records/missing", json!({})).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// 带一段 2 秒录音的记录（已优化、已编辑过），重新识别用。
+    fn insert_audio_record(core: &CoreState, id: &str) {
+        let name = format!("{id}.flac");
+        att_core::audio::write_recording_16k(&core.records.audio_dir().join(&name), &vec![0i16; 32_000]).unwrap();
+        core.records
+            .insert(att_core::records::Record {
+                id: id.into(),
+                audio_path: name,
+                duration: 2.0,
+                raw_text: Some("旧原文".into()),
+                optimized_text: Some("旧优化".into()),
+                is_modified: true,
+                status: att_core::records::RecordStatus::Optimized,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn records_重新识别_成功覆盖原文并记下引擎与语言() {
+        let (base, _requests) = att_core::llm::testing::stub_routes(vec![att_core::llm::testing::StubRoute::json(
+            "POST /v1/tools/asr",
+            200,
+            r#"{"text":"重新识别的文本"}"#,
+        )])
+        .await;
+        let state = test_state("retranscribe-ok").await;
+        state
+            .core
+            .apply_settings_update(&json!({
+                "deepseek_asr_api_key": "sk-test-123456",
+                "deepseek_asr_endpoint": format!("{base}/v1/tools/asr"),
+            }))
+            .unwrap();
+        insert_audio_record(&state.core, "rec-audio");
+
+        let (status, accepted) = request_with_body(
+            &state,
+            "POST",
+            "/api/records/rec-audio/retranscribe",
+            json!({"provider": "deepseek_asr"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+        assert_eq!(accepted["status"], json!("transcribing"), "受理后记录置为识别中");
+
+        // 前端沿用状态查询：轮询到状态离开 transcribing
+        let mut record = Value::Null;
+        for _ in 0..100 {
+            let (_, current) = get_json(&state, "/api/records/rec-audio/status").await;
+            if current["status"] != json!("transcribing") {
+                record = get_json(&state, "/api/records/rec-audio").await.1;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(record["status"], json!("transcribed"), "{record}");
+        assert_eq!(record["raw_text"], json!("重新识别的文本"));
+        assert_eq!(record["optimized_text"], Value::Null, "重新识别清空旧的优化结果");
+        assert_eq!(record["is_modified"], json!(false));
+        assert_eq!(record["engine"], json!("deepseek_asr"));
+        assert_eq!(record["language"], json!("auto"), "DeepSeek 不能指定语言，记为自动检测");
+        assert!(!record.to_string().contains("sk-test-123456"), "响应里不能出现密钥");
+        assert!(!state.core.retranscribe.is_active("rec-audio"), "结束后释放占用");
+    }
+
+    #[tokio::test]
+    async fn records_重新识别_没有音频404_引擎不可用409_不认识422() {
+        let state = test_state("retranscribe-errors").await;
+        // test_state 的 rec-x 是没有音频的文本记录
+        let (status, error) = request_with_body(&state, "POST", "/api/records/rec-x/retranscribe", json!({})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(error["detail"].as_str().unwrap().contains("没有录音音频"), "{error}");
+        let (status, _) = request_with_body(&state, "POST", "/api/records/missing/retranscribe", json!({})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        insert_audio_record(&state.core, "rec-audio");
+        // 本地引擎缺模型：409 + 现有的一句结论（与识别引擎页、录音时同一句）
+        let (status, error) =
+            request_with_body(&state, "POST", "/api/records/rec-audio/retranscribe", json!({"provider": "whisper"}))
+                .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error}");
+        let summary = state
+            .core
+            .local_models
+            .status(&state.core, att_core::stt::local::LocalKind::Whisper)
+            .error
+            .expect("临时数据目录没有 Whisper 模型");
+        assert_eq!(error["detail"], json!(summary));
+        // 在线引擎没配凭据：409
+        let (status, error) =
+            request_with_body(&state, "POST", "/api/records/rec-audio/retranscribe", json!({"provider": "doubao_asr"}))
+                .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(error["detail"].as_str().unwrap().contains("豆包"), "{error}");
+        let (status, _) =
+            request_with_body(&state, "POST", "/api/records/rec-audio/retranscribe", json!({"provider": "nope"})).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        // 都没受理：记录原样
+        let (_, record) = get_json(&state, "/api/records/rec-audio").await;
+        assert_eq!(record["status"], json!("optimized"));
+        assert_eq!(record["raw_text"], json!("旧原文"));
+    }
+
+    #[tokio::test]
+    async fn asr_engines_列出全部引擎与可用性() {
+        let state = test_state("asr-engines").await;
+        let (status, body) = get_json(&state, "/api/asr/engines").await;
+        assert_eq!(status, StatusCode::OK);
+        let providers: Vec<&str> =
+            body["engines"].as_array().unwrap().iter().map(|e| e["provider"].as_str().unwrap()).collect();
+        assert_eq!(providers, ["doubao_asr", "chatgpt_asr", "deepseek_asr", "whisper", "qwen_asr"]);
+        assert!(body["engines"].as_array().unwrap().iter().all(|e| e["available"] == json!(false)), "{body}");
+        assert_eq!(body["current"], json!(state.core.settings().asr_provider));
+
+        state.core.apply_settings_update(&json!({"deepseek_asr_api_key": "sk-test-123456"})).unwrap();
+        let (_, body) = get_json(&state, "/api/asr/engines").await;
+        let deepseek = body["engines"].as_array().unwrap().iter().find(|e| e["provider"] == "deepseek_asr").unwrap();
+        assert_eq!(deepseek["available"], json!(true));
+        assert_eq!(deepseek["error"], Value::Null);
+        assert!(!body.to_string().contains("sk-test-123456"));
     }
 
     #[tokio::test]

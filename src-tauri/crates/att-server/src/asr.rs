@@ -2,6 +2,8 @@
 //!
 //! - GET  /api/asr/credential-check?provider=…：当前凭据最近一次的验证结果（没验过为 `null`），不发网络请求
 //! - POST /api/asr/credential-check {provider?}：立即验证（豆包握手约 1～2 秒），返回结果
+//! - GET  /api/asr/engines：全部识别引擎能不能用（凭据齐备 / 本地模型就位，不发网络请求），
+//!   「重新识别」选引擎用；`current` 是设置里的 `asr_provider`
 //!
 //! provider 缺省取设置里的 `asr_provider`。
 
@@ -19,7 +21,15 @@ use std::sync::Arc;
 type Shared = State<Arc<ServerState>>;
 
 pub fn routes() -> Router<Arc<ServerState>> {
-    Router::new().route("/api/asr/credential-check", get(check_get).post(check_post))
+    Router::new()
+        .route("/api/asr/credential-check", get(check_get).post(check_post))
+        .route("/api/asr/engines", get(engines))
+}
+
+async fn engines(State(state): Shared) -> Json<Value> {
+    let core = state.core.clone();
+    let engines = crate::blocking(move || att_core::stt::engine_choices(&core)).await.unwrap_or_default();
+    Json(json!({ "current": state.core.settings().asr_provider, "engines": engines }))
 }
 
 /// 请求里的 provider，缺省取当前设置；不是在线引擎时返回 422。

@@ -127,10 +127,72 @@ pub enum Engine {
     Local(LocalHandle),
 }
 
+/// 全部识别引擎的 provider 标识（与设置 `asr_provider` 取值一致），也是「重新识别」可选引擎的顺序。
+pub const PROVIDERS: [&str; 5] = ["doubao_asr", "chatgpt_asr", "deepseek_asr", local::WHISPER, local::QWEN];
+
+/// 一个识别引擎当前能不能用（「重新识别」选引擎用）：只看凭据是否齐备、本地模型文件是否就位，不发网络请求。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct EngineChoice {
+    pub provider: &'static str,
+    pub label: &'static str,
+    pub available: bool,
+    /// 不可用时的一句结论
+    pub error: Option<String>,
+}
+
+/// 列出全部识别引擎及其可用性（顺序同 [`PROVIDERS`]）。
+pub fn engine_choices(core: &CoreState) -> Vec<EngineChoice> {
+    PROVIDERS
+        .iter()
+        .map(|&provider| {
+            let (label, error) = match LocalKind::from_provider(provider) {
+                Some(kind) => {
+                    let status = core.local_models.status(core, kind);
+                    let error =
+                        (!status.available).then(|| status.error.unwrap_or_else(|| format!("{}不可用", kind.label())));
+                    (kind.label(), error)
+                }
+                // 凭据验证「确定不可用」（Token 无效等）同样不列为可用；没验过按凭据齐备处理
+                None => match Engine::online_for_provider(core, provider) {
+                    Ok(engine) => (
+                        engine.label(),
+                        verify::invalid_reason(core, provider)
+                            .map(|reason| format!("{}凭据验证失败：{reason}", engine.label())),
+                    ),
+                    Err(message) => (online_label(provider), Some(message)),
+                },
+            };
+            EngineChoice { provider, label, available: error.is_none(), error }
+        })
+        .collect()
+}
+
+/// 这次识别实际用的语言（写进记录）：DeepSeek / Qwen3-ASR 不能指定语言、由模型自行判定，记为 `auto`；
+/// 其余引擎就是设置里的识别语言。
+pub fn effective_language(provider: &str, language: &str) -> String {
+    match provider.trim() {
+        "deepseek_asr" | "qwen_asr" => "auto".into(),
+        _ => language.to_string(),
+    }
+}
+
+/// 在线引擎的界面名称（凭据缺失、构造不出 [`Engine`] 时也要能显示）。
+fn online_label(provider: &str) -> &'static str {
+    match provider {
+        "chatgpt_asr" => "ChatGPT 听写",
+        "deepseek_asr" => "DeepSeek 语音识别",
+        _ => "豆包语音",
+    }
+}
+
 impl Engine {
     /// 只解析在线引擎（本地引擎要加载模型，见 [`Engine::resolve`]）。
     pub fn online_from_settings(core: &CoreState) -> Result<Self, String> {
-        let provider = core.settings().asr_provider;
+        Self::online_for_provider(core, &core.settings().asr_provider)
+    }
+
+    /// 按指定 provider 解析在线引擎（凭据仍取自用户设置）。
+    pub fn online_for_provider(core: &CoreState, provider: &str) -> Result<Self, String> {
         match provider.trim() {
             "chatgpt_asr" => {
                 let config = chatgpt_config(core);
@@ -157,8 +219,12 @@ impl Engine {
 
     /// 按当前设置解析引擎；不阻塞：本地引擎只校验模型文件是否就位，并在后台开始预加载。
     pub fn resolve(core: &Arc<CoreState>) -> Result<Self, String> {
-        let provider = core.settings().asr_provider;
-        match LocalKind::from_provider(&provider) {
+        Self::resolve_provider(core, &core.settings().asr_provider)
+    }
+
+    /// 按指定 provider 解析引擎（重新识别可以换引擎）；本地引擎同样只校验模型文件并后台预加载。
+    pub fn resolve_provider(core: &Arc<CoreState>, provider: &str) -> Result<Self, String> {
+        match LocalKind::from_provider(provider) {
             Some(kind) => {
                 let status = core.local_models.status(core, kind);
                 if !status.available {
@@ -167,7 +233,17 @@ impl Engine {
                 preload_local(core.clone(), kind);
                 Ok(Engine::Local(LocalHandle { core: core.clone(), kind }))
             }
-            None => Self::online_from_settings(core),
+            None => Self::online_for_provider(core, provider),
+        }
+    }
+
+    /// provider 标识（写进记录的 `engine` 字段，与设置 `asr_provider` 取值一致）。
+    pub fn provider(&self) -> &'static str {
+        match self {
+            Engine::Doubao(_) => "doubao_asr",
+            Engine::ChatGpt(_) => "chatgpt_asr",
+            Engine::DeepSeek(_) => "deepseek_asr",
+            Engine::Local(handle) => handle.kind.provider(),
         }
     }
 
@@ -266,6 +342,14 @@ pub async fn warmup_local(core: Arc<CoreState>, kind: LocalKind) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 识别语言_不能指定语言的引擎记为自动检测() {
+        assert_eq!(effective_language("deepseek_asr", "zh"), "auto");
+        assert_eq!(effective_language("qwen_asr", "en"), "auto");
+        assert_eq!(effective_language("doubao_asr", "yue"), "yue");
+        assert_eq!(effective_language("whisper", "auto"), "auto");
+    }
 
     #[test]
     fn local_kind_识别本地_provider() {

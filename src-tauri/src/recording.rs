@@ -217,6 +217,16 @@ struct Active {
     started: Instant,
     /// 停止录音的时刻（按住模式取真实松开那一刻）：记录里的「处理耗时」从这里算起，不含录音本身
     stopped_at: Option<Instant>,
+    /// 本次用的识别引擎与语言（落库写进记录）
+    asr: AsrInfo,
+}
+
+/// 识别引擎与语言：写进记录，换引擎重试、排查识别质量时对照。
+#[derive(Debug, Clone)]
+struct AsrInfo {
+    /// provider 标识（与设置 `asr_provider` 取值一致）
+    provider: &'static str,
+    language: String,
 }
 
 /// 录音热键在当前相位下该做什么（纯逻辑，见 [`record_hotkey_step`]）。
@@ -490,7 +500,7 @@ impl Actor {
             }
         };
         tracing::info!("优化选中文本（{} 字）", text.chars().count());
-        let record = self.save_record(&[], 0.0, Some(text.clone()), None, 0.0).await;
+        let record = self.save_record(&[], 0.0, Some(text.clone()), None, 0.0, None).await;
         let Some(record_id) = record.get("id").and_then(Value::as_str).map(str::to_string) else {
             return self.emit_state("error", json!({ "message": "保存记录失败，未开始优化" }));
         };
@@ -561,6 +571,10 @@ impl Actor {
             _ => None,
         };
         let language = settings.asr_language.clone();
+        let asr = AsrInfo {
+            provider: engine.provider(),
+            language: att_core::stt::effective_language(engine.provider(), &language),
+        };
         self.next_id += 1;
         let id = self.next_id;
 
@@ -618,6 +632,7 @@ impl Actor {
             held,
             started: Instant::now(),
             stopped_at: None,
+            asr,
         });
 
         let tx = self.tx.clone();
@@ -791,6 +806,7 @@ impl Actor {
         let mode = active.mode;
         let (quiet_end, timed_out) = (active.quiet_end, active.timed_out);
         let processing_time = processing_seconds(active.stopped_at, Instant::now());
+        let asr = active.asr.clone();
         self.active = Some(Active { capture: None, cancel: None, ..active });
         let duration = outcome.samples.len() as f64 / SAMPLE_RATE;
         if outcome.cancelled && timed_out {
@@ -814,8 +830,9 @@ impl Actor {
             match outcome.error {
                 // 识别失败且没有任何文本：音频落盘并建失败记录，避免录音丢失
                 Some(error) => {
-                    let record =
-                        self.save_record(&outcome.samples, duration, None, Some(error.clone()), processing_time).await;
+                    let record = self
+                        .save_record(&outcome.samples, duration, None, Some(error.clone()), processing_time, Some(&asr))
+                        .await;
                     self.emit_state("error", json!({ "message": error, "record": record }));
                 }
                 None => self.emit_state("completed", json!({ "message": "没有识别到语音内容", "text": "" })),
@@ -837,7 +854,14 @@ impl Actor {
                 None => NO_VOICE_NOTE.to_string(),
             };
             let record = self
-                .save_record(&outcome.samples, duration, Some(outcome.text.clone()), Some(note), processing_time)
+                .save_record(
+                    &outcome.samples,
+                    duration,
+                    Some(outcome.text.clone()),
+                    Some(note),
+                    processing_time,
+                    Some(&asr),
+                )
                 .await;
             self.emit_state("completed", no_voice_state(&outcome.text, record));
         } else {
@@ -848,6 +872,7 @@ impl Actor {
                     Some(outcome.text.clone()),
                     outcome.error.clone(),
                     processing_time,
+                    Some(&asr),
                 )
                 .await;
             let record_id = record.get("id").and_then(Value::as_str).map(str::to_string);
@@ -1048,6 +1073,7 @@ impl Actor {
     }
 
     /// 音频落盘 + 建记录；返回记录 JSON（失败时返回 null，不阻断提示）。
+    /// `asr`：识别用的引擎与语言；优化选中文本建的文本记录没有识别，传 None。
     async fn save_record(
         &self,
         samples: &[i16],
@@ -1055,6 +1081,7 @@ impl Actor {
         text: Option<String>,
         error: Option<String>,
         processing_time: f64,
+        asr: Option<&AsrInfo>,
     ) -> Value {
         let id = uuid::Uuid::new_v4().to_string();
         let audio_name = format!("{id}.{}", att_core::audio::RECORDING_EXTENSION);
@@ -1078,6 +1105,8 @@ impl Actor {
             status,
             processing_time: Some((processing_time * 100.0).round() / 100.0),
             error,
+            engine: asr.map(|asr| asr.provider.to_string()),
+            language: asr.map(|asr| asr.language.clone()),
             ..Default::default()
         };
         if let Err(error) = self.core.records.insert(record) {
