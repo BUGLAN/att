@@ -7,6 +7,10 @@
 //! 3. [`DoubaoSession::finish`]：发末包 → 等末包结果/关闭/静默窗口 → 返回整场文字稿；
 //! 4. [`DoubaoSession::cancel`]：用户取消，不算失败。
 //!
+//! 预热：流式录音结束后可以先建好下一条连接（[`DoubaoSession::connect`] 不带回调），按下时用
+//! [`WarmKey`] 确认参数没变、[`DoubaoSession::check_alive`] 确认没断，再 [`DoubaoSession::set_partial_callback`]
+//! 接上本次会话的回调直接推流，省掉握手。服务端对不发音频的连接有空闲上限（见 [`WARM_KEEP`]）。
+//!
 //! 约定：密钥只进握手头，不落日志、不进错误文案；连接直连（tungstenite 不读系统代理，
 //! 与 Python 版显式 `proxy=None` 语义一致——境内服务不应绕代理）。
 
@@ -31,6 +35,11 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// 流式收尾：硬超时与「收到结果后静默多久算收完」
 pub const FINISH_TIMEOUT: Duration = Duration::from_secs(6);
 pub const FINISH_QUIET: Duration = Duration::from_millis(1200);
+/// 预热连接最多保留多久：取实测服务端空闲断开时长的一半，上限 30 秒。
+///
+/// 2026-11-21 实测（`examples/doubao_probe.rs` 的 idle 模式，`bigmodel_async` + `*.duration`，3 次一致）：
+/// 发出全量请求后不发音频，8.4 秒时服务端回错误帧「等包超时」并断开 → 取 4 秒。
+pub const WARM_KEEP: Duration = Duration::from_secs(4);
 
 /// 豆包会话错误：带归一化分类（上层据此决定「去修复」还是「立即重试」）。
 #[derive(Debug, Clone)]
@@ -183,6 +192,8 @@ impl TranscriptState {
 struct Shared {
     state: Mutex<TranscriptState>,
     notify: Notify,
+    /// 中间结果回调：预热连接建连时还没有会话，按下复用时再接上
+    on_partial: Mutex<Option<PartialCallback>>,
 }
 
 impl Shared {
@@ -199,6 +210,37 @@ pub struct FinishOutcome {
     pub audio_duration_ms: i64,
 }
 
+/// 预热连接的匹配键：建连时写进全量请求的参数（接入点、凭据、语言、断句时长、热词）任何一项变了，
+/// 预热连接就不能用。凭据只存摘要，不多留一份明文。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarmKey {
+    endpoint: String,
+    resource_id: String,
+    api_key_digest: String,
+    language: String,
+    end_window_size: i64,
+    hotwords: Vec<String>,
+}
+
+impl WarmKey {
+    pub fn new(config: &DoubaoConfig, language: &str) -> Self {
+        use sha2::{Digest, Sha256};
+        Self {
+            endpoint: config.endpoint.trim().to_string(),
+            resource_id: config.resource_id.trim().to_string(),
+            api_key_digest: crate::clipboard::hex(&Sha256::digest(config.api_key.trim().as_bytes())),
+            language: language.to_string(),
+            end_window_size: config.end_window_size,
+            hotwords: config.hotwords.clone(),
+        }
+    }
+}
+
+/// 只有按时长计费的资源（`*.duration`）才预热：按并发计费（`*.concurrent`）时预热连接会多占一路并发。
+pub fn warm_allowed(config: &DoubaoConfig) -> bool {
+    config.resource_id.trim().ends_with(".duration")
+}
+
 pub struct DoubaoSession {
     writer: SplitSink<WsStream, Message>,
     shared: Arc<Shared>,
@@ -209,6 +251,8 @@ pub struct DoubaoSession {
     pub connect_id: String,
     /// 服务端 X-Tt-Logid：排查时提供给火山侧定位，不含凭据
     pub log_id: String,
+    /// 建连完成（全量请求已发出）的时刻：预热连接据此判断是否过期
+    pub opened_at: Instant,
 }
 
 impl DoubaoSession {
@@ -274,7 +318,11 @@ impl DoubaoSession {
             return Err(SttError::new(ErrorKind::Network, format!("发送请求失败（{error}）"), true, "重新开始录音"));
         }
 
-        let shared = Arc::new(Shared { state: Mutex::new(TranscriptState::default()), notify: Notify::new() });
+        let shared = Arc::new(Shared {
+            state: Mutex::new(TranscriptState::default()),
+            notify: Notify::new(),
+            on_partial: Mutex::new(on_partial),
+        });
         let reader_shared = shared.clone();
         let reader_connect_id = connect_id.clone();
         let reader = tokio::spawn(async move {
@@ -283,7 +331,8 @@ impl DoubaoSession {
                     Ok(Message::Binary(data)) => {
                         let partial = handle_frame(&reader_shared, &data, &reader_connect_id);
                         reader_shared.notify.notify_waiters();
-                        if let (Some(text), Some(callback)) = (partial, on_partial.as_ref()) {
+                        let callback = reader_shared.on_partial.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                        if let (Some(text), Some(callback)) = (partial, callback) {
                             callback(text);
                         }
                         if reader_shared.lock().closed {
@@ -297,6 +346,11 @@ impl DoubaoSession {
                             state.close_code = Some(u16::from(frame.code));
                             state.close_reason = frame.reason.to_string();
                         }
+                        tracing::debug!(
+                            connect_id = %reader_connect_id,
+                            code = ?state.close_code,
+                            "豆包流式连接被服务端关闭"
+                        );
                         break;
                     }
                     Ok(_) => {}
@@ -318,7 +372,32 @@ impl DoubaoSession {
             frame_samples: sauc::STREAM_CHUNK_SAMPLES,
             connect_id,
             log_id,
+            opened_at: Instant::now(),
         })
+    }
+
+    /// 接上（或换掉）中间结果回调：预热连接在按下复用时调用，之后的结果帧回调给本次会话。
+    pub fn set_partial_callback(&self, on_partial: Option<PartialCallback>) {
+        *self.shared.on_partial.lock().unwrap_or_else(|e| e.into_inner()) = on_partial;
+    }
+
+    /// 连接被服务端关闭时的 close code（预热实测与日志用）；还开着时为 None。
+    pub fn close_code(&self) -> Option<u16> {
+        let state = self.shared.lock();
+        state.closed.then_some(state.close_code).flatten()
+    }
+
+    /// 等到连接被关闭（服务端关闭 / 出错 / 读取结束）为止。
+    pub async fn wait_closed(&self) {
+        loop {
+            let notified = self.shared.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.shared.lock().closed {
+                return;
+            }
+            notified.await;
+        }
     }
 
     /// 当前状态下是否已不可继续推流（错误帧/断连）。
@@ -504,9 +583,111 @@ mod tests {
         assert!(!format!("{config:?}").contains("api_key:"));
     }
 
+    fn local_config(endpoint: String) -> DoubaoConfig {
+        DoubaoConfig {
+            api_key: "test-key".into(),
+            resource_id: "volc.seedasr.sauc.duration".into(),
+            endpoint,
+            end_window_size: 800,
+            hotwords: vec!["落墨".into()],
+        }
+    }
+
+    /// 本地 WebSocket 桩：收下全量请求后，`on_audio` 为真时每收到一个音频包回一个结果帧，
+    /// 否则一直不回、直到 `close_after` 到点主动关闭（模拟服务端空闲断开）。
+    async fn stub_server(on_audio: bool, close_after: Option<Duration>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _request = ws.next().await;
+            let mut sent = 0;
+            loop {
+                let next = match close_after {
+                    Some(after) => match tokio::time::timeout(after, ws.next()).await {
+                        Ok(next) => next,
+                        Err(_) => {
+                            let _ = ws.close(None).await;
+                            return;
+                        }
+                    },
+                    None => ws.next().await,
+                };
+                match next {
+                    Some(Ok(Message::Binary(_))) if on_audio => {
+                        sent += 1;
+                        let text = if sent == 1 { "你好" } else { "你好世界" };
+                        let frame =
+                            sauc::build_server_result_frame(&json!({ "result": { "text": text } }), false, false);
+                        let _ = ws.send(Message::binary(frame)).await;
+                    }
+                    Some(Ok(_)) => {}
+                    _ => return,
+                }
+            }
+        });
+        format!("ws://{address}")
+    }
+
+    #[test]
+    fn 预热匹配键_参数变了就不复用_只预热按时长计费() {
+        let config = local_config("ws://127.0.0.1:1".into());
+        let key = WarmKey::new(&config, "zh");
+        assert_eq!(key, WarmKey::new(&config.clone(), "zh"));
+        assert_ne!(key, WarmKey::new(&config, "en"), "语言变了");
+        for change in [
+            DoubaoConfig { api_key: "other".into(), ..config.clone() },
+            DoubaoConfig { resource_id: "volc.seedasr.sauc.concurrent".into(), ..config.clone() },
+            DoubaoConfig { end_window_size: 1200, ..config.clone() },
+            DoubaoConfig { hotwords: Vec::new(), ..config.clone() },
+        ] {
+            assert_ne!(key, WarmKey::new(&change, "zh"), "{change:?}");
+        }
+        assert!(!format!("{key:?}").contains("test-key"), "匹配键里不留明文凭据");
+        assert!(warm_allowed(&config));
+        assert!(!warm_allowed(&DoubaoConfig { resource_id: "volc.seedasr.sauc.concurrent".into(), ..config }));
+        assert!(WARM_KEEP <= Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn 预热连接_按下时接上回调_推流收到中间结果() {
+        let endpoint = stub_server(true, None).await;
+        // 预热：建连时还没有会话回调
+        let mut session = DoubaoSession::connect(&local_config(endpoint), "zh", "", None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(session.check_alive().is_ok());
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        session.set_partial_callback(Some(Arc::new(move |partial: Partial| sink.lock().unwrap().push(partial.text))));
+        session.push(&vec![0i16; sauc::STREAM_CHUNK_SAMPLES * 2]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while seen.lock().unwrap().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("接上的回调应收到中间结果");
+        assert_eq!(*seen.lock().unwrap(), ["你好", "你好世界"]);
+        session.cancel().await;
+    }
+
+    #[tokio::test]
+    async fn 预热连接_服务端空闲断开后_check_alive_报错() {
+        let endpoint = stub_server(false, Some(Duration::from_millis(100))).await;
+        let session = DoubaoSession::connect(&local_config(endpoint), "zh", "", None).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), session.wait_closed()).await.expect("应等到断开");
+        assert!(session.check_alive().is_err(), "断开的预热连接不能再用");
+    }
+
     #[test]
     fn 结果帧推进文本与末包() {
-        let shared = Shared { state: Mutex::new(TranscriptState::default()), notify: Notify::new() };
+        let shared = Shared {
+            state: Mutex::new(TranscriptState::default()),
+            notify: Notify::new(),
+            on_partial: Mutex::new(None),
+        };
         let frame = sauc::build_server_result_frame(
             &json!({"result": {"text": "你好世", "utterances": [
                 {"text": "你好", "definite": true}, {"text": "世", "definite": false}
@@ -534,7 +715,11 @@ mod tests {
 
     #[test]
     fn 文本不变只是被确认_照样回调() {
-        let shared = Shared { state: Mutex::new(TranscriptState::default()), notify: Notify::new() };
+        let shared = Shared {
+            state: Mutex::new(TranscriptState::default()),
+            notify: Notify::new(),
+            on_partial: Mutex::new(None),
+        };
         let frame = |definite: bool| {
             sauc::build_server_result_frame(
                 &json!({"result": {"text": "你好世界", "utterances": [
@@ -556,7 +741,11 @@ mod tests {
 
     #[test]
     fn 错误帧标记关闭并保留错误() {
-        let shared = Shared { state: Mutex::new(TranscriptState::default()), notify: Notify::new() };
+        let shared = Shared {
+            state: Mutex::new(TranscriptState::default()),
+            notify: Notify::new(),
+            on_partial: Mutex::new(None),
+        };
         let mut frame = vec![0x11, 0xF0, 0x10, 0x00];
         frame.extend_from_slice(&45_000_081u32.to_be_bytes());
         frame.extend_from_slice(&0u32.to_be_bytes());

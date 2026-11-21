@@ -1,7 +1,13 @@
 //! 豆包连通性探针：用数据目录里的设置（密文密钥）把一段 WAV 送去识别。
 //!
-//! 用法：`cargo run -p att-core --example doubao_probe -- <data_dir> <wav> [stream] [endpoint]`
-//! 第三个参数为 `stream` 时按实时节奏（100ms/包）推流，模拟录音路径，并打印首字耗时；
+//! 用法：`cargo run -p att-core --example doubao_probe -- <data_dir> <wav> [模式] [endpoint]`
+//! - 模式省略：批量识别；
+//! - `stream`：按实时节奏（100ms/包）推流，模拟录音路径，打印建连与首字耗时（距「按下」）；
+//! - `warm:<秒>`：先建好连接（模拟录音结束后的预热）、空闲这么多秒后再「按下」推流，打印首字耗时，
+//!   与 `stream` 对比预热能省多少；
+//! - `idle`：只建连、不发音频，等服务端断开，打印空闲多久被断开与 close code（预热保留时长据此取值）。
+//!   这个模式不读 wav，第二个参数随便填。
+//!
 //! 第四个参数覆盖接入点，便于对比 `bigmodel` 与 `bigmodel_async`；
 //! 环境变量 `DOUBAO_END_WINDOW_SIZE` 覆盖「强制断句静音时长」（ms），便于观察停顿后何时确认。
 
@@ -10,12 +16,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+/// idle 模式最多等这么久（服务端一直不断开时也要结束）。
+const IDLE_PROBE_LIMIT: Duration = Duration::from_secs(180);
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let data_dir = PathBuf::from(args.get(1).expect("缺少 data_dir 参数"));
     let wav = PathBuf::from(args.get(2).expect("缺少 wav 参数"));
-    let realtime = args.get(3).map(|s| s == "stream").unwrap_or(false);
+    let mode = args.get(3).cloned().unwrap_or_default();
 
     let core = att_core::state::CoreState::init(&data_dir, att_core::Platform::current()).expect("初始化失败");
     let mut config = doubao_config(&core);
@@ -26,8 +35,40 @@ async fn main() {
         config.end_window_size = window;
     }
     println!("配置: {config:?}");
+
+    if mode == "idle" {
+        let started = Instant::now();
+        let session = doubao::DoubaoSession::connect(&config, "zh", "", None).await.expect("建连失败");
+        println!("建连耗时 {:?}，logid={}；开始空闲等待（不发音频）", started.elapsed(), session.log_id);
+        let opened = Instant::now();
+        match tokio::time::timeout(IDLE_PROBE_LIMIT, session.wait_closed()).await {
+            Ok(()) => println!(
+                "空闲 {:.1}s 后连接被关闭：close code={:?}，check_alive={:?}",
+                opened.elapsed().as_secs_f64(),
+                session.close_code(),
+                session.check_alive().err().map(|e| e.to_string())
+            ),
+            Err(_) => println!("空闲 {}s 内服务端没有断开", IDLE_PROBE_LIMIT.as_secs()),
+        }
+        session.cancel().await;
+        return;
+    }
+
     let samples = att_core::audio::read_audio_16k_mono(&wav).expect("读取音频失败");
     println!("音频: {} 采样 ≈ {:.2}s", samples.len(), samples.len() as f64 / 16000.0);
+
+    let warm_secs = mode.strip_prefix("warm:").and_then(|v| v.parse::<f64>().ok());
+    let realtime = mode == "stream" || warm_secs.is_some();
+    // 预热：先建好连接，空闲指定秒数后才算「按下」
+    let warm = match warm_secs {
+        Some(secs) => {
+            let session = doubao::DoubaoSession::connect(&config, "zh", "", None).await.expect("预热建连失败");
+            println!("预热连接已建好，空闲 {secs}s 后按下");
+            tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+            Some(session)
+        }
+        None => None,
+    };
 
     let started = Instant::now();
     let result = if realtime {
@@ -44,8 +85,22 @@ async fn main() {
                 partial.text
             );
         });
-        let mut session = doubao::DoubaoSession::connect(&config, "zh", "", Some(on_partial)).await.expect("建连失败");
-        println!("建连耗时 {:?}，logid={}", started.elapsed(), session.log_id);
+        let mut session = match warm {
+            Some(session) if session.check_alive().is_ok() => {
+                session.set_partial_callback(Some(on_partial));
+                println!("复用预热连接（按下到可推流 {:?}）", started.elapsed());
+                session
+            }
+            other => {
+                if other.is_some() {
+                    println!("预热连接已断开，改为新建");
+                }
+                let session =
+                    doubao::DoubaoSession::connect(&config, "zh", "", Some(on_partial)).await.expect("建连失败");
+                println!("建连耗时 {:?}，logid={}", started.elapsed(), session.log_id);
+                session
+            }
+        };
         for chunk in samples.chunks(1600) {
             session.push(chunk).await.expect("推流失败");
             tokio::time::sleep(Duration::from_millis(100)).await;
