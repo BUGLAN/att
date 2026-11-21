@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::OwnedMutexGuard;
 
 const MAX_DURATION_SECONDS: f64 = 7200.0;
 const ASYNC_THRESHOLD_SECONDS: f64 = 1800.0;
@@ -86,8 +87,11 @@ struct Job {
 #[derive(Default)]
 pub struct FileTranscriber {
     jobs: Mutex<HashMap<String, Job>>,
-    /// 单并发闸门（引擎/上游配额有限；忙时 503）
-    busy: tokio::sync::Mutex<()>,
+    /// 单并发闸门（引擎/上游配额有限；忙碌时 503）。
+    ///
+    /// 受理异步任务时必须把 guard 交给后台任务持有，不能在 `start_job` 返回时释放；
+    /// 否则并发请求会重复通过受理，随后真正执行时才以「引擎忙」失败。
+    busy: Arc<tokio::sync::Mutex<()>>,
     /// 缓存（懒加载）；None = 尚未读盘
     cache: Mutex<Option<Map<String, Value>>>,
 }
@@ -361,6 +365,11 @@ impl FileTranscriber {
             f(job);
         }
     }
+
+    /// 取得本次执行权；返回的 owned guard 必须存活到引擎工作结束。
+    fn try_acquire_busy(&self) -> Result<OwnedMutexGuard<()>, TranscribeError> {
+        self.busy.clone().try_lock_owned().map_err(|_| TranscribeError::busy("转写引擎忙，请稍后重试"))
+    }
 }
 
 fn last_used(entry: &Value) -> f64 {
@@ -432,7 +441,19 @@ async fn run_transcription(
     hash: &str,
     engine: &str,
 ) -> Result<Value, TranscribeError> {
-    let _guard = core.transcriber.busy.try_lock().map_err(|_| TranscribeError::busy("转写引擎忙，请稍后重试"))?;
+    let _permit = core.transcriber.try_acquire_busy()?;
+    run_transcription_locked(core, path, language, duration, hash, engine).await
+}
+
+/// 在调用方已持有执行许可时跑一次转写并写缓存；许可必须覆盖完整任务生命周期。
+async fn run_transcription_locked(
+    core: &Arc<CoreState>,
+    path: &Path,
+    language: &str,
+    duration: f64,
+    hash: &str,
+    engine: &str,
+) -> Result<Value, TranscribeError> {
     let samples = media::decode_pcm16k(path).await?;
     if samples.is_empty() {
         return Err(TranscribeError::new(415, "无法解码：没有音频数据"));
@@ -536,9 +557,8 @@ fn start_job(
     duration: f64,
     engine: &'static str,
 ) -> Result<String, TranscribeError> {
-    if core.transcriber.busy.try_lock().is_err() {
-        return Err(TranscribeError::busy("转写引擎忙，请稍后重试"));
-    }
+    // 受理即取得执行权；guard 随任务移动，直到 ASR / 校对全部结束才释放。
+    let permit = core.transcriber.try_acquire_busy()?;
     let job_id = uuid::Uuid::new_v4().simple().to_string();
     {
         let mut jobs = core.transcriber.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -561,6 +581,8 @@ fn start_job(
     tracing::info!("转写任务已受理 {job_id}（{engine}，校对={}，{duration:.0}s）", request.proofread);
     let id = job_id.clone();
     tokio::spawn(async move {
+        // guard 随后台任务存活，覆盖 ASR 与校对；成功、失败或 panic 时才释放。
+        let _permit = permit;
         let outcome = execute_job(&core, &id, &request, &path, &hash, duration, engine).await;
         core.transcriber.update_job(&id, |job| match outcome {
             Ok(result) => {
@@ -589,7 +611,7 @@ async fn execute_job(
 ) -> Result<Value, TranscribeError> {
     let mut payload = match core.transcriber.cache_lookup(core, hash, engine) {
         Some(bucket) => bucket,
-        None => run_transcription(core, path, &request.language, duration, hash, engine).await?,
+        None => run_transcription_locked(core, path, &request.language, duration, hash, engine).await?,
     };
     if request.proofread {
         core.transcriber.update_job(job_id, |job| job.stage = "proofreading");
@@ -642,6 +664,54 @@ mod tests {
         assert_eq!(shaped["raw_text"], "原文");
         assert_eq!(shaped["proofread"]["llm_model"], "DS");
         assert_eq!(shaped["segments"][0]["text"], "校对文");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn 并发受理_执行许可只发给一个任务() {
+        let dir = std::env::temp_dir().join(format!("att-ft-busy-{}", uuid::Uuid::new_v4()));
+        let core = Arc::new(CoreState::init(&dir, crate::Platform::Macos).unwrap());
+        let request = || TranscribeRequest {
+            path: "unused.wav".into(),
+            language: "zh".into(),
+            want_segments: false,
+            engine: "deepseek_asr".into(),
+            proofread: false,
+            proofread_model_id: None,
+            proofread_options: None,
+        };
+        let path = PathBuf::from("unused.wav");
+
+        // current_thread runtime 下不主动 yield，后台任务尚未开始，受理取得的 guard 仍在。
+        let first =
+            start_job(core.clone(), request(), path.clone(), "first-hash".into(), 3600.0, "deepseek_asr").unwrap();
+        let busy_job =
+            start_job(core.clone(), request(), path.clone(), "second-hash".into(), 3600.0, "deepseek_asr").unwrap_err();
+        assert_eq!(busy_job.status, 503);
+        assert_eq!(busy_job.retry_after, Some(BUSY_RETRY_AFTER_SECONDS));
+
+        // 同步请求在受理之后也必须被拒绝，不能抢走已返回 202 任务的执行权。
+        let busy_sync = run_transcription(&core, &path, "zh", 1.0, "sync-hash", "deepseek_asr").await.unwrap_err();
+        assert_eq!(busy_sync.status, 503);
+
+        // 让已受理任务真正执行：它应因文件不存在而失败，而不是因「引擎忙」失败。
+        let job = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                tokio::task::yield_now().await;
+                let job = core.transcriber.get_job(&first).unwrap();
+                if job["status"] != "running" {
+                    break job;
+                }
+            }
+        })
+        .await
+        .expect("已受理任务应结束");
+        assert_eq!(job["status"], "failed");
+        assert!(!job["error"].as_str().unwrap_or("").contains("引擎忙"), "{}", job["error"]);
+
+        // 任务结束后许可释放，下一批请求可以继续受理。
+        let third = start_job(core.clone(), request(), path, "third-hash".into(), 3600.0, "deepseek_asr").unwrap();
+        assert!(!third.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
