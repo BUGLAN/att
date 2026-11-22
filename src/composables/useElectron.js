@@ -143,7 +143,7 @@ export function useElectron() {
 
   const tray = {
     setIcon: (iconType) => isDesktop && void invoke('set_tray_icon', { iconType }),
-    updateMenu: (records = []) => isDesktop && void invoke('update_tray_menu', { records })
+    updateMenu: () => isDesktop && void invoke('update_tray_menu')
   }
 
   const clipboard = {

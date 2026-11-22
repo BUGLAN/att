@@ -20,14 +20,7 @@ export const useRecordsStore = defineStore('records', () => {
   const recordCount = computed(() => records.value.length)
 
   function syncTrayMenu() {
-    tray.updateMenu(sortedRecords.value.map((record) => ({
-      id: record.id,
-      created_at: record.created_at,
-      raw_text: record.raw_text,
-      optimized_text: record.optimized_text,
-      status: record.status,
-      is_favorite: record.is_favorite
-    })))
+    tray.updateMenu()
   }
 
   async function loadRecords() {

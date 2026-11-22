@@ -300,32 +300,16 @@ pub fn set_tray_icon(app: AppHandle, icon_type: String) {
     crate::tray::set_icon(&app, &icon_type);
 }
 
-/// 前端记录列表变化时触发；菜单内容以 Rust 记录库为准（载荷忽略）。
+/// 前端记录列表变化时触发；菜单内容以 Rust 记录库为准。
 #[tauri::command]
-pub fn update_tray_menu(app: AppHandle, records: Value) {
-    let _ = records;
+pub fn update_tray_menu(app: AppHandle) {
     crate::tray::refresh(&app);
-}
-
-#[tauri::command]
-pub fn show_floating_window(app: AppHandle) {
-    crate::floating::update(&app, crate::floating::last_state(), true);
 }
 
 /// 悬浮窗结果态停留到点后自行收起：只收已结束的会话（与新一次录音并发时不误藏）。
 #[tauri::command]
 pub fn hide_floating_window(app: AppHandle) {
     crate::floating::dismiss(&app);
-}
-
-#[tauri::command]
-pub fn toggle_floating_window(app: AppHandle) {
-    let visible = app.get_webview_window(crate::floating::LABEL).and_then(|w| w.is_visible().ok()).unwrap_or(false);
-    if visible {
-        crate::floating::hide(&app);
-    } else {
-        crate::floating::update(&app, crate::floating::last_state(), true);
-    }
 }
 
 /// 悬浮窗页面上报胶囊区域 [x, y, 宽, 高]（CSS px）；null = 胶囊不可见。用于透明部分点击穿透。

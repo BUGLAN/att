@@ -524,7 +524,7 @@ pub fn apply_settings_update(
             // 先校验再赋值：出错时整个请求返回错误，但这里不能把越界值留在设置里（之后会照常落盘）
             "clipboard_max_items" => {
                 let mut parsed = 0;
-                set_i64(&mut parsed, key, value, &type_error)?;
+                set_i64(&mut parsed, value, &type_error)?;
                 if !(0..=CLIPBOARD_MAX_ITEMS_LIMIT).contains(&parsed) {
                     return Err(format!(
                         "字段 clipboard_max_items 必须在 0~{CLIPBOARD_MAX_ITEMS_LIMIT} 之间（0 = 不限）"
@@ -534,7 +534,7 @@ pub fn apply_settings_update(
             }
             "clipboard_retention_days" => {
                 let mut parsed = 0;
-                set_i64(&mut parsed, key, value, &type_error)?;
+                set_i64(&mut parsed, value, &type_error)?;
                 if !(0..=CLIPBOARD_RETENTION_DAYS_LIMIT).contains(&parsed) {
                     return Err(format!(
                         "字段 clipboard_retention_days 必须在 0~{CLIPBOARD_RETENTION_DAYS_LIMIT} 之间（0 = 永久）"
@@ -544,7 +544,7 @@ pub fn apply_settings_update(
             }
             "audio_retention_days" => {
                 let mut parsed = 0;
-                set_i64(&mut parsed, key, value, &type_error)?;
+                set_i64(&mut parsed, value, &type_error)?;
                 if !(0..=AUDIO_RETENTION_DAYS_LIMIT).contains(&parsed) {
                     return Err(format!(
                         "字段 audio_retention_days 必须在 0~{AUDIO_RETENTION_DAYS_LIMIT} 之间（0 = 永久）"
@@ -561,8 +561,8 @@ pub fn apply_settings_update(
             }
 
             // ---- 字符串键 ----
-            "asr_provider" => set_string(&mut settings.asr_provider, key, value, &type_error)?,
-            "asr_language" => set_string(&mut settings.asr_language, key, value, &type_error)?,
+            "asr_provider" => set_string(&mut settings.asr_provider, value, &type_error)?,
+            "asr_language" => set_string(&mut settings.asr_language, value, &type_error)?,
             "models_dir" => {
                 let dir = value.as_str().ok_or_else(|| type_error("字符串"))?;
                 let dir = dir.trim();
@@ -572,18 +572,18 @@ pub fn apply_settings_update(
                 let words = value.as_array().ok_or_else(|| type_error("字符串数组"))?;
                 settings.asr_hotwords = crate::stt::hotwords::normalize(words.iter().filter_map(Value::as_str));
             }
-            "whisper_model" => set_string(&mut settings.whisper_model, key, value, &type_error)?,
-            "whisper_device" => set_string(&mut settings.whisper_device, key, value, &type_error)?,
-            "qwen_asr_model" => set_string(&mut settings.qwen_asr_model, key, value, &type_error)?,
-            "qwen_asr_device" => set_string(&mut settings.qwen_asr_device, key, value, &type_error)?,
-            "qwen_asr_dtype" => set_string(&mut settings.qwen_asr_dtype, key, value, &type_error)?,
+            "whisper_model" => set_string(&mut settings.whisper_model, value, &type_error)?,
+            "whisper_device" => set_string(&mut settings.whisper_device, value, &type_error)?,
+            "qwen_asr_model" => set_string(&mut settings.qwen_asr_model, value, &type_error)?,
+            "qwen_asr_device" => set_string(&mut settings.qwen_asr_device, value, &type_error)?,
+            "qwen_asr_dtype" => set_string(&mut settings.qwen_asr_dtype, value, &type_error)?,
             "qwen_asr_forced_aligner_model" => {
-                set_string(&mut settings.qwen_asr_forced_aligner_model, key, value, &type_error)?
+                set_string(&mut settings.qwen_asr_forced_aligner_model, value, &type_error)?
             }
-            "doubao_asr_resource_id" => set_string(&mut settings.doubao_asr_resource_id, key, value, &type_error)?,
-            "doubao_asr_endpoint" => set_string(&mut settings.doubao_asr_endpoint, key, value, &type_error)?,
-            "chatgpt_asr_endpoint" => set_string(&mut settings.chatgpt_asr_endpoint, key, value, &type_error)?,
-            "deepseek_asr_endpoint" => set_string(&mut settings.deepseek_asr_endpoint, key, value, &type_error)?,
+            "doubao_asr_resource_id" => set_string(&mut settings.doubao_asr_resource_id, value, &type_error)?,
+            "doubao_asr_endpoint" => set_string(&mut settings.doubao_asr_endpoint, value, &type_error)?,
+            "chatgpt_asr_endpoint" => set_string(&mut settings.chatgpt_asr_endpoint, value, &type_error)?,
+            "deepseek_asr_endpoint" => set_string(&mut settings.deepseek_asr_endpoint, value, &type_error)?,
             "recording_mode" => {
                 let mode = value.as_str().ok_or_else(|| type_error("字符串"))?;
                 if !matches!(mode, "single" | "multi" | "streaming") {
@@ -613,8 +613,8 @@ pub fn apply_settings_update(
             }
 
             // ---- 整数键 ----
-            "qwen_asr_max_new_tokens" => set_i64(&mut settings.qwen_asr_max_new_tokens, key, value, &type_error)?,
-            "qwen_asr_max_audio_seconds" => set_i64(&mut settings.qwen_asr_max_audio_seconds, key, value, &type_error)?,
+            "qwen_asr_max_new_tokens" => set_i64(&mut settings.qwen_asr_max_new_tokens, value, &type_error)?,
+            "qwen_asr_max_audio_seconds" => set_i64(&mut settings.qwen_asr_max_audio_seconds, value, &type_error)?,
             "model_download_source" => {
                 let source = value.as_str().ok_or_else(|| type_error("字符串"))?;
                 if !matches!(source, "official" | "mirror") {
@@ -623,19 +623,15 @@ pub fn apply_settings_update(
                 settings.model_download_source = source.into();
             }
             "local_model_idle_unload_minutes" => {
-                set_i64(&mut settings.local_model_idle_unload_minutes, key, value, &type_error)?;
+                set_i64(&mut settings.local_model_idle_unload_minutes, value, &type_error)?;
                 if settings.local_model_idle_unload_minutes < 0 {
                     return Err("字段 local_model_idle_unload_minutes 不能为负数".into());
                 }
             }
-            "doubao_asr_end_window_size" => set_i64(&mut settings.doubao_asr_end_window_size, key, value, &type_error)?,
-            "chatgpt_asr_timeout_seconds" => {
-                set_i64(&mut settings.chatgpt_asr_timeout_seconds, key, value, &type_error)?
-            }
-            "deepseek_asr_timeout_seconds" => {
-                set_i64(&mut settings.deepseek_asr_timeout_seconds, key, value, &type_error)?
-            }
-            "silence_level" => set_i64(&mut settings.silence_level, key, value, &type_error)?,
+            "doubao_asr_end_window_size" => set_i64(&mut settings.doubao_asr_end_window_size, value, &type_error)?,
+            "chatgpt_asr_timeout_seconds" => set_i64(&mut settings.chatgpt_asr_timeout_seconds, value, &type_error)?,
+            "deepseek_asr_timeout_seconds" => set_i64(&mut settings.deepseek_asr_timeout_seconds, value, &type_error)?,
+            "silence_level" => set_i64(&mut settings.silence_level, value, &type_error)?,
 
             // ---- 浮点键 ----
             "silence_threshold" => {
@@ -644,17 +640,13 @@ pub fn apply_settings_update(
             }
 
             // ---- 布尔键 ----
-            "qwen_asr_return_timestamps" => {
-                set_bool(&mut settings.qwen_asr_return_timestamps, key, value, &type_error)?
-            }
-            "qwen_asr_use_forced_aligner" => {
-                set_bool(&mut settings.qwen_asr_use_forced_aligner, key, value, &type_error)?
-            }
-            "pause_audio_on_recording" => set_bool(&mut settings.pause_audio_on_recording, key, value, &type_error)?,
-            "auto_optimize" => set_bool(&mut settings.auto_optimize, key, value, &type_error)?,
-            "auto_copy_to_clipboard" => set_bool(&mut settings.auto_copy_to_clipboard, key, value, &type_error)?,
-            "auto_download_updates" => set_bool(&mut settings.auto_download_updates, key, value, &type_error)?,
-            "launch_at_login" => set_bool(&mut settings.launch_at_login, key, value, &type_error)?,
+            "qwen_asr_return_timestamps" => set_bool(&mut settings.qwen_asr_return_timestamps, value, &type_error)?,
+            "qwen_asr_use_forced_aligner" => set_bool(&mut settings.qwen_asr_use_forced_aligner, value, &type_error)?,
+            "pause_audio_on_recording" => set_bool(&mut settings.pause_audio_on_recording, value, &type_error)?,
+            "auto_optimize" => set_bool(&mut settings.auto_optimize, value, &type_error)?,
+            "auto_copy_to_clipboard" => set_bool(&mut settings.auto_copy_to_clipboard, value, &type_error)?,
+            "auto_download_updates" => set_bool(&mut settings.auto_download_updates, value, &type_error)?,
+            "launch_at_login" => set_bool(&mut settings.launch_at_login, value, &type_error)?,
 
             // 未知键：静默丢弃（契约如此）
             _ => {}
@@ -688,21 +680,18 @@ pub fn apply_settings_update(
     Ok(outcome)
 }
 
-fn set_string(slot: &mut String, key: &str, value: &Value, type_error: &dyn Fn(&str) -> String) -> Result<(), String> {
-    let _ = key;
+fn set_string(slot: &mut String, value: &Value, type_error: &dyn Fn(&str) -> String) -> Result<(), String> {
     *slot = value.as_str().ok_or_else(|| type_error("字符串"))?.to_string();
     Ok(())
 }
 
-fn set_i64(slot: &mut i64, key: &str, value: &Value, type_error: &dyn Fn(&str) -> String) -> Result<(), String> {
-    let _ = key;
+fn set_i64(slot: &mut i64, value: &Value, type_error: &dyn Fn(&str) -> String) -> Result<(), String> {
     // 与反序列化同策略：接受浮点数（取整），兼容前端滑杆/Python 侧写出的 -40.0
     *slot = value.as_i64().or_else(|| value.as_f64().map(|f| f.round() as i64)).ok_or_else(|| type_error("整数"))?;
     Ok(())
 }
 
-fn set_bool(slot: &mut bool, key: &str, value: &Value, type_error: &dyn Fn(&str) -> String) -> Result<(), String> {
-    let _ = key;
+fn set_bool(slot: &mut bool, value: &Value, type_error: &dyn Fn(&str) -> String) -> Result<(), String> {
     *slot = value.as_bool().ok_or_else(|| type_error("布尔值"))?;
     Ok(())
 }
