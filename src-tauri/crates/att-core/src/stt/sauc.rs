@@ -384,7 +384,31 @@ pub struct Advance {
 /// 1. 每帧都推进，不做「文本未变」短路（interim→definite 可在文本不变时发生）；
 /// 2. 遇到第一个未定稿句就停，其后作为中间结果；
 /// 3. 服务端回退时收缩已确认列表；utterances 为空只代表本帧不推进。
+///
+/// 服务端偶尔会把同一句在相邻位置重复下发。这里只按「文本 + 起始时间」识别同一句，
+/// 不按文本做全局去重：用户连续说两遍相同的话时起始时间不同，仍会保留两遍。
 pub fn advance_definite_prefix(committed: &[String], utterances: &[Utterance]) -> Advance {
+    // 时间信息缺失（都为 0）时无法区分重复下发和用户真实重复，保留原样。
+    let same_utterance = |a: &Utterance, b: &Utterance| {
+        !a.text.is_empty()
+            && a.text == b.text
+            && a.start_ms == b.start_ms
+            && (a.start_ms > 0 || a.end_ms > 0 || b.end_ms > 0)
+    };
+    let normalized;
+    let utterances = if utterances.windows(2).any(|pair| same_utterance(&pair[0], &pair[1])) {
+        let mut merged: Vec<Utterance> = Vec::with_capacity(utterances.len());
+        for utterance in utterances {
+            match merged.last_mut() {
+                Some(previous) if same_utterance(previous, utterance) => previous.definite |= utterance.definite,
+                _ => merged.push(utterance.clone()),
+            }
+        }
+        normalized = merged;
+        normalized.as_slice()
+    } else {
+        utterances
+    };
     if utterances.is_empty() {
         return Advance { committed: committed.to_vec(), pending: String::new() };
     }
@@ -588,6 +612,20 @@ mod tests {
         assert_eq!(advance.committed, vec!["你好".to_string()]);
 
         assert_eq!(pending_from_cumulative_text(&["你好".into()], "你好世界"), "世界");
+    }
+
+    #[test]
+    fn 定稿前缀推进_同句重复下发只提交一次且保留真实重复() {
+        let at =
+            |start_ms, end_ms| Utterance { text: "你知道我是谁吗？".into(), start_ms, end_ms, definite: true };
+        let repeated = advance_definite_prefix(&[], &[at(0, 500), at(0, 900)]);
+        assert_eq!(repeated.committed, vec!["你知道我是谁吗？"]);
+        assert_eq!(repeated.pending, "");
+
+        // 用户真的说了两遍：起始时间不同，不能被当成重复下发吞掉
+        let spoken_twice = advance_definite_prefix(&[], &[at(0, 500), at(600, 1100)]);
+        assert_eq!(spoken_twice.committed, vec!["你知道我是谁吗？", "你知道我是谁吗？"]);
+        assert_eq!(spoken_twice.pending, "");
     }
 
     #[test]

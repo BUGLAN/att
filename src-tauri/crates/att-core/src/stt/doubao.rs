@@ -184,8 +184,15 @@ impl TranscriptState {
             let advance = sauc::advance_definite_prefix(&self.committed, &result.utterances);
             self.committed = advance.committed;
             self.pending = advance.pending;
+            // result_type=full 的 text 是整场累积文本，是最终输出的权威来源。
+            // 句级列表偶尔会重叠时，只按已确认前缀重算待定尾巴，不能让重叠部分污染全文。
+            let committed_text = self.committed.concat();
+            if !result.text.is_empty() && result.text.starts_with(&committed_text) {
+                self.pending = result.text[committed_text.len()..].to_string();
+            }
         }
-        self.last_text = format!("{}{}", self.committed.concat(), self.pending);
+        self.last_text =
+            if result.text.is_empty() { format!("{}{}", self.committed.concat(), self.pending) } else { result.text };
     }
 }
 
@@ -737,6 +744,38 @@ mod tests {
             handle_frame(&shared, &frame(true), "t"),
             Some(Partial { text: "你好世界".into(), pending_chars: 0 })
         );
+    }
+
+    #[test]
+    fn 句级结果重叠时全文以累积文本为准且待定尾巴正确() {
+        let mut state = TranscriptState::default();
+        let text = "你知道我是谁吗？";
+        state.apply_result(sauc::ResultFrame {
+            text: text.into(),
+            utterances: vec![
+                sauc::Utterance { text: text.into(), definite: true, ..Default::default() },
+                sauc::Utterance { text: text.into(), definite: false, ..Default::default() },
+            ],
+            audio_duration_ms: 900,
+        });
+        assert_eq!(state.final_text(), text);
+        assert_eq!(state.partial().pending_chars, 0);
+    }
+
+    #[test]
+    fn 连续说两遍同句时仍输出两遍() {
+        let mut state = TranscriptState::default();
+        let text = "你好。你好。";
+        state.apply_result(sauc::ResultFrame {
+            text: text.into(),
+            utterances: vec![
+                sauc::Utterance { text: "你好。".into(), definite: true, ..Default::default() },
+                sauc::Utterance { text: "你好。".into(), definite: true, ..Default::default() },
+            ],
+            audio_duration_ms: 1100,
+        });
+        assert_eq!(state.final_text(), text);
+        assert_eq!(state.partial().pending_chars, 0);
     }
 
     #[test]
