@@ -53,10 +53,3 @@ export function deriveCompletionToast(stage, copyResult) {
 
   return copy.plain
 }
-
-/**
- * 当前支持的完成态阶段列表（便于测试与调用方排查打错字的情况）。
- */
-export function listCompletionStages() {
-  return Object.keys(COMPLETION_TOAST_COPY)
-}

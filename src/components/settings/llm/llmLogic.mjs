@@ -32,23 +32,6 @@ const FALLBACK_HINTS = {
 }
 
 /**
- * 模型串组装（有真实前缀的服务商）：裸名按前缀组装，含 / 的完整串原样透传。
- * 注意：custom（自定义 OpenAI 兼容）档案不要用这个函数——本地网关的模型 ID
- * 常自带斜杠（group/xxx），必须用 composeCustomModelString 整串包进 openai/。
- */
-export function composeModelString(litellmPrefix, modelName) {
-  const name = String(modelName || '').trim()
-  if (!name) {
-    return ''
-  }
-  if (name.includes('/')) {
-    return name
-  }
-  const prefix = String(litellmPrefix || 'openai').trim() || 'openai'
-  return prefix + '/' + name
-}
-
-/**
  * custom 档案的模型串组装（与后端 compose_model_string 的 custom 分支一致）：
  * 恒为 openai/<完整模型ID>，对已是 openai/ 开头的 ID 幂等。
  * 本地网关的模型 ID 常自带斜杠（group/deepseek-v4.1-flash），若原样透传，
@@ -170,11 +153,6 @@ export function paramItems(params) {
     items.push({ label: '思考', value: reasoningEffortLabel(params.reasoning_effort).replace(/（.*）$/, '') })
   }
   return items
-}
-
-/** 模型参数摘要行。 */
-export function describeParams(params) {
-  return paramItems(params).map((item) => item.label + ' ' + item.value).join(' · ')
 }
 
 /**

@@ -3,10 +3,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import {
-  TRAY_ICON_STATES,
-  deriveTrayIconState
-} from '../src/composables/recorder/trayState.mjs'
+import { deriveTrayIconState } from '../src/composables/recorder/trayState.mjs'
+
+const TRAY_ICON_STATES = ['idle', 'recording', 'transcribing', 'disconnected']
 
 test('deriveTrayIconState：四个输入组合的完整真值表', () => {
   const cases = [
@@ -49,9 +48,7 @@ test('deriveTrayIconState：connected 只认显式 false', () => {
   assert.equal(deriveTrayIconState({ connected: 0 }), 'idle')
 })
 
-test('TRAY_ICON_STATES：导出四个状态且与推导结果同源', () => {
-  assert.deepEqual([...TRAY_ICON_STATES], ['idle', 'recording', 'transcribing', 'disconnected'])
-
+test('TRAY_ICON_STATES：推导结果都属于四个图标状态', () => {
   const derived = new Set([
     deriveTrayIconState({ recording: true }),
     deriveTrayIconState({ transcribing: true }),

@@ -3,7 +3,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { NATIVE_PHASES, deriveNativeSessionPatch } from '../src/composables/recorder/nativeSession.mjs'
+import { deriveNativeSessionPatch } from '../src/composables/recorder/nativeSession.mjs'
+
+const NATIVE_PHASES = [
+  'idle',
+  'connecting',
+  'recording',
+  'finalizing',
+  'optimizing',
+  'completed',
+  'error',
+  'cancelled'
+]
 
 test('录音相位：connecting 起表并清空上一轮文本，流式 recording 不重复起表', () => {
   const connecting = deriveNativeSessionPatch({ phase: 'connecting', mode: 'streaming' })

@@ -16,17 +16,6 @@ import { deriveCompletionToast } from './statusCopy.mjs'
 
 const NO_VOICE_TOAST = '没有听到声音，检查麦克风'
 
-export const NATIVE_PHASES = Object.freeze([
-  'idle',
-  'connecting',
-  'recording',
-  'finalizing',
-  'optimizing',
-  'completed',
-  'error',
-  'cancelled'
-])
-
 /**
  * 计算一次状态事件对界面的影响。返回 null 表示忽略（未知相位）。
  *

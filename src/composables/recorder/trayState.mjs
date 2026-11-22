@@ -11,13 +11,6 @@
 // 状态字符串必须与托盘图标文件名一一对应
 // （见 src-tauri/icons/tray/ 下的 win-*.png / macos-*.png）。
 
-export const TRAY_ICON_STATES = Object.freeze([
-  'idle',
-  'recording',
-  'transcribing',
-  'disconnected'
-])
-
 /**
  * 推导当前该显示哪个托盘图标。
  *

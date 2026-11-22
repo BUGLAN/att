@@ -14,9 +14,6 @@ export const SUPPORTED_MEDIA_EXTENSIONS = [
   '.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.wma', '.amr'
 ]
 
-// 同步请求的读取超时：契约约定调用方对短文件给 15 分钟；更长的文件后端直接 202
-export const SYNC_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
-
 // 轮询策略默认值
 export const JOB_POLL_INITIAL_DELAY_MS = 1000
 export const JOB_POLL_MAX_DELAY_MS = 5000
@@ -200,11 +197,6 @@ export function nextJobPollDelay(attempt, { initialDelayMs = JOB_POLL_INITIAL_DE
 export function isJobPollExpired(elapsedMs, { maxWaitMs = JOB_POLL_MAX_WAIT_MS } = {}) {
   const safeElapsed = Number.isFinite(elapsedMs) && elapsedMs > 0 ? elapsedMs : 0
   return safeElapsed >= maxWaitMs
-}
-
-/** 任务已经结束（成功 / 失败 / 已取消）。 */
-export function isJobFinished(job) {
-  return ['done', 'failed', 'cancelled'].includes(job?.status)
 }
 
 /**

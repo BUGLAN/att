@@ -5,8 +5,7 @@ import assert from 'node:assert/strict'
 
 import {
   IDLE_SESSION_STATUS_TEXT,
-  deriveCompletionToast,
-  listCompletionStages
+  deriveCompletionToast
 } from '../src/composables/recorder/statusCopy.mjs'
 // 注：deriveOptimizationDegradedToast 已随 LLM v2（移除 .env 内置 key 兜底）删除，
 // 后端不再广播 optimization_degraded（降级改由 done 事件的 degraded 字段表达）。
@@ -53,6 +52,9 @@ test('deriveCompletionToast：未知阶段抛错，避免静默拿到错误文�
   assert.throws(() => deriveCompletionToast(undefined, {}), /未知的完成态阶段/)
 })
 
-test('listCompletionStages：覆盖三个完成态阶段', () => {
-  assert.deepEqual(listCompletionStages().sort(), ['optimization', 'streaming', 'transcription'])
+test('deriveCompletionToast：覆盖三个完成态阶段', () => {
+  const stages = ['optimization', 'streaming', 'transcription']
+  for (const stage of stages) {
+    assert.equal(typeof deriveCompletionToast(stage, {}), 'string', stage)
+  }
 })

@@ -4,7 +4,6 @@ import assert from 'node:assert/strict'
 import {
   JOB_POLL_MAX_DELAY_MS,
   JOB_POLL_MAX_WAIT_MS,
-  SYNC_REQUEST_TIMEOUT_MS,
   buildTranscribeRequest,
   fileNameOf,
   formatDuration,
@@ -24,7 +23,6 @@ import {
   describeJobProgress,
   enqueuePaths,
   formatClock,
-  isJobFinished,
   jobProgressSignature,
   nextQueuedItem,
   queueSummary,
@@ -32,8 +30,7 @@ import {
   updateQueueItem
 } from '../src/composables/transcribe/fileTranscribeModel.mjs'
 
-test('同步超时常量与契约一致（15 分钟）', () => {
-  assert.equal(SYNC_REQUEST_TIMEOUT_MS, 15 * 60 * 1000)
+test('轮询上限常量与契约一致（15 分钟）', () => {
   assert.equal(JOB_POLL_MAX_WAIT_MS, 15 * 60 * 1000)
   assert.equal(JOB_POLL_MAX_DELAY_MS, 5000)
 })
@@ -278,10 +275,7 @@ test('describeJobProgress：校对阶段字段不变（窗口数）；取消中�
   assert.equal(describeJobProgress({ ...job, cancel_requested: true }).label, '正在取消…')
 })
 
-test('isJobFinished / jobProgressSignature：cancelled 也算结束；进度一变签名就变', () => {
-  assert.ok(isJobFinished({ status: 'cancelled' }))
-  assert.ok(isJobFinished({ status: 'done' }))
-  assert.ok(!isJobFinished({ status: 'running' }))
+test('jobProgressSignature：进度一变签名就变', () => {
   const a = jobProgressSignature({ stage: 'asr', progress: { done_seconds: 1 } })
   const b = jobProgressSignature({ stage: 'asr', progress: { done_seconds: 2 } })
   const c = jobProgressSignature({ stage: 'proofreading', progress: { window_done: 0 } })

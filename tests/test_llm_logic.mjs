@@ -12,8 +12,6 @@ import assert from 'node:assert/strict'
 
 import {
   composeCustomModelString,
-  composeModelString,
-  describeParams,
   errorCopy,
   formatLatency,
   groupModelsByProfile,
@@ -28,20 +26,6 @@ import {
 } from '../src/components/settings/llm/llmLogic.mjs'
 
 // ==================== 模型串组装 ====================
-
-test('composeModelString：裸模型名按服务商前缀组装', () => {
-  assert.equal(composeModelString('deepseek', 'deepseek-flash'), 'deepseek/deepseek-flash')
-  assert.equal(composeModelString('ollama_chat', 'qwen3:14b'), 'ollama_chat/qwen3:14b')
-})
-
-test('composeModelString：已带 / 的名字原样透传（高级用户手输完整串）', () => {
-  assert.equal(composeModelString('deepseek', 'openrouter/qwen/max'), 'openrouter/qwen/max')
-})
-
-test('composeModelString：空名返回空串、前缀缺失回退 openai', () => {
-  assert.equal(composeModelString('deepseek', '   '), '')
-  assert.equal(composeModelString('', 'm'), 'openai/m')
-})
 
 test('composeCustomModelString：含斜杠的本地网关模型 ID 整串包 openai/（2026-10-22 实测踩坑）', () => {
   assert.equal(
@@ -113,14 +97,6 @@ test('formatLatency：亚秒用毫秒，超秒用秒', () => {
   assert.equal(formatLatency(-5), '')
 })
 
-test('describeParams：参数摘要行', () => {
-  assert.equal(
-    describeParams({ temperature: 0.3, max_tokens: 4096, timeout_s: 60 }),
-    'temp 0.3 · max 4,096 · 超时 60s'
-  )
-  assert.equal(describeParams(null), '')
-})
-
 test('paramItems：拆成名值标签，思考强度只留档位名', () => {
   assert.deepEqual(
     paramItems({ temperature: 0.7, max_tokens: 4096, timeout_s: 60, reasoning_effort: 'none' }),
@@ -172,16 +148,13 @@ test('reasoningEffortLabel：空值跟随模型默认，未知值回退默认，
   assert.match(reasoningEffortLabel('none'), /关闭/)
 })
 
-test('describeParams：未设思考强度时摘要行与旧版一致', () => {
-  assert.equal(
-    describeParams({ temperature: 0.3, max_tokens: 4096, timeout_s: 60, reasoning_effort: '' }),
-    'temp 0.3 · max 4,096 · 超时 60s'
-  )
-})
-
-test('describeParams：设了思考强度时追加到摘要行', () => {
-  assert.match(
-    describeParams({ temperature: 0.3, max_tokens: 4096, timeout_s: 60, reasoning_effort: 'none' }),
-    /思考 关闭/
+test('paramItems：未设思考强度时摘要行与旧版一致', () => {
+  assert.deepEqual(
+    paramItems({ temperature: 0.3, max_tokens: 4096, timeout_s: 60, reasoning_effort: '' }),
+    [
+      { label: 'temp', value: '0.3' },
+      { label: 'max', value: '4,096' },
+      { label: '超时', value: '60s' }
+    ]
   )
 })
