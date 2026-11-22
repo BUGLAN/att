@@ -159,28 +159,6 @@ body::before {
     margin-left: var(--space-sm);
 }
 
-/* ============================================
-   Transcription Section
-   ============================================ */
-.section-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--space-md) var(--space-lg);
-    background: var(--bg-card);
-    border-bottom: 1px solid var(--border);
-    flex-wrap: wrap;
-    gap: var(--space-sm);
-}
-
-.section-header h2 {
-    font-size: var(--fs-cap);
-    font-weight: 600;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--text-secondary);
-}
-
 /* Buttons */
 
 /* ------------------------------------------------------------
@@ -301,14 +279,6 @@ body::before {
         padding: var(--space-md);
     }
 
-    .section-header {
-        padding: var(--space-sm) var(--space-md);
-    }
-
-    .section-header h2 {
-        font-size: var(--fs-cap);
-    }
-
 }
 
 /* ============================================
@@ -343,13 +313,9 @@ textarea:focus-visible {
     outline-offset: 3px;
 }
 
-/* 列表行 / 卡片类焦点目标：改用实心焦点环令牌 --focus-ring，
-   因为它们的祖先普遍带 overflow: hidden，outline 会被裁掉。 */
-.nav-item:focus-visible,
-.record-item:focus-visible,
-.preset-item:focus-visible,
-.llm-config-item:focus-visible,
-.audio-play-btn:focus-visible {
+/* 侧栏导航项：改用实心焦点环令牌 --focus-ring，
+   因为祖先带 overflow: hidden，outline 会被裁掉。 */
+.nav-item:focus-visible {
     outline: none;
     box-shadow: var(--focus-ring);
 }
@@ -365,12 +331,6 @@ textarea:focus-visible {
     overflow: hidden;
 }
 
-.section-header-right {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-}
-
 .records-list {
     max-height: 400px;
     overflow-y: auto;
@@ -378,158 +338,29 @@ textarea:focus-visible {
 }
 
 /* ------------------------------------------------------------
-   密集列表统一使用同一套细滚动条：此前 4 段重复的 6px 灰块已合并为
-   这一处定义，颜色/圆角全部取自 tokens.css。
+   记录列表使用细滚动条，颜色/圆角全部取自 tokens.css。
    ------------------------------------------------------------ */
-.records-list,
-.preset-list,
-.llm-config-list {
+.records-list {
     scrollbar-width: thin;
     scrollbar-color: var(--scroll-thumb) transparent;
 }
 
-.records-list::-webkit-scrollbar,
-.preset-list::-webkit-scrollbar,
-.llm-config-list::-webkit-scrollbar {
+.records-list::-webkit-scrollbar {
     width: var(--scroll-size-thin);
     height: var(--scroll-size-thin);
 }
 
-.records-list::-webkit-scrollbar-track,
-.preset-list::-webkit-scrollbar-track,
-.llm-config-list::-webkit-scrollbar-track {
+.records-list::-webkit-scrollbar-track {
     background: transparent;
 }
 
-.records-list::-webkit-scrollbar-thumb,
-.preset-list::-webkit-scrollbar-thumb,
-.llm-config-list::-webkit-scrollbar-thumb {
+.records-list::-webkit-scrollbar-thumb {
     background: var(--scroll-thumb);
     border-radius: var(--r-full);
 }
 
-.records-list::-webkit-scrollbar-thumb:hover,
-.preset-list::-webkit-scrollbar-thumb:hover,
-.llm-config-list::-webkit-scrollbar-thumb:hover {
+.records-list::-webkit-scrollbar-thumb:hover {
     background: var(--scroll-thumb-hover);
-}
-
-/* Record Item */
-.record-item {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    padding: var(--space-md);
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    margin-bottom: var(--space-sm);
-    cursor: pointer;
-    transition: all var(--transition-fast);
-}
-
-.record-item:last-child {
-    margin-bottom: 0;
-}
-
-.record-item:hover {
-    border-color: var(--border-light);
-    background: var(--bg-elevated);
-}
-
-/* Audio Play Button */
-.record-audio {
-    flex-shrink: 0;
-}
-
-/* Record Content */
-.record-content {
-    flex: 1;
-    min-width: 0;
-}
-
-.record-text {
-    font-size: var(--fs-base);
-    color: var(--text-secondary);
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    line-height: 1.5;
-}
-
-/* Record Actions */
-.record-meta {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: var(--space-xs);
-    flex-shrink: 0;
-}
-
-.record-times {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    font-family: var(--font-mono);
-    font-size: var(--fs-cap);
-    color: var(--text-muted);
-}
-
-.record-times .record-duration {
-    font-weight: 500;
-    color: var(--text-secondary);
-}
-
-.record-times .record-time {
-    font-size: var(--fs-cap);
-}
-
-.record-times .record-processing {
-    color: var(--accent);
-}
-
-/* ============================================
-   Select Mode
-   ============================================ */
-.record-checkbox {
-    width: 18px;
-    height: 18px;
-    margin-right: var(--space-sm);
-    accent-color: var(--accent);
-    cursor: pointer;
-}
-
-/* Select Toolbar */
-.select-toolbar {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    padding: var(--space-sm) var(--space-md);
-    background: var(--bg-card);
-    border-top: 1px solid var(--border);
-}
-
-.select-all-label {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    cursor: pointer;
-    font-size: var(--fs-base);
-    color: var(--text-secondary);
-}
-
-.select-all-label input {
-    accent-color: var(--accent);
-}
-
-/* Record Item in Select Mode */
-.record-item.select-mode {
-    cursor: default;
-}
-
-.record-item.select-mode:hover {
-    background: var(--bg-card);
 }
 
 /* Record Status Badge */
@@ -1077,46 +908,6 @@ textarea:focus-visible {
     max-width: 560px;
 }
 
-/* Preset List */
-.preset-list {
-    max-height: 300px;
-    overflow-y: auto;
-    margin-bottom: var(--space-md);
-}
-
-/* Preset Item */
-.preset-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--space-md);
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    margin-bottom: var(--space-sm);
-    cursor: pointer;
-    transition: all var(--transition-fast);
-}
-
-.preset-item:last-child {
-    margin-bottom: 0;
-}
-
-.preset-item:hover {
-    border-color: var(--border-light);
-    background: var(--bg-elevated);
-}
-
-.preset-item.selected {
-    border-color: var(--accent);
-    background: var(--accent-dim);
-}
-
-.preset-info {
-    flex: 1;
-    min-width: 0;
-}
-
 .preset-name {
     font-size: var(--fs-base);
     font-weight: 500;
@@ -1156,93 +947,8 @@ textarea:focus-visible {
     border-top: 1px solid var(--border);
 }
 
-/* ============================================
-   LLM Config Manager
-   ============================================ */
-.llm-config-list {
-    max-height: 300px;
-    overflow-y: auto;
-    margin-bottom: var(--space-md);
-}
-
-.llm-config-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--space-md);
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    margin-bottom: var(--space-sm);
-    transition: all var(--transition-fast);
-}
-
-.llm-config-item:last-child {
-    margin-bottom: 0;
-}
-
-.llm-config-item:hover {
-    border-color: var(--border-light);
-    background: var(--bg-elevated);
-}
-
-.llm-config-item.default {
-    border-color: var(--accent);
-    background: var(--accent-dim);
-}
-
-.llm-config-info {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    flex-wrap: wrap;
-}
-
-.llm-config-name {
-    font-size: var(--fs-base);
-    font-weight: 500;
-    color: var(--text-primary);
-}
-
-.llm-config-provider {
-    font-size: var(--fs-cap);
-    color: var(--text-muted);
-}
-
-.llm-config-actions {
-    display: flex;
-    gap: var(--space-xs);
-}
-
-.form-hint {
-    font-size: var(--fs-cap);
-    color: var(--text-muted);
-}
-
-.form-row {
-    display: flex;
-    gap: var(--space-md);
-}
-
 .form-group.half {
     flex: 1;
-}
-
-/* ============================================
-   Record Modified State
-   已编辑 = --info，已优化 = --warn：同一语义在全应用只有一种颜色
-   （此前"已优化"同时存在 #f59e0b / #4ade80 / var(--accent) 三种写法，
-    "已编辑"用了浅蓝 rgba(224,242,254) 这种亮色系残留，污染深色主题）
-   ============================================ */
-.record-item.modified {
-    background: var(--info-soft);
-    border-color: var(--info-line);
-}
-
-.record-item.modified:hover {
-    background: var(--info-tint);
 }
 
 /* ============================================
@@ -1286,16 +992,6 @@ textarea:focus-visible {
     background: var(--bg-hover);
 }
 
-/* ============================================
-   Record Card Copy Button
-   ============================================ */
-
-.record-status-group {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-}
-
 .setting-actions-inline {
   display: flex;
   align-items: center;
@@ -1310,24 +1006,6 @@ textarea:focus-visible {
 .setting-actions-inline > .ui-select {
   flex: 1 1 160px;
   min-width: 0;
-}
-
-.section-header-left {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-}
-
-.preset-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin-bottom: 4px;
-}
-
-.preset-description {
-  font-size: var(--fs-cap);
-  color: var(--text-muted);
 }
 
 /* ------------------------------------------------------------
@@ -1378,13 +1056,6 @@ textarea:focus-visible {
 
 .choice-card.is-muted {
   opacity: 0.65;
-}
-
-.choice-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--s-2);
 }
 
 .choice-title {
