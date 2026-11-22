@@ -11,7 +11,15 @@ import {
   normalizeLanguageForProvider
 } from '../src/components/settings/asrLanguages.mjs'
 
-const ALL_PROVIDERS = ['doubao_asr', 'doubao_web_asr', 'chatgpt_asr', 'deepseek_asr', 'whisper', 'qwen_asr']
+const ALL_PROVIDERS = [
+  'doubao_asr',
+  'doubao_web_asr',
+  'chatgpt_asr',
+  'deepseek_asr',
+  'wetype_asr',
+  'whisper',
+  'qwen_asr'
+]
 
 test('语言下拉：所有引擎首项都是自动检测，且选项不重复', () => {
   assert.equal(AUTO_LANGUAGE, 'auto')
@@ -22,10 +30,11 @@ test('语言下拉：所有引擎首项都是自动检测，且选项不重复',
   }
 })
 
-test('语言下拉：豆包网页 / Qwen / DeepSeek 只能自动判定，豆包与 Whisper 可选固定语种', () => {
+test('语言下拉：豆包网页 / 微信输入法 / Qwen / DeepSeek 只能自动判定，豆包与 Whisper 可选固定语种', () => {
   assert.deepEqual(languageOptions('doubao_web_asr').map((item) => item.value), ['auto'])
   assert.deepEqual(languageOptions('qwen_asr').map((item) => item.value), ['auto'])
   assert.deepEqual(languageOptions('deepseek_asr').map((item) => item.value), ['auto'])
+  assert.deepEqual(languageOptions('wetype_asr').map((item) => item.value), ['auto'])
 
   const doubao = languageOptions('doubao_asr').map((item) => item.value)
   assert.ok(doubao.includes('zh'))

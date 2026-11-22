@@ -155,6 +155,9 @@ export const useSettingsStore = defineStore('settings', () => {
     deepseek_asr_api_key_set: false,
     deepseek_asr_endpoint: 'https://api.deepseek.com/v1/tools/asr',
     deepseek_asr_timeout_seconds: 120,
+    // 微信输入法语音（Windows）：直接注入输入法进程，不需要密钥
+    wetype_asr_timeout_seconds: 60,
+    wetype_asr_pid: 0,
     pause_audio_on_recording: true,
     auto_optimize: false,
     auto_copy_to_clipboard: true,
@@ -192,7 +195,13 @@ export const useSettingsStore = defineStore('settings', () => {
     streaming_available: false,
     streaming_supported: false,
     streaming_backend: null,
-    streaming_error: null
+    streaming_error: null,
+    wetype_engine: {
+      available: false,
+      pid: null,
+      message: '',
+      platform_supported: false
+    }
   })
 
   // 本地模型清单与下载任务（/api/models）；下载在数据面后台进行，页面切走也不会中断

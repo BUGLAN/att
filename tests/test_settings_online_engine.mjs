@@ -7,9 +7,12 @@ import assert from 'node:assert/strict'
 import {
   credentialNote,
   isOnlineProvider,
+  isWetypeProvider,
   needsCredentialCheck,
   onlineEngineChip,
-  requiresCredential
+  requiresCredential,
+  wetypeEngineChip,
+  WETYPE_PROVIDER
 } from '../src/components/settings/onlineEngineStatus.mjs'
 
 test('没保存凭据：未配置（警示色）', () => {
@@ -78,4 +81,31 @@ test('保存后何时重新验证：换引擎、填新 Token、改 Resource ID /
   }, { ...saved, asr_provider: 'doubao_web_asr' }), false)
   assert.equal(isOnlineProvider('qwen_asr'), false)
   assert.equal(isOnlineProvider('deepseek_asr'), true)
+  assert.equal(isOnlineProvider(WETYPE_PROVIDER), true)
+  assert.equal(isWetypeProvider(WETYPE_PROVIDER), true)
+  assert.equal(requiresCredential(WETYPE_PROVIDER), false)
+})
+
+test('微信输入法语音：非 Windows 禁用，Windows 按本机检测结论展示', () => {
+  assert.deepEqual(wetypeEngineChip({ platform: 'darwin' }), { chip: '仅 Windows', tone: 'neutral', loading: false })
+  assert.deepEqual(wetypeEngineChip({ platform: 'win32', check: { status: 'checking' } }), {
+    chip: '检测中',
+    tone: 'accent',
+    loading: true
+  })
+  assert.equal(wetypeEngineChip({ platform: 'win32', check: { status: 'ok' } }).chip, '可用')
+  assert.equal(wetypeEngineChip({ platform: 'win32', check: { status: 'invalid' } }).chip, '未就绪')
+  assert.equal(wetypeEngineChip({ platform: 'win32' }).chip, '本机注入')
+})
+
+test('微信输入法语音：换引擎或改 PID / 超时后重新检测', () => {
+  const saved = {
+    asr_provider: WETYPE_PROVIDER,
+    wetype_asr_pid: 0,
+    wetype_asr_timeout_seconds: 60
+  }
+  assert.equal(needsCredentialCheck(saved, saved), false)
+  assert.equal(needsCredentialCheck({ ...saved, wetype_asr_pid: 1234 }, saved), true)
+  assert.equal(needsCredentialCheck({ ...saved, wetype_asr_timeout_seconds: 120 }, saved), true)
+  assert.equal(needsCredentialCheck(saved, { ...saved, asr_provider: 'deepseek_asr' }), true)
 })

@@ -5,6 +5,7 @@
 // - 豆包网页语音：接口没有 language 参数，只能自动判定；
 // - Whisper / ChatGPT 听写：列常用语种，模型支持的其余语种仍可通过自动检测识别；
 // - DeepSeek：接口没有 language 参数，只能自动判定；
+// - 微信输入法语音：请求不带 language，由输入法服务端自动判定；
 // - Qwen3-ASR：sherpa 配置没有 language 参数，由模型自行判定。
 
 import { providerLabel } from './asrEngineStatus.mjs'
@@ -57,6 +58,7 @@ const PROVIDER_LANGUAGE_CODES = Object.freeze({
   doubao_web_asr: Object.freeze([]),
   chatgpt_asr: COMMON_LANGUAGE_CODES,
   deepseek_asr: Object.freeze([]),
+  wetype_asr: Object.freeze([]),
   whisper: COMMON_LANGUAGE_CODES,
   qwen_asr: Object.freeze([])
 })
@@ -115,6 +117,9 @@ export function languageHint(provider) {
   }
   if (provider === 'deepseek_asr') {
     return 'DeepSeek 语音识别由音频自动判定语种，不能手动指定。'
+  }
+  if (provider === 'wetype_asr') {
+    return '微信输入法语音由输入法服务端自动判定语种，请求不携带语言。'
   }
   if (provider === 'doubao_asr') {
     return '自动检测时豆包支持中英混说与粤语等方言；固定语种可识别更多外语。'

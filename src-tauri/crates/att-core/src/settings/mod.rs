@@ -53,6 +53,8 @@ pub const MODEL_RUNTIME_KEYS: &[&str] = &[
     "chatgpt_asr_timeout_seconds",
     "deepseek_asr_endpoint",
     "deepseek_asr_timeout_seconds",
+    "wetype_asr_timeout_seconds",
+    "wetype_asr_pid",
 ];
 
 /// 剪贴板悬浮框高度的允许范围（逻辑像素）：再矮放不下卡片内容，再高就挡住大半个屏幕。
@@ -79,7 +81,8 @@ pub const SETTINGS_REVISION: i64 = 2;
 #[serde(default)]
 pub struct UserSettings {
     // ---- ASR 基础 ----
-    pub asr_provider: String, // whisper | qwen_asr | doubao_asr | doubao_web_asr | chatgpt_asr | deepseek_asr
+    pub asr_provider: String,
+    // whisper | qwen_asr | doubao_asr | doubao_web_asr | chatgpt_asr | deepseek_asr | wetype_asr
     pub asr_language: String, // auto（自动检测）或各引擎支持的语种码，如 zh / en / ja / ko / yue
     /// 本地模型根目录；空值走现有默认查找。仅启动时生效，环境变量 `ATT_MODELS_DIR` 优先。
     #[serde(default)]
@@ -124,6 +127,12 @@ pub struct UserSettings {
     pub deepseek_asr_endpoint: String,
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub deepseek_asr_timeout_seconds: i64,
+    // ---- 微信输入法语音（仅 Windows）----
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub wetype_asr_timeout_seconds: i64,
+    /// 0 = 自动发现；多个 `wetype_update.exe` 时填具体 PID
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub wetype_asr_pid: i64,
     // ---- 密文（GET 视图替换为 *_set 布尔，明文永不外发）----
     pub doubao_asr_api_key_encrypted: Option<String>,
     pub chatgpt_asr_api_key_encrypted: Option<String>,
@@ -223,6 +232,8 @@ impl UserSettings {
             chatgpt_asr_timeout_seconds: 120,
             deepseek_asr_endpoint: crate::stt::deepseek::DEFAULT_ENDPOINT.into(),
             deepseek_asr_timeout_seconds: 120,
+            wetype_asr_timeout_seconds: 60,
+            wetype_asr_pid: 0,
             doubao_asr_api_key_encrypted: None,
             chatgpt_asr_api_key_encrypted: None,
             deepseek_asr_api_key_encrypted: None,
@@ -589,6 +600,14 @@ pub fn apply_settings_update(
             "doubao_asr_endpoint" => set_string(&mut settings.doubao_asr_endpoint, value, &type_error)?,
             "chatgpt_asr_endpoint" => set_string(&mut settings.chatgpt_asr_endpoint, value, &type_error)?,
             "deepseek_asr_endpoint" => set_string(&mut settings.deepseek_asr_endpoint, value, &type_error)?,
+            "wetype_asr_pid" => {
+                let mut parsed = settings.wetype_asr_pid;
+                set_i64(&mut parsed, value, &type_error)?;
+                if !(0..=i64::from(u32::MAX)).contains(&parsed) {
+                    return Err("字段 wetype_asr_pid 必须是 0（自动）或有效的进程 PID".into());
+                }
+                settings.wetype_asr_pid = parsed;
+            }
             "recording_mode" => {
                 let mode = value.as_str().ok_or_else(|| type_error("字符串"))?;
                 if !matches!(mode, "single" | "multi" | "streaming") {
@@ -646,6 +665,10 @@ pub fn apply_settings_update(
             }
             "chatgpt_asr_timeout_seconds" => set_i64(&mut settings.chatgpt_asr_timeout_seconds, value, &type_error)?,
             "deepseek_asr_timeout_seconds" => set_i64(&mut settings.deepseek_asr_timeout_seconds, value, &type_error)?,
+            "wetype_asr_timeout_seconds" => {
+                set_i64(&mut settings.wetype_asr_timeout_seconds, value, &type_error)?;
+                settings.wetype_asr_timeout_seconds = settings.wetype_asr_timeout_seconds.clamp(10, 600);
+            }
             "silence_level" => set_i64(&mut settings.silence_level, value, &type_error)?,
 
             // ---- 浮点键 ----
@@ -860,7 +883,9 @@ mod tests {
         std::fs::write(&path, json!({ "auto_optimize": true }).to_string()).unwrap();
         assert_eq!(UserSettings::load(&path, Platform::Macos).asr_provider, "doubao_asr");
         // 老用户选过的引擎（含旧默认 whisper）原样保留
-        for provider in ["whisper", "qwen_asr", "chatgpt_asr", "doubao_asr", "doubao_web_asr", "deepseek_asr"] {
+        for provider in
+            ["whisper", "qwen_asr", "chatgpt_asr", "doubao_asr", "doubao_web_asr", "deepseek_asr", "wetype_asr"]
+        {
             std::fs::write(&path, json!({ "asr_provider": provider }).to_string()).unwrap();
             assert_eq!(UserSettings::load(&path, Platform::Windows).asr_provider, provider);
         }
@@ -1049,6 +1074,46 @@ mod tests {
             .unwrap_err();
             assert!(error.contains("doubao_web_timeout_seconds") && error.contains("10~300"), "{error}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 微信输入法语音_旧数据兜底_pid与超时校验() {
+        let dir = temp_dir("wetype");
+        let path = dir.join("settings.json");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        std::fs::write(&path, json!({ "asr_provider": "doubao_asr" }).to_string()).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Windows);
+        assert_eq!(settings.wetype_asr_timeout_seconds, 60);
+        assert_eq!(settings.wetype_asr_pid, 0);
+
+        let outcome = apply_settings_update(
+            &mut settings,
+            &json!({ "asr_provider": "wetype_asr", "wetype_asr_timeout_seconds": 90, "wetype_asr_pid": 20656 }),
+            Platform::Windows,
+            &crypto,
+        )
+        .unwrap();
+        assert!(outcome.runtime_keys_changed.contains(&"wetype_asr_timeout_seconds"));
+        assert!(outcome.runtime_keys_changed.contains(&"wetype_asr_pid"));
+        assert_eq!(settings.asr_provider, "wetype_asr");
+        assert_eq!(settings.wetype_asr_timeout_seconds, 90);
+        assert_eq!(settings.wetype_asr_pid, 20656);
+
+        assert!(
+            apply_settings_update(&mut settings, &json!({ "wetype_asr_pid": -1 }), Platform::Windows, &crypto).is_err()
+        );
+        assert_eq!(settings.wetype_asr_pid, 20656, "非法 PID 不能留下");
+
+        apply_settings_update(
+            &mut settings,
+            &json!({ "wetype_asr_timeout_seconds": 1, "wetype_asr_pid": 0 }),
+            Platform::Windows,
+            &crypto,
+        )
+        .unwrap();
+        assert_eq!(settings.wetype_asr_timeout_seconds, 10, "超时夹到允许下限");
+        assert_eq!(settings.wetype_asr_pid, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -32,7 +32,7 @@ async fn engines(State(state): Shared) -> Json<Value> {
     Json(json!({ "current": state.core.settings().asr_provider, "engines": engines }))
 }
 
-/// 请求里的 provider，缺省取当前设置；不是在线引擎时返回 422。
+/// 请求里的 provider，缺省取当前设置；不能做可用性检测时返回 422。
 fn resolve_provider(state: &ServerState, requested: Option<&str>) -> Result<String, (StatusCode, Json<Value>)> {
     let provider = requested
         .map(str::trim)
@@ -42,10 +42,7 @@ fn resolve_provider(state: &ServerState, requested: Option<&str>) -> Result<Stri
     if verify::is_online_provider(&provider) {
         Ok(provider.trim().to_string())
     } else {
-        Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({ "detail": format!("{provider} 不是在线引擎，无需验证凭据") })),
-        ))
+        Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "detail": format!("{provider} 不是可检测的识别引擎") }))))
     }
 }
 

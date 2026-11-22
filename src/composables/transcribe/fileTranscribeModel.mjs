@@ -44,6 +44,12 @@ export const TRANSCRIBE_ENGINES = [
     desc: 'DeepSeek 在线批量识别，自动判定语种，按音频时长计费。'
   },
   {
+    value: 'wetype_asr',
+    label: '微信输入法语音',
+    tag: 'Windows',
+    desc: '直接调用本机微信输入法的语音链路，自动判定语种。'
+  },
+  {
     value: 'whisper',
     label: 'faster-whisper',
     tag: '本地',
@@ -78,7 +84,12 @@ export function defaultTranscribeEngine(asrProvider) {
  *   它报缺模型 / 推理库时标出原因；其余本地引擎拿不到状态，不标（提交时后端 409 兜底）。
  * 返回 [{ value, label, tag, desc, disabled, badge, hint }]：badge 是下拉里的短标注，hint 是一句原因。
  */
-export function transcribeEngineOptions({ doubaoKeySet = false, deepseekKeySet = false, localEngine = null } = {}) {
+export function transcribeEngineOptions({
+  doubaoKeySet = false,
+  deepseekKeySet = false,
+  localEngine = null,
+  wetypeEngine = null
+} = {}) {
   return TRANSCRIBE_ENGINES.map((item) => {
     // 豆包网页语音无需凭据，也不依赖本地模型，始终可用。
     if (item.value === 'doubao_asr' && !doubaoKeySet) {
@@ -86,6 +97,21 @@ export function transcribeEngineOptions({ doubaoKeySet = false, deepseekKeySet =
     }
     if (item.value === 'deepseek_asr' && !deepseekKeySet) {
       return { ...item, disabled: true, badge: '未配置', hint: 'DeepSeek 需要先在「设置 → 识别引擎」填写 API Key。' }
+    }
+    if (item.value === 'wetype_asr' && wetypeEngine) {
+      const supported = wetypeEngine.platform_supported !== false
+      const available = wetypeEngine.available === true
+      if (!supported) {
+        return { ...item, disabled: true, badge: '仅 Windows', hint: '微信输入法语音只能在 Windows 上使用。' }
+      }
+      if (!available) {
+        return {
+          ...item,
+          disabled: true,
+          badge: '未检测到',
+          hint: wetypeEngine.message || '请先启动微信输入法。'
+        }
+      }
     }
     if (localEngine && localEngine.provider === item.value && localEngine.available === false) {
       const summary = String(localEngine.error || '').split('\n')[0].trim() || `${item.label} 模型未安装`

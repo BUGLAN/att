@@ -7,6 +7,7 @@
 //! - [`chatgpt`]：ChatGPT 听写（在线批量，不支持流式）
 //! - [`deepseek`]：DeepSeek 语音识别（在线批量，不支持流式）
 //! - [`local`]：本地引擎装配与常驻池（faster-whisper / Qwen3-ASR，进程内推理）
+//! - [`wetype`]：微信输入法语音（仅 Windows，直接注入输入法进程）
 //! - [`verify`]：在线引擎验证（凭据握手 / 匿名连通性，区分「已配置」与「可用」）
 //!
 //! 在线引擎（豆包 / 豆包网页 / ChatGPT / DeepSeek）凭据齐备或匿名地址可用即就绪；本地引擎要在后台线程加载模型（large-v3 在 CPU 上
@@ -22,10 +23,48 @@ pub mod hotwords;
 pub mod local;
 pub mod sauc;
 pub mod verify;
+#[cfg(windows)]
+pub mod wetype;
 
 use crate::state::CoreState;
 use local::LocalKind;
 use std::sync::Arc;
+
+/// 微信输入法语音的轻量状态（不 attach，设置页可安全轮询）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WetypeStatus {
+    pub available: bool,
+    pub pid: Option<u32>,
+    pub message: String,
+    pub platform_supported: bool,
+}
+
+/// 微信输入法语音是否可用：只枚举进程，供首页、文件转写和引擎列表使用。
+pub fn wetype_status(core: &CoreState) -> WetypeStatus {
+    #[cfg(windows)]
+    {
+        if core.platform == crate::Platform::Windows {
+            wetype::status(&wetype_config(core))
+        } else {
+            WetypeStatus {
+                available: false,
+                pid: None,
+                message: "微信输入法语音仅支持 Windows".into(),
+                platform_supported: false,
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = core;
+        WetypeStatus {
+            available: false,
+            pid: None,
+            message: "微信输入法语音仅支持 Windows".into(),
+            platform_supported: false,
+        }
+    }
+}
 
 /// 分块识别被进度回调叫停（文件转写取消）时的错误文案。
 pub const TRANSCRIBE_CANCELLED: &str = "转写已取消";
@@ -103,6 +142,16 @@ pub fn deepseek_config(core: &CoreState) -> deepseek::DeepSeekConfig {
     }
 }
 
+/// 从用户设置组装微信输入法语音配置（仅 Windows 编译）。
+#[cfg(windows)]
+pub fn wetype_config(core: &CoreState) -> wetype::WetypeConfig {
+    let settings = core.settings();
+    wetype::WetypeConfig {
+        pid: u32::try_from(settings.wetype_asr_pid).ok().filter(|pid| *pid > 0),
+        timeout: std::time::Duration::from_secs(settings.wetype_asr_timeout_seconds.clamp(10, 600) as u64),
+    }
+}
+
 /// provider 是否是本地引擎（`whisper` / `qwen_asr`）。
 pub fn local_kind(provider: &str) -> Option<LocalKind> {
     LocalKind::from_provider(provider)
@@ -139,11 +188,13 @@ pub enum Engine {
     ChatGpt(chatgpt::ChatGptConfig),
     DeepSeek(deepseek::DeepSeekConfig),
     Local(LocalHandle),
+    #[cfg(windows)]
+    WeType(wetype::WetypeConfig),
 }
 
 /// 全部识别引擎的 provider 标识（与设置 `asr_provider` 取值一致），也是「重新识别」可选引擎的顺序。
-pub const PROVIDERS: [&str; 6] =
-    ["doubao_asr", "doubao_web_asr", "chatgpt_asr", "deepseek_asr", local::WHISPER, local::QWEN];
+pub const PROVIDERS: [&str; 7] =
+    ["doubao_asr", "doubao_web_asr", "chatgpt_asr", "deepseek_asr", "wetype_asr", local::WHISPER, local::QWEN];
 
 /// 一个识别引擎当前能不能用（「重新识别」选引擎用）：只看凭据是否齐备、本地模型文件是否就位，不发网络请求。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -169,11 +220,15 @@ pub fn engine_choices(core: &CoreState) -> Vec<EngineChoice> {
                 }
                 // 凭据验证「确定不可用」（Token 无效等）同样不列为可用；没验过按凭据齐备处理
                 None => match Engine::online_for_provider(core, provider) {
-                    Ok(engine) => (
-                        engine.label(),
-                        verify::invalid_reason(core, provider)
-                            .map(|reason| verify::invalid_message(provider, engine.label(), &reason)),
-                    ),
+                    Ok(engine) => {
+                        let invalid = if provider == "wetype_asr" {
+                            None
+                        } else {
+                            verify::invalid_reason(core, provider)
+                                .map(|reason| verify::invalid_message(provider, engine.label(), &reason))
+                        };
+                        (engine.label(), invalid)
+                    }
                     Err(message) => (online_label(provider), Some(message)),
                 },
             };
@@ -186,7 +241,7 @@ pub fn engine_choices(core: &CoreState) -> Vec<EngineChoice> {
 /// 其余引擎就是设置里的识别语言。
 pub fn effective_language(provider: &str, language: &str) -> String {
     match provider.trim() {
-        "deepseek_asr" | "qwen_asr" | "doubao_web_asr" => "auto".into(),
+        "deepseek_asr" | "wetype_asr" | "qwen_asr" | "doubao_web_asr" => "auto".into(),
         _ => language.to_string(),
     }
 }
@@ -197,6 +252,7 @@ fn online_label(provider: &str) -> &'static str {
         "doubao_web_asr" => "豆包网页语音",
         "chatgpt_asr" => "ChatGPT 听写",
         "deepseek_asr" => "DeepSeek 语音识别",
+        "wetype_asr" => "微信输入法语音",
         _ => "豆包语音",
     }
 }
@@ -224,6 +280,21 @@ impl Engine {
                 let config = doubao_web_config(core);
                 config.ensure().map_err(|error| error.to_string())?;
                 Ok(Engine::DoubaoWeb(config))
+            }
+            "wetype_asr" => {
+                #[cfg(windows)]
+                {
+                    if core.platform != crate::Platform::Windows {
+                        return Err("微信输入法语音仅支持 Windows".into());
+                    }
+                    let config = wetype_config(core);
+                    config.ensure()?;
+                    Ok(Engine::WeType(config))
+                }
+                #[cfg(not(windows))]
+                {
+                    Err("微信输入法语音仅支持 Windows".into())
+                }
             }
             "doubao_asr" | "" => {
                 let config = doubao_config(core);
@@ -266,6 +337,8 @@ impl Engine {
             Engine::ChatGpt(_) => "chatgpt_asr",
             Engine::DeepSeek(_) => "deepseek_asr",
             Engine::Local(handle) => handle.kind.provider(),
+            #[cfg(windows)]
+            Engine::WeType(_) => "wetype_asr",
         }
     }
 
@@ -280,6 +353,8 @@ impl Engine {
             Engine::ChatGpt(_) => "ChatGPT 听写",
             Engine::DeepSeek(_) => "DeepSeek 语音识别",
             Engine::Local(handle) => handle.kind.label(),
+            #[cfg(windows)]
+            Engine::WeType(_) => wetype::LABEL,
         }
     }
 
@@ -304,6 +379,10 @@ impl Engine {
                 let warning = (!transcript.warnings.is_empty()).then(|| transcript.warnings.join("；"));
                 BatchTranscript { text: transcript.text, warning }
             }),
+            #[cfg(windows)]
+            Engine::WeType(config) => {
+                wetype::transcribe_pcm(config, samples).await.map(|text| BatchTranscript { text, warning: None })
+            }
             Engine::Local(handle) => {
                 transcribe_local(handle.core.clone(), handle.kind, language.to_string(), samples.to_vec())
                     .await
@@ -389,6 +468,7 @@ mod tests {
         assert_eq!(effective_language("deepseek_asr", "zh"), "auto");
         assert_eq!(effective_language("qwen_asr", "en"), "auto");
         assert_eq!(effective_language("doubao_web_asr", "zh"), "auto");
+        assert_eq!(effective_language("wetype_asr", "zh"), "auto");
         assert_eq!(effective_language("doubao_asr", "yue"), "yue");
         assert_eq!(effective_language("whisper", "auto"), "auto");
     }
@@ -399,6 +479,7 @@ mod tests {
         assert_eq!(local_kind("qwen_asr"), Some(LocalKind::Qwen));
         assert_eq!(local_kind("doubao_asr"), None);
         assert_eq!(local_kind("doubao_web_asr"), None);
+        assert_eq!(local_kind("wetype_asr"), None);
         assert_eq!(local_kind("chatgpt_asr"), None);
         assert_eq!(local_kind("deepseek_asr"), None);
     }

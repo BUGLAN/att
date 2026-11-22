@@ -71,7 +71,7 @@ import {
   submittedCredentialClearPatch
 } from './settingsFormSync.mjs'
 import { createLatestSaveQueue } from './settingsSaveQueue.mjs'
-import { needsCredentialCheck, requiresCredential } from './onlineEngineStatus.mjs'
+import { isWetypeProvider, needsCredentialCheck, requiresCredential } from './onlineEngineStatus.mjs'
 import { normalizeDownloadSource } from './modelManager.mjs'
 import { normalizeDoubaoWebTimeoutSeconds, normalizeLocalModelIdleMinutes } from './asrEngineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
@@ -377,6 +377,8 @@ function normalizeSettings(value = {}) {
     deepseek_asr_api_key_set: value.deepseek_asr_api_key_set ?? false,
     deepseek_asr_endpoint: value.deepseek_asr_endpoint || 'https://api.deepseek.com/v1/tools/asr',
     deepseek_asr_timeout_seconds: value.deepseek_asr_timeout_seconds ?? 120,
+    wetype_asr_timeout_seconds: value.wetype_asr_timeout_seconds ?? 60,
+    wetype_asr_pid: value.wetype_asr_pid ?? 0,
     pause_audio_on_recording: value.pause_audio_on_recording ?? true,
     auto_optimize: value.auto_optimize ?? false,
     auto_copy_to_clipboard: value.auto_copy_to_clipboard ?? true,
@@ -441,6 +443,8 @@ function buildSettingsPayload() {
     chatgpt_asr_timeout_seconds: form.value.chatgpt_asr_timeout_seconds,
     deepseek_asr_endpoint: form.value.deepseek_asr_endpoint,
     deepseek_asr_timeout_seconds: form.value.deepseek_asr_timeout_seconds,
+    wetype_asr_timeout_seconds: Number(form.value.wetype_asr_timeout_seconds) || 60,
+    wetype_asr_pid: Number(form.value.wetype_asr_pid) || 0,
     pause_audio_on_recording: form.value.pause_audio_on_recording,
     auto_optimize: form.value.auto_optimize,
     auto_copy_to_clipboard: form.value.auto_copy_to_clipboard,
@@ -702,7 +706,10 @@ async function handleSave() {
     lastSavedSettingsSnapshot.value = serializeSavedSettingsPayload(payload)
 
     // 填了新 Token、改了 Resource ID / 接入点或换了在线引擎：后台做一次真实验证，不阻塞保存
-    if (needsCredentialCheck(payload, previous) && serverOwnedPatch(settings.value)[`${payload.asr_provider}_api_key_set`]) {
+    if (
+      needsCredentialCheck(payload, previous) &&
+      (isWetypeProvider(payload.asr_provider) || serverOwnedPatch(settings.value)[`${payload.asr_provider}_api_key_set`])
+    ) {
       credential.verify(payload.asr_provider)
     }
 
@@ -893,7 +900,10 @@ onMounted(async () => {
 
   // 启动时验证一次当前在线引擎的凭据（豆包只握手不推音频），首页的「已就绪」才可信
   const provider = settings.value.asr_provider
-  if (requiresCredential(provider) && serverOwnedPatch(settings.value)[`${provider}_api_key_set`]) {
+  if (
+    (isWetypeProvider(provider) && platform === 'win32') ||
+    (requiresCredential(provider) && serverOwnedPatch(settings.value)[`${provider}_api_key_set`])
+  ) {
     credential.verify(provider)
   }
 })

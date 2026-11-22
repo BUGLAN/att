@@ -420,6 +420,20 @@ fn engine_status(core: &CoreState) -> EngineStatus {
             loading: status.loading,
         };
     }
+    if settings.asr_provider == "wetype_asr" {
+        let status = att_core::stt::wetype_status(core);
+        let streaming_error = streaming.then(|| "微信输入法语音暂不支持流式录音，请使用单段或多段录音模式".to_string());
+        return EngineStatus {
+            ready: status.available && !streaming,
+            error: (!status.available).then_some(status.message).or(streaming_error),
+            streaming_supported: false,
+            streaming_available: false,
+            streaming_backend: None,
+            mode: "provider",
+            running: status.available,
+            loading: false,
+        };
+    }
     // 凭据验证「确定不可用」（Token 无效、Resource ID 不符、接入点不存在）时不报就绪；
     // 没验过或只是没验成（网络等）按凭据齐备处理，不拦录音
     let invalid = att_core::stt::verify::invalid_reason(core, &settings.asr_provider);
@@ -496,6 +510,16 @@ fn local_engine_payload(core: &CoreState) -> Value {
     })
 }
 
+fn wetype_engine_payload(core: &CoreState) -> Value {
+    let status = att_core::stt::wetype_status(core);
+    json!({
+        "available": status.available,
+        "pid": status.pid,
+        "message": status.message,
+        "platform_supported": status.platform_supported,
+    })
+}
+
 /// GET /api/health：前端 runtimeStatus 的全部字段（新旧双命名同源）。
 async fn health(State(state): State<Arc<ServerState>>) -> Json<Value> {
     let settings = state.core.settings();
@@ -506,6 +530,7 @@ async fn health(State(state): State<Arc<ServerState>>) -> Json<Value> {
         "asr_provider": settings.asr_provider,
         "recording_mode": settings.recording_mode,
         "online_ready": engine.ready,
+        "wetype_engine": wetype_engine_payload(&state.core),
         "local_engine": local_engine_payload(&state.core),
         "model_service_managed": true,
         "model_service_running": engine.running,
@@ -995,6 +1020,7 @@ fn model_service_payload(core: &CoreState) -> Value {
             "doubao_web_asr" => Value::from("doubao-web"),
             "chatgpt_asr" => Value::from("chatgpt-dictation"),
             "deepseek_asr" => Value::from("deepseek-asr"),
+            "wetype_asr" => Value::from("wetype-voice"),
             _ => Value::Null,
         },
     };
@@ -2178,11 +2204,16 @@ mod tests {
     #[tokio::test]
     async fn asr_engines_列出全部引擎与可用性() {
         let state = test_state("asr-engines").await;
+        // 测试机可能正开着微信输入法：指定一个不存在的 PID，保证初始可用性可断言
+        state.core.apply_settings_update(&json!({"wetype_asr_pid": i64::from(u32::MAX)})).unwrap();
         let (status, body) = get_json(&state, "/api/asr/engines").await;
         assert_eq!(status, StatusCode::OK);
         let providers: Vec<&str> =
             body["engines"].as_array().unwrap().iter().map(|e| e["provider"].as_str().unwrap()).collect();
-        assert_eq!(providers, ["doubao_asr", "doubao_web_asr", "chatgpt_asr", "deepseek_asr", "whisper", "qwen_asr"]);
+        assert_eq!(
+            providers,
+            ["doubao_asr", "doubao_web_asr", "chatgpt_asr", "deepseek_asr", "wetype_asr", "whisper", "qwen_asr"]
+        );
         let engines = body["engines"].as_array().unwrap();
         let web = engines.iter().find(|e| e["provider"] == "doubao_web_asr").unwrap();
         assert_eq!(web["available"], json!(true), "豆包网页匿名无需凭据");
@@ -2236,6 +2267,7 @@ mod tests {
             "streaming_error",
             "recording_mode",
             "local_engine",
+            "wetype_engine",
         ] {
             assert!(body.get(field).is_some(), "health 缺字段 {field}");
         }

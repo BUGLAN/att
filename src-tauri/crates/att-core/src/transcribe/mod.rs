@@ -205,6 +205,7 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
     let doubao_ready = crate::stt::doubao_config(core).ensure().is_ok();
     let doubao_web_ready = crate::stt::doubao_web_config(core).ensure().is_ok();
     let deepseek_ready = crate::stt::deepseek_config(core).ensure().is_ok();
+    let wetype_ready = crate::stt::Engine::online_for_provider(core, "wetype_asr").is_ok();
     // 只给一句结论 + 去哪下载：完整目录与文件要求仍放在设置页折叠详情里
     let unavailable = |kind: LocalKind, status: &crate::stt::local::LocalStatus| {
         let summary = status.error.clone().unwrap_or_else(|| format!("{}不可用", kind.label()));
@@ -231,10 +232,12 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
                 Ok("deepseek_asr")
             } else if doubao_web_ready {
                 Ok("doubao_web_asr")
+            } else if wetype_ready {
+                Ok("wetype_asr")
             } else {
                 Err(TranscribeError::new(
                     409,
-                    "当前没有可用的转写引擎：本地模型未就位，豆包、DeepSeek 凭据未配置，豆包网页也暂时不可用",
+                    "当前没有可用的转写引擎：本地模型未就位，豆包、DeepSeek 凭据未配置，豆包网页不可用，也未检测到微信输入法",
                 ))
             }
         }
@@ -250,9 +253,28 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
         "deepseek_asr" => {
             Err(TranscribeError::new(409, "DeepSeek 语音识别未配置 API Key，请在「设置 → 识别引擎」中填写"))
         }
+        "wetype_asr" => {
+            #[cfg(windows)]
+            {
+                if wetype_ready {
+                    Ok("wetype_asr")
+                } else {
+                    Err(TranscribeError::new(
+                        409,
+                        crate::stt::wetype_config(core).ensure().err().unwrap_or_else(|| "请先启动微信输入法".into()),
+                    ))
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                Err(TranscribeError::new(409, "微信输入法语音仅支持 Windows"))
+            }
+        }
         other => Err(TranscribeError::new(
             422,
-            format!("不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr/doubao_web_asr/deepseek_asr）"),
+            format!(
+                "不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr/doubao_web_asr/deepseek_asr/wetype_asr）"
+            ),
         )),
     }
 }
@@ -633,6 +655,7 @@ async fn run_transcription_locked(
         None => match engine {
             "deepseek_asr" => hook.token.run(run_deepseek(core, &samples, duration, hook)).await?,
             "doubao_web_asr" => hook.token.run(run_doubao_web(core, &samples, duration, hook)).await?,
+            "wetype_asr" => hook.token.run(run_wetype(core, &samples, duration, hook)).await?,
             _ => hook.token.run(run_doubao(core, language, &samples, duration, engine, hook)).await?,
         },
     };
@@ -762,6 +785,42 @@ fn doubao_web_payload(text: String, duration: f64, samples: usize) -> Value {
         "engine": "doubao_web_asr",
         "segments": segments,
     })
+}
+
+/// 微信输入法语音：整段发送，协议层只返回最终文字，不伪造时间戳。
+async fn run_wetype(
+    core: &CoreState,
+    samples: &[i16],
+    duration: f64,
+    hook: &AsrHook,
+) -> Result<Value, TranscribeError> {
+    #[cfg(windows)]
+    {
+        hook.tick(0.0);
+        let config = crate::stt::wetype_config(core);
+        let text = crate::stt::wetype::transcribe_pcm(&config, samples).await.map_err(|error| {
+            if hook.token.is_cancelled() {
+                TranscribeError::cancelled()
+            } else {
+                TranscribeError::new(500, format!("转写失败：{error}"))
+            }
+        })?;
+        hook.tick(duration);
+        let segments = (!text.trim().is_empty())
+            .then(|| vec![json!({ "start": 0.0, "end": duration, "text": text })])
+            .unwrap_or_default();
+        Ok(json!({
+            "text": text,
+            "duration_seconds": if duration > 0.0 { duration } else { samples.len() as f64 / SAMPLE_RATE as f64 },
+            "engine": "wetype_asr",
+            "segments": segments,
+        }))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (core, samples, duration, hook);
+        Err(TranscribeError::new(409, "微信输入法语音仅支持 Windows"))
+    }
 }
 
 fn start_job(
@@ -1317,6 +1376,34 @@ mod tests {
         assert_eq!(resolve_engine(&core, "auto").unwrap(), "deepseek_asr");
         assert_eq!(resolve_engine(&core, "").unwrap(), "deepseek_asr");
         assert_eq!(resolve_engine(&core, "deepseek_asr").unwrap(), "deepseek_asr");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    #[ignore = "需要本机运行微信输入法、ffmpeg 与 ATT_TEST_WAV"]
+    async fn 真机_微信输入法_文件转写全链路() {
+        let path = std::env::var("ATT_TEST_WAV").expect("请设置 ATT_TEST_WAV");
+        let dir = std::env::temp_dir().join(format!("att-ft-wetype-{}", uuid::Uuid::new_v4()));
+        let core = Arc::new(CoreState::init(&dir, crate::Platform::Windows).unwrap());
+        core.allow_transcribe_file(std::path::Path::new(&path)).unwrap();
+        let request = TranscribeRequest {
+            path,
+            language: "zh".into(),
+            want_segments: false,
+            engine: "wetype_asr".into(),
+            proofread: false,
+            proofread_model_id: None,
+            proofread_options: None,
+            async_job: false,
+        };
+        let outcome = handle(core.clone(), request).await.unwrap();
+        let Outcome::Result(payload) = outcome else { panic!("短音频应同步返回") };
+        assert_eq!(payload["engine"], json!("wetype_asr"));
+        assert!(!payload["text"].as_str().unwrap_or_default().trim().is_empty());
+        let id = payload["record_id"].as_str().expect("应写入记录集");
+        let record = core.records.get(id).unwrap();
+        assert_eq!(record.engine.as_deref(), Some("wetype_asr"));
+        assert_eq!(record.language.as_deref(), Some("auto"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

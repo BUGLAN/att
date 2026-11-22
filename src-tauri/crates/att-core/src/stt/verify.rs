@@ -28,6 +28,8 @@ pub const DOUBAO_WEB: &str = "doubao_web_asr";
 pub const CHATGPT: &str = "chatgpt_asr";
 /// DeepSeek 语音识别 provider 标识。
 pub const DEEPSEEK: &str = "deepseek_asr";
+/// 微信输入法语音 provider 标识。
+pub const WETYPE: &str = "wetype_asr";
 
 /// ChatGPT 验证请求的超时：比正常听写短，验证不该让设置页等太久。
 const CHATGPT_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
@@ -79,9 +81,9 @@ impl CredentialChecks {
     }
 }
 
-/// 是否是需要在线验证的引擎（豆包网页匿名，验证的是连通性而不是凭据）。
+/// 是否支持 `/api/asr/credential-check` 的可用性检测（含无需凭据的微信输入法）。
 pub fn is_online_provider(provider: &str) -> bool {
-    matches!(provider.trim(), DOUBAO | DOUBAO_WEB | CHATGPT | DEEPSEEK)
+    matches!(provider.trim(), DOUBAO | DOUBAO_WEB | CHATGPT | DEEPSEEK | WETYPE)
 }
 
 fn fingerprint(parts: &[&str]) -> u64 {
@@ -116,6 +118,22 @@ fn current_fingerprint(core: &CoreState, provider: &str) -> Option<u64> {
             config.ensure().ok()?;
             Some(fingerprint(&[DEEPSEEK, &config.api_key, &config.endpoint]))
         }
+        WETYPE => {
+            #[cfg(windows)]
+            {
+                if core.platform != crate::Platform::Windows {
+                    return None;
+                }
+                let config = crate::stt::wetype_config(core);
+                let pid = config.pid.map(|pid| pid.to_string()).unwrap_or_default();
+                let timeout = config.timeout.as_secs().to_string();
+                Some(fingerprint(&[WETYPE, &pid, &timeout]))
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -134,6 +152,9 @@ pub fn invalid_reason(core: &CoreState, provider: &str) -> Option<String> {
 /// 立即验证该 provider 的当前凭据并记下结果。没配齐时返回 `Err`（提示去填写）。
 pub async fn check(core: &CoreState, provider: &str) -> Result<CredentialCheck, String> {
     let provider = provider.trim();
+    if provider == WETYPE {
+        return check_wetype(core).await;
+    }
     let (status, message, fingerprint) = match provider {
         DOUBAO => {
             let config = doubao_config(core);
@@ -181,6 +202,36 @@ pub async fn check(core: &CoreState, provider: &str) -> Result<CredentialCheck, 
     Ok(check)
 }
 
+/// 微信输入法：在本机 attach 输入法、核对模块与编码器特征，不发识别请求。
+async fn check_wetype(core: &CoreState) -> Result<CredentialCheck, String> {
+    #[cfg(windows)]
+    {
+        if core.platform != crate::Platform::Windows {
+            return Err("微信输入法语音仅支持 Windows".into());
+        }
+        let config = crate::stt::wetype_config(core);
+        let pid = config.pid.map(|pid| pid.to_string()).unwrap_or_default();
+        let timeout = config.timeout.as_secs().to_string();
+        let fingerprint = fingerprint(&[WETYPE, &pid, &timeout]);
+        let result = tokio::task::spawn_blocking(move || crate::stt::wetype::probe(&config))
+            .await
+            .map_err(|error| format!("微信输入法探活任务失败：{error}"))?;
+        let (status, message) = match result {
+            Ok(()) => (CheckStatus::Ok, String::new()),
+            Err(message) => (CheckStatus::Invalid, message),
+        };
+        let check =
+            CredentialCheck { provider: WETYPE.into(), status, message, checked_at: crate::now_rfc3339(), fingerprint };
+        core.credential_checks.store(check.clone());
+        Ok(check)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = core;
+        Err("微信输入法语音仅支持 Windows".into())
+    }
+}
+
 /// 测试支撑：直接记下一条验证结论（按当前凭据指纹），供下游 crate 的测试模拟「验证失败」。
 #[cfg(any(test, feature = "test-support"))]
 pub fn record_for_test(core: &CoreState, provider: &str, status: CheckStatus, message: &str) {
@@ -223,7 +274,7 @@ pub fn doubao_status(kind: ErrorKind) -> CheckStatus {
 
 /// 验证失败文案：匿名网页引擎没有凭据，失败的是连通性 / 网页结构。
 pub fn invalid_message(provider: &str, label: &str, reason: &str) -> String {
-    let subject = if provider.trim() == DOUBAO_WEB { "连接" } else { "凭据" };
+    let subject = if matches!(provider.trim(), DOUBAO_WEB | WETYPE) { "连接" } else { "凭据" };
     format!("{label}{subject}验证失败：{reason}")
 }
 
@@ -376,5 +427,6 @@ mod tests {
         assert!(is_online_provider(" doubao_asr "));
         assert!(is_online_provider("doubao_web_asr"));
         assert!(is_online_provider("deepseek_asr"));
+        assert!(is_online_provider("wetype_asr"));
     }
 }

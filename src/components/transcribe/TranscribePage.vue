@@ -423,7 +423,8 @@ const activeResultTab = ref('text')
 const engineOptions = computed(() => transcribeEngineOptions({
   doubaoKeySet: Boolean(settingsStore.settings?.doubao_asr_api_key_set),
   deepseekKeySet: Boolean(settingsStore.settings?.deepseek_asr_api_key_set),
-  localEngine: settingsStore.runtimeStatus?.local_engine || null
+  localEngine: settingsStore.runtimeStatus?.local_engine || null,
+  wetypeEngine: settingsStore.runtimeStatus?.wetype_engine || null
 }))
 const currentEngine = computed(() => engineOptions.value.find((item) => item.value === engine.value))
 const languageOptions = computed(() => buildLanguageOptions(engine.value))

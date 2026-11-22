@@ -15,6 +15,7 @@ const PROVIDER_LABELS = Object.freeze({
   doubao_web_asr: '豆包网页语音',
   chatgpt_asr: 'ChatGPT 听写',
   deepseek_asr: 'DeepSeek 语音识别',
+  wetype_asr: '微信输入法语音',
   whisper: '本地 Whisper',
   qwen_asr: '本地 Qwen3-ASR'
 })
@@ -25,6 +26,7 @@ const PROVIDER_SHORT_LABELS = Object.freeze({
   doubao_web_asr: '豆包网页语音',
   chatgpt_asr: 'ChatGPT 听写',
   deepseek_asr: 'DeepSeek',
+  wetype_asr: '微信输入法语音',
   whisper: '本地 Whisper',
   qwen_asr: '本地 Qwen3-ASR'
 })

@@ -71,10 +71,10 @@ test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法�
   assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'chatgpt_asr' }).engine, 'doubao_web_asr')
 })
 
-test('TRANSCRIBE_ENGINES：五引擎元数据齐备，不标「默认」，描述各一句话', () => {
+test('TRANSCRIBE_ENGINES：六引擎元数据齐备，不标「默认」，描述各一句话', () => {
   assert.deepEqual(
     TRANSCRIBE_ENGINES.map((item) => item.value),
-    ['doubao_asr', 'doubao_web_asr', 'deepseek_asr', 'whisper', 'qwen_asr']
+    ['doubao_asr', 'doubao_web_asr', 'deepseek_asr', 'wetype_asr', 'whisper', 'qwen_asr']
   )
   for (const item of TRANSCRIBE_ENGINES) {
     assert.ok(!item.badge, `${item.value} 不再带「默认」标记`)
@@ -90,6 +90,7 @@ test('defaultTranscribeEngine：跟随设置里的识别引擎，文件转写不
   assert.equal(defaultTranscribeEngine('qwen_asr'), 'qwen_asr')
   assert.equal(defaultTranscribeEngine('deepseek_asr'), 'deepseek_asr')
   assert.equal(defaultTranscribeEngine('doubao_web_asr'), 'doubao_web_asr')
+  assert.equal(defaultTranscribeEngine('wetype_asr'), 'wetype_asr')
   assert.equal(defaultTranscribeEngine('chatgpt_asr'), 'doubao_web_asr')
   assert.equal(defaultTranscribeEngine(undefined), 'doubao_web_asr')
   assert.equal(defaultTranscribeEngine(''), 'doubao_web_asr')
@@ -111,7 +112,23 @@ test('transcribeEngineOptions：豆包 / DeepSeek 未配置、当前本地引擎
   assert.equal(noToken.deepseek_asr.disabled, true)
   assert.equal(noToken.deepseek_asr.badge, '未配置')
   assert.match(noToken.deepseek_asr.hint, /API Key/)
+  assert.equal(noToken.wetype_asr.disabled, false, '还没拿到微信输入法状态时不误标')
   assert.equal(noToken.whisper.disabled, false, '拿不到状态的本地引擎不标')
+
+  const wetypeMissing = byValue(transcribeEngineOptions({
+    doubaoKeySet: true,
+    deepseekKeySet: true,
+    wetypeEngine: { platform_supported: true, available: false, message: '请先启动微信输入法' }
+  }))
+  assert.equal(wetypeMissing.wetype_asr.disabled, true)
+  assert.equal(wetypeMissing.wetype_asr.badge, '未检测到')
+  assert.match(wetypeMissing.wetype_asr.hint, /请先启动微信输入法/)
+
+  const wetypeUnsupported = byValue(transcribeEngineOptions({
+    wetypeEngine: { platform_supported: false, available: false, message: '仅 Windows' }
+  }))
+  assert.equal(wetypeUnsupported.wetype_asr.disabled, true)
+  assert.equal(wetypeUnsupported.wetype_asr.badge, '仅 Windows')
 
   const missing = byValue(transcribeEngineOptions({
     doubaoKeySet: true,

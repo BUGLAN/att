@@ -161,6 +161,8 @@ impl MultiDrainPolicy {
             stt::Engine::DeepSeek(config) => {
                 config.timeout.saturating_mul(deepseek::MAX_ATTEMPTS_PER_CHUNK as u32) + Duration::from_secs(3)
             }
+            #[cfg(windows)]
+            stt::Engine::WeType(config) => config.timeout,
             // 本地推理没有上游请求超时；由运行时可配置值统一限制单段，避免模型卡死拖住整场录音。
             stt::Engine::Local(_) => fallback,
         };
@@ -1071,6 +1073,7 @@ impl Actor {
             settings.deepseek_asr_timeout_seconds,
             settings.doubao_web_timeout_seconds,
             settings.chatgpt_asr_timeout_seconds,
+            settings.wetype_asr_timeout_seconds,
         );
         finalize_budget(mode, recorded, batch_timeout, plan)
     }
@@ -1665,6 +1668,7 @@ fn batch_plan(
     deepseek_timeout_seconds: i64,
     doubao_web_timeout_seconds: i64,
     chatgpt_timeout_seconds: i64,
+    wetype_timeout_seconds: i64,
 ) -> (Duration, BatchPlan) {
     if provider == "doubao_web_asr" {
         let config = doubao_web::DoubaoWebConfig::from_seconds(doubao_web_timeout_seconds);
@@ -1675,6 +1679,8 @@ fn batch_plan(
         let chunks = deepseek::chunk_count_for_duration(recorded + HOLD_RELEASE_GRACE);
         let timeout = Duration::from_secs(deepseek::request_timeout_seconds(deepseek_timeout_seconds));
         (timeout, BatchPlan::DeepSeek { chunks })
+    } else if provider == "wetype_asr" {
+        (Duration::from_secs(wetype_timeout_seconds.clamp(10, 600) as u64), BatchPlan::Single)
     } else {
         (Duration::from_secs(chatgpt_timeout_seconds.max(0) as u64), BatchPlan::Single)
     }
@@ -2335,7 +2341,7 @@ mod tests {
         // 600 / 1800 / 7200 秒分别切成 6 / 16 / 63 块，最坏每块尝试 3 次、每次等满 120 秒
         for (seconds, chunks) in [(600u64, 6usize), (1800, 16), (7200, 63)] {
             let recorded = Duration::from_secs(seconds);
-            let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 30, 120);
+            let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 30, 120, 60);
             assert_eq!(timeout, Duration::from_secs(120), "{seconds} 秒");
             assert_eq!(plan, BatchPlan::DeepSeek { chunks }, "{seconds} 秒");
             let budget = finalize_budget(Mode::Batch, recorded, timeout, plan);
@@ -2352,7 +2358,7 @@ mod tests {
     #[test]
     fn 收尾看门狗_deepseek短录音按尝试次数放大_其他引擎预算不变() {
         let attempts = att_core::stt::deepseek::MAX_ATTEMPTS_PER_CHUNK as u64;
-        let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 120, 30, 120);
+        let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 120, 30, 120, 60);
         assert_eq!(timeout, Duration::from_secs(120));
         assert_eq!(plan, BatchPlan::DeepSeek { chunks: 1 });
         assert_eq!(
@@ -2361,17 +2367,21 @@ mod tests {
         );
 
         // 单块超时按 deepseek_config 的实际范围（10～600 秒）取，预算不能跟着越界设置无限放大
-        let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 900, 30, 120);
+        let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 900, 30, 120, 60);
         assert_eq!(timeout, Duration::from_secs(600));
         assert_eq!(
             finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, plan),
             Duration::from_secs(600 * attempts) + WATCHDOG_SLACK
         );
+
+        let (timeout, plan) = batch_plan("wetype_asr", Duration::from_secs(30), 120, 30, 120, 90);
+        assert_eq!(timeout, Duration::from_secs(90));
+        assert_eq!(plan, BatchPlan::Single);
     }
 
     #[test]
     fn 收尾看门狗_豆包网页按实时推流与游客会话数放大预算() {
-        let (timeout, plan) = batch_plan("doubao_web_asr", Duration::from_secs(600), 120, 30, 120);
+        let (timeout, plan) = batch_plan("doubao_web_asr", Duration::from_secs(600), 120, 30, 120, 60);
         assert_eq!(timeout, Duration::from_secs(30));
         assert_eq!(plan, BatchPlan::DoubaoWeb { sessions: 1 });
         let budget = finalize_budget(Mode::Batch, Duration::from_secs(600), timeout, plan);
@@ -2379,7 +2389,7 @@ mod tests {
         assert!(budget > Duration::from_secs(600));
 
         // 超过 13 分钟会再启动新的游客会话；预算必须覆盖每段各自的初始化、握手和四个控制等待。
-        let (timeout, plan) = batch_plan("doubao_web_asr", Duration::from_secs(1800), 120, 30, 120);
+        let (timeout, plan) = batch_plan("doubao_web_asr", Duration::from_secs(1800), 120, 30, 120, 60);
         assert_eq!(plan, BatchPlan::DoubaoWeb { sessions: 3 });
         assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(1800), timeout, plan), Duration::from_secs(2361));
     }
@@ -2556,7 +2566,7 @@ mod tests {
         ])
         .await;
         let recorded = Duration::from_secs(600);
-        let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 30, 120);
+        let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 30, 120, 60);
         assert_eq!(plan, BatchPlan::DeepSeek { chunks: 6 });
         let budget = finalize_budget(Mode::Batch, recorded, timeout, plan);
         assert_eq!(budget, Duration::from_secs(6 * 120 * deepseek::MAX_ATTEMPTS_PER_CHUNK as u64) + WATCHDOG_SLACK);

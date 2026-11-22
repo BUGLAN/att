@@ -1,11 +1,17 @@
-// 在线识别引擎（豆包 / 豆包网页 / ChatGPT 听写 / DeepSeek）卡片状态的纯逻辑
-// （不依赖 Vue，供 tests/test_settings_online_engine.mjs 锁定）。
+// 识别引擎可用性状态的纯逻辑（不依赖 Vue，供 tests/test_settings_online_engine.mjs 锁定）。
 //
 // 「填了 Token」不等于「能用」：保存后后端会做一次真实握手（见 att_core::stt::verify），
 // 卡片据此区分「已配置 / 验证中 / 可用 / 验证失败 / 未能验证」。
-// 豆包网页语音同样是在线引擎，但匿名访问、无需密钥，不参与凭据验证。
+// 豆包网页语音匿名访问、无需密钥；微信输入法语音只做本机探活，两者都不参与凭据验证。
 
-export const ONLINE_PROVIDERS = Object.freeze(['doubao_asr', 'doubao_web_asr', 'chatgpt_asr', 'deepseek_asr'])
+export const WETYPE_PROVIDER = 'wetype_asr'
+export const ONLINE_PROVIDERS = Object.freeze([
+  'doubao_asr',
+  'doubao_web_asr',
+  'chatgpt_asr',
+  'deepseek_asr',
+  WETYPE_PROVIDER
+])
 
 /** 需要用户填写凭据并做后端握手的在线引擎。 */
 export const CREDENTIAL_PROVIDERS = Object.freeze(['doubao_asr', 'chatgpt_asr', 'deepseek_asr'])
@@ -17,6 +23,10 @@ export function isOnlineProvider(provider) {
 /** 是否需要配置并验证凭据；豆包网页语音无需密钥。 */
 export function requiresCredential(provider) {
   return CREDENTIAL_PROVIDERS.includes(provider)
+}
+
+export function isWetypeProvider(provider) {
+  return provider === WETYPE_PROVIDER
 }
 
 /**
@@ -66,6 +76,28 @@ export function credentialNote(check) {
 }
 
 /**
+ * 微信输入法语音卡片状态。非 Windows 明确不可用；Windows 上按进程/attach 检测结果展示。
+ * @param {{ platform?: string, check?: { status: string, message?: string } | null }} params
+ */
+export function wetypeEngineChip({ platform = 'win32', check = null } = {}) {
+  if (platform !== 'win32') {
+    return { chip: '仅 Windows', tone: 'neutral', loading: false }
+  }
+  switch (check?.status) {
+    case 'checking':
+      return { chip: '检测中', tone: 'accent', loading: true }
+    case 'ok':
+      return { chip: '可用', tone: 'ok', loading: false }
+    case 'invalid':
+      return { chip: '未就绪', tone: 'warn', loading: false }
+    case 'unknown':
+      return { chip: '未能检测', tone: 'warn', loading: false }
+    default:
+      return { chip: '本机注入', tone: 'neutral', loading: false }
+  }
+}
+
+/**
  * 保存设置后是否需要重新验证当前在线引擎：换了引擎、填了新 Token，或改了 Resource ID / 接入点。
  *
  * @param {object} payload 本次提交的设置载荷（明文 Token 只在用户输入时出现）
@@ -75,6 +107,13 @@ export function needsCredentialCheck(payload, previous = {}) {
   const provider = payload?.asr_provider
   if (!isOnlineProvider(provider)) {
     return false
+  }
+  if (provider === WETYPE_PROVIDER) {
+    if (provider !== previous?.asr_provider) {
+      return true
+    }
+    return payload.wetype_asr_pid !== previous?.wetype_asr_pid ||
+      payload.wetype_asr_timeout_seconds !== previous?.wetype_asr_timeout_seconds
   }
   if (!requiresCredential(provider)) {
     return false

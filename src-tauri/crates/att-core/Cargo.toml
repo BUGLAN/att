@@ -47,6 +47,17 @@ regex = "1"
 tar = "0.4"
 bzip2 = "0.5"
 
+[target.'cfg(windows)'.dependencies]
+# 微信输入法语音：直接注入输入法进程；ToolHelp 只用于发现进程，Frida 负责 attach / 执行 agent
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
+
+[target.'cfg(windows)'.build-dependencies]
+# 只下载并解包 Frida Core 静态库，不使用 bindgen，构建机无需安装 libclang。
+frida-build = "0.17.2"
+
 [features]
 # 默认包含本地引擎；CI / 纯数据面构建可用 --no-default-features 跳过 CTranslate2 与 sherpa-onnx
 default = ["local-engines"]

@@ -11,9 +11,11 @@
             type="button"
             role="radio"
             class="choice-card engine-card"
-            :class="{ 'is-loading': engine.loading }"
+            :class="{ 'is-loading': engine.loading, 'is-muted': engine.disabled }"
             :aria-checked="form.asr_provider === engine.value ? 'true' : 'false'"
             :aria-busy="engine.loading ? 'true' : undefined"
+            :aria-disabled="engine.disabled ? 'true' : undefined"
+            :disabled="engine.disabled"
             @click="selectEngine(engine.value)"
           >
             <span class="choice-title">{{ engine.label }}</span>
@@ -232,6 +234,42 @@
       </div>
     </section>
 
+    <!-- 微信输入法语音：直接注入本机输入法，无需密钥；仅 Windows -->
+    <section v-if="form.asr_provider === 'wetype_asr'" class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">微信输入法语音 · 本机接入</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">运行状态</span>
+            <span class="setting-desc">直接连接本机微信输入法，不经过外部桥进程。</span>
+          </div>
+          <span class="engine-meta" :class="`is-${wetypeChip.tone}`">
+            <span class="engine-dot" aria-hidden="true"></span>{{ wetypeChip.chip }}
+          </span>
+        </div>
+        <div v-if="wetypeStatusNote" class="settings-note" :class="wetypeStatusNote.tone" role="status">
+          <span>{{ wetypeStatusNote.text }}</span>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">请求超时</span>
+            <span class="setting-desc">秒；长音频还会按“音频时长 × 1.5 + 15 秒”自动放宽。</span>
+          </div>
+          <BaseInput v-model.number="form.wetype_asr_timeout_seconds" type="number" min="10" max="600" step="10" aria-label="微信输入法语音请求超时" />
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">输入法 PID</span>
+            <span class="setting-desc">0 = 自动发现；同时运行多个微信输入法时填具体 PID。</span>
+          </div>
+          <BaseInput v-model.number="form.wetype_asr_pid" type="number" min="0" step="1" aria-label="微信输入法进程 PID" />
+        </div>
+        <div class="settings-note">
+          <span>识别音频会经微信输入法自己的网络层发往腾讯；首次录音前请确认微信输入法语音功能可正常联网。仅个人自用，不建议作为默认对外服务。</span>
+        </div>
+      </div>
+    </section>
+
     <section v-if="form.asr_provider === 'whisper'" class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">faster-whisper · 本地模型</h3>
@@ -437,14 +475,21 @@ import {
   whisperOptionLabel
 } from '../modelManager.mjs'
 import { hotwordView, parseHotwords } from '../asrHotwords.mjs'
-import { credentialNote, requiresCredential, onlineEngineChip } from '../onlineEngineStatus.mjs'
+import {
+  credentialNote,
+  isWetypeProvider,
+  onlineEngineChip,
+  requiresCredential,
+  wetypeEngineChip,
+  WETYPE_PROVIDER
+} from '../onlineEngineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 
 const { form, streamingRuntimeSummary } = inject(SETTINGS_CTX)
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const credential = useAsrCredentialCheck()
-const { isDesktop, revealAppPath } = useElectron()
+const { isDesktop, platform, revealAppPath } = useElectron()
 
 const LOCAL_STATUS_POLL_MS = 1000
 const MODEL_JOB_POLL_MS = 800
@@ -644,12 +689,20 @@ async function confirmDeleteModel() {
 
 // 点引擎卡片：切换引擎；再点已选中的本地引擎 = 提前加载（未加载时）或重试（加载失败时），界面上不另放按钮
 function selectEngine(value) {
+  const selected = engines.value.find((engine) => engine.value === value)
+  if (selected?.disabled) {
+    return
+  }
   if (form.value.asr_provider === value && ['idle', 'failed'].includes(localView.value.state)) {
     loadLocalModel()
     return
   }
   // 再点已选中、已填凭据的在线引擎 = 重新验证（与本地引擎「再点一下重试」同一个手势）
-  if (form.value.asr_provider === value && requiresCredential(value) && onlineKeySet(value)) {
+  if (
+    form.value.asr_provider === value &&
+    (requiresCredential(value) || isWetypeProvider(value)) &&
+    onlineKeySet(value)
+  ) {
     credential.verify(value)
     return
   }
@@ -664,6 +717,7 @@ function selectEngine(value) {
 }
 
 function onlineKeySet(provider) {
+  if (isWetypeProvider(provider)) return platform === 'win32'
   if (provider === 'doubao_asr') return Boolean(form.value.doubao_asr_api_key_set)
   if (provider === 'deepseek_asr') return Boolean(form.value.deepseek_asr_api_key_set)
   if (provider === 'chatgpt_asr') return Boolean(form.value.chatgpt_asr_api_key_set)
@@ -684,10 +738,36 @@ const doubaoNote = computed(() => (form.value.doubao_asr_api_key_set ? credentia
 const chatgptNote = computed(() => (form.value.chatgpt_asr_api_key_set ? credentialNote(credential.checks.chatgpt_asr) : null))
 const deepseekNote = computed(() => (form.value.deepseek_asr_api_key_set ? credentialNote(credential.checks.deepseek_asr) : null))
 
-// 进入本页时：当前在线引擎没有「可用」结论就补验一次（上次没验成、验证失败后在控制台改过开通等）
+const wetypeCheck = computed(() => {
+  const runtime = settingsStore.runtimeStatus?.wetype_engine
+  if (platform === 'win32' && runtime?.available === false) {
+    return { status: 'invalid', message: runtime.message || '请先启动微信输入法' }
+  }
+  const check = credential.checks[WETYPE_PROVIDER]
+  if (check) {
+    return check
+  }
+  if (platform === 'win32' && runtime?.available === true) {
+    return { status: 'ok', message: '' }
+  }
+  return null
+})
+const wetypeChip = computed(() => wetypeEngineChip({ platform, check: wetypeCheck.value }))
+const wetypeStatusNote = computed(() => {
+  if (platform !== 'win32') {
+    return { tone: 'warn', text: '微信输入法语音只能在 Windows 上使用。' }
+  }
+  const check = wetypeCheck.value
+  if (check) {
+    return credentialNote(check)
+  }
+  return null
+})
+
+// 进入本页时：当前可检测引擎没有「可用」结论就补验一次（上次没验成、进程刚启动等）
 onMounted(async () => {
   const provider = form.value.asr_provider
-  if (!requiresCredential(provider) || !onlineKeySet(provider)) {
+  if (!(requiresCredential(provider) || isWetypeProvider(provider)) || !onlineKeySet(provider)) {
     return
   }
   const check = await credential.load(provider)
@@ -801,6 +881,13 @@ const engines = computed(() => [
     label: 'DeepSeek',
     ...onlineChip('deepseek_asr'),
     desc: '单段 / 多段'
+  },
+  {
+    value: WETYPE_PROVIDER,
+    label: '微信输入法语音',
+    ...wetypeChip.value,
+    disabled: platform !== 'win32',
+    desc: 'Windows · 本机注入'
   },
   {
     value: 'whisper',
