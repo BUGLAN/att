@@ -334,8 +334,6 @@ defineExpose({ deleteProfile })
 <style scoped>
 .llm-section { display: flex; flex-direction: column; gap: var(--s-4); container-type: inline-size; }
 .llm-head { display: flex; align-items: center; gap: var(--s-3); }
-.llm-head-desc { margin: 0; font-size: var(--fs-cap); color: var(--text-3); line-height: 1.6; }
-.settings-group-title + .llm-head-desc { margin-top: calc(-1 * var(--s-2)); }
 .llm-head-actions { margin-left: auto; display: flex; gap: var(--s-2); flex: none; }
 
 .llm-empty {

@@ -490,21 +490,6 @@ textarea:focus-visible {
 }
 
 /* ============================================
-   Toast Notification
-   ============================================ */
-
-@keyframes toast-in {
-    from {
-        opacity: 0;
-        transform: translateX(-50%) translateY(10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0);
-    }
-}
-
-/* ============================================
    Select Mode
    ============================================ */
 .record-checkbox {
@@ -545,29 +530,6 @@ textarea:focus-visible {
 
 .record-item.select-mode:hover {
     background: var(--bg-card);
-}
-
-/* ============================================
-   Transcribing Status
-   ============================================ */
-
-/* 旧类 transcribing-spinner 已随旧转写面板下线删除，@keyframes spin 仍被 .spinner-small 使用；
-   原 .record-btn 的 recording-pulse / ring-expand / processing-pulse 三组关键帧已随旧按钮下线删除 */
-
-@keyframes spin {
-    to { transform: rotate(360deg); }
-}
-
-/* Small Spinner for Status Badge */
-.spinner-small {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border: 2px solid var(--border);
-    border-top-color: currentColor;
-    border-radius: var(--r-full);
-    animation: spin 1s linear infinite;
-    margin-right: var(--space-xs);
 }
 
 /* Record Status Badge */
@@ -976,8 +938,7 @@ textarea:focus-visible {
 .setting-item > .ui-input,
 .setting-item > .ui-textarea,
 .setting-item > .hotkey-input-wrapper,
-.setting-item > .setting-actions-inline,
-.setting-item > .setting-runtime-card {
+.setting-item > .setting-actions-inline {
     width: 100%;
     min-width: 0;
 }
@@ -985,16 +946,6 @@ textarea:focus-visible {
 /* 开关是固定尺寸控件：靠右对齐而不是被栅格拉伸 */
 .setting-item > .toggle-switch {
     justify-self: end;
-}
-
-/* 可选的控件容器：SettingItem.vue 用它把右侧控件包成同一列（等价于栅格第二列） */
-.setting-control {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--s-2);
-    min-width: 0;
-    width: 100%;
 }
 
 .setting-info {
@@ -1105,11 +1056,6 @@ textarea:focus-visible {
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-}
-
-@keyframes pulse-border {
-    0%, 100% { border-color: var(--accent); }
-    50% { border-color: var(--accent-dim); }
 }
 
 /* ============================================
@@ -1382,40 +1328,6 @@ textarea:focus-visible {
 .preset-description {
   font-size: var(--fs-cap);
   color: var(--text-muted);
-}
-
-.setting-actions-block {
-  width: 100%;
-  justify-content: flex-start;
-}
-
-.setting-item-runtime {
-  align-items: flex-start;
-}
-
-.setting-runtime-card {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  background: var(--grad-accent);
-  border: 1px solid var(--accent-line);
-  border-radius: var(--r-md);
-  box-shadow: var(--edge-hi);
-}
-
-.setting-runtime-card.unavailable {
-  background: var(--grad-raise);
-  border-color: var(--line-strong);
-}
-
-.setting-runtime-text {
-  color: var(--text-secondary);
-  font-size: var(--fs-base);
-  line-height: 1.6;
-  word-break: break-word;
 }
 
 /* ------------------------------------------------------------
