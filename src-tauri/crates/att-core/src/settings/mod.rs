@@ -12,7 +12,7 @@ use crate::Platform;
 use hotkey::binding_from_legacy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub use hotkey::{HotkeyAction, HotkeyBinding, TriggerMode};
 
@@ -69,21 +69,6 @@ pub const CLIPBOARD_PANEL_WIDTH_RANGE: (i64, i64) = (720, 3840);
 /// 2：豆包接入点改为 bigmodel_async；强制断句静音时长 0 → 800ms（0 时服务端按语义分段，
 ///    停顿后基本不确认，流式的未确认文字要到松开才变色）。
 pub const SETTINGS_REVISION: i64 = 2;
-
-/// 进程级配置（环境变量覆盖）：数据目录与模型目录。
-#[derive(Debug, Clone)]
-pub struct EnvSettings {
-    pub data_dir: PathBuf,
-    pub models_dir: PathBuf,
-}
-
-impl EnvSettings {
-    pub fn from_env() -> Self {
-        let data_dir = std::env::var("ATT_DATA_DIR").unwrap_or_else(|_| "data".into());
-        let models_dir = std::env::var("ATT_MODELS_DIR").unwrap_or_else(|_| "models".into());
-        Self { data_dir: PathBuf::from(data_dir), models_dir: PathBuf::from(models_dir) }
-    }
-}
 
 /// 用户设置（data/settings.json）。
 ///
@@ -820,6 +805,7 @@ fn merge_defaults_into(object: &mut serde_json::Map<String, Value>, platform: Pl
 mod tests {
     use super::*;
     use crate::storage::crypto::Crypto;
+    use std::path::PathBuf;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("att-settings-{tag}-{}", std::process::id()));

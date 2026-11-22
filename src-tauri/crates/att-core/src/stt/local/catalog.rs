@@ -473,10 +473,6 @@ pub fn find(id: &str) -> Option<&'static ModelSpec> {
     MODELS.iter().find(|spec| spec.id == id)
 }
 
-pub fn whisper_specs() -> impl Iterator<Item = &'static ModelSpec> {
-    MODELS.iter().filter(|spec| spec.engine == Engine::Whisper)
-}
-
 pub fn vad_spec() -> &'static ModelSpec {
     find("silero-vad").expect("模型清单必须包含 Silero VAD")
 }

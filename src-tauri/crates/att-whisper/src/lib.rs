@@ -131,11 +131,6 @@ pub fn model_candidates(model: &str, models_dir: &Path) -> Vec<PathBuf> {
 /// 缺模型时错误文案的首行结论：首页、诊断页只显示这一句，详情（目录与获取方式）留给设置页。
 pub const MODEL_MISSING: &str = "本地 Whisper 模型未安装";
 
-/// 默认的模型存放目录（`models/faster_whisper`，也是 [`model_candidates`] 里最常见的布局）。
-pub fn default_model_dir(models_dir: &Path) -> PathBuf {
-    models_dir.join("faster_whisper")
-}
-
 /// 解析出真正要加载的模型目录。
 ///
 /// 都找不到时返回「首行结论 + 详情」两段式文案（见 [`model_missing_hint`]）；

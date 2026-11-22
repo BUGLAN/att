@@ -15,7 +15,6 @@ pub const CODE_PROVIDER: &str = "provider_error";
 pub const CODE_UNSUPPORTED_PROVIDER: &str = "unsupported_provider";
 /// 输出预算被思考 token 吃光（正文为空 + finish_reason=length）：重试必然同样失败
 pub const CODE_OUTPUT_TRUNCATED: &str = "output_truncated";
-pub const CODE_UNKNOWN: &str = "unknown";
 
 /// 面向用户的建议文案（失败原因要可执行，而不是一坨异常字符串）。
 fn user_hint(code: &str) -> &'static str {

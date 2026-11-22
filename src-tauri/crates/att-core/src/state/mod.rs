@@ -74,12 +74,8 @@ pub fn models_dir_env_override() -> bool {
     std::env::var("ATT_MODELS_DIR").is_ok_and(|dir| !dir.trim().is_empty())
 }
 
-/// 解析本地模型根目录：环境变量优先，其次用户设置，再走现有默认。
-pub fn resolve_models_dir(data_dir: &Path, configured: Option<&str>) -> PathBuf {
-    resolve_models_dir_with_env(data_dir, configured, std::env::var("ATT_MODELS_DIR").ok().as_deref())
-}
-
-fn resolve_models_dir_with_env(data_dir: &Path, configured: Option<&str>, env_dir: Option<&str>) -> PathBuf {
+/// 按环境变量、用户设置、现有默认目录的顺序选择本地模型根目录。
+fn choose_models_dir(data_dir: &Path, configured: Option<&str>, env_dir: Option<&str>) -> PathBuf {
     if let Some(dir) = env_dir.filter(|dir| !dir.trim().is_empty()) {
         return tidy(PathBuf::from(dir.trim()));
     }
@@ -125,7 +121,7 @@ impl CoreState {
         let llm = LlmStore::load(data_dir, crypto.clone());
         let settings_path = data_dir.join("settings.json");
         let settings = UserSettings::load(&settings_path, platform);
-        let models_dir = resolve_models_dir_with_env(data_dir, settings.models_dir.as_deref(), models_env);
+        let models_dir = choose_models_dir(data_dir, settings.models_dir.as_deref(), models_env);
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             models_dir: models_dir.clone(),
@@ -257,7 +253,7 @@ impl CoreState {
 
     fn public_settings_with_env(&self, env_dir: Option<&str>) -> serde_json::Value {
         let settings = self.settings();
-        let next_models_dir = resolve_models_dir_with_env(&self.data_dir, settings.models_dir.as_deref(), env_dir);
+        let next_models_dir = choose_models_dir(&self.data_dir, settings.models_dir.as_deref(), env_dir);
         let mut view = settings.public_view(self.platform);
         view["models_dir_effective"] = serde_json::json!(self.models_dir.display().to_string());
         view["models_dir_next"] = serde_json::json!(next_models_dir.display().to_string());
@@ -462,23 +458,19 @@ mod tests {
         std::fs::create_dir_all(&env_dir).unwrap();
 
         assert_eq!(
-            resolve_models_dir_with_env(&data_dir, Some(configured.to_str().unwrap()), Some(env_dir.to_str().unwrap())),
+            choose_models_dir(&data_dir, Some(configured.to_str().unwrap()), Some(env_dir.to_str().unwrap())),
             tidy(env_dir.clone()),
             "环境变量必须覆盖用户设置"
         );
         assert_eq!(
-            resolve_models_dir_with_env(&data_dir, Some(configured.to_str().unwrap()), None),
+            choose_models_dir(&data_dir, Some(configured.to_str().unwrap()), None),
             tidy(configured.clone()),
             "用户设置必须覆盖现有默认"
         );
-        assert_eq!(
-            resolve_models_dir_with_env(&data_dir, None, None),
-            tidy(sibling.clone()),
-            "同级 models/ 存在时沿用现有默认"
-        );
+        assert_eq!(choose_models_dir(&data_dir, None, None), tidy(sibling.clone()), "同级 models/ 存在时沿用现有默认");
         std::fs::remove_dir(&sibling).unwrap();
         assert_eq!(
-            resolve_models_dir_with_env(&data_dir, Some(""), Some("  ")),
+            choose_models_dir(&data_dir, Some(""), Some("  ")),
             data_dir.join("models"),
             "空设置与空环境变量都回落到数据目录内的 models/"
         );

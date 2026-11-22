@@ -107,24 +107,6 @@ impl ModSet {
             && (self.meta || !other.meta)
     }
 
-    /// 规范化字符串列表（展示顺序：meta < ctrl < alt < shift）。
-    pub fn to_name_list(&self) -> Vec<&'static str> {
-        let mut list = Vec::new();
-        if self.meta {
-            list.push("meta");
-        }
-        if self.ctrl {
-            list.push("ctrl");
-        }
-        if self.alt {
-            list.push("alt");
-        }
-        if self.shift {
-            list.push("shift");
-        }
-        list
-    }
-
     /// 从旧版修饰键名解析（win/cmd → meta；未知项忽略；去重）。
     pub fn from_legacy_names(names: &[serde_json::Value]) -> Self {
         let mut set = ModSet::default();
