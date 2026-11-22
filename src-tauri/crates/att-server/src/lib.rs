@@ -422,13 +422,14 @@ fn engine_status(core: &CoreState) -> EngineStatus {
     }
     if settings.asr_provider == "wetype_asr" {
         let status = att_core::stt::wetype_status(core);
-        let streaming_error = streaming.then(|| "微信输入法语音暂不支持流式录音，请使用单段或多段录音模式".to_string());
+        let streaming_supported = streaming && status.platform_supported;
+        let streaming_available = streaming_supported && status.available;
         return EngineStatus {
-            ready: status.available && !streaming,
-            error: (!status.available).then_some(status.message).or(streaming_error),
-            streaming_supported: false,
-            streaming_available: false,
-            streaming_backend: None,
+            ready: status.available,
+            error: (!status.available).then_some(status.message),
+            streaming_supported,
+            streaming_available,
+            streaming_backend: streaming_supported.then_some("wetype_native"),
             mode: "provider",
             running: status.available,
             loading: false,
@@ -2250,6 +2251,29 @@ mod tests {
         let (_, health) = get_json(&state, "/api/health").await;
         assert_eq!(health["model_service_ready"], json!(false));
         assert!(health["model_service_error"].as_str().unwrap().contains("豆包网页语音暂不支持流式录音"), "{health}");
+    }
+
+    #[tokio::test]
+    async fn 微信输入法_流式能力按平台与输入法运行态给出结论() {
+        let state = test_state("wetype-stream-health").await;
+        state
+            .core
+            .apply_settings_update(&json!({
+                "asr_provider": "wetype_asr",
+                "recording_mode": "streaming",
+                "wetype_asr_pid": i64::from(u32::MAX)
+            }))
+            .unwrap();
+        let (_, health) = get_json(&state, "/api/health").await;
+        assert_eq!(health["asr_provider"], "wetype_asr");
+        assert_eq!(health["streaming_supported"], json!(cfg!(windows)));
+        assert_eq!(health["streaming_available"], json!(false));
+        if cfg!(windows) {
+            assert_eq!(health["streaming_backend"], "wetype_native");
+            assert!(health["streaming_error"].as_str().unwrap().contains("PID"));
+        } else {
+            assert!(health["streaming_error"].as_str().unwrap().contains("仅支持 Windows"));
+        }
     }
 
     #[tokio::test]

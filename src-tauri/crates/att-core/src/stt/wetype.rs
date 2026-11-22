@@ -8,6 +8,13 @@
 //!
 //! 清理状态不确定时进程内暂停后续调用，要求用户重启输入法；不把半截文字当成成功结果。
 
+use super::wetype_stream::{
+    build_request, opus_packets, parse_response, stream_packet, validate_stream_frames, StreamTransport, StreamUpdate,
+    FRAME_BYTES, FRAME_SAMPLES,
+};
+#[cfg(test)]
+use super::wetype_stream::{bytes_value, field_blob, field_int, int_value, parse_fields, OPUS_HEADER};
+pub use super::wetype_stream::{PartialCallback, WetypeSession};
 use super::WetypeStatus;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -15,7 +22,7 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -33,10 +40,8 @@ const REFERENCE_SHA256: [(&str, &str); 3] = [
     ("ime_net.dll", "69f25af3a87662c5e8060324cf13fda91c42ce44b6a3515c5b8c04ac5f9cbb02"),
 ];
 const AGENT_JS: &str = include_str!("wetype_agent.js");
-const OPUS_HEADER: &[u8; 16] = b"#!OPUS_RAW_V1\x02\x01\x00";
-const FRAME_SAMPLES: usize = 640;
-const MAX_FRAMES_PER_PACKET: usize = 250;
 const FRIDA_CORE_VERSION: &str = env!("ATT_FRIDA_CORE_VERSION");
+const MAX_FRAMES_PER_PACKET: usize = 250;
 
 const SIGNATURE_CONSTRUCT: &[u8] = &hex_bytes("33c0c74110803e00004889014889410866894124884126488bc1c74114010000");
 const SIGNATURE_INITIALIZE: &[u8] = &hex_bytes("48895c241848896c2420565741574883ec40488bf94533ff488b09418bd9418b");
@@ -98,7 +103,7 @@ fn transcribe_blocking(config: &WetypeConfig, samples: &[i16]) -> Result<String,
     let pid = resolve_pid(config.pid)?;
     let host = ensure_host(pid)?;
     let (reply_tx, reply_rx) = mpsc::channel();
-    if host.send(HostCommand { samples: samples.to_vec(), deadline, reply: reply_tx }).is_err() {
+    if host.send(HostCommand::Recognize { samples: samples.to_vec(), deadline, reply: reply_tx }).is_err() {
         invalidate_host(pid);
         return Err("微信输入法连接已断开，请重试".into());
     }
@@ -160,10 +165,13 @@ fn enumerate_wetype_pids() -> Result<Vec<u32>, String> {
     Ok(pids)
 }
 
-struct HostCommand {
-    samples: Vec<i16>,
-    deadline: Instant,
-    reply: Sender<Result<String, String>>,
+enum HostCommand {
+    Recognize { samples: Vec<i16>, deadline: Instant, reply: Sender<Result<String, String>> },
+    StreamStart { voice_id: String, deadline: Instant, reply: Sender<Result<(), String>> },
+    StreamChunk { voice_id: String, samples: Vec<i16>, deadline: Instant, reply: Sender<Result<StreamUpdate, String>> },
+    StreamEnd { voice_id: String, deadline: Instant, reply: Sender<Result<StreamUpdate, String>> },
+    StreamPoll { voice_id: String, deadline: Instant, reply: Sender<Result<StreamUpdate, String>> },
+    StreamCancel { voice_id: String, reply: Sender<Result<(), String>> },
 }
 
 static HOSTS: OnceLock<Mutex<HashMap<u32, Sender<HostCommand>>>> = OnceLock::new();
@@ -226,22 +234,162 @@ fn host_main(pid: u32, ready: Sender<Result<(), String>>, commands: mpsc::Receiv
     }
 
     while let Ok(command) = commands.recv() {
-        match session.recognize(&command.samples, command.deadline) {
-            Ok(text) => {
-                let _ = command.reply.send(Ok(text));
-            }
-            Err(error) => {
-                if error.starts_with("CLEANUP_PAUSE:") {
-                    pause_pid(pid);
-                    let _ = command.reply.send(Err(error.trim_start_matches("CLEANUP_PAUSE:").into()));
-                    break;
+        let pause = match command {
+            HostCommand::Recognize { samples, deadline, reply } => match session.recognize(&samples, deadline) {
+                Ok(text) => {
+                    let _ = reply.send(Ok(text));
+                    false
                 }
-                let _ = command.reply.send(Err(error));
-                break;
+                Err(error) => {
+                    let pause = error.starts_with("CLEANUP_PAUSE:");
+                    let _ = reply.send(Err(error_without_pause(error)));
+                    pause
+                }
+            },
+            HostCommand::StreamStart { voice_id, deadline, reply } => match session.start_stream(&voice_id, deadline) {
+                Ok(()) => {
+                    let _ = reply.send(Ok(()));
+                    false
+                }
+                Err(error) => {
+                    let pause = error.starts_with("CLEANUP_PAUSE:");
+                    let _ = reply.send(Err(error_without_pause(error)));
+                    pause
+                }
+            },
+            HostCommand::StreamChunk { voice_id, samples, deadline, reply } => {
+                match session.stream_chunk(&voice_id, &samples, deadline) {
+                    Ok(update) => {
+                        let _ = reply.send(Ok(update));
+                        false
+                    }
+                    Err(error) => {
+                        let pause = error.starts_with("CLEANUP_PAUSE:");
+                        let _ = reply.send(Err(error_without_pause(error)));
+                        pause
+                    }
+                }
             }
+            HostCommand::StreamEnd { voice_id, deadline, reply } => match session.stream_end(&voice_id, deadline) {
+                Ok(update) => {
+                    let _ = reply.send(Ok(update));
+                    false
+                }
+                Err(error) => {
+                    let pause = error.starts_with("CLEANUP_PAUSE:");
+                    let _ = reply.send(Err(error_without_pause(error)));
+                    pause
+                }
+            },
+            HostCommand::StreamPoll { voice_id, deadline, reply } => match session.stream_poll(&voice_id, deadline) {
+                Ok(update) => {
+                    let _ = reply.send(Ok(update));
+                    false
+                }
+                Err(error) => {
+                    let pause = error.starts_with("CLEANUP_PAUSE:");
+                    let _ = reply.send(Err(error_without_pause(error)));
+                    pause
+                }
+            },
+            HostCommand::StreamCancel { voice_id, reply } => match session.cancel_stream(&voice_id) {
+                Ok(()) => {
+                    let _ = reply.send(Ok(()));
+                    false
+                }
+                Err(error) => {
+                    let pause = error.starts_with("CLEANUP_PAUSE:");
+                    let _ = reply.send(Err(error_without_pause(error)));
+                    pause
+                }
+            },
+        };
+        if pause {
+            pause_pid(pid);
+            break;
         }
     }
     session.close();
+}
+
+fn error_without_pause(error: String) -> String {
+    error.trim_start_matches("CLEANUP_PAUSE:").to_string()
+}
+
+struct HostTransport {
+    commands: Sender<HostCommand>,
+}
+
+impl HostTransport {
+    fn wait<T>(receiver: mpsc::Receiver<Result<T, String>>) -> Result<T, String> {
+        match receiver.recv_timeout(Duration::from_secs(30)) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => Err("微信输入法注入线程响应超时".into()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err("微信输入法注入线程已退出".into()),
+        }
+    }
+}
+
+impl StreamTransport for HostTransport {
+    fn start(&self, voice_id: &str, deadline: Instant) -> Result<(), String> {
+        let (reply, receiver) = mpsc::channel();
+        self.commands
+            .send(HostCommand::StreamStart { voice_id: voice_id.to_string(), deadline, reply })
+            .map_err(|_| "微信输入法注入线程已退出".to_string())?;
+        Self::wait(receiver)
+    }
+
+    fn chunk(&self, voice_id: &str, samples: &[i16], deadline: Instant) -> Result<StreamUpdate, String> {
+        let (reply, receiver) = mpsc::channel();
+        self.commands
+            .send(HostCommand::StreamChunk {
+                voice_id: voice_id.to_string(),
+                samples: samples.to_vec(),
+                deadline,
+                reply,
+            })
+            .map_err(|_| "微信输入法注入线程已退出".to_string())?;
+        Self::wait(receiver)
+    }
+
+    fn end(&self, voice_id: &str, deadline: Instant) -> Result<StreamUpdate, String> {
+        let (reply, receiver) = mpsc::channel();
+        self.commands
+            .send(HostCommand::StreamEnd { voice_id: voice_id.to_string(), deadline, reply })
+            .map_err(|_| "微信输入法注入线程已退出".to_string())?;
+        Self::wait(receiver)
+    }
+
+    fn poll(&self, voice_id: &str, deadline: Instant) -> Result<StreamUpdate, String> {
+        let (reply, receiver) = mpsc::channel();
+        self.commands
+            .send(HostCommand::StreamPoll { voice_id: voice_id.to_string(), deadline, reply })
+            .map_err(|_| "微信输入法注入线程已退出".to_string())?;
+        Self::wait(receiver)
+    }
+
+    fn cancel(&self, voice_id: &str) -> Result<(), String> {
+        let (reply, receiver) = mpsc::channel();
+        self.commands
+            .send(HostCommand::StreamCancel { voice_id: voice_id.to_string(), reply })
+            .map_err(|_| "微信输入法注入线程已退出".to_string())?;
+        Self::wait(receiver)
+    }
+}
+
+impl WetypeSession {
+    /// 连接输入法并初始化本场流式会话；`on_partial` 收到的始终是累计文本。
+    pub async fn connect(
+        config: &WetypeConfig,
+        _language: &str,
+        on_partial: Option<PartialCallback>,
+    ) -> Result<Self, String> {
+        let pid = resolve_pid(config.pid)?;
+        let commands = ensure_host(pid)?;
+        let voice_id = format!("wt-att-{}", uuid::Uuid::new_v4().simple());
+        let transport = Arc::new(HostTransport { commands });
+        Self::from_transport(transport, voice_id, config.timeout, on_partial).await
+    }
 }
 
 // ---------------- Frida Core 最小 FFI ----------------
@@ -415,6 +563,14 @@ fn rpc_call(
     }
 }
 
+#[derive(Debug)]
+struct StreamState {
+    voice_id: String,
+    sequence: u64,
+    total_bytes: usize,
+    encoder_open: bool,
+}
+
 struct AttachedSession {
     pid: u32,
     manager: *mut c_void,
@@ -423,6 +579,7 @@ struct AttachedSession {
     script: *mut c_void,
     router: *mut RpcRouter,
     keep_agent: bool,
+    stream: Option<StreamState>,
 }
 
 impl AttachedSession {
@@ -520,21 +677,18 @@ impl AttachedSession {
             return Err(format!("加载微信输入法 agent 失败：{message}"));
         }
         tracing::info!("微信输入法 agent 已连接（PID {pid}，Frida {FRIDA_CORE_VERSION}）");
-        Ok(Self { pid, manager, device, session, script, router, keep_agent: false })
+        Ok(Self { pid, manager, device, session, script, router, keep_agent: false, stream: None })
     }
 
     fn recognize(&mut self, samples: &[i16], deadline: Instant) -> Result<String, String> {
-        if unsafe { frida_session_is_detached(self.session) } != 0 {
-            self.keep_agent = true;
-            return Err("CLEANUP_PAUSE:微信输入法连接意外断开，请退出并重新启动微信输入法后重试".into());
+        if self.stream.is_some() {
+            return Err("微信输入法正在流式识别，请先结束当前录音".into());
         }
-        let mut pcm = Vec::with_capacity(samples.len() * 2);
-        for sample in samples {
-            pcm.extend_from_slice(&sample.to_le_bytes());
-        }
-        let padded = pcm.len().div_ceil(FRAME_SAMPLES) * FRAME_SAMPLES;
+        self.ensure_attached()?;
+        let mut pcm = pcm_bytes(samples);
+        let padded = pcm.len().div_ceil(FRAME_BYTES) * FRAME_BYTES;
         pcm.resize(padded, 0);
-        let expected_frames = pcm.len() / FRAME_SAMPLES;
+        let expected_frames = pcm.len() / FRAME_BYTES;
         let encoded = rpc_call(self.script, self.router, "encode", json!([pcm]), Duration::from_secs(120))?;
         let encoded = json_byte_array(&encoded, "agent 返回的 Opus 流")?;
         let packets = opus_packets(&encoded, MAX_FRAMES_PER_PACKET)?;
@@ -569,13 +723,13 @@ impl AttachedSession {
             ensure_before(deadline, "输入法未在时限内完成识别")?;
             total_bytes += packet.len();
             let request = build_request(voice_id, packet, index as u64 + 1, total_bytes, false);
-            let reply = self.submit(&request)?;
+            let reply = self.submit(voice_id, &request)?;
             parse_response(&reply, voice_id)?;
         }
         ensure_before(deadline, "输入法未在时限内完成识别")?;
         let end_sequence = packets.len() as u64 + 1;
         let request = build_request(voice_id, &[], end_sequence, total_bytes, true);
-        let reply = self.submit(&request)?;
+        let reply = self.submit(voice_id, &request)?;
         let mut current = parse_response(&reply, voice_id)?;
         loop {
             if current.end_flag != 0 {
@@ -584,13 +738,198 @@ impl AttachedSession {
             ensure_before(deadline, "输入法未确认识别结束，未交付可能不完整的文字")?;
             std::thread::sleep(Duration::from_millis(current.interval_ms.clamp(100, 1000)));
             let request = build_request(voice_id, &[], 0, total_bytes, true);
-            let reply = self.submit(&request)?;
+            let reply = self.submit(voice_id, &request)?;
             current = parse_response(&reply, voice_id)?;
         }
     }
 
-    fn submit(&mut self, request: &[u8]) -> Result<Vec<u8>, String> {
-        let reply = rpc_call(self.script, self.router, "request", json!([request, ""]), Duration::from_secs(20))?;
+    fn ensure_attached(&mut self) -> Result<(), String> {
+        if unsafe { frida_session_is_detached(self.session) } != 0 {
+            self.keep_agent = true;
+            return Err("CLEANUP_PAUSE:微信输入法连接意外断开，请退出并重新启动微信输入法后重试".into());
+        }
+        Ok(())
+    }
+
+    fn start_stream(&mut self, voice_id: &str, deadline: Instant) -> Result<(), String> {
+        ensure_before(deadline, "连接微信输入法流式会话超时")?;
+        self.ensure_attached()?;
+        if let Some(stale) = self.stream.as_ref() {
+            // 建连途中用户取消时 WetypeSession 可能来不及构造，host 里会留下上一场会话。
+            // 下一次开始前先清掉它，避免后续录音被「已有正在进行的流式会话」永久挡住。
+            let stale_voice = stale.voice_id.clone();
+            tracing::warn!(%stale_voice, "清理遗留的微信输入法流式会话");
+            self.cleanup_or_pause(&stale_voice)?;
+        }
+        rpc_call(self.script, self.router, "encoderInit", json!([]), Duration::from_secs(20))
+            .map_err(|error| format!("初始化微信输入法常驻编码器失败：{error}"))?;
+        self.stream =
+            Some(StreamState { voice_id: voice_id.to_string(), sequence: 0, total_bytes: 0, encoder_open: true });
+        Ok(())
+    }
+
+    fn stream_chunk(&mut self, voice_id: &str, samples: &[i16], deadline: Instant) -> Result<StreamUpdate, String> {
+        match self.stream_chunk_inner(voice_id, samples, deadline) {
+            Ok(update) => Ok(update),
+            Err(error) => Err(self.stream_failure(voice_id, error)),
+        }
+    }
+
+    fn stream_chunk_inner(
+        &mut self,
+        voice_id: &str,
+        samples: &[i16],
+        deadline: Instant,
+    ) -> Result<StreamUpdate, String> {
+        ensure_before(deadline, "微信输入法流式请求超时")?;
+        self.ensure_attached()?;
+        if samples.is_empty() || samples.len() % FRAME_SAMPLES != 0 {
+            return Err("流式音频没有按 20ms 帧对齐".into());
+        }
+        let (sequence, total_bytes) = match self.stream.as_ref() {
+            Some(state) if state.voice_id == voice_id => (state.sequence, state.total_bytes),
+            Some(_) => return Err("流式会话标识不匹配".into()),
+            None => return Err("微信输入法流式会话尚未建立".into()),
+        };
+        let pcm = pcm_bytes(samples);
+        let encoded = rpc_call(self.script, self.router, "encoderEncode", json!([pcm]), Duration::from_secs(30))
+            .map_err(|error| format!("微信输入法流式编码失败：{error}"))?;
+        let frames = json_byte_array(&encoded, "agent 返回的 Opus 帧")?;
+        validate_stream_frames(&frames, samples.len() / FRAME_SAMPLES)?;
+        let packet = stream_packet(&frames, sequence == 0);
+        let next_total = total_bytes + packet.len();
+        let request = build_request(voice_id, &packet, sequence + 1, next_total, false);
+        let reply = self.submit(voice_id, &request)?;
+        let response = parse_response(&reply, voice_id)?;
+        if let Some(state) = self.stream.as_mut() {
+            state.sequence = sequence + 1;
+            state.total_bytes = next_total;
+        }
+        Ok(response.into())
+    }
+
+    fn stream_end(&mut self, voice_id: &str, deadline: Instant) -> Result<StreamUpdate, String> {
+        match self.stream_end_inner(voice_id, deadline) {
+            Ok(update) => Ok(update),
+            Err(error) => Err(self.stream_failure(voice_id, error)),
+        }
+    }
+
+    fn stream_end_inner(&mut self, voice_id: &str, deadline: Instant) -> Result<StreamUpdate, String> {
+        ensure_before(deadline, "微信输入法流式收尾超时")?;
+        self.ensure_attached()?;
+        self.close_encoder()?;
+        let (sequence, total_bytes) = match self.stream.as_ref() {
+            Some(state) if state.voice_id == voice_id => (state.sequence, state.total_bytes),
+            Some(_) => return Err("流式会话标识不匹配".into()),
+            None => return Err("微信输入法流式会话尚未建立".into()),
+        };
+        let request = build_request(voice_id, &[], sequence + 1, total_bytes, true);
+        let reply = self.submit(voice_id, &request)?;
+        let response = parse_response(&reply, voice_id)?;
+        if response.end_flag != 0 {
+            self.cleanup_or_pause(voice_id)?;
+        }
+        Ok(response.into())
+    }
+
+    fn stream_poll(&mut self, voice_id: &str, deadline: Instant) -> Result<StreamUpdate, String> {
+        match self.stream_poll_inner(voice_id, deadline) {
+            Ok(update) => Ok(update),
+            Err(error) => Err(self.stream_failure(voice_id, error)),
+        }
+    }
+
+    fn stream_poll_inner(&mut self, voice_id: &str, deadline: Instant) -> Result<StreamUpdate, String> {
+        ensure_before(deadline, "微信输入法未在时限内确认识别结束")?;
+        self.ensure_attached()?;
+        let total_bytes = match self.stream.as_ref() {
+            Some(state) if state.voice_id == voice_id => state.total_bytes,
+            Some(_) => return Err("流式会话标识不匹配".into()),
+            None => return Err("微信输入法流式会话尚未建立".into()),
+        };
+        let request = build_request(voice_id, &[], 0, total_bytes, true);
+        let reply = self.submit(voice_id, &request)?;
+        let response = parse_response(&reply, voice_id)?;
+        if response.end_flag != 0 {
+            self.cleanup_or_pause(voice_id)?;
+        }
+        Ok(response.into())
+    }
+
+    fn cancel_stream(&mut self, voice_id: &str) -> Result<(), String> {
+        match self.cleanup_stream(voice_id) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.keep_agent = true;
+                Err(format!("CLEANUP_PAUSE:微信输入法流式会话清理失败（{error}），已暂停后续调用；请退出并重新启动微信输入法后重试"))
+            }
+        }
+    }
+
+    fn stream_failure(&mut self, voice_id: &str, error: String) -> String {
+        if error.starts_with("CLEANUP_PAUSE:") {
+            self.keep_agent = true;
+            return error;
+        }
+        match self.cleanup_stream(voice_id) {
+            Ok(()) => error,
+            Err(cleanup) => {
+                self.keep_agent = true;
+                format!("CLEANUP_PAUSE:{error}；会话清理也失败（{cleanup}），已暂停后续调用；请退出并重新启动微信输入法后重试")
+            }
+        }
+    }
+
+    fn close_encoder(&mut self) -> Result<(), String> {
+        let Some(state) = self.stream.as_ref() else { return Ok(()) };
+        if !state.encoder_open {
+            return Ok(());
+        }
+        rpc_call(self.script, self.router, "encoderClose", json!([]), Duration::from_secs(10))
+            .map_err(|error| format!("关闭微信输入法常驻编码器失败：{error}"))?;
+        if let Some(state) = self.stream.as_mut() {
+            state.encoder_open = false;
+        }
+        Ok(())
+    }
+
+    fn cleanup_stream(&mut self, voice_id: &str) -> Result<(), String> {
+        let Some(stream) = self.stream.as_ref() else { return Ok(()) };
+        if stream.voice_id != voice_id {
+            return Err("流式会话标识不匹配".into());
+        }
+        let mut errors = Vec::new();
+        match rpc_call(self.script, self.router, "finalize", json!([voice_id]), Duration::from_secs(10)) {
+            Ok(value) if value.get("cleaned").and_then(Value::as_bool) == Some(true) => {}
+            Ok(value) => errors.push(format!("原生回调尚未清理（{value}）")),
+            Err(error) => errors.push(format!("原生回调清理失败：{error}")),
+        }
+        if stream.encoder_open {
+            if let Err(error) = rpc_call(self.script, self.router, "encoderClose", json!([]), Duration::from_secs(10)) {
+                errors.push(format!("常驻编码器关闭失败：{error}"));
+            }
+        }
+        self.stream = None;
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("；"))
+        }
+    }
+
+    fn cleanup_or_pause(&mut self, voice_id: &str) -> Result<(), String> {
+        match self.cleanup_stream(voice_id) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.keep_agent = true;
+                Err(format!("CLEANUP_PAUSE:微信输入法流式会话清理失败（{error}），已暂停后续调用；请退出并重新启动微信输入法后重试"))
+            }
+        }
+    }
+
+    fn submit(&mut self, owner: &str, request: &[u8]) -> Result<Vec<u8>, String> {
+        let reply = rpc_call(self.script, self.router, "request", json!([request, owner]), Duration::from_secs(20))?;
         let code = reply.get("code").and_then(Value::as_i64).unwrap_or(-1);
         if code != 0 {
             let task = reply.get("taskId").map(Value::to_string).unwrap_or_else(|| "unknown".into());
@@ -845,199 +1184,6 @@ fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
 
 // ---------------- 协议与 Opus 分包 ----------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum WireValue {
-    Varint(u64),
-    Bytes(Vec<u8>),
-}
-
-type Fields = HashMap<u32, Vec<(u8, WireValue)>>;
-
-fn varint(value: u64) -> Vec<u8> {
-    let mut result = Vec::new();
-    let mut value = value;
-    while value > 127 {
-        result.push(((value & 127) as u8) | 128);
-        value >>= 7;
-    }
-    result.push(value as u8);
-    result
-}
-
-fn field_int(field: u32, value: u64) -> Vec<u8> {
-    let mut result = varint(u64::from(field) << 3);
-    result.extend(varint(value));
-    result
-}
-
-fn field_blob(field: u32, value: &[u8]) -> Vec<u8> {
-    let mut result = varint((u64::from(field) << 3) | 2);
-    result.extend(varint(value.len() as u64));
-    result.extend_from_slice(value);
-    result
-}
-
-fn parse_fields(data: &[u8]) -> Result<Fields, String> {
-    if data.len() > 4 * 1024 * 1024 {
-        return Err("响应过大".into());
-    }
-    let mut position = 0usize;
-    let mut fields = Fields::new();
-    while position < data.len() {
-        let tag = read_varint(data, &mut position)?;
-        let field = (tag >> 3) as u32;
-        let wire = (tag & 7) as u8;
-        if field == 0 || field >= 1 << 29 {
-            return Err("无效的字段号".into());
-        }
-        let value = match wire {
-            0 => WireValue::Varint(read_varint(data, &mut position)?),
-            1 | 2 | 5 => {
-                let length = match wire {
-                    2 => read_varint(data, &mut position)? as usize,
-                    1 => 8,
-                    5 => 4,
-                    _ => unreachable!(),
-                };
-                let end = position.checked_add(length).ok_or("字段长度溢出")?;
-                if end > data.len() {
-                    return Err("字段数据不完整".into());
-                }
-                let bytes = data[position..end].to_vec();
-                position = end;
-                WireValue::Bytes(bytes)
-            }
-            _ => return Err("不支持的 wire type".into()),
-        };
-        fields.entry(field).or_default().push((wire, value));
-    }
-    Ok(fields)
-}
-
-fn read_varint(data: &[u8], position: &mut usize) -> Result<u64, String> {
-    let mut value = 0u64;
-    for shift in (0..70).step_by(7) {
-        let byte = *data.get(*position).ok_or("varint 不完整")?;
-        *position += 1;
-        if shift == 63 && byte > 1 {
-            return Err("varint 溢出".into());
-        }
-        value |= u64::from(byte & 127) << shift;
-        if byte < 128 {
-            return Ok(value);
-        }
-    }
-    Err("varint 过长".into())
-}
-
-fn field_value<'a>(fields: &'a Fields, field: u32, wire: u8) -> Result<Option<&'a WireValue>, String> {
-    let Some(entries) = fields.get(&field) else { return Ok(None) };
-    if entries.len() != 1 || entries[0].0 != wire {
-        return Err(format!("字段 {field} 的类型或数量不符"));
-    }
-    Ok(Some(&entries[0].1))
-}
-
-fn bytes_value<'a>(fields: &'a Fields, field: u32) -> Result<Option<&'a [u8]>, String> {
-    Ok(match field_value(fields, field, 2)? {
-        Some(WireValue::Bytes(bytes)) => Some(bytes),
-        _ => None,
-    })
-}
-
-fn int_value(fields: &Fields, field: u32, default: u64) -> Result<u64, String> {
-    Ok(match field_value(fields, field, 0)? {
-        Some(WireValue::Varint(value)) => *value,
-        _ => default,
-    })
-}
-
-fn build_request(voice_id: &str, audio: &[u8], sequence: u64, total_bytes: usize, end: bool) -> Vec<u8> {
-    let mut inner = Vec::new();
-    inner.extend(field_blob(2, voice_id.as_bytes()));
-    inner.extend(field_blob(4, audio));
-    inner.extend(field_int(5, 5));
-    inner.extend(field_int(6, end as u64));
-    inner.extend(field_int(7, sequence));
-    inner.extend(field_int(11, total_bytes as u64));
-    inner.extend(field_blob(25, &field_blob(1, b"WeType")));
-    field_blob(1, &inner)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct VoiceResponse {
-    text: String,
-    sequence: u64,
-    end_flag: u64,
-    interval_ms: u64,
-}
-
-fn parse_response(data: &[u8], expected_voice_id: &str) -> Result<VoiceResponse, String> {
-    let outer = parse_fields(data)?;
-    let payload = bytes_value(&outer, 1)?.ok_or("缺少业务响应")?;
-    let inner = parse_fields(payload)?;
-    let base_payload = bytes_value(&inner, 1)?.ok_or("缺少业务状态")?;
-    let base = parse_fields(base_payload)?;
-    let ret = int_value(&base, 1, 0)?;
-    if ret != 0 {
-        return Err(format!("输入法业务返回错误 {ret}"));
-    }
-    let voice_id = bytes_value(&inner, 2)?.unwrap_or_default();
-    if voice_id != expected_voice_id.as_bytes() {
-        return Err("响应会话标识不匹配".into());
-    }
-    let text =
-        String::from_utf8(bytes_value(&inner, 4)?.unwrap_or_default().to_vec()).map_err(|_| "响应文字编码不正确")?;
-    Ok(VoiceResponse {
-        text,
-        sequence: int_value(&inner, 3, 0)?,
-        end_flag: int_value(&inner, 5, 0)?,
-        interval_ms: int_value(&inner, 6, 100)?,
-    })
-}
-
-#[derive(Debug)]
-struct OpusPackets<'a> {
-    packets: Vec<&'a [u8]>,
-    frames: usize,
-}
-
-fn opus_packets(encoded: &[u8], frames_per_packet: usize) -> Result<OpusPackets<'_>, String> {
-    if frames_per_packet == 0 {
-        return Err("无效的分片帧数".into());
-    }
-    if encoded.len() < OPUS_HEADER.len() || &encoded[..OPUS_HEADER.len()] != OPUS_HEADER {
-        return Err("不支持的 Opus 流头".into());
-    }
-    let mut position = OPUS_HEADER.len();
-    let mut boundaries = vec![OPUS_HEADER.len()];
-    while position < encoded.len() {
-        if encoded.len() - position < 2 {
-            return Err("Opus 帧长度不完整".into());
-        }
-        let size = u16::from_le_bytes([encoded[position], encoded[position + 1]]) as usize;
-        position += 2;
-        if size == 0 || size > 1500 || position + size > encoded.len() {
-            return Err("Opus 帧不完整".into());
-        }
-        position += size;
-        boundaries.push(position);
-    }
-    let frames = boundaries.len() - 1;
-    if frames == 0 {
-        return Err("Opus 流没有音频帧".into());
-    }
-    let packets = (0..frames)
-        .step_by(frames_per_packet)
-        .map(|start| {
-            let end_frame = (start + frames_per_packet).min(frames);
-            let from = if start == 0 { 0 } else { boundaries[start] };
-            &encoded[from..boundaries[end_frame]]
-        })
-        .collect();
-    Ok(OpusPackets { packets, frames })
-}
-
 fn json_byte_array(value: &Value, label: &str) -> Result<Vec<u8>, String> {
     let items = value.as_array().ok_or_else(|| format!("{label}不是字节数组"))?;
     items
@@ -1049,6 +1195,14 @@ fn json_byte_array(value: &Value, label: &str) -> Result<Vec<u8>, String> {
                 .ok_or_else(|| format!("{label}包含非法字节"))
         })
         .collect()
+}
+
+fn pcm_bytes(samples: &[i16]) -> Vec<u8> {
+    let mut pcm = Vec::with_capacity(samples.len() * 2);
+    for sample in samples {
+        pcm.extend_from_slice(&sample.to_le_bytes());
+    }
+    pcm
 }
 
 fn ensure_before(deadline: Instant, message: &str) -> Result<(), String> {
@@ -1212,5 +1366,38 @@ mod tests {
         let text = transcribe_blocking(&config, &samples).expect("微信输入法识别失败");
         eprintln!("微信输入法识别结果：{text}");
         assert!(!text.trim().is_empty(), "识别结果为空");
+    }
+
+    #[test]
+    #[ignore = "需要本机运行微信输入法，并提供 ATT_TEST_WAV"]
+    fn 真机_微信输入法流式输出累计中间字幕() {
+        let path = std::env::var("ATT_TEST_WAV").expect("请设置 ATT_TEST_WAV 指向 16k/mono 音频");
+        let samples = crate::audio::read_audio_16k_mono(std::path::Path::new(&path)).expect("读取测试音频失败");
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let partial_seen = seen.clone();
+        let callback: PartialCallback = Arc::new(move |text| {
+            let mut seen = partial_seen.lock().unwrap_or_else(|error| error.into_inner());
+            if seen.last() != Some(&text) {
+                seen.push(text);
+            }
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let final_text = runtime
+            .block_on(async move {
+                let config = WetypeConfig { pid: None, timeout: Duration::from_secs(60) };
+                let mut session = WetypeSession::connect(&config, "auto", Some(callback)).await?;
+                for chunk in samples.chunks(super::super::wetype_stream::STREAM_CHUNK_SAMPLES) {
+                    // 按真实录音节奏每 1 秒送一包；一次性灌完会让服务端退回批量式出字，测不到中间字幕
+                    let sent_at = Instant::now();
+                    session.push(chunk).await?;
+                    tokio::time::sleep(Duration::from_secs(1).saturating_sub(sent_at.elapsed())).await;
+                }
+                session.finish(Duration::from_secs(60)).await
+            })
+            .expect("微信输入法流式识别失败");
+        let seen = seen.lock().unwrap_or_else(|error| error.into_inner());
+        eprintln!("微信输入法流式结果：{final_text}；中间文本 {} 次", seen.len());
+        assert!(!final_text.trim().is_empty(), "最终识别结果为空");
+        assert!(seen.len() >= 10, "中间字幕不足 10 次：{seen:?}");
     }
 }

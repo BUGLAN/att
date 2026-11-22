@@ -25,6 +25,8 @@ pub mod sauc;
 pub mod verify;
 #[cfg(windows)]
 pub mod wetype;
+#[cfg(any(windows, test))]
+pub(super) mod wetype_stream;
 
 use crate::state::CoreState;
 use local::LocalKind;
@@ -343,7 +345,12 @@ impl Engine {
     }
 
     pub fn supports_streaming(&self) -> bool {
-        matches!(self, Engine::Doubao(_))
+        match self {
+            Engine::Doubao(_) => true,
+            #[cfg(windows)]
+            Engine::WeType(_) => true,
+            _ => false,
+        }
     }
 
     pub fn label(&self) -> &'static str {

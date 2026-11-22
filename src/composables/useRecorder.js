@@ -6,6 +6,7 @@ import { useOptimizationStreamStore } from '@/stores/optimizationStream'
 import { useElectron } from './useElectron'
 import * as statusCopy from './recorder/statusCopy.mjs'
 import * as nativeSession from './recorder/nativeSession.mjs'
+import { supportsStreaming } from '@/components/settings/asrEngineStatus.mjs'
 
 // 录音界面状态（模块级单例，多个组件实例共用）。
 //
@@ -254,7 +255,7 @@ function stopRecording() {
 export function useRecorder() {
   const appStore = useAppStore()
   const settingsStore = useSettingsStore()
-  const { isDesktop } = useElectron()
+  const { isDesktop, platform } = useElectron()
 
   onMounted(() => {
     mountedInstances += 1
@@ -281,7 +282,14 @@ export function useRecorder() {
     livePhase,
     sessionStatusText,
     isMultiModeEnabled: computed(() => settingsStore.settings.recording_mode === 'multi'),
-    isStreamingModeEnabled: computed(() => settingsStore.settings.recording_mode === 'streaming'),
+    isStreamingModeEnabled: computed(() => (
+      settingsStore.settings.recording_mode === 'streaming' &&
+      supportsStreaming(
+        settingsStore.settings.asr_provider,
+        platform,
+        settingsStore.runtimeStatus?.wetype_engine?.platform_supported === true
+      )
+    )),
     startRecording,
     stopRecording,
     cancelOptimization

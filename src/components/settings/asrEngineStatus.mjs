@@ -1,18 +1,18 @@
 // 识别引擎页的纯逻辑：录音模式与引擎的兼容关系、本地引擎加载状态的展示模型
 // （不依赖 Vue，供 tests/test_settings_asr_engine.mjs 锁定）。
 //
-// 录音模式和引擎放在同一页选：流式只有豆包支持，选别的引擎时流式卡片直接置灰并说明原因，
+// 录音模式和引擎放在同一页选：流式支持豆包和 Windows 微信输入法，其余引擎的流式卡片直接置灰并说明原因，
 // 而不是让用户去另一页才发现「当前引擎不支持流式」。
 
 export const LOCAL_PROVIDERS = Object.freeze(['whisper', 'qwen_asr'])
 
-/** 支持流式（边说边出字）的引擎：目前只有豆包 SAUC。 */
-export const STREAMING_PROVIDERS = Object.freeze(['doubao_asr'])
+/** 支持流式（边说边出字）的引擎；微信输入法还要求 Windows 与本机输入法在线。 */
+export const STREAMING_PROVIDERS = Object.freeze(['doubao_asr', 'wetype_asr'])
 
 export const RECORDING_MODES = Object.freeze([
   { value: 'single', label: '单段', desc: '录完整段后一次识别' },
   { value: 'multi', label: '多段', desc: '按静音自动切段，边录边出字' },
-  { value: 'streaming', label: '流式', desc: '边说边出字，延迟最低（仅豆包语音）' }
+  { value: 'streaming', label: '流式', desc: '边说边出字（豆包语音 / Windows 微信输入法）' }
 ])
 
 const PROVIDER_LABELS = Object.freeze({
@@ -33,7 +33,12 @@ export function isLocalProvider(provider) {
   return LOCAL_PROVIDERS.includes(provider)
 }
 
-export function supportsStreaming(provider) {
+export function supportsStreaming(provider, platform, wetypePlatformSupported = false) {
+  if (provider === 'wetype_asr') {
+    // 前端平台推断偶尔会拿不到 Tauri 的精确值；health/runtime 的
+    // `wetype_engine.platform_supported` 是后端按编译目标与运行平台给出的权威结论。
+    return platform === 'win32' || wetypePlatformSupported === true
+  }
   return STREAMING_PROVIDERS.includes(provider)
 }
 
@@ -65,20 +70,27 @@ export function normalizeDoubaoWebTimeoutSeconds(value) {
  * 录音模式卡片：按当前引擎标出不可用的模式。
  * 返回 [{ value, label, desc, disabled, hint }]；hint 为不可用原因（可用时为空串）。
  */
-export function recordingModeOptions(provider) {
+export function recordingModeOptions(provider, platform, wetypePlatformSupported = false) {
   return RECORDING_MODES.map((mode) => {
-    const disabled = mode.value === 'streaming' && !supportsStreaming(provider)
+    const disabled = mode.value === 'streaming' && !supportsStreaming(provider, platform, wetypePlatformSupported)
     return {
       ...mode,
       disabled,
-      hint: disabled ? `${providerLabel(provider)}不支持流式` : ''
+      hint: disabled
+        ? provider === 'wetype_asr'
+          ? '微信输入法语音仅支持 Windows 流式'
+          : `${providerLabel(provider)}不支持流式`
+        : ''
     }
   })
 }
 
 /** 当前引擎与录音模式冲突时给出的提示（无冲突返回空串）。 */
-export function recordingModeConflict(provider, recordingMode) {
-  if (recordingMode === 'streaming' && !supportsStreaming(provider)) {
+export function recordingModeConflict(provider, recordingMode, platform, wetypePlatformSupported = false) {
+  if (recordingMode === 'streaming' && !supportsStreaming(provider, platform, wetypePlatformSupported)) {
+    if (provider === 'wetype_asr') {
+      return '微信输入法语音仅支持 Windows 流式录音；请改用单段或多段。'
+    }
     return `${providerLabel(provider)}不支持流式录音，录音时会直接报错；请改用单段或多段。`
   }
   return ''

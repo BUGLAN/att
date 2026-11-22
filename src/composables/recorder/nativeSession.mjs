@@ -16,6 +16,20 @@ import { deriveCompletionToast } from './statusCopy.mjs'
 
 const NO_VOICE_TOAST = '没有听到声音，检查麦克风'
 
+const STREAMING_PROVIDER_TEXT = Object.freeze({
+  doubao_asr: { connecting: '正在连接豆包语音服务', recording: '豆包语音转写中' },
+  wetype_asr: { connecting: '正在连接微信输入法语音', recording: '微信输入法转写中' }
+})
+
+/** 流式 provider 的连接 / 转写状态文案；未知 provider 用通用文案。 */
+export function streamingProviderText(provider, phase = 'recording') {
+  const text = STREAMING_PROVIDER_TEXT[provider]
+  if (text) {
+    return text[phase] || text.recording
+  }
+  return phase === 'connecting' ? '正在连接流式转写服务' : '流式转写中'
+}
+
 /**
  * 计算一次状态事件对界面的影响。返回 null 表示忽略（未知相位）。
  *
@@ -34,12 +48,13 @@ export function deriveNativeSessionPatch(payload = {}) {
   const phase = payload.phase
   const streaming = payload.mode === 'streaming'
   const message = payload.message || ''
+  const provider = payload.provider || ''
 
   switch (phase) {
     case 'connecting':
       return {
         livePhase: 'connecting',
-        statusText: message || '正在连接豆包语音服务',
+        statusText: message || streamingProviderText(provider, 'connecting'),
         recording: true,
         transcribing: false,
         clock: 'start',
@@ -49,7 +64,7 @@ export function deriveNativeSessionPatch(payload = {}) {
     case 'recording':
       return {
         livePhase: streaming ? 'streaming' : 'recording',
-        statusText: message || (streaming ? '豆包语音转写中' : '正在录音'),
+        statusText: message || (streaming ? streamingProviderText(provider) : '正在录音'),
         recording: true,
         transcribing: false,
         // 流式在 connecting 时已起表；单段直接进 recording 时起表

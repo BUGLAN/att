@@ -25,6 +25,39 @@ const submit = new NativeFunction(
 const tasks = new Map();
 let closing = false;
 let callbacks = 0;
+let encoderObject = null;
+let encoderHeaderSeen = false;
+
+const OPUS_HEADER = [0x23, 0x21, 0x4f, 0x50, 0x55, 0x53, 0x5f, 0x52, 0x41, 0x57, 0x5f, 0x56, 0x31, 0x02, 0x01, 0x00];
+
+function hasOpusHeader(bytes) {
+  if (bytes.length < OPUS_HEADER.length) {
+    return false;
+  }
+  for (let index = 0; index < OPUS_HEADER.length; index++) {
+    if (bytes[index] !== OPUS_HEADER[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function requireEncoderObject() {
+  if (!encoderObject) {
+    throw Error('Opus encoder is not initialized');
+  }
+  return encoderObject;
+}
+
+function closeEncoder() {
+  if (!encoderObject) {
+    return;
+  }
+  const object = encoderObject;
+  encoderObject = null;
+  encoderHeaderSeen = false;
+  release(object);
+}
 
 // 回调必须活到输入法进程退出：超时请求即使不再被 Promise 使用，也不能释放 user_data。
 const callback = new NativeCallback((user, taskId, code, response, length) => {
@@ -58,6 +91,58 @@ const callback = new NativeCallback((user, taskId, code, response, length) => {
 }, 'void', ['pointer', 'int', 'int', 'pointer', 'uint'], 'win64');
 
 rpc.exports = {
+  encoderInit() {
+    if (closing || encoderObject) {
+      throw Error('Invalid encoder state');
+    }
+    const object = Memory.alloc(0x28);
+    construct(object);
+    try {
+      const code = initialize(object, 16000, 1, 64000, 1);
+      if (code !== 0) {
+        throw Error('Opus initialization failed: ' + code);
+      }
+      encoderObject = object;
+      encoderHeaderSeen = false;
+      return true;
+    } catch (error) {
+      release(object);
+      throw error;
+    }
+  },
+
+  encoderEncode(pcm) {
+    if (closing || pcm.length === 0 || pcm.length % 640 !== 0) {
+      throw Error('Invalid PCM or agent stopping');
+    }
+    const object = requireEncoderObject();
+    const input = Memory.alloc(pcm.length);
+    const capacity = (pcm.length / 640) * 1502 + 16;
+    const output = Memory.alloc(capacity);
+    const length = Memory.alloc(4);
+    input.writeByteArray(new Uint8Array(pcm));
+    const code = encode(object, input, pcm.length, output, capacity, length);
+    if (code !== 0) {
+      throw Error('Opus encoding failed: ' + code);
+    }
+    const size = length.readU32();
+    if (size > capacity) {
+      throw Error('Invalid Opus output size');
+    }
+    const bytes = new Uint8Array(output.readByteArray(size));
+    const includesHeader = hasOpusHeader(bytes);
+    if (!encoderHeaderSeen && !includesHeader) {
+      throw Error('Opus stream header missing on first chunk');
+    }
+    encoderHeaderSeen = true;
+    return Array.from(includesHeader ? bytes.subarray(OPUS_HEADER.length) : bytes);
+  },
+
+  encoderClose() {
+    closeEncoder();
+    return true;
+  },
+
   encode(pcm) {
     if (closing || pcm.length === 0 || pcm.length % 640 !== 0) {
       throw Error('Invalid PCM or agent stopping');
@@ -135,6 +220,7 @@ rpc.exports = {
 
   dispose() {
     closing = true;
+    closeEncoder();
     return { cleaned: tasks.size === 0 && callbacks === 0 };
   }
 };

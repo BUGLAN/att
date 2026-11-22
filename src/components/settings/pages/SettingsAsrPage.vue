@@ -1,6 +1,6 @@
 <template>
   <div class="settings-stack">
-    <!-- 引擎与录音模式放在一起选：流式只有豆包支持，切引擎时能立刻看到哪些模式可用 -->
+    <!-- 引擎与录音模式放在一起选：流式支持豆包与 Windows 微信输入法，切引擎时能立刻看到哪些模式可用 -->
     <section class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">识别引擎</h3>
@@ -494,8 +494,17 @@ const { isDesktop, platform, revealAppPath } = useElectron()
 const LOCAL_STATUS_POLL_MS = 1000
 const MODEL_JOB_POLL_MS = 800
 
-const recordingModes = computed(() => recordingModeOptions(form.value.asr_provider))
-const modeConflict = computed(() => recordingModeConflict(form.value.asr_provider, form.value.recording_mode))
+// 微信输入法流式的平台结论以 health/runtime 为准；页面同步推断只作缺省兜底
+const wetypePlatformSupported = computed(() => (
+  settingsStore.runtimeStatus?.wetype_engine?.platform_supported === true
+))
+const recordingModes = computed(() => recordingModeOptions(form.value.asr_provider, platform, wetypePlatformSupported.value))
+const modeConflict = computed(() => recordingModeConflict(
+  form.value.asr_provider,
+  form.value.recording_mode,
+  platform,
+  wetypePlatformSupported.value
+))
 const asrLanguageOptions = computed(() => buildLanguageOptions(form.value.asr_provider))
 const asrLanguageHint = computed(() => languageHint(form.value.asr_provider))
 // LLM 模型列表没加载过时按「有模型」处理，免得误报（同输出页）；挂载时补拉一次

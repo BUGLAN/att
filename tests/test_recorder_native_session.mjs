@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { deriveNativeSessionPatch } from '../src/composables/recorder/nativeSession.mjs'
+import { deriveNativeSessionPatch, streamingProviderText } from '../src/composables/recorder/nativeSession.mjs'
 
 const NATIVE_PHASES = [
   'idle',
@@ -29,6 +29,16 @@ test('录音相位：connecting 起表并清空上一轮文本，流式 recordin
   const single = deriveNativeSessionPatch({ phase: 'recording', mode: 'single' })
   assert.equal(single.livePhase, 'recording')
   assert.equal(single.clock, 'start')
+})
+
+test('流式文案按 provider 区分：微信输入法不再显示豆包', () => {
+  assert.equal(streamingProviderText('wetype_asr'), '微信输入法转写中')
+  assert.equal(streamingProviderText('wetype_asr', 'connecting'), '正在连接微信输入法语音')
+  assert.equal(streamingProviderText('doubao_asr'), '豆包语音转写中')
+  const patch = deriveNativeSessionPatch({ phase: 'recording', mode: 'streaming', provider: 'wetype_asr' })
+  assert.equal(patch.statusText, '微信输入法转写中')
+  const connecting = deriveNativeSessionPatch({ phase: 'connecting', mode: 'streaming', provider: 'wetype_asr' })
+  assert.equal(connecting.statusText, '正在连接微信输入法语音')
 })
 
 test('收尾相位：录音与转写标志互斥', () => {

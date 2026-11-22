@@ -1,4 +1,5 @@
-//! 录音会话 Actor：在线引擎豆包（流式 + 批量）、豆包网页、ChatGPT 听写与 DeepSeek（批量）。
+//! 录音会话 Actor：在线引擎豆包（流式 + 批量）、Windows 微信输入法（流式 + 批量）、
+//! 豆包网页、ChatGPT 听写与 DeepSeek（批量）。
 //!
 //! 单个 tokio 任务串行消费命令（UI 按钮 / 全局热键 / 会话任务回报），状态机：
 //!
@@ -33,6 +34,7 @@
 //! 豆包流式预热：流式录音结束后（按时长计费的资源才做），后台再建一条连接留 [`doubao::WARM_KEEP`]；
 //! 这段时间内再按下、且引擎 / 模式 / 接入参数没变，就直接复用它推流，省掉握手（实测首字从 2.2~2.9s 降到 0.8~1.4s）。
 //! 预热槽只在 Actor 里推进；复用的连接在出字前就断了，会话任务静默改为新建并重发已收的音频。
+//! 微信输入法没有预热：每次流式录音都由输入法内的常驻编码器新建一条 voice_id。
 //!
 //! 三防御语义在这里天然成立：
 //! - 不丢开头：采集先于建连启动，建连期间的样本缓存在会话任务里，就绪后统一冲刷；
@@ -484,7 +486,12 @@ impl Actor {
                 Cmd::Connected(id) => {
                     if self.is_current(id) && self.phase == Phase::Connecting {
                         self.set_phase(Phase::Recording);
-                        self.emit_state("recording", json!({ "message": "豆包语音转写中" }));
+                        let message = self
+                            .active
+                            .as_ref()
+                            .map(|active| streaming_message(active.asr.provider, false))
+                            .unwrap_or("流式转写中");
+                        self.emit_state("recording", json!({ "message": message }));
                     }
                 }
                 Cmd::Failed(id) => {
@@ -589,6 +596,9 @@ impl Actor {
         self.core.set_recording_active(matches!(phase, "connecting" | "recording" | "finalizing"));
         let mode = self.active.as_ref().map(|a| a.mode.as_str()).unwrap_or("streaming");
         let mut payload = json!({ "phase": phase, "mode": mode });
+        if let Some(provider) = self.active.as_ref().map(|active| active.asr.provider) {
+            payload["provider"] = json!(provider);
+        }
         if let Some(name) = self.preset_tag(phase) {
             payload["preset"] = json!(name);
         }
@@ -857,20 +867,20 @@ impl Actor {
                 _ => Mode::Batch,
             }
         };
-        // 流式只有豆包支持（ChatGPT 听写 / DeepSeek 是批量接口）
-        let streaming_config = match (&engine, mode) {
-            (stt::Engine::Doubao(config), Mode::Streaming) => Some(config.clone()),
-            (_, Mode::Streaming) => {
-                return self
-                    .fail_start(format!("{}暂不支持流式录音，请在设置中改用单段或多段录音模式", engine.label()));
-            }
-            _ => None,
+        let streaming_config = match streaming_config_for(&engine, mode) {
+            Ok(config) => config,
+            Err(message) => return self.fail_start(message),
         };
         let language = settings.asr_language.clone();
-        // 预热连接只给「流式 + 豆包」用：换了引擎 / 模式就关掉，参数变了也不复用
+        // 预热连接只给豆包：换了引擎 / 模式就关掉，参数变了也不复用
         let warm = match streaming_config.as_ref() {
-            Some(config) => self.take_warm(config, &language),
+            Some(StreamingConfig::Doubao(config)) => self.take_warm(config, &language),
             None => {
+                self.drop_warm("本次不是豆包流式录音");
+                None
+            }
+            #[cfg(windows)]
+            Some(StreamingConfig::WeType(_)) => {
                 self.drop_warm("本次不是豆包流式录音");
                 None
             }
@@ -951,9 +961,10 @@ impl Actor {
         match mode {
             Mode::Streaming => {
                 self.set_phase(Phase::Connecting);
-                self.emit_state("connecting", json!({ "message": "正在连接豆包语音服务" }));
+                let message = streaming_message(engine.provider(), true);
+                self.emit_state("connecting", json!({ "message": message }));
                 let app = self.app.clone();
-                let config = streaming_config.expect("流式模式已校验为豆包");
+                let config = streaming_config.expect("流式模式已校验为支持的引擎");
                 tauri::async_runtime::spawn(streaming_task(
                     id, config, language, warm, audio_rx, cancel_rx, heard, live, app, tx,
                 ));
@@ -1087,7 +1098,7 @@ impl Actor {
             settings.chatgpt_asr_timeout_seconds,
             settings.wetype_asr_timeout_seconds,
         );
-        finalize_budget(mode, recorded, batch_timeout, plan)
+        finalize_budget_for_provider(mode, &settings.asr_provider, recorded, batch_timeout, plan)
     }
 
     /// 看门狗到点仍在收尾：先取消会话任务（它会带着已收到的音频与文字回来）；
@@ -1276,8 +1287,11 @@ impl Actor {
                 )
                 .await;
             let record_id = record.get("id").and_then(Value::as_str).map(str::to_string);
+            // 微信输入法流式超时/断连时只有半截累计文本：记录照常保存，但不自动输出或优化，
+            // 避免把未收到 end_flag 的内容打进用户输入框。
+            let withhold_partial = withhold_partial_stream_output(mode, asr.provider, &outcome.error);
             let auto_optimize = self.core.settings().auto_optimize && optimizer::has_default_model(&self.core);
-            if let (true, Some(record_id)) = (auto_optimize, record_id) {
+            if let (true, Some(record_id)) = (auto_optimize && !withhold_partial, record_id) {
                 // 自动优化：本次不在转写阶段粘贴，优化结果流式打进输入框（否则原文、优化文各出一遍）
                 self.begin_optimization(
                     mode,
@@ -1291,10 +1305,15 @@ impl Actor {
                 self.active = None;
                 return;
             }
-            let (copied, pasted, copy_error) = self.auto_copy(&outcome.text, false, focus_target).await;
-            let message = match &outcome.error {
-                Some(error) => format!("识别中断，已保存已识别内容：{error}"),
-                None => "录音已完成".to_string(),
+            let (copied, pasted, copy_error) = if withhold_partial {
+                (false, false, None)
+            } else {
+                self.auto_copy(&outcome.text, false, focus_target).await
+            };
+            let message = match (&outcome.error, withhold_partial) {
+                (Some(error), true) => format!("微信输入法流式识别中断，已保存已识别内容但未自动输出：{error}"),
+                (Some(error), false) => format!("识别中断，已保存已识别内容：{error}"),
+                (None, _) => "录音已完成".to_string(),
             };
             self.emit_state(
                 "completed",
@@ -1726,10 +1745,24 @@ fn batch_plan(
 /// DeepSeek 长录音是「115 秒一块、顺序 await」：每块最多尝试 [`deepseek::MAX_ATTEMPTS_PER_CHUNK`] 次，
 /// 预算必须按「块数 × 尝试次数」放大，不能沿用 `recorded / 2`——600 秒录音有 6 块，
 /// 最坏 6 × 3 × 120 秒，旧算法只给 318 秒。
+#[cfg(test)]
 fn finalize_budget(mode: Mode, recorded: Duration, batch_timeout: Duration, plan: BatchPlan) -> Duration {
+    finalize_budget_for_provider(mode, "doubao_asr", recorded, batch_timeout, plan)
+}
+
+fn finalize_budget_for_provider(
+    mode: Mode,
+    provider: &str,
+    recorded: Duration,
+    batch_timeout: Duration,
+    plan: BatchPlan,
+) -> Duration {
     // 豆包：建连 + 末包等待（批量另按音频时长加时）+ 关闭
     let doubao = doubao::CONNECT_TIMEOUT + doubao::FINISH_TIMEOUT + Duration::from_secs(2);
     let engine = match mode {
+        Mode::Streaming if provider == "wetype_asr" => {
+            batch_timeout.max(Duration::from_secs(30)) + Duration::from_secs(2)
+        }
         Mode::Streaming => doubao,
         // 正常情况下多段走 `arm_multi_watchdog` 的动态预算；这里只兜内部状态异常时仍保证能收尾。
         Mode::Multi => MULTI_DRAIN_DEFAULT_FALLBACK,
@@ -1774,25 +1807,152 @@ async fn mute_output() -> bool {
 /// 两段加起来不至于超出收尾看门狗给建连留的预算太多。
 const WARM_CONNECT_WAIT: Duration = Duration::from_secs(3);
 
+#[derive(Clone, Debug)]
+enum StreamingConfig {
+    Doubao(doubao::DoubaoConfig),
+    #[cfg(windows)]
+    WeType(stt::wetype::WetypeConfig),
+}
+
+fn streaming_config_for(engine: &stt::Engine, mode: Mode) -> Result<Option<StreamingConfig>, String> {
+    if mode != Mode::Streaming {
+        return Ok(None);
+    }
+    match engine {
+        stt::Engine::Doubao(config) => Ok(Some(StreamingConfig::Doubao(config.clone()))),
+        #[cfg(windows)]
+        stt::Engine::WeType(config) => Ok(Some(StreamingConfig::WeType(config.clone()))),
+        _ => Err(format!("{}暂不支持流式录音，请在设置中改用单段或多段录音模式", engine.label())),
+    }
+}
+
+impl StreamingConfig {
+    fn label(&self) -> &'static str {
+        match self {
+            StreamingConfig::Doubao(_) => "豆包语音",
+            #[cfg(windows)]
+            StreamingConfig::WeType(_) => stt::wetype::LABEL,
+        }
+    }
+
+    fn finish_timeout(&self) -> Duration {
+        match self {
+            StreamingConfig::Doubao(_) => doubao::FINISH_TIMEOUT,
+            #[cfg(windows)]
+            StreamingConfig::WeType(config) => config.timeout,
+        }
+    }
+}
+
+/// 流式录音给前端的阶段文案；前端 nativeSession 有同一套缺省文案兜底。
+fn streaming_message(provider: &str, connecting: bool) -> &'static str {
+    match (provider, connecting) {
+        ("wetype_asr", true) => "正在连接微信输入法语音",
+        ("wetype_asr", false) => "微信输入法转写中",
+        (_, true) => "正在连接豆包语音服务",
+        (_, false) => "豆包语音转写中",
+    }
+}
+
+/// 流式识别中断时是否只留记录、不把半截文字自动送进输入框。
+fn withhold_partial_stream_output(mode: Mode, provider: &str, error: &Option<String>) -> bool {
+    mode == Mode::Streaming && provider == "wetype_asr" && error.is_some()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StreamingPartial {
+    text: String,
+    pending_chars: usize,
+}
+
+type StreamingCallback = Arc<dyn Fn(StreamingPartial) + Send + Sync>;
+
+enum StreamingSession {
+    Doubao(doubao::DoubaoSession),
+    #[cfg(windows)]
+    WeType(stt::wetype::WetypeSession),
+}
+
+impl StreamingSession {
+    fn current_text(&self) -> String {
+        match self {
+            StreamingSession::Doubao(session) => session.current_text(),
+            #[cfg(windows)]
+            StreamingSession::WeType(session) => session.current_text(),
+        }
+    }
+
+    async fn push(&mut self, samples: &[i16]) -> Result<(), String> {
+        match self {
+            StreamingSession::Doubao(session) => session.push(samples).await.map_err(|error| error.to_string()),
+            #[cfg(windows)]
+            StreamingSession::WeType(session) => session.push(samples).await,
+        }
+    }
+
+    async fn finish(self, timeout: Duration, quiet: Duration) -> Result<String, String> {
+        match self {
+            StreamingSession::Doubao(session) => {
+                session.finish(timeout, quiet).await.map(|outcome| outcome.text).map_err(|error| error.to_string())
+            }
+            #[cfg(windows)]
+            StreamingSession::WeType(session) => session.finish(timeout).await,
+        }
+    }
+
+    async fn cancel(self) {
+        match self {
+            StreamingSession::Doubao(session) => session.cancel().await,
+            #[cfg(windows)]
+            StreamingSession::WeType(session) => session.cancel().await,
+        }
+    }
+}
+
 /// 建连结果：会话 + 是否复用了预热连接。
-type ConnectFuture = Pin<Box<dyn Future<Output = (Result<doubao::DoubaoSession, doubao::SttError>, bool)> + Send>>;
+type ConnectFuture = Pin<Box<dyn Future<Output = (Result<StreamingSession, String>, bool)> + Send>>;
 
 /// 新建一条流式连接。
-fn connect_fresh(config: &doubao::DoubaoConfig, language: &str, on_partial: doubao::PartialCallback) -> ConnectFuture {
+fn connect_fresh(config: &StreamingConfig, language: &str, on_partial: StreamingCallback) -> ConnectFuture {
     let config = config.clone();
     let language = language.to_string();
-    Box::pin(async move { (doubao::DoubaoSession::connect(&config, &language, "", Some(on_partial)).await, false) })
+    Box::pin(async move {
+        let result = match config {
+            StreamingConfig::Doubao(config) => {
+                let callback = on_partial.clone();
+                let adapter: doubao::PartialCallback = Arc::new(move |partial: doubao::Partial| {
+                    callback(StreamingPartial { text: partial.text, pending_chars: partial.pending_chars });
+                });
+                doubao::DoubaoSession::connect(&config, &language, "", Some(adapter))
+                    .await
+                    .map(StreamingSession::Doubao)
+                    .map_err(|error| error.to_string())
+            }
+            #[cfg(windows)]
+            StreamingConfig::WeType(config) => {
+                let callback = on_partial.clone();
+                let adapter: stt::wetype::PartialCallback = Arc::new(move |text: String| {
+                    callback(StreamingPartial { text, pending_chars: 0 });
+                });
+                stt::wetype::WetypeSession::connect(&config, &language, Some(adapter))
+                    .await
+                    .map(StreamingSession::WeType)
+            }
+        };
+        (result, false)
+    })
 }
 
 /// 优先用预热连接：等它建好（最多 [`WARM_CONNECT_WAIT`]）、确认没断就接上回调直接用；否则照旧新建。
 fn connect_or_reuse(
     config: &doubao::DoubaoConfig,
     language: &str,
-    on_partial: doubao::PartialCallback,
+    on_partial: StreamingCallback,
     warm: Option<WarmReceiver>,
 ) -> ConnectFuture {
-    let Some(warm) = warm else { return connect_fresh(config, language, on_partial) };
-    let fresh = connect_fresh(config, language, on_partial.clone());
+    let streaming_config = StreamingConfig::Doubao(config.clone());
+    let Some(warm) = warm else { return connect_fresh(&streaming_config, language, on_partial) };
+    let fresh = connect_fresh(&streaming_config, language, on_partial.clone());
     Box::pin(async move {
         let reason = match tokio::time::timeout(WARM_CONNECT_WAIT, warm).await {
             Ok(Ok(Ok(session))) => match session.check_alive() {
@@ -1802,8 +1962,12 @@ fn connect_or_reuse(
                         "复用豆包预热连接（已空闲 {:?}）",
                         session.opened_at.elapsed()
                     );
-                    session.set_partial_callback(Some(on_partial));
-                    return (Ok(session), true);
+                    let callback = on_partial.clone();
+                    let adapter: doubao::PartialCallback = Arc::new(move |partial: doubao::Partial| {
+                        callback(StreamingPartial { text: partial.text, pending_chars: partial.pending_chars });
+                    });
+                    session.set_partial_callback(Some(adapter));
+                    return (Ok(StreamingSession::Doubao(session)), true);
                 }
                 Err(error) => format!("已断开：{error}"),
             },
@@ -1816,6 +1980,19 @@ fn connect_or_reuse(
     })
 }
 
+fn connect_stream(
+    config: &StreamingConfig,
+    language: &str,
+    on_partial: StreamingCallback,
+    warm: Option<WarmReceiver>,
+) -> ConnectFuture {
+    match config {
+        StreamingConfig::Doubao(config) => connect_or_reuse(config, language, on_partial, warm),
+        #[cfg(windows)]
+        StreamingConfig::WeType(_) => connect_fresh(config, language, on_partial),
+    }
+}
+
 /// 流式会话：建连与采集并行，建连期间样本先缓存，就绪后冲刷；音频通道关闭即发末包收尾。
 ///
 /// 有预热连接时先试它；复用的连接在出字前推流失败（服务端恰好在按下时断开）就改为新建、
@@ -1823,7 +2000,7 @@ fn connect_or_reuse(
 #[allow(clippy::too_many_arguments)]
 async fn streaming_task(
     id: u64,
-    config: doubao::DoubaoConfig,
+    config: StreamingConfig,
     language: String,
     warm: Option<WarmReceiver>,
     mut audio_rx: mpsc::UnboundedReceiver<Vec<i16>>,
@@ -1839,8 +2016,8 @@ async fn streaming_task(
     let first_text_at: Arc<OnceLock<Duration>> = Arc::new(OnceLock::new());
     let first_text_mark = first_text_at.clone();
     let partial_app = app.clone();
-    let on_partial: doubao::PartialCallback = Arc::new(move |partial: doubao::Partial| {
-        let doubao::Partial { text, pending_chars } = partial;
+    let on_partial: StreamingCallback = Arc::new(move |partial: StreamingPartial| {
+        let StreamingPartial { text, pending_chars } = partial;
         // 已经出字就算说过话（小声说话电平可能压在阈值下，但识别出来了）
         if !text.trim().is_empty() {
             heard.store(true, Ordering::Relaxed);
@@ -1856,12 +2033,12 @@ async fn streaming_task(
         }
         let _ = partial_app.emit("recording:partial", json!({ "text": text }));
     });
-    let mut connect = connect_or_reuse(&config, &language, on_partial.clone(), warm);
+    let mut connect = connect_stream(&config, &language, on_partial.clone(), warm);
     // 当前会话是否复用的预热连接（出字前出错时据此改为新建）
     let mut reused = false;
     let mut reused_any = false;
 
-    let mut session: Option<doubao::DoubaoSession> = None;
+    let mut session: Option<StreamingSession> = None;
     let mut connect_done = false;
     let mut audio_open = true;
     let mut pending: Vec<i16> = Vec::new();
@@ -1872,7 +2049,7 @@ async fn streaming_task(
         tokio::select! {
             _ = &mut cancel_rx => {
                 // 取消也带回已收的音频与文字：用户取消时由 Actor 丢弃，看门狗超时时据此保存
-                let text = session.as_ref().map(doubao::DoubaoSession::current_text).unwrap_or_default();
+                let text = session.as_ref().map(StreamingSession::current_text).unwrap_or_default();
                 if let Some(session) = session.take() {
                     session.cancel().await;
                 }
@@ -1892,7 +2069,7 @@ async fn streaming_task(
                                 if reused {
                                     tracing::info!("预热连接推流失败（{error}），改为新建并重发 {} 采样", pending.len());
                                     ready.cancel().await;
-                                    connect = connect_fresh(&config, &language, on_partial.clone());
+                                    connect = connect_stream(&config, &language, on_partial.clone(), None);
                                     connect_done = false;
                                     reused = false;
                                     continue;
@@ -1907,7 +2084,8 @@ async fn streaming_task(
                             let _ = tx.send(Cmd::Connected(id));
                         }
                         tracing::info!(
-                            "豆包流式就绪（{:?}，{}，缓冲 {} 采样）",
+                            "流式就绪（{}；{:?}，{}，缓冲 {} 采样）",
+                            config.label(),
                             started.elapsed(),
                             if reused { "复用预热连接" } else { "新建连接" },
                             all.len()
@@ -1934,7 +2112,7 @@ async fn streaming_task(
                                             stale.cancel().await;
                                         }
                                         pending = all.clone();
-                                        connect = connect_fresh(&config, &language, on_partial.clone());
+                                        connect = connect_stream(&config, &language, on_partial.clone(), None);
                                         connect_done = false;
                                         reused = false;
                                     } else {
@@ -1954,7 +2132,7 @@ async fn streaming_task(
 
     let duration = all.len() as f64 / SAMPLE_RATE;
     let released_at = started.elapsed();
-    let partial = session.as_ref().map(doubao::DoubaoSession::current_text).unwrap_or_default();
+    let partial = session.as_ref().map(StreamingSession::current_text).unwrap_or_default();
     let finalize = async move {
         match (session, failure) {
             (Some(active), Some(error)) => {
@@ -1969,8 +2147,8 @@ async fn streaming_task(
             }
             (Some(active), None) => {
                 let partial = active.current_text();
-                match active.finish(doubao::FINISH_TIMEOUT, doubao::FINISH_QUIET).await {
-                    Ok(outcome) => (outcome.text, None),
+                match active.finish(config.finish_timeout(), doubao::FINISH_QUIET).await {
+                    Ok(text) => (text, None),
                     Err(error) => (partial, Some(error.to_string())),
                 }
             }
@@ -2207,14 +2385,16 @@ mod tests {
     use super::recording_state_uses_asr;
     use super::{
         abort_multi_segments, batch_plan, cancel_binding_modifiers, compose_voice_rewrite_raw_text, counts_as_timeout,
-        finalize_budget, join_multi_texts, missing_voice, no_voice_state, parse_multi_drain_fallback,
-        processing_seconds, quiet_end_message, quiet_end_reason, record_hotkey_step, recorded_until,
-        spawn_multi_segment, start_cancel_modifiers, BatchPlan, Mode, MultiDrainPolicy, Phase, RecordHotkeyStep,
+        finalize_budget, finalize_budget_for_provider, join_multi_texts, missing_voice, no_voice_state,
+        parse_multi_drain_fallback, processing_seconds, quiet_end_message, quiet_end_reason, record_hotkey_step,
+        recorded_until, spawn_multi_segment, start_cancel_modifiers, streaming_config_for,
+        withhold_partial_stream_output, BatchPlan, Mode, MultiDrainPolicy, Phase, RecordHotkeyStep, StreamingConfig,
         HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, MULTI_DRAIN_DEFAULT_FALLBACK, MULTI_DRAIN_SCHEDULING_SLACK,
         MULTI_TRANSCRIBE_CONCURRENCY, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
     };
     use att_core::settings::hotkey::HotkeyAction::{ClipboardPanel, Record, RecordToggle, VoiceRewriteSelection};
     use att_core::settings::hotkey::ModSet;
+    use att_core::stt::{self, doubao};
     use att_hotkey::KeyPhase::{Pressed, Released};
     use serde_json::{json, Value};
     use std::time::{Duration, Instant};
@@ -2347,6 +2527,42 @@ mod tests {
     }
 
     #[test]
+    fn 流式编排_豆包与_windows_微信输入法接受_批量引擎明确拒绝() {
+        let doubao = stt::Engine::Doubao(doubao::DoubaoConfig {
+            api_key: "test".into(),
+            resource_id: "volc.bigasr.sauc.duration".into(),
+            endpoint: "wss://example.invalid".into(),
+            end_window_size: 800,
+            hotwords: Vec::new(),
+        });
+        assert!(matches!(streaming_config_for(&doubao, Mode::Streaming), Ok(Some(StreamingConfig::Doubao(_)))));
+        assert!(matches!(streaming_config_for(&doubao, Mode::Batch), Ok(None)));
+
+        let chatgpt = stt::Engine::ChatGpt(stt::chatgpt::ChatGptConfig {
+            api_key: "test".into(),
+            endpoint: "https://example.invalid".into(),
+            timeout: Duration::from_secs(30),
+        });
+        let error = streaming_config_for(&chatgpt, Mode::Streaming).unwrap_err();
+        assert!(error.contains("暂不支持流式"), "{error}");
+
+        #[cfg(windows)]
+        {
+            let wetype = stt::Engine::WeType(stt::wetype::WetypeConfig { pid: None, timeout: Duration::from_secs(60) });
+            assert!(matches!(streaming_config_for(&wetype, Mode::Streaming), Ok(Some(StreamingConfig::WeType(_)))));
+        }
+    }
+
+    #[test]
+    fn 微信输入法流式中断只留记录_不自动输出半截() {
+        let error = Some("微信输入法未确认识别结束".to_string());
+        assert!(withhold_partial_stream_output(Mode::Streaming, "wetype_asr", &error));
+        assert!(!withhold_partial_stream_output(Mode::Streaming, "wetype_asr", &None));
+        assert!(!withhold_partial_stream_output(Mode::Streaming, "doubao_asr", &error));
+        assert!(!withhold_partial_stream_output(Mode::Batch, "wetype_asr", &error));
+    }
+
+    #[test]
     fn 收尾看门狗上限_覆盖各引擎自身超时() {
         let timeout = Duration::from_secs(120);
         // 流式：建连 10 + 末包 6 + 关闭 2 + 余量 15
@@ -2367,6 +2583,17 @@ mod tests {
         assert_eq!(
             finalize_budget(Mode::Batch, Duration::from_secs(600), timeout, BatchPlan::Single),
             Duration::from_secs(333)
+        );
+        // 微信输入法流式：按设置的单次请求超时（最低 30 秒）+ 关闭开销 + 余量
+        assert_eq!(
+            finalize_budget_for_provider(
+                Mode::Streaming,
+                "wetype_asr",
+                Duration::from_secs(30),
+                Duration::from_secs(90),
+                BatchPlan::Single
+            ),
+            Duration::from_secs(107)
         );
     }
 

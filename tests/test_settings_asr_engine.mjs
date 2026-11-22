@@ -1,5 +1,5 @@
 // 识别引擎页纯逻辑（src/components/settings/asrEngineStatus.mjs）单元测试。
-// 覆盖：流式只对豆包可用、模式冲突提示、本地引擎加载状态的各个分支。
+// 覆盖：流式对豆包与 Windows 微信输入法可用、模式冲突提示、本地引擎加载状态的各个分支。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -12,7 +12,8 @@ import {
   recordingModeConflict,
   recordingModeOptions,
   providerLabel,
-  splitHint
+  splitHint,
+  supportsStreaming
 } from '../src/components/settings/asrEngineStatus.mjs'
 
 test('本地模型空闲释放：缺省 15 分钟，0 关闭，无效值兜底', () => {
@@ -36,24 +37,39 @@ test('豆包网页语音：展示名独立，超时缺省 30 秒并限制在 10�
   assert.equal(normalizeDoubaoWebTimeoutSeconds(999), 300)
 })
 
-test('录音模式：流式只有豆包可选，其余引擎置灰并说明原因', () => {
-  const doubao = recordingModeOptions('doubao_asr')
+test('录音模式：流式支持豆包与 Windows 微信输入法，其余引擎置灰并说明原因', () => {
+  const doubao = recordingModeOptions('doubao_asr', 'darwin')
   assert.deepEqual(doubao.map((mode) => mode.value), ['single', 'multi', 'streaming'])
   assert.ok(doubao.every((mode) => !mode.disabled))
 
+  const wetypeWindows = recordingModeOptions('wetype_asr', 'win32')
+  assert.equal(wetypeWindows.find((mode) => mode.value === 'streaming').disabled, false)
+  assert.equal(supportsStreaming('wetype_asr', 'win32'), true)
+  const wetypeMac = recordingModeOptions('wetype_asr', 'darwin')
+  const streaming = wetypeMac.find((mode) => mode.value === 'streaming')
+  assert.equal(streaming.disabled, true)
+  assert.match(streaming.hint, /仅支持 Windows/)
+  assert.equal(supportsStreaming('wetype_asr', 'darwin'), false)
+  // health/runtime 的平台字段是权威结论：前端 UA 推断不准时仍能放开流式
+  assert.equal(supportsStreaming('wetype_asr', 'darwin', true), true)
+  assert.equal(recordingModeOptions('wetype_asr', 'darwin', true).find((mode) => mode.value === 'streaming').disabled, false)
+
   for (const provider of ['whisper', 'qwen_asr', 'chatgpt_asr', 'deepseek_asr', 'doubao_web_asr']) {
-    const streaming = recordingModeOptions(provider).find((mode) => mode.value === 'streaming')
+    const streaming = recordingModeOptions(provider, 'win32').find((mode) => mode.value === 'streaming')
     assert.equal(streaming.disabled, true, provider)
     assert.match(streaming.hint, /不支持流式/)
-    assert.ok(recordingModeOptions(provider).filter((mode) => mode.value !== 'streaming').every((mode) => !mode.disabled))
+    assert.ok(recordingModeOptions(provider, 'win32').filter((mode) => mode.value !== 'streaming').every((mode) => !mode.disabled))
   }
 })
 
-test('模式冲突：非豆包 + 流式给出提示，其它组合无提示', () => {
-  assert.match(recordingModeConflict('whisper', 'streaming'), /faster-whisper不支持流式/)
-  assert.match(recordingModeConflict('doubao_web_asr', 'streaming'), /豆包网页语音不支持流式/)
-  assert.equal(recordingModeConflict('doubao_asr', 'streaming'), '')
-  assert.equal(recordingModeConflict('whisper', 'single'), '')
+test('模式冲突：不支持流式的引擎与平台给出提示，其它组合无提示', () => {
+  assert.match(recordingModeConflict('whisper', 'streaming', 'win32'), /faster-whisper不支持流式/)
+  assert.match(recordingModeConflict('doubao_web_asr', 'streaming', 'win32'), /豆包网页语音不支持流式/)
+  assert.match(recordingModeConflict('wetype_asr', 'streaming', 'darwin'), /仅支持 Windows/)
+  assert.equal(recordingModeConflict('wetype_asr', 'streaming', 'darwin', true), '')
+  assert.equal(recordingModeConflict('wetype_asr', 'streaming', 'win32'), '')
+  assert.equal(recordingModeConflict('doubao_asr', 'streaming', 'darwin'), '')
+  assert.equal(recordingModeConflict('whisper', 'single', 'win32'), '')
 })
 
 test('本地引擎状态：在线引擎不展示', () => {

@@ -73,7 +73,7 @@ import {
 import { createLatestSaveQueue } from './settingsSaveQueue.mjs'
 import { isWetypeProvider, needsCredentialCheck, requiresCredential } from './onlineEngineStatus.mjs'
 import { normalizeDownloadSource } from './modelManager.mjs'
-import { normalizeDoubaoWebTimeoutSeconds, normalizeLocalModelIdleMinutes } from './asrEngineStatus.mjs'
+import { normalizeDoubaoWebTimeoutSeconds, normalizeLocalModelIdleMinutes, supportsStreaming } from './asrEngineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
 import { normalizeLanguageForProvider } from './asrLanguages.mjs'
@@ -176,7 +176,14 @@ const lastSavedPresetId = ref('')
 // 全部预设：内置（只读）在前，自定义在后；下拉框与预设页都用它
 const allPresets = computed(() => presets.value)
 const isSyncing = computed(() => syncDepth.value > 0)
-const streamingRuntimeAvailable = computed(() => settingsStore.runtimeStatus.streaming_available === true)
+const streamingRuntimeAvailable = computed(() => (
+  settingsStore.runtimeStatus.streaming_available === true &&
+  supportsStreaming(
+    settingsStore.settings.asr_provider,
+    platform,
+    settingsStore.runtimeStatus.wetype_engine?.platform_supported === true
+  )
+))
 // 流式录音的运行时提示：可用时不打扰，不可用时只说原因。
 // 后端还没切到流式（保存防抖中）时不下结论，免得选中流式的瞬间闪一下误报
 const streamingRuntimeSummary = computed(() => {
