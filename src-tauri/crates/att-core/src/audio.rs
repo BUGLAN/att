@@ -7,6 +7,7 @@ use std::path::Path;
 pub const TARGET_RATE: u32 = 16_000;
 
 /// 写 16k 单声道 PCM16 WAV（先写 .tmp 再 rename，异常退出不留半截文件）。
+#[cfg(test)]
 pub fn write_wav_16k(path: &Path, samples: &[i16]) -> std::io::Result<()> {
     let spec = hound::WavSpec {
         channels: 1,

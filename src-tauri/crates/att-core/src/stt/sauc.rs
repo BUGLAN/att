@@ -13,7 +13,7 @@
 //! - 服务端错误帧体：`[错误码 u32 BE][信息长度 u32 BE][信息 UTF-8]`（兼容头后多一个字节的形态）。
 
 use serde_json::{json, Value};
-use std::io::{Read, Write};
+use std::io::Read;
 
 /// 优化版双向流式：结果有变化才回包，首字 / 尾字延迟都比 `bigmodel` 低
 pub const DEFAULT_ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
@@ -350,7 +350,10 @@ pub fn parse_server_frame(data: &[u8]) -> ServerFrame {
 }
 
 /// 测试辅助：构造服务端结果帧（可选 gzip）。
+#[cfg(test)]
 pub fn build_server_result_frame(payload: &Value, last: bool, gzip: bool) -> Vec<u8> {
+    use std::io::Write;
+
     let mut body = payload.to_string().into_bytes();
     if gzip {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());

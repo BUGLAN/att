@@ -371,7 +371,6 @@ dependencies = [
  "att-core",
  "core-foundation 0.10.1",
  "core-graphics",
- "thiserror 2.0.21",
  "tracing",
  "windows-sys 0.61.2",
 ]

@@ -1,6 +1,6 @@
 [package]
 name = "att-hotkey"
-description = "全局热键：平台后端抽象 + 底层键盘监听（macOS CGEventTap / Windows WH_KEYBOARD_LL）+ 触发匹配状态机"
+description = "全局热键：底层键盘监听（macOS CGEventTap / Windows WH_KEYBOARD_LL）+ 触发匹配状态机"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,7 +11,6 @@ local-engines = ["att-core/local-engines"]
 
 [dependencies]
 att-core = { path = "../att-core", default-features = false }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
