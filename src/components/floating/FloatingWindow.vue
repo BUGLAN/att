@@ -13,10 +13,6 @@
       出字：到字先进缓冲，按稳定节拍逐字放出、每个字墨晕洇开；超宽后整行平滑左移（见 floatingView.mjs 的 paceStep）。
       胶囊本身不参与排版：内层 .content 排好，胶囊量出它的大小后用过渡追上去。
     -->
-    <!-- 自动优化要用的预设：录音 / 识别 / 优化中在胶囊上方用小字显示，不改变胶囊大小 -->
-    <Transition name="tag">
-      <span v-if="presetTag" class="preset-tag" aria-hidden="true">{{ presetTag }}</span>
-    </Transition>
     <section
       :key="sessionKey"
       class="capsule"
@@ -38,7 +34,7 @@
             </span>
           </Transition>
         </span>
-        <span class="sr-only">{{ SEAL_LABELS[view.seal] }}{{ view.detail ? `：${view.detail}` : '' }}{{ view.notice ? `：${view.notice}` : '' }}{{ presetTag ? `（优化预设：${presetTag}）` : '' }}</span>
+        <span class="sr-only">{{ SEAL_LABELS[view.seal] }}{{ view.detail ? `：${view.detail}` : '' }}{{ view.notice ? `：${view.notice}` : '' }}</span>
 
         <!--
           离场的元素一律先钉在原位、脱离排版（detachOnLeave），在原地淡出：
@@ -134,8 +130,6 @@ const reason = computed(() => {
   if (view.value.seal === 'failure') return view.value.detail
   return view.value.seal === 'preset' ? view.value.notice : ''
 })
-// 胶囊上方的预设小字：只在工作态（录音 / 识别 / 优化中）且胶囊没在淡出时显示
-const presetTag = computed(() => (view.value.active && !leaving.value ? view.value.preset : ''))
 const showCancel = computed(() => view.value.cancellable && (expanded.value || hovered.value))
 // 声纹：录音中音量第一次过门限时出现（不必等出字）
 const showWave = computed(() => voiced.value && view.value.seal === 'listening')

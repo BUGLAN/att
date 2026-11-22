@@ -77,7 +77,7 @@ import {
 const { api } = useElectron()
 const recordsStore = useRecordsStore()
 
-const open = ref(false)
+const open = ref(true)
 const range = ref('7d')
 const metric = ref('count')
 const hovered = ref(null)
