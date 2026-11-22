@@ -500,7 +500,8 @@ mod tests {
         let public = core.public_settings_with_env(None);
         assert_eq!(public["models_dir"], configured.to_string_lossy().as_ref());
         assert_eq!(public["models_dir_effective"], core.models_dir.to_string_lossy().as_ref());
-        assert_eq!(public["models_dir_next"], configured.to_string_lossy().as_ref());
+        // models_dir_next 是规范化后的路径（macOS 临时目录 /var 是 /private/var 的符号链接），期望也走 tidy
+        assert_eq!(public["models_dir_next"], tidy(configured.clone()).display().to_string());
         assert_eq!(public["models_dir_env_override"], false);
         drop(core);
 
