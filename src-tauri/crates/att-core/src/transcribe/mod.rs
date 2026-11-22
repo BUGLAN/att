@@ -194,7 +194,7 @@ fn variant_key(model_id: Option<&str>) -> String {
     format!("{}@{}", model_id.unwrap_or("default"), proofread::PROMPT_VERSION)
 }
 
-/// 引擎解析：显式 > auto（本地优先，其次豆包、DeepSeek）；本地模型/推理库缺失、在线凭据缺失 → 409。
+/// 引擎解析：显式 > auto（本地优先，其次豆包、DeepSeek、豆包网页）；本地模型/推理库缺失、在线凭据缺失 → 409。
 ///
 /// 本地引擎只做**文件是否就位**的探测，不触发模型加载（加载发生在真正转写时）。
 fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, TranscribeError> {
@@ -203,6 +203,7 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
     let whisper = core.local_models.status(core, LocalKind::Whisper);
     let qwen = core.local_models.status(core, LocalKind::Qwen);
     let doubao_ready = crate::stt::doubao_config(core).ensure().is_ok();
+    let doubao_web_ready = crate::stt::doubao_web_config(core).ensure().is_ok();
     let deepseek_ready = crate::stt::deepseek_config(core).ensure().is_ok();
     // 只给一句结论 + 去哪下载：完整目录与文件要求仍放在设置页折叠详情里
     let unavailable = |kind: LocalKind, status: &crate::stt::local::LocalStatus| {
@@ -211,8 +212,8 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
     };
 
     match requested.trim().to_lowercase().as_str() {
-        // 与 Python 版一致：auto = 本地优先（配置指向本地引擎就用它，否则回落本地 Whisper / Qwen，
-        // 最后才用在线引擎：豆包 → DeepSeek）
+        // auto = 本地优先（配置指向本地引擎就用它，否则回落本地 Whisper / Qwen），
+        // 最后才用在线引擎：豆包 → DeepSeek → 豆包网页（后者无需凭据）
         "auto" | "" => {
             if let Some(kind) = crate::stt::local_kind(&core.settings().asr_provider) {
                 let ready = if kind == LocalKind::Whisper { whisper.available } else { qwen.available };
@@ -228,10 +229,12 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
                 Ok("doubao_asr")
             } else if deepseek_ready {
                 Ok("deepseek_asr")
+            } else if doubao_web_ready {
+                Ok("doubao_web_asr")
             } else {
                 Err(TranscribeError::new(
                     409,
-                    "当前没有可用的转写引擎：本地 Whisper / Qwen3-ASR 模型未就位，豆包、DeepSeek 凭据也未配置",
+                    "当前没有可用的转写引擎：本地模型未就位，豆包、DeepSeek 凭据未配置，豆包网页也暂时不可用",
                 ))
             }
         }
@@ -241,13 +244,15 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
         "qwen_asr" => Err(unavailable(LocalKind::Qwen, &qwen)),
         "doubao_asr" if doubao_ready => Ok("doubao_asr"),
         "doubao_asr" => Err(TranscribeError::new(409, "豆包语音未配置 Access Token，请在「设置 → 识别引擎」中填写")),
+        "doubao_web_asr" if doubao_web_ready => Ok("doubao_web_asr"),
+        "doubao_web_asr" => Err(TranscribeError::new(409, "豆包网页语音当前不可用，请稍后重试")),
         "deepseek_asr" if deepseek_ready => Ok("deepseek_asr"),
         "deepseek_asr" => {
             Err(TranscribeError::new(409, "DeepSeek 语音识别未配置 API Key，请在「设置 → 识别引擎」中填写"))
         }
         other => Err(TranscribeError::new(
             422,
-            format!("不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr/deepseek_asr）"),
+            format!("不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr/doubao_web_asr/deepseek_asr）"),
         )),
     }
 }
@@ -627,6 +632,7 @@ async fn run_transcription_locked(
         }
         None => match engine {
             "deepseek_asr" => hook.token.run(run_deepseek(core, &samples, duration, hook)).await?,
+            "doubao_web_asr" => hook.token.run(run_doubao_web(core, &samples, duration, hook)).await?,
             _ => hook.token.run(run_doubao(core, language, &samples, duration, engine, hook)).await?,
         },
     };
@@ -718,6 +724,44 @@ async fn run_deepseek(
         payload["warnings"] = json!(transcript.warnings);
     }
     Ok(payload)
+}
+
+/// 豆包网页匿名路径：实时速率推流；引擎内部按 13 分钟会话上限自动分段。
+async fn run_doubao_web(
+    core: &CoreState,
+    samples: &[i16],
+    duration: f64,
+    hook: &AsrHook,
+) -> Result<Value, TranscribeError> {
+    let config = crate::stt::doubao_web_config(core);
+    let mut on_push = |pushed: usize| hook.tick(pushed as f64 / SAMPLE_RATE as f64);
+    let text = crate::stt::doubao_web::transcribe_pcm_with_progress(&config, samples, &mut on_push).await.map_err(
+        |error| {
+            if hook.token.is_cancelled() {
+                TranscribeError::cancelled()
+            } else {
+                TranscribeError::new(500, format!("转写失败：{error}"))
+            }
+        },
+    )?;
+    Ok(doubao_web_payload(text, duration, samples.len()))
+}
+
+fn doubao_web_payload(text: String, duration: f64, samples: usize) -> Value {
+    let end = if duration > 0.0 { duration } else { samples as f64 / SAMPLE_RATE as f64 };
+    // 校对链路从 segments 取文本；豆包网页不返回时间戳，但必须给一个覆盖整段的 segment，
+    // 否则开启 LLM 校对时会误判成 asr_empty 并静默跳过。
+    let segments = if text.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![json!({ "start": 0.0, "end": end, "text": text.clone() })]
+    };
+    json!({
+        "text": text,
+        "duration_seconds": end,
+        "engine": "doubao_web_asr",
+        "segments": segments,
+    })
 }
 
 fn start_job(
@@ -978,6 +1022,17 @@ mod tests {
         assert_eq!(shaped["segments"][0]["text"], "校对文");
     }
 
+    #[test]
+    fn 豆包网页响应_为校对提供覆盖整段的_segment() {
+        let payload = doubao_web_payload("你好世界".into(), 3.5, 56_000);
+        assert_eq!(payload["text"], "你好世界");
+        assert_eq!(payload["engine"], "doubao_web_asr");
+        assert_eq!(payload["segments"], json!([{ "start": 0.0, "end": 3.5, "text": "你好世界" }]));
+
+        let empty = doubao_web_payload("  ".into(), 1.0, 16_000);
+        assert_eq!(empty["segments"], json!([]));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn 并发受理_执行许可只发给一个任务() {
         let dir = std::env::temp_dir().join(format!("att-ft-busy-{}", uuid::Uuid::new_v4()));
@@ -1173,6 +1228,14 @@ mod tests {
         core.transcriber.cache_store(&core, "h1", "doubao_asr", &entry);
         save_record(&core, &request, &path, "h1", "doubao_asr", shape_payload(&entry, false, false, None));
         assert_eq!(core.records.list(None, 10, 0).len(), 2);
+        // 豆包网页与官方豆包必须使用独立缓存桶 / 记录，不能相互覆盖
+        core.transcriber.cache_store(&core, "h1", "doubao_web_asr", &entry);
+        let web =
+            save_record(&core, &request, &path, "h1", "doubao_web_asr", shape_payload(&entry, false, false, None));
+        assert_eq!(core.records.list(None, 10, 0).len(), 3);
+        assert_ne!(web["record_id"], json!(id));
+        assert!(core.transcriber.cache_lookup(&core, "h1", "doubao_asr").is_some());
+        assert!(core.transcriber.cache_lookup(&core, "h1", "doubao_web_asr").is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1234,22 +1297,20 @@ mod tests {
             assert!(error.message.contains(crate::stt::local::LOCAL_ENGINES_DISABLED), "{}", error.message);
         }
         assert_eq!(resolve_engine(&core, "doubao_asr").unwrap_err().status, 409, "新数据目录没有豆包凭据");
+        assert_eq!(resolve_engine(&core, "doubao_web_asr").unwrap(), "doubao_web_asr", "豆包网页无需凭据");
         assert_eq!(resolve_engine(&core, "chatgpt_asr").unwrap_err().status, 422, "文件转写不支持 ChatGPT 听写");
         assert_eq!(resolve_engine(&core, "deepseek_asr").unwrap_err().status, 409, "新数据目录没有 DeepSeek 凭据");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn 引擎解析_auto_只配_deepseek_时回落到_deepseek() {
+    fn 引擎解析_auto_先回落豆包网页_配置_deepseek_后优先_deepseek() {
         let dir = std::env::temp_dir().join(format!("att-ft-auto-{}", uuid::Uuid::new_v4()));
         let core = CoreState::init(&dir, crate::Platform::Macos).unwrap();
 
-        // 没有本地模型、也没有在线凭据：409 文案同时提到本地、豆包与 DeepSeek
-        let error = resolve_engine(&core, "auto").unwrap_err();
-        assert_eq!(error.status, 409);
-        for word in ["本地", "豆包", "DeepSeek"] {
-            assert!(error.message.contains(word), "缺少「{word}」：{}", error.message);
-        }
+        // 没有本地模型，也没有豆包 / DeepSeek 凭据：最后回落到无需凭据的豆包网页
+        assert_eq!(resolve_engine(&core, "auto").unwrap(), "doubao_web_asr");
+        assert_eq!(resolve_engine(&core, "").unwrap(), "doubao_web_asr");
 
         // 只配置 DeepSeek：auto 与省略 engine 都回落到它
         core.apply_settings_update(&json!({ "deepseek_asr_api_key": "sk-test" })).unwrap();

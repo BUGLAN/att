@@ -1289,6 +1289,8 @@ mod tests {
         let core = crate::state::CoreState::init(&target, crate::Platform::Macos).unwrap();
         let public = core.public_settings();
         assert_eq!(public["doubao_asr_api_key_set"], json!(false));
+        assert_eq!(public["doubao_web_timeout_seconds"], json!(30), "旧备份恢复后补齐新设置默认值");
+        assert!(public.get("doubao_web_asr_api_key_set").is_none(), "匿名引擎没有凭据字段");
         assert!(core.llm.list_profiles()[0].api_key_encrypted.is_empty());
         let _ = fs::remove_dir_all(&source);
         let _ = fs::remove_dir_all(&target);

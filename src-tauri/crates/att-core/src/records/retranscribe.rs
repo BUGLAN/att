@@ -310,7 +310,10 @@ mod tests {
         assert_eq!(normalize_provider(None, "whisper"), "whisper");
         assert_eq!(normalize_provider(Some("  "), "deepseek_asr"), "deepseek_asr");
         assert_eq!(normalize_provider(Some("qwen_asr"), "doubao_asr"), "qwen_asr");
+        assert_eq!(normalize_provider(Some("doubao_web_asr"), "doubao_asr"), "doubao_web_asr");
         assert_eq!(normalize_provider(None, ""), "doubao_asr", "旧设置的空 provider 按豆包");
+        assert!(stt::PROVIDERS.contains(&"doubao_web_asr"));
+        assert_eq!(stt::effective_language("doubao_web_asr", "zh"), "auto");
     }
 
     #[tokio::test]

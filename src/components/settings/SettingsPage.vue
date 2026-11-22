@@ -71,9 +71,9 @@ import {
   submittedCredentialClearPatch
 } from './settingsFormSync.mjs'
 import { createLatestSaveQueue } from './settingsSaveQueue.mjs'
-import { isOnlineProvider, needsCredentialCheck } from './onlineEngineStatus.mjs'
+import { needsCredentialCheck, requiresCredential } from './onlineEngineStatus.mjs'
 import { normalizeDownloadSource } from './modelManager.mjs'
-import { normalizeLocalModelIdleMinutes } from './asrEngineStatus.mjs'
+import { normalizeDoubaoWebTimeoutSeconds, normalizeLocalModelIdleMinutes } from './asrEngineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
 import { normalizeLanguageForProvider } from './asrLanguages.mjs'
@@ -363,6 +363,8 @@ function normalizeSettings(value = {}) {
     doubao_asr_resource_id: value.doubao_asr_resource_id || 'volc.seedasr.sauc.duration',
     doubao_asr_endpoint: value.doubao_asr_endpoint || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async',
     doubao_asr_end_window_size: value.doubao_asr_end_window_size ?? 800,
+    // 豆包网页语音：匿名在线识别，无需凭据，只保留请求超时
+    doubao_web_timeout_seconds: normalizeDoubaoWebTimeoutSeconds(value.doubao_web_timeout_seconds),
     // ChatGPT 听写：明文令牌只存在于表单内存里，初始值恒为空
     chatgpt_asr_api_key: '',
     chatgpt_asr_api_key_clear: false,
@@ -434,6 +436,7 @@ function buildSettingsPayload() {
     doubao_asr_resource_id: form.value.doubao_asr_resource_id,
     doubao_asr_endpoint: form.value.doubao_asr_endpoint,
     doubao_asr_end_window_size: form.value.doubao_asr_end_window_size,
+    doubao_web_timeout_seconds: normalizeDoubaoWebTimeoutSeconds(form.value.doubao_web_timeout_seconds),
     chatgpt_asr_endpoint: form.value.chatgpt_asr_endpoint,
     chatgpt_asr_timeout_seconds: form.value.chatgpt_asr_timeout_seconds,
     deepseek_asr_endpoint: form.value.deepseek_asr_endpoint,
@@ -890,7 +893,7 @@ onMounted(async () => {
 
   // 启动时验证一次当前在线引擎的凭据（豆包只握手不推音频），首页的「已就绪」才可信
   const provider = settings.value.asr_provider
-  if (isOnlineProvider(provider) && serverOwnedPatch(settings.value)[`${provider}_api_key_set`]) {
+  if (requiresCredential(provider) && serverOwnedPatch(settings.value)[`${provider}_api_key_set`]) {
     credential.verify(provider)
   }
 })

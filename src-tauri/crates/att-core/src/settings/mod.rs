@@ -48,6 +48,7 @@ pub const MODEL_RUNTIME_KEYS: &[&str] = &[
     "doubao_asr_resource_id",
     "doubao_asr_endpoint",
     "doubao_asr_end_window_size",
+    "doubao_web_timeout_seconds",
     "chatgpt_asr_endpoint",
     "chatgpt_asr_timeout_seconds",
     "deepseek_asr_endpoint",
@@ -78,7 +79,7 @@ pub const SETTINGS_REVISION: i64 = 2;
 #[serde(default)]
 pub struct UserSettings {
     // ---- ASR 基础 ----
-    pub asr_provider: String, // whisper | qwen_asr | doubao_asr | chatgpt_asr | deepseek_asr
+    pub asr_provider: String, // whisper | qwen_asr | doubao_asr | doubao_web_asr | chatgpt_asr | deepseek_asr
     pub asr_language: String, // auto（自动检测）或各引擎支持的语种码，如 zh / en / ja / ko / yue
     /// 本地模型根目录；空值走现有默认查找。仅启动时生效，环境变量 `ATT_MODELS_DIR` 优先。
     #[serde(default)]
@@ -112,6 +113,9 @@ pub struct UserSettings {
     pub doubao_asr_endpoint: String,
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub doubao_asr_end_window_size: i64,
+    // ---- 豆包网页匿名语音（无需凭据）----
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub doubao_web_timeout_seconds: i64,
     // ---- ChatGPT 听写 ----
     pub chatgpt_asr_endpoint: String,
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
@@ -214,6 +218,7 @@ impl UserSettings {
             doubao_asr_resource_id: "volc.seedasr.sauc.duration".into(),
             doubao_asr_endpoint: crate::stt::sauc::DEFAULT_ENDPOINT.into(),
             doubao_asr_end_window_size: 800,
+            doubao_web_timeout_seconds: crate::stt::doubao_web::DEFAULT_TIMEOUT_SECONDS,
             chatgpt_asr_endpoint: "https://chatgpt.com/backend-api/transcribe".into(),
             chatgpt_asr_timeout_seconds: 120,
             deepseek_asr_endpoint: crate::stt::deepseek::DEFAULT_ENDPOINT.into(),
@@ -629,6 +634,16 @@ pub fn apply_settings_update(
                 }
             }
             "doubao_asr_end_window_size" => set_i64(&mut settings.doubao_asr_end_window_size, value, &type_error)?,
+            "doubao_web_timeout_seconds" => {
+                let mut seconds = settings.doubao_web_timeout_seconds;
+                set_i64(&mut seconds, value, &type_error)?;
+                let (min, max) =
+                    (crate::stt::doubao_web::MIN_TIMEOUT_SECONDS, crate::stt::doubao_web::MAX_TIMEOUT_SECONDS);
+                if !(min..=max).contains(&seconds) {
+                    return Err(format!("字段 doubao_web_timeout_seconds 必须在 {min}~{max} 秒之间"));
+                }
+                settings.doubao_web_timeout_seconds = seconds;
+            }
             "chatgpt_asr_timeout_seconds" => set_i64(&mut settings.chatgpt_asr_timeout_seconds, value, &type_error)?,
             "deepseek_asr_timeout_seconds" => set_i64(&mut settings.deepseek_asr_timeout_seconds, value, &type_error)?,
             "silence_level" => set_i64(&mut settings.silence_level, value, &type_error)?,
@@ -828,6 +843,7 @@ mod tests {
         assert!(!settings.launch_at_login);
         assert_eq!(settings.main_window_close_action, "tray");
         assert_eq!(settings.local_model_idle_unload_minutes, 15, "旧 settings.json 取 15 分钟默认值");
+        assert_eq!(settings.doubao_web_timeout_seconds, 30, "旧 settings.json 补豆包网页默认超时");
         // 旧热键迁移：Ctrl+Shift+R 保持
         let binding = settings.binding_of(HotkeyAction::Record).unwrap();
         assert_eq!(binding.display(Platform::Linux), "Ctrl+Shift+R");
@@ -844,7 +860,7 @@ mod tests {
         std::fs::write(&path, json!({ "auto_optimize": true }).to_string()).unwrap();
         assert_eq!(UserSettings::load(&path, Platform::Macos).asr_provider, "doubao_asr");
         // 老用户选过的引擎（含旧默认 whisper）原样保留
-        for provider in ["whisper", "qwen_asr", "chatgpt_asr", "doubao_asr", "deepseek_asr"] {
+        for provider in ["whisper", "qwen_asr", "chatgpt_asr", "doubao_asr", "doubao_web_asr", "deepseek_asr"] {
             std::fs::write(&path, json!({ "asr_provider": provider }).to_string()).unwrap();
             assert_eq!(UserSettings::load(&path, Platform::Windows).asr_provider, provider);
         }
@@ -998,6 +1014,41 @@ mod tests {
         apply_settings_update(&mut settings, &json!({"deepseek_asr_api_key_clear": true}), Platform::Windows, &crypto)
             .unwrap();
         assert!(settings.deepseek_asr_api_key_encrypted.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 豆包网页设置_默认30秒_保存重读_范围校验() {
+        let dir = temp_dir("doubao-web");
+        let path = dir.join("settings.json");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Windows);
+        assert_eq!(settings.doubao_web_timeout_seconds, 30);
+
+        let outcome = apply_settings_update(
+            &mut settings,
+            &json!({ "asr_provider": "doubao_web_asr", "doubao_web_timeout_seconds": 75 }),
+            Platform::Windows,
+            &crypto,
+        )
+        .unwrap();
+        assert!(outcome.runtime_keys_changed.contains(&"doubao_web_timeout_seconds"));
+        settings.save(&path).unwrap();
+        let reloaded = UserSettings::load(&path, Platform::Windows);
+        assert_eq!(reloaded.asr_provider, "doubao_web_asr");
+        assert_eq!(reloaded.doubao_web_timeout_seconds, 75);
+        assert_eq!(reloaded.public_view(Platform::Windows)["doubao_web_timeout_seconds"], json!(75));
+
+        for invalid in [9, 301] {
+            let error = apply_settings_update(
+                &mut settings,
+                &json!({ "doubao_web_timeout_seconds": invalid }),
+                Platform::Windows,
+                &crypto,
+            )
+            .unwrap_err();
+            assert!(error.contains("doubao_web_timeout_seconds") && error.contains("10~300"), "{error}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

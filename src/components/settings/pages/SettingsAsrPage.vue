@@ -122,6 +122,23 @@
       </div>
     </section>
 
+    <!-- 豆包网页语音（匿名在线）：无需密钥，只配请求超时；音频会发往豆包 -->
+    <section v-if="form.asr_provider === 'doubao_web_asr'" class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">豆包网页语音 · 接入配置</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">请求超时</span>
+            <span class="setting-desc">秒；单次识别的网络等待上限（10–300）。</span>
+          </div>
+          <BaseInput v-model.number="form.doubao_web_timeout_seconds" type="number" min="10" max="300" step="10" aria-label="豆包网页语音请求超时" />
+        </div>
+        <div class="settings-note">
+          <span>无需密钥，保存后即可用于录音、文件转写和重新识别；识别时音频会发往豆包。不支持流式录音，语种由音频自动判定。</span>
+        </div>
+      </div>
+    </section>
+
     <!-- ChatGPT 听写（在线批量）：访问令牌只写不读，后端加密落盘 -->
     <section v-if="form.asr_provider === 'chatgpt_asr'" class="settings-section">
       <div class="settings-group">
@@ -420,7 +437,7 @@ import {
   whisperOptionLabel
 } from '../modelManager.mjs'
 import { hotwordView, parseHotwords } from '../asrHotwords.mjs'
-import { credentialNote, isOnlineProvider, onlineEngineChip } from '../onlineEngineStatus.mjs'
+import { credentialNote, requiresCredential, onlineEngineChip } from '../onlineEngineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 
 const { form, streamingRuntimeSummary } = inject(SETTINGS_CTX)
@@ -632,7 +649,7 @@ function selectEngine(value) {
     return
   }
   // 再点已选中、已填凭据的在线引擎 = 重新验证（与本地引擎「再点一下重试」同一个手势）
-  if (form.value.asr_provider === value && isOnlineProvider(value) && onlineKeySet(value)) {
+  if (form.value.asr_provider === value && requiresCredential(value) && onlineKeySet(value)) {
     credential.verify(value)
     return
   }
@@ -649,12 +666,18 @@ function selectEngine(value) {
 function onlineKeySet(provider) {
   if (provider === 'doubao_asr') return Boolean(form.value.doubao_asr_api_key_set)
   if (provider === 'deepseek_asr') return Boolean(form.value.deepseek_asr_api_key_set)
-  return Boolean(form.value.chatgpt_asr_api_key_set)
+  if (provider === 'chatgpt_asr') return Boolean(form.value.chatgpt_asr_api_key_set)
+  // 豆包网页语音没有凭据
+  return false
 }
 
 // 在线引擎：卡片状态与接入配置区的提示都跟随凭据验证结论
 function onlineChip(provider) {
-  return onlineEngineChip({ keySet: onlineKeySet(provider), check: credential.checks[provider] || null })
+  return onlineEngineChip({
+    keySet: onlineKeySet(provider),
+    check: credential.checks[provider] || null,
+    requiresCredentials: requiresCredential(provider)
+  })
 }
 
 const doubaoNote = computed(() => (form.value.doubao_asr_api_key_set ? credentialNote(credential.checks.doubao_asr) : null))
@@ -664,7 +687,7 @@ const deepseekNote = computed(() => (form.value.deepseek_asr_api_key_set ? crede
 // 进入本页时：当前在线引擎没有「可用」结论就补验一次（上次没验成、验证失败后在控制台改过开通等）
 onMounted(async () => {
   const provider = form.value.asr_provider
-  if (!isOnlineProvider(provider) || !onlineKeySet(provider)) {
+  if (!requiresCredential(provider) || !onlineKeySet(provider)) {
     return
   }
   const check = await credential.load(provider)
@@ -760,6 +783,12 @@ const engines = computed(() => [
     label: '豆包语音',
     ...onlineChip('doubao_asr'),
     desc: '单段 / 多段 / 流式'
+  },
+  {
+    value: 'doubao_web_asr',
+    label: '豆包网页语音',
+    ...onlineChip('doubao_web_asr'),
+    desc: '单段 / 多段 · 无需密钥'
   },
   {
     value: 'chatgpt_asr',

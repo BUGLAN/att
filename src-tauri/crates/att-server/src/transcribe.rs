@@ -191,4 +191,13 @@ mod tests {
         let status = post_body(&app, Some("test-token"), r#"{"path":"C:\\not-registered\\a.mp3"}"#).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "auto 没有回落到已配置凭据的 DeepSeek");
     }
+
+    #[tokio::test]
+    async fn 省略engine_没有任何配置时回落到豆包网页() {
+        let app = router(test_state());
+        // 新数据目录没有本地模型和豆包 / DeepSeek 凭据；auto 应回落到无需密钥的豆包网页，
+        // 随后因为路径未登记返回 404，而不是「没有可用引擎」409。
+        let status = post_body(&app, Some("test-token"), r#"{"path":"C:\\not-registered\\a.mp3"}"#).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "auto 没有回落到豆包网页语音");
+    }
 }

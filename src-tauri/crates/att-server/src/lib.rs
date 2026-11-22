@@ -12,8 +12,8 @@
 //!   搜索支持状态与本地日期筛选，/api/records/export 批量导出（Markdown / TXT / JSON / CSV）
 //! - /api/prompts：列出（内置 + 自定义）、新建 / 修改 / 删除自定义预设、PUT /api/prompts/default 设默认
 //! - /api/llm/* LLM v2 全套（服务商目录 / 档案 / 模型 / 验证，见 [`llm`]）
-//! - 模型服务三端点（在线引擎凭据配齐即就绪；凭据验证确定失败时不就绪）
-//! - /api/asr/credential-check：在线引擎凭据验证（见 [`asr`]）
+//! - 模型服务三端点（在线引擎凭据配齐或匿名可用即就绪；验证确定失败时不就绪）
+//! - /api/asr/credential-check：在线引擎凭据 / 匿名连通性验证（见 [`asr`]）
 //! - /api/update：检查更新与安装包下载（见 [`update`]）
 //! - /api/storage：数据占用统计与清理孤儿音频（见 [`storage`]）
 //! - GET /api/stats?range=7d|30d|all：按天汇总录音条数、时长、识别字数与优化 token（见 `att_core::records::stats`）
@@ -426,7 +426,8 @@ fn engine_status(core: &CoreState) -> EngineStatus {
     match att_core::stt::Engine::online_from_settings(core) {
         Ok(engine) if invalid.is_some() => EngineStatus {
             ready: false,
-            error: invalid.map(|reason| format!("{}凭据验证失败：{reason}", engine.label())),
+            error: invalid
+                .map(|reason| att_core::stt::verify::invalid_message(&settings.asr_provider, engine.label(), &reason)),
             streaming_supported: false,
             streaming_available: false,
             streaming_backend: None,
@@ -973,7 +974,7 @@ async fn records_retranscribe(
     }
 }
 
-// ---- 模型服务（在线引擎：凭据配齐即就绪；本地引擎：start 真正加载并预热、stop 释放） ----
+// ---- 模型服务（在线引擎：凭据配齐或匿名可用即就绪；本地引擎：start 真正加载并预热、stop 释放） ----
 
 fn model_service_payload(core: &CoreState) -> Value {
     let settings = core.settings();
@@ -991,6 +992,7 @@ fn model_service_payload(core: &CoreState) -> Value {
             .unwrap_or(Value::Null),
         None => match settings.asr_provider.as_str() {
             "doubao_asr" => Value::from("bigmodel"),
+            "doubao_web_asr" => Value::from("doubao-web"),
             "chatgpt_asr" => Value::from("chatgpt-dictation"),
             "deepseek_asr" => Value::from("deepseek-asr"),
             _ => Value::Null,
@@ -2180,8 +2182,12 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let providers: Vec<&str> =
             body["engines"].as_array().unwrap().iter().map(|e| e["provider"].as_str().unwrap()).collect();
-        assert_eq!(providers, ["doubao_asr", "chatgpt_asr", "deepseek_asr", "whisper", "qwen_asr"]);
-        assert!(body["engines"].as_array().unwrap().iter().all(|e| e["available"] == json!(false)), "{body}");
+        assert_eq!(providers, ["doubao_asr", "doubao_web_asr", "chatgpt_asr", "deepseek_asr", "whisper", "qwen_asr"]);
+        let engines = body["engines"].as_array().unwrap();
+        let web = engines.iter().find(|e| e["provider"] == "doubao_web_asr").unwrap();
+        assert_eq!(web["available"], json!(true), "豆包网页匿名无需凭据");
+        assert_eq!(web["label"], json!("豆包网页语音"));
+        assert!(engines.iter().filter(|e| e["provider"] != "doubao_web_asr").all(|e| e["available"] == json!(false)));
         assert_eq!(body["current"], json!(state.core.settings().asr_provider));
 
         state.core.apply_settings_update(&json!({"deepseek_asr_api_key": "sk-test-123456"})).unwrap();
@@ -2190,6 +2196,29 @@ mod tests {
         assert_eq!(deepseek["available"], json!(true));
         assert_eq!(deepseek["error"], Value::Null);
         assert!(!body.to_string().contains("sk-test-123456"));
+    }
+
+    #[tokio::test]
+    async fn 豆包网页语音_单段多段就绪_流式明确不可用() {
+        let state = test_state("doubao-web-health").await;
+        state
+            .core
+            .apply_settings_update(&json!({
+                "asr_provider": "doubao_web_asr",
+                "recording_mode": "single"
+            }))
+            .unwrap();
+        let (_, health) = get_json(&state, "/api/health").await;
+        assert_eq!(health["asr_provider"], "doubao_web_asr");
+        assert_eq!(health["model_service_ready"], json!(true));
+        assert_eq!(health["streaming_supported"], json!(false));
+        assert_eq!(health["local_engine"], Value::Null);
+        assert_eq!(health["model_service_mode"], "online");
+
+        state.core.apply_settings_update(&json!({ "recording_mode": "streaming" })).unwrap();
+        let (_, health) = get_json(&state, "/api/health").await;
+        assert_eq!(health["model_service_ready"], json!(false));
+        assert!(health["model_service_error"].as_str().unwrap().contains("豆包网页语音暂不支持流式录音"), "{health}");
     }
 
     #[tokio::test]

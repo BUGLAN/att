@@ -12,6 +12,7 @@ export const RETRANSCRIBE_MAX_WAIT_MS = 15 * 60 * 1000
 
 const PROVIDER_LABELS = Object.freeze({
   doubao_asr: '豆包语音',
+  doubao_web_asr: '豆包网页语音',
   chatgpt_asr: 'ChatGPT 听写',
   deepseek_asr: 'DeepSeek 语音识别',
   whisper: '本地 Whisper',
@@ -21,6 +22,7 @@ const PROVIDER_LABELS = Object.freeze({
 // 引擎下拉里的短名称（下拉放在记录展开后的半栏里，全称会被截断）
 const PROVIDER_SHORT_LABELS = Object.freeze({
   doubao_asr: '豆包语音',
+  doubao_web_asr: '豆包网页语音',
   chatgpt_asr: 'ChatGPT 听写',
   deepseek_asr: 'DeepSeek',
   whisper: '本地 Whisper',

@@ -1,12 +1,22 @@
-// 在线识别引擎（豆包 / ChatGPT 听写 / DeepSeek）卡片状态的纯逻辑（不依赖 Vue，供 tests/test_settings_online_engine.mjs 锁定）。
+// 在线识别引擎（豆包 / 豆包网页 / ChatGPT 听写 / DeepSeek）卡片状态的纯逻辑
+// （不依赖 Vue，供 tests/test_settings_online_engine.mjs 锁定）。
 //
 // 「填了 Token」不等于「能用」：保存后后端会做一次真实握手（见 att_core::stt::verify），
 // 卡片据此区分「已配置 / 验证中 / 可用 / 验证失败 / 未能验证」。
+// 豆包网页语音同样是在线引擎，但匿名访问、无需密钥，不参与凭据验证。
 
-export const ONLINE_PROVIDERS = Object.freeze(['doubao_asr', 'chatgpt_asr', 'deepseek_asr'])
+export const ONLINE_PROVIDERS = Object.freeze(['doubao_asr', 'doubao_web_asr', 'chatgpt_asr', 'deepseek_asr'])
+
+/** 需要用户填写凭据并做后端握手的在线引擎。 */
+export const CREDENTIAL_PROVIDERS = Object.freeze(['doubao_asr', 'chatgpt_asr', 'deepseek_asr'])
 
 export function isOnlineProvider(provider) {
   return ONLINE_PROVIDERS.includes(provider)
+}
+
+/** 是否需要配置并验证凭据；豆包网页语音无需密钥。 */
+export function requiresCredential(provider) {
+  return CREDENTIAL_PROVIDERS.includes(provider)
 }
 
 /**
@@ -16,9 +26,13 @@ export function isOnlineProvider(provider) {
  * @param {boolean} params.keySet 是否已保存凭据
  * @param {{ status: 'checking'|'ok'|'invalid'|'unknown', message?: string } | null} [params.check]
  *   该引擎当前凭据的验证结论；没验过为 null
+ * @param {boolean} [params.requiresCredentials] 是否需要凭据；豆包网页语音传 false
  * @returns {{ chip: string, tone: 'ok'|'warn'|'err'|'accent'|'neutral', loading: boolean }}
  */
-export function onlineEngineChip({ keySet, check = null }) {
+export function onlineEngineChip({ keySet, check = null, requiresCredentials = true }) {
+  if (!requiresCredentials) {
+    return { chip: '在线 · 无需密钥', tone: 'ok', loading: false }
+  }
   if (!keySet) {
     return { chip: '在线 · 未配置', tone: 'warn', loading: false }
   }
@@ -60,6 +74,9 @@ export function credentialNote(check) {
 export function needsCredentialCheck(payload, previous = {}) {
   const provider = payload?.asr_provider
   if (!isOnlineProvider(provider)) {
+    return false
+  }
+  if (!requiresCredential(provider)) {
     return false
   }
   if (provider !== previous?.asr_provider) {

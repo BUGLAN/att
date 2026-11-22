@@ -7,9 +7,11 @@ import {
   hintBlocks,
   hintSummary,
   localEngineView,
+  normalizeDoubaoWebTimeoutSeconds,
   normalizeLocalModelIdleMinutes,
   recordingModeConflict,
   recordingModeOptions,
+  providerLabel,
   splitHint
 } from '../src/components/settings/asrEngineStatus.mjs'
 
@@ -22,12 +24,24 @@ test('本地模型空闲释放：缺省 15 分钟，0 关闭，无效值兜底',
   assert.equal(normalizeLocalModelIdleMinutes(-3), 0)
 })
 
+test('豆包网页语音：展示名独立，超时缺省 30 秒并限制在 10–300', () => {
+  assert.equal(providerLabel('doubao_asr'), '豆包语音')
+  assert.equal(providerLabel('doubao_web_asr'), '豆包网页语音')
+  assert.equal(normalizeDoubaoWebTimeoutSeconds(undefined), 30)
+  assert.equal(normalizeDoubaoWebTimeoutSeconds(''), 30)
+  assert.equal(normalizeDoubaoWebTimeoutSeconds('not-a-number'), 30)
+  assert.equal(normalizeDoubaoWebTimeoutSeconds(30), 30)
+  assert.equal(normalizeDoubaoWebTimeoutSeconds('45.4'), 45)
+  assert.equal(normalizeDoubaoWebTimeoutSeconds(1), 10)
+  assert.equal(normalizeDoubaoWebTimeoutSeconds(999), 300)
+})
+
 test('录音模式：流式只有豆包可选，其余引擎置灰并说明原因', () => {
   const doubao = recordingModeOptions('doubao_asr')
   assert.deepEqual(doubao.map((mode) => mode.value), ['single', 'multi', 'streaming'])
   assert.ok(doubao.every((mode) => !mode.disabled))
 
-  for (const provider of ['whisper', 'qwen_asr', 'chatgpt_asr', 'deepseek_asr']) {
+  for (const provider of ['whisper', 'qwen_asr', 'chatgpt_asr', 'deepseek_asr', 'doubao_web_asr']) {
     const streaming = recordingModeOptions(provider).find((mode) => mode.value === 'streaming')
     assert.equal(streaming.disabled, true, provider)
     assert.match(streaming.hint, /不支持流式/)
@@ -37,6 +51,7 @@ test('录音模式：流式只有豆包可选，其余引擎置灰并说明原�
 
 test('模式冲突：非豆包 + 流式给出提示，其它组合无提示', () => {
   assert.match(recordingModeConflict('whisper', 'streaming'), /faster-whisper不支持流式/)
+  assert.match(recordingModeConflict('doubao_web_asr', 'streaming'), /豆包网页语音不支持流式/)
   assert.equal(recordingModeConflict('doubao_asr', 'streaming'), '')
   assert.equal(recordingModeConflict('whisper', 'single'), '')
 })

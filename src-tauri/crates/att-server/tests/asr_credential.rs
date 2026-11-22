@@ -90,3 +90,21 @@ async fn 未配置凭据与本地引擎_不做验证() {
     let (status, _) = call(&state, "GET", "/api/asr/credential-check?provider=qwen_asr", None).await;
     assert_eq!(status, 422);
 }
+
+#[tokio::test]
+async fn 豆包网页验证失败_按连接而非凭据给出原因() {
+    let state = temp_state("web-invalid");
+    state.core.apply_settings_update(&json!({ "asr_provider": "doubao_web_asr", "recording_mode": "single" })).unwrap();
+    verify::record_for_test(&state.core, "doubao_web_asr", CheckStatus::Invalid, "豆包网页首页结构变化");
+
+    let (_, health) = call(&state, "GET", "/api/health", None).await;
+    assert_eq!(health["model_service_ready"], json!(false));
+    let error = health["model_service_error"].as_str().unwrap();
+    assert!(error.contains("豆包网页语音连接验证失败"), "{error}");
+    assert!(!error.contains("凭据验证失败"), "{error}");
+
+    let (status, current) = call(&state, "GET", "/api/asr/credential-check?provider=doubao_web_asr", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(current["check"]["status"], "invalid");
+    assert!(current.get("check").and_then(|check| check.get("fingerprint")).is_none());
+}

@@ -1,4 +1,4 @@
-//! 录音会话 Actor：在线引擎豆包（流式 + 批量）与 ChatGPT 听写（批量）。
+//! 录音会话 Actor：在线引擎豆包（流式 + 批量）、豆包网页、ChatGPT 听写与 DeepSeek（批量）。
 //!
 //! 单个 tokio 任务串行消费命令（UI 按钮 / 全局热键 / 会话任务回报），状态机：
 //!
@@ -55,7 +55,7 @@ use att_core::llm::optimizer::{self, OptimizeEvent, OptimizeOutcome};
 use att_core::records::{Record, RecordStatus};
 use att_core::settings::hotkey::{HotkeyAction, ModSet};
 use att_core::state::CoreState;
-use att_core::stt::{self, deepseek, doubao};
+use att_core::stt::{self, deepseek, doubao, doubao_web};
 use att_hotkey::listener::CancelBinding;
 use att_hotkey::KeyPhase;
 use serde_json::{json, Value};
@@ -131,6 +131,8 @@ enum BatchPlan {
     Single,
     /// DeepSeek：超过 115 秒按块串行请求，每块各受一次单块超时约束。
     DeepSeek { chunks: usize },
+    /// 豆包网页：音频按实时速率推送，长录音再按 13 分钟游客会话分段。
+    DoubaoWeb { sessions: usize },
 }
 
 /// 多段模式的预算参数：每个在途任务的最长运行时间，以及配置错误的兜底下限。
@@ -151,6 +153,10 @@ impl MultiDrainPolicy {
                     + WATCHDOG_SLACK
             }
             stt::Engine::ChatGpt(config) => config.timeout,
+            stt::Engine::DoubaoWeb(config) => {
+                doubao_web::estimated_timeout(config, Duration::from_secs_f64(att_core::audio::MAX_SEGMENT_SECONDS))
+                    + WATCHDOG_SLACK
+            }
             // DeepSeek 在单个 10 秒分段内仍会按暂时性错误重试三次。
             stt::Engine::DeepSeek(config) => {
                 config.timeout.saturating_mul(deepseek::MAX_ATTEMPTS_PER_CHUNK as u32) + Duration::from_secs(3)
@@ -1063,6 +1069,7 @@ impl Actor {
             &settings.asr_provider,
             recorded,
             settings.deepseek_asr_timeout_seconds,
+            settings.doubao_web_timeout_seconds,
             settings.chatgpt_asr_timeout_seconds,
         );
         finalize_budget(mode, recorded, batch_timeout, plan)
@@ -1656,9 +1663,14 @@ fn batch_plan(
     provider: &str,
     recorded: Duration,
     deepseek_timeout_seconds: i64,
+    doubao_web_timeout_seconds: i64,
     chatgpt_timeout_seconds: i64,
 ) -> (Duration, BatchPlan) {
-    if provider == "deepseek_asr" {
+    if provider == "doubao_web_asr" {
+        let config = doubao_web::DoubaoWebConfig::from_seconds(doubao_web_timeout_seconds);
+        let sessions = doubao_web::session_count_for_duration(recorded + HOLD_RELEASE_GRACE);
+        (config.timeout, BatchPlan::DoubaoWeb { sessions })
+    } else if provider == "deepseek_asr" {
         // 按住模式松开后还会多收一小段尾音（不算进 recorded），估算块数时补上，避免边界上少算一块
         let chunks = deepseek::chunk_count_for_duration(recorded + HOLD_RELEASE_GRACE);
         let timeout = Duration::from_secs(deepseek::request_timeout_seconds(deepseek_timeout_seconds));
@@ -1683,6 +1695,12 @@ fn finalize_budget(mode: Mode, recorded: Duration, batch_timeout: Duration, plan
         Mode::Batch => match plan {
             BatchPlan::Single => batch_timeout.max(doubao + recorded / 2),
             BatchPlan::DeepSeek { chunks } => batch_timeout * (chunks.max(1) * deepseek::MAX_ATTEMPTS_PER_CHUNK) as u32,
+            BatchPlan::DoubaoWeb { sessions } => {
+                let control_per_session = batch_timeout.saturating_mul(6).saturating_add(Duration::from_secs(2));
+                recorded.saturating_add(
+                    control_per_session.saturating_mul(u32::try_from(sessions.max(1)).unwrap_or(u32::MAX)),
+                )
+            }
         },
     };
     engine + WATCHDOG_SLACK
@@ -2317,7 +2335,7 @@ mod tests {
         // 600 / 1800 / 7200 秒分别切成 6 / 16 / 63 块，最坏每块尝试 3 次、每次等满 120 秒
         for (seconds, chunks) in [(600u64, 6usize), (1800, 16), (7200, 63)] {
             let recorded = Duration::from_secs(seconds);
-            let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 120);
+            let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 30, 120);
             assert_eq!(timeout, Duration::from_secs(120), "{seconds} 秒");
             assert_eq!(plan, BatchPlan::DeepSeek { chunks }, "{seconds} 秒");
             let budget = finalize_budget(Mode::Batch, recorded, timeout, plan);
@@ -2334,7 +2352,7 @@ mod tests {
     #[test]
     fn 收尾看门狗_deepseek短录音按尝试次数放大_其他引擎预算不变() {
         let attempts = att_core::stt::deepseek::MAX_ATTEMPTS_PER_CHUNK as u64;
-        let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 120, 120);
+        let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 120, 30, 120);
         assert_eq!(timeout, Duration::from_secs(120));
         assert_eq!(plan, BatchPlan::DeepSeek { chunks: 1 });
         assert_eq!(
@@ -2343,12 +2361,40 @@ mod tests {
         );
 
         // 单块超时按 deepseek_config 的实际范围（10～600 秒）取，预算不能跟着越界设置无限放大
-        let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 900, 120);
+        let (timeout, plan) = batch_plan("deepseek_asr", Duration::from_secs(30), 900, 30, 120);
         assert_eq!(timeout, Duration::from_secs(600));
         assert_eq!(
             finalize_budget(Mode::Batch, Duration::from_secs(30), timeout, plan),
             Duration::from_secs(600 * attempts) + WATCHDOG_SLACK
         );
+    }
+
+    #[test]
+    fn 收尾看门狗_豆包网页按实时推流与游客会话数放大预算() {
+        let (timeout, plan) = batch_plan("doubao_web_asr", Duration::from_secs(600), 120, 30, 120);
+        assert_eq!(timeout, Duration::from_secs(30));
+        assert_eq!(plan, BatchPlan::DoubaoWeb { sessions: 1 });
+        let budget = finalize_budget(Mode::Batch, Duration::from_secs(600), timeout, plan);
+        assert_eq!(budget, Duration::from_secs(797), "600 秒音频按实时推流 + 单会话控制开销");
+        assert!(budget > Duration::from_secs(600));
+
+        // 超过 13 分钟会再启动新的游客会话；预算必须覆盖每段各自的初始化、握手和四个控制等待。
+        let (timeout, plan) = batch_plan("doubao_web_asr", Duration::from_secs(1800), 120, 30, 120);
+        assert_eq!(plan, BatchPlan::DoubaoWeb { sessions: 3 });
+        assert_eq!(finalize_budget(Mode::Batch, Duration::from_secs(1800), timeout, plan), Duration::from_secs(2361));
+    }
+
+    #[test]
+    fn 多段预算_豆包网页覆盖实时推流与四个控制等待() {
+        let config = att_core::stt::doubao_web::DoubaoWebConfig::from_seconds(30);
+        let engine = att_core::stt::Engine::DoubaoWeb(config.clone());
+        let policy = MultiDrainPolicy::for_engine(&engine, MULTI_DRAIN_DEFAULT_FALLBACK);
+        let expected = att_core::stt::doubao_web::estimated_timeout(
+            &config,
+            Duration::from_secs_f64(att_core::audio::MAX_SEGMENT_SECONDS),
+        ) + WATCHDOG_SLACK;
+        assert_eq!(policy.segment_timeout, expected);
+        assert!(policy.segment_timeout > Duration::from_secs_f64(att_core::audio::MAX_SEGMENT_SECONDS));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2510,7 +2556,7 @@ mod tests {
         ])
         .await;
         let recorded = Duration::from_secs(600);
-        let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 120);
+        let (timeout, plan) = batch_plan("deepseek_asr", recorded, 120, 30, 120);
         assert_eq!(plan, BatchPlan::DeepSeek { chunks: 6 });
         let budget = finalize_budget(Mode::Batch, recorded, timeout, plan);
         assert_eq!(budget, Duration::from_secs(6 * 120 * deepseek::MAX_ATTEMPTS_PER_CHUNK as u64) + WATCHDOG_SLACK);

@@ -11,7 +11,7 @@ import {
   normalizeLanguageForProvider
 } from '../src/components/settings/asrLanguages.mjs'
 
-const ALL_PROVIDERS = ['doubao_asr', 'chatgpt_asr', 'deepseek_asr', 'whisper', 'qwen_asr']
+const ALL_PROVIDERS = ['doubao_asr', 'doubao_web_asr', 'chatgpt_asr', 'deepseek_asr', 'whisper', 'qwen_asr']
 
 test('语言下拉：所有引擎首项都是自动检测，且选项不重复', () => {
   assert.equal(AUTO_LANGUAGE, 'auto')
@@ -22,7 +22,8 @@ test('语言下拉：所有引擎首项都是自动检测，且选项不重复',
   }
 })
 
-test('语言下拉：Qwen / DeepSeek 只能自动判定，豆包与 Whisper 可选固定语种', () => {
+test('语言下拉：豆包网页 / Qwen / DeepSeek 只能自动判定，豆包与 Whisper 可选固定语种', () => {
+  assert.deepEqual(languageOptions('doubao_web_asr').map((item) => item.value), ['auto'])
   assert.deepEqual(languageOptions('qwen_asr').map((item) => item.value), ['auto'])
   assert.deepEqual(languageOptions('deepseek_asr').map((item) => item.value), ['auto'])
 
@@ -73,17 +74,22 @@ test('切换引擎：新引擎不支持当前语言时回落自动检测并提�
   assert.equal(deepseek.language, 'auto')
   assert.match(deepseek.message, /DeepSeek 语音识别不支持「日语」，已改为自动检测/)
 
+  const doubaoWeb = normalizeLanguageForProvider('doubao_web_asr', 'zh')
+  assert.equal(doubaoWeb.language, 'auto')
+  assert.match(doubaoWeb.message, /豆包网页语音不支持「中文」，已改为自动检测/)
+
   const doubao = normalizeLanguageForProvider('doubao_asr', 'xx')
   assert.equal(doubao.language, 'auto')
   assert.match(doubao.message, /豆包语音不支持「xx」，已改为自动检测/)
 })
 
-test('语言标签与说明：地区码显示基础语种中文名，Qwen / DeepSeek 明确不能指定', () => {
+test('语言标签与说明：地区码显示基础语种中文名，自动判定引擎明确不能指定', () => {
   assert.equal(languageLabel('zh-CN'), '中文')
   assert.equal(languageLabel('EN_us'), '英语')
   assert.equal(languageLabel('xx'), 'xx')
   assert.match(languageHint('qwen_asr'), /不支持指定语言/)
   assert.match(languageHint('deepseek_asr'), /自动判定/)
+  assert.match(languageHint('doubao_web_asr'), /自动判定/)
   assert.match(languageHint('doubao_asr'), /自动检测/)
   assert.match(languageHint('whisper'), /自动检测/)
 })

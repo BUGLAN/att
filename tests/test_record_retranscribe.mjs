@@ -31,6 +31,7 @@ test('折叠行只给失败且有音频的记录显示快捷按钮', () => {
 test('引擎选项：只列可用的，当前设置的排第一并标注', () => {
   const engines = [
     { provider: 'doubao_asr', label: '豆包语音', available: true, error: null },
+    { provider: 'doubao_web_asr', label: '豆包网页语音', available: true, error: null },
     { provider: 'chatgpt_asr', label: 'ChatGPT 听写', available: false, error: '未配置' },
     { provider: 'deepseek_asr', label: 'DeepSeek 语音识别', available: true, error: null },
     { provider: 'whisper', label: '本地 Whisper', available: false, error: '模型未安装' }
@@ -38,13 +39,14 @@ test('引擎选项：只列可用的，当前设置的排第一并标注', () =>
   const options = retranscribeEngineOptions(engines, 'deepseek_asr')
   assert.deepEqual(options, [
     { value: 'deepseek_asr', label: 'DeepSeek（当前）' },
-    { value: 'doubao_asr', label: '豆包语音' }
+    { value: 'doubao_asr', label: '豆包语音' },
+    { value: 'doubao_web_asr', label: '豆包网页语音' }
   ])
   assert.equal(defaultRetranscribeEngine(options, 'deepseek_asr'), 'deepseek_asr')
 
   // 当前引擎不可用：默认选第一个可用的
   const fallback = retranscribeEngineOptions(engines, 'whisper')
-  assert.deepEqual(fallback.map((option) => option.value), ['doubao_asr', 'deepseek_asr'])
+  assert.deepEqual(fallback.map((option) => option.value), ['doubao_asr', 'doubao_web_asr', 'deepseek_asr'])
   assert.equal(defaultRetranscribeEngine(fallback, 'whisper'), 'doubao_asr')
 
   assert.deepEqual(retranscribeEngineOptions([], 'doubao_asr'), [])
@@ -62,6 +64,7 @@ test('已有文字的记录重新识别前要确认，失败且没有文字的�
 test('识别信息：引擎 · 语言，旧记录没有字段时为空', () => {
   assert.equal(recordAsrSummary({ engine: 'whisper', language: 'zh' }), '本地 Whisper · 中文')
   assert.equal(recordAsrSummary({ engine: 'doubao_asr' }), '豆包语音')
+  assert.equal(recordAsrSummary({ engine: 'doubao_web_asr', language: 'auto' }), '豆包网页语音 · 自动检测')
   assert.equal(recordAsrSummary({ engine: 'deepseek_asr', language: 'auto' }), 'DeepSeek 语音识别 · 自动检测')
   assert.equal(recordAsrSummary({}), '')
 })

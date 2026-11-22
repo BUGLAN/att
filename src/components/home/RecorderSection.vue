@@ -119,7 +119,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import { ACTION_GLYPHS, SEALS, recorderSealState } from '@/components/common/glyphs.mjs'
 import { FAILURE_HOLD_MS, SUCCESS_HOLD_MS } from '@/components/floating/floatingView.mjs'
 import { hintSummary, providerLabel } from '@/components/settings/asrEngineStatus.mjs'
-import { isOnlineProvider } from '@/components/settings/onlineEngineStatus.mjs'
+import { requiresCredential } from '@/components/settings/onlineEngineStatus.mjs'
 import { recordHotkeySummary } from '@/components/settings/settingsHotkeys.mjs'
 
 const {
@@ -156,11 +156,12 @@ const streamingAvailable = computed(() => settingsStore.runtimeStatus.streaming_
 const streamingNeedsCredentials = computed(() => (
   isStreamingModeEnabled.value &&
   !streamingAvailable.value &&
+  requiresCredential(settingsStore.settings.asr_provider) &&
   settingsStore.runtimeStatus.model_service_mode === 'online'
 ))
 const currentCredentialCheck = computed(() => {
   const provider = settingsStore.settings.asr_provider
-  return isOnlineProvider(provider) ? credential.checks[provider] || null : null
+  return requiresCredential(provider) ? credential.checks[provider] || null : null
 })
 const recordingButtonDisabled = computed(() => (
   !isRecording.value &&

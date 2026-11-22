@@ -22,6 +22,7 @@ export const JOB_POLL_MAX_WAIT_MS = 15 * 60 * 1000
 /**
  * 识别引擎下拉的元数据（与后端 engine 参数一一对应）。
  * 文件转写只支持这几个引擎（后端 att-core transcribe::resolve_engine），ChatGPT 听写不在其中。
+ * 豆包网页语音匿名可用，无需密钥。
  */
 export const TRANSCRIBE_ENGINES = [
   {
@@ -29,6 +30,12 @@ export const TRANSCRIBE_ENGINES = [
     label: '豆包 · 实时大模型',
     tag: '在线',
     desc: '火山在线识别，质量高、不占本机算力，按音频时长计费。'
+  },
+  {
+    value: 'doubao_web_asr',
+    label: '豆包网页语音',
+    tag: '在线',
+    desc: '豆包网页匿名识别，无需密钥，自动判定语种。'
   },
   {
     value: 'deepseek_asr',
@@ -50,15 +57,15 @@ export const TRANSCRIBE_ENGINES = [
   }
 ]
 
-/** 设置里的引擎不能用于文件转写（如 ChatGPT 听写）时退到的引擎。 */
-export const FALLBACK_TRANSCRIBE_ENGINE = 'doubao_asr'
+/** 设置里的引擎不能用于文件转写（如 ChatGPT 听写）时退到的引擎；匿名可用，无需先配密钥。 */
+export const FALLBACK_TRANSCRIBE_ENGINE = 'doubao_web_asr'
 
 function isTranscribeEngine(value) {
   return TRANSCRIBE_ENGINES.some((item) => item.value === value)
 }
 
 /**
- * 转文字页的默认引擎：跟随设置里的 `asr_provider`；文件转写不支持时退到豆包。
+ * 转文字页的默认引擎：跟随设置里的 `asr_provider`；文件转写不支持时退到豆包网页。
  */
 export function defaultTranscribeEngine(asrProvider) {
   return isTranscribeEngine(asrProvider) ? asrProvider : FALLBACK_TRANSCRIBE_ENGINE
@@ -73,6 +80,7 @@ export function defaultTranscribeEngine(asrProvider) {
  */
 export function transcribeEngineOptions({ doubaoKeySet = false, deepseekKeySet = false, localEngine = null } = {}) {
   return TRANSCRIBE_ENGINES.map((item) => {
+    // 豆包网页语音无需凭据，也不依赖本地模型，始终可用。
     if (item.value === 'doubao_asr' && !doubaoKeySet) {
       return { ...item, disabled: true, badge: '未配置', hint: '豆包需要先在「设置 → 识别引擎」填写 Access Token。' }
     }
@@ -89,7 +97,7 @@ export function transcribeEngineOptions({ doubaoKeySet = false, deepseekKeySet =
 
 /**
  * 构造 POST /api/transcribe 请求体（M2：engine + LLM 校对参数）。
- * 路径为空时返回 null（调用方据此提示，不发请求）；引擎不在 {@link TRANSCRIBE_ENGINES} 里时退到豆包。
+ * 路径为空时返回 null（调用方据此提示，不发请求）；引擎不在 {@link TRANSCRIBE_ENGINES} 里时退到豆包网页。
  */
 export function buildTranscribeRequest({
   path,

@@ -2,13 +2,14 @@
 //!
 //! - [`sauc`]：火山 SAUC 二进制协议编解码（纯函数）
 //! - [`doubao`]：豆包会话（流式推流 / 批量转写）
+//! - [`doubao_web`]：豆包网页匿名语音（游客初始化 + 网页 WebSocket，在线批量）
 //! - [`hotwords`]：个人词表的归一化与 token 预算（目前只有豆包使用）
 //! - [`chatgpt`]：ChatGPT 听写（在线批量，不支持流式）
 //! - [`deepseek`]：DeepSeek 语音识别（在线批量，不支持流式）
 //! - [`local`]：本地引擎装配与常驻池（faster-whisper / Qwen3-ASR，进程内推理）
-//! - [`verify`]：在线引擎凭据验证（握手 / 静音请求，区分「已配置」与「可用」）
+//! - [`verify`]：在线引擎验证（凭据握手 / 匿名连通性，区分「已配置」与「可用」）
 //!
-//! 在线引擎（豆包 / ChatGPT / DeepSeek）凭据齐备即就绪；本地引擎要在后台线程加载模型（large-v3 在 CPU 上
+//! 在线引擎（豆包 / 豆包网页 / ChatGPT / DeepSeek）凭据齐备或匿名地址可用即就绪；本地引擎要在后台线程加载模型（large-v3 在 CPU 上
 //! 要十几秒），所以 [`Engine::resolve`] 只校验模型文件、随即在后台预加载（[`preload_local`]），
 //! 录音立刻开始；真正推理时（[`Engine::transcribe_pcm`] / [`transcribe_local`]）再取常驻句柄，
 //! 若还在加载就在 blocking 线程上等它加载完。
@@ -16,6 +17,7 @@
 pub mod chatgpt;
 pub mod deepseek;
 pub mod doubao;
+pub mod doubao_web;
 pub mod hotwords;
 pub mod local;
 pub mod sauc;
@@ -56,6 +58,11 @@ pub fn doubao_config(core: &CoreState) -> doubao::DoubaoConfig {
         end_window_size: settings.doubao_asr_end_window_size,
         hotwords: settings.asr_hotwords.clone(),
     }
+}
+
+/// 从用户设置组装豆包网页语音配置。无凭据；超时按设置夹到 10–300 秒。
+pub fn doubao_web_config(core: &CoreState) -> doubao_web::DoubaoWebConfig {
+    doubao_web::DoubaoWebConfig::from_seconds(core.settings().doubao_web_timeout_seconds)
 }
 
 /// 从用户设置组装 ChatGPT 听写配置（令牌只存密文，运行期解密）。
@@ -128,13 +135,15 @@ impl std::fmt::Debug for LocalHandle {
 #[derive(Clone, Debug)]
 pub enum Engine {
     Doubao(doubao::DoubaoConfig),
+    DoubaoWeb(doubao_web::DoubaoWebConfig),
     ChatGpt(chatgpt::ChatGptConfig),
     DeepSeek(deepseek::DeepSeekConfig),
     Local(LocalHandle),
 }
 
 /// 全部识别引擎的 provider 标识（与设置 `asr_provider` 取值一致），也是「重新识别」可选引擎的顺序。
-pub const PROVIDERS: [&str; 5] = ["doubao_asr", "chatgpt_asr", "deepseek_asr", local::WHISPER, local::QWEN];
+pub const PROVIDERS: [&str; 6] =
+    ["doubao_asr", "doubao_web_asr", "chatgpt_asr", "deepseek_asr", local::WHISPER, local::QWEN];
 
 /// 一个识别引擎当前能不能用（「重新识别」选引擎用）：只看凭据是否齐备、本地模型文件是否就位，不发网络请求。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -163,7 +172,7 @@ pub fn engine_choices(core: &CoreState) -> Vec<EngineChoice> {
                     Ok(engine) => (
                         engine.label(),
                         verify::invalid_reason(core, provider)
-                            .map(|reason| format!("{}凭据验证失败：{reason}", engine.label())),
+                            .map(|reason| verify::invalid_message(provider, engine.label(), &reason)),
                     ),
                     Err(message) => (online_label(provider), Some(message)),
                 },
@@ -177,7 +186,7 @@ pub fn engine_choices(core: &CoreState) -> Vec<EngineChoice> {
 /// 其余引擎就是设置里的识别语言。
 pub fn effective_language(provider: &str, language: &str) -> String {
     match provider.trim() {
-        "deepseek_asr" | "qwen_asr" => "auto".into(),
+        "deepseek_asr" | "qwen_asr" | "doubao_web_asr" => "auto".into(),
         _ => language.to_string(),
     }
 }
@@ -185,6 +194,7 @@ pub fn effective_language(provider: &str, language: &str) -> String {
 /// 在线引擎的界面名称（凭据缺失、构造不出 [`Engine`] 时也要能显示）。
 fn online_label(provider: &str) -> &'static str {
     match provider {
+        "doubao_web_asr" => "豆包网页语音",
         "chatgpt_asr" => "ChatGPT 听写",
         "deepseek_asr" => "DeepSeek 语音识别",
         _ => "豆包语音",
@@ -209,6 +219,11 @@ impl Engine {
                 let config = deepseek_config(core);
                 config.ensure()?;
                 Ok(Engine::DeepSeek(config))
+            }
+            "doubao_web_asr" => {
+                let config = doubao_web_config(core);
+                config.ensure().map_err(|error| error.to_string())?;
+                Ok(Engine::DoubaoWeb(config))
             }
             "doubao_asr" | "" => {
                 let config = doubao_config(core);
@@ -247,6 +262,7 @@ impl Engine {
     pub fn provider(&self) -> &'static str {
         match self {
             Engine::Doubao(_) => "doubao_asr",
+            Engine::DoubaoWeb(_) => "doubao_web_asr",
             Engine::ChatGpt(_) => "chatgpt_asr",
             Engine::DeepSeek(_) => "deepseek_asr",
             Engine::Local(handle) => handle.kind.provider(),
@@ -260,6 +276,7 @@ impl Engine {
     pub fn label(&self) -> &'static str {
         match self {
             Engine::Doubao(_) => "豆包语音",
+            Engine::DoubaoWeb(_) => "豆包网页语音",
             Engine::ChatGpt(_) => "ChatGPT 听写",
             Engine::DeepSeek(_) => "DeepSeek 语音识别",
             Engine::Local(handle) => handle.kind.label(),
@@ -276,6 +293,9 @@ impl Engine {
                 .await
                 .map(|outcome| BatchTranscript { text: outcome.text, warning: None })
                 .map_err(|error| error.to_string()),
+            Engine::DoubaoWeb(config) => {
+                doubao_web::transcribe_pcm(config, samples).await.map(|text| BatchTranscript { text, warning: None })
+            }
             Engine::ChatGpt(config) => {
                 let wav = crate::audio::wav_bytes_16k(samples).map_err(|e| format!("音频编码失败：{e}"))?;
                 chatgpt::transcribe_wav(config, wav, language).await.map(|text| BatchTranscript { text, warning: None })
@@ -368,6 +388,7 @@ mod tests {
     fn 识别语言_不能指定语言的引擎记为自动检测() {
         assert_eq!(effective_language("deepseek_asr", "zh"), "auto");
         assert_eq!(effective_language("qwen_asr", "en"), "auto");
+        assert_eq!(effective_language("doubao_web_asr", "zh"), "auto");
         assert_eq!(effective_language("doubao_asr", "yue"), "yue");
         assert_eq!(effective_language("whisper", "auto"), "auto");
     }
@@ -377,8 +398,25 @@ mod tests {
         assert_eq!(local_kind("whisper"), Some(LocalKind::Whisper));
         assert_eq!(local_kind("qwen_asr"), Some(LocalKind::Qwen));
         assert_eq!(local_kind("doubao_asr"), None);
+        assert_eq!(local_kind("doubao_web_asr"), None);
         assert_eq!(local_kind("chatgpt_asr"), None);
         assert_eq!(local_kind("deepseek_asr"), None);
+    }
+
+    #[test]
+    fn engine_choices_包含无需凭据的豆包网页语音() {
+        let dir = std::env::temp_dir().join(format!("att-engine-choices-{}", uuid::Uuid::new_v4()));
+        let core = CoreState::init(&dir, crate::Platform::Windows).unwrap();
+        let choices = engine_choices(&core);
+        let web = choices.iter().find(|choice| choice.provider == "doubao_web_asr").unwrap();
+        assert_eq!(web.label, "豆包网页语音");
+        assert!(web.available, "无需凭据，选项本身应可用：{web:?}");
+        assert!(web.error.is_none());
+        let engine = Engine::online_for_provider(&core, "doubao_web_asr").unwrap();
+        assert_eq!(engine.provider(), "doubao_web_asr");
+        assert_eq!(engine.label(), "豆包网页语音");
+        assert!(!engine.supports_streaming());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

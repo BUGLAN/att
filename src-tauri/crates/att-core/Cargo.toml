@@ -40,7 +40,7 @@ zip = { version = "2.6", default-features = false, features = ["deflate"] }
 att-whisper = { path = "../att-whisper", optional = true }
 att-qwen = { path = "../att-qwen", optional = true }
 # LLM 网关：native-tls 与 WebSocket 同一套系统 TLS；system-proxy 读系统代理（与 Python httpx 走代理的行为对齐）
-reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "http2", "charset", "system-proxy", "multipart"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "http2", "charset", "system-proxy", "multipart", "cookies"] }
 # LLM 错误文案脱敏
 regex = "1"
 # 本地模型应用内下载：GitHub Releases 的 .tar.bz2 用 Rust 解压（Windows 无系统 tar/bzip2）

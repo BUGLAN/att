@@ -45,12 +45,21 @@ test('存在未提交改动时必须禁止用服务端值覆盖表单', () => {
 
 // 锁死的真实踩坑：保存 Token 后后端已返回 *_api_key_set: true，但当时表单里还留着明文 Token，
 // watch(settings) 判成「有未提交改动」跳过重建，卡片一直显示「未配置」。
-// 这两个字段不进快照，必须无条件跟随服务端。
-test('密钥「是否已保存」只由服务端维护：两个字段都要取到', () => {
+// 这些字段不进快照，必须无条件跟随服务端。
+test('密钥「是否已保存」只由服务端维护：三个字段都要取到', () => {
   assert.deepEqual(
     [...SERVER_OWNED_FIELDS].sort(),
     ['chatgpt_asr_api_key_set', 'deepseek_asr_api_key_set', 'doubao_asr_api_key_set']
   )
+})
+
+test('豆包网页语音无需凭据：不额外产生服务端维护字段', () => {
+  const patch = serverOwnedPatch({
+    asr_provider: 'doubao_web_asr',
+    doubao_web_timeout_seconds: 30
+  })
+  assert.equal('doubao_web_asr_api_key_set' in patch, false)
+  assert.deepEqual(Object.keys(patch).sort(), [...SERVER_OWNED_FIELDS].sort())
 })
 
 test('serverOwnedPatch 跟随服务端值（保存 / 清除 Token 两个方向）', () => {

@@ -854,6 +854,7 @@ mod tests {
         assert_eq!(LocalKind::from_provider("whisper"), Some(LocalKind::Whisper));
         assert_eq!(LocalKind::from_provider("qwen_asr"), Some(LocalKind::Qwen));
         assert_eq!(LocalKind::from_provider("doubao_asr"), None);
+        assert_eq!(LocalKind::from_provider("doubao_web_asr"), None);
         assert_eq!(LocalKind::Whisper.label(), "本地 Whisper");
     }
 

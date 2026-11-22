@@ -8,7 +8,8 @@ import {
   credentialNote,
   isOnlineProvider,
   needsCredentialCheck,
-  onlineEngineChip
+  onlineEngineChip,
+  requiresCredential
 } from '../src/components/settings/onlineEngineStatus.mjs'
 
 test('没保存凭据：未配置（警示色）', () => {
@@ -23,6 +24,16 @@ test('有凭据：按验证结论区分五种状态', () => {
   assert.equal(onlineEngineChip({ keySet: true, check: { status: 'ok' } }).tone, 'ok')
   assert.deepEqual(onlineEngineChip({ keySet: true, check: { status: 'invalid' } }), { chip: '在线 · 验证失败', tone: 'err', loading: false })
   assert.equal(onlineEngineChip({ keySet: true, check: { status: 'unknown' } }).chip, '在线 · 未能验证')
+})
+
+test('豆包网页语音：在线但无需密钥，卡片直接显示可用', () => {
+  assert.equal(isOnlineProvider('doubao_web_asr'), true)
+  assert.equal(requiresCredential('doubao_web_asr'), false)
+  assert.equal(requiresCredential('doubao_asr'), true)
+  assert.deepEqual(
+    onlineEngineChip({ keySet: false, requiresCredentials: false }),
+    { chip: '在线 · 无需密钥', tone: 'ok', loading: false }
+  )
 })
 
 test('提示条只在验证失败 / 没验成时出现', () => {
@@ -58,6 +69,13 @@ test('保存后何时重新验证：换引擎、填新 Token、改 Resource ID /
   assert.equal(needsCredentialCheck({ ...dsSaved, deepseek_asr_endpoint: 'https://proxy.example/asr' }, dsSaved), true)
   // 本地引擎不需要验证凭据
   assert.equal(needsCredentialCheck({ ...same, asr_provider: 'whisper' }, saved), false)
+  // 豆包网页语音无需凭据，换到它或改超时都不触发验证
+  assert.equal(needsCredentialCheck({ ...same, asr_provider: 'doubao_web_asr' }, saved), false)
+  assert.equal(needsCredentialCheck({
+    ...same,
+    asr_provider: 'doubao_web_asr',
+    doubao_web_timeout_seconds: 60
+  }, { ...saved, asr_provider: 'doubao_web_asr' }), false)
   assert.equal(isOnlineProvider('qwen_asr'), false)
   assert.equal(isOnlineProvider('deepseek_asr'), true)
 })

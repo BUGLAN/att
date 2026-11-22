@@ -2,6 +2,7 @@
 //
 // 各引擎支持范围以官方文档为准，并保留「自动检测」兜底：
 // - 豆包 SAUC：官方列出中文（含方言）与常用外语，自动检测由服务端判定；
+// - 豆包网页语音：接口没有 language 参数，只能自动判定；
 // - Whisper / ChatGPT 听写：列常用语种，模型支持的其余语种仍可通过自动检测识别；
 // - DeepSeek：接口没有 language 参数，只能自动判定；
 // - Qwen3-ASR：sherpa 配置没有 language 参数，由模型自行判定。
@@ -53,6 +54,7 @@ const DOUBAO_LANGUAGE_CODES = Object.freeze([
 
 const PROVIDER_LANGUAGE_CODES = Object.freeze({
   doubao_asr: DOUBAO_LANGUAGE_CODES,
+  doubao_web_asr: Object.freeze([]),
   chatgpt_asr: COMMON_LANGUAGE_CODES,
   deepseek_asr: Object.freeze([]),
   whisper: COMMON_LANGUAGE_CODES,
@@ -107,6 +109,9 @@ export function normalizeLanguageForProvider(provider, language) {
 export function languageHint(provider) {
   if (provider === 'qwen_asr') {
     return 'Qwen3-ASR 不支持指定语言，由模型自行判定。'
+  }
+  if (provider === 'doubao_web_asr') {
+    return '豆包网页语音由音频自动判定语种，不能手动指定。'
   }
   if (provider === 'deepseek_asr') {
     return 'DeepSeek 语音识别由音频自动判定语种，不能手动指定。'

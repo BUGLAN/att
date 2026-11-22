@@ -45,6 +45,7 @@ export const SERVER_OWNED_FIELDS = Object.freeze([
   'chatgpt_asr_api_key_set',
   'deepseek_asr_api_key_set'
 ])
+// 豆包网页语音无需凭据，不在这里登记「是否已保存」字段。
 
 /**
  * 从服务端设置取出 {@link SERVER_OWNED_FIELDS} 的最新值（缺字段按「未保存」处理）。

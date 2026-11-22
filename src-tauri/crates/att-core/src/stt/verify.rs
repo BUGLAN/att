@@ -1,7 +1,8 @@
-//! 在线引擎凭据验证：区分「填了 Token」和「Token 真的能用」。
+//! 在线引擎验证：区分「填了 Token」和「Token 真的能用」，以及匿名网页链路是否仍可连接。
 //!
 //! - 豆包：只做 WebSocket 握手（401 / 403 / 404 在握手阶段就能判定），成功后立刻断开，
 //!   不推音频、不产生计费时长；
+//! - 豆包网页匿名：先取游客上下文，再做 WebSocket 握手；同样不创建任务、不推音频；
 //! - ChatGPT 听写 / DeepSeek：上传 0.5 秒静音（空文本是合法结果），按 HTTP 状态判定。
 //!
 //! 结果按「凭据指纹」缓存在内存（[`CredentialChecks`]，挂在 `CoreState` 上）：Token、Resource ID、
@@ -11,7 +12,7 @@
 //! 网络、限流、服务端异常记为 [`CheckStatus::Unknown`]，不据此拦录音。
 
 use super::sauc::ErrorKind;
-use super::{chatgpt, chatgpt_config, deepseek, deepseek_config, doubao, doubao_config};
+use super::{chatgpt, chatgpt_config, deepseek, deepseek_config, doubao, doubao_config, doubao_web, doubao_web_config};
 use crate::state::CoreState;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -21,6 +22,8 @@ use std::time::Duration;
 
 /// 豆包 provider 标识。
 pub const DOUBAO: &str = "doubao_asr";
+/// 豆包网页匿名 provider 标识。
+pub const DOUBAO_WEB: &str = "doubao_web_asr";
 /// ChatGPT 听写 provider 标识。
 pub const CHATGPT: &str = "chatgpt_asr";
 /// DeepSeek 语音识别 provider 标识。
@@ -30,6 +33,8 @@ pub const DEEPSEEK: &str = "deepseek_asr";
 const CHATGPT_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 /// DeepSeek 验证请求的超时（与 ChatGPT 同一考虑）。
 const DEEPSEEK_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+/// 豆包网页验证只需首页初始化与握手，不应让设置页等满用户配置的 300 秒。
+const DOUBAO_WEB_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -74,9 +79,9 @@ impl CredentialChecks {
     }
 }
 
-/// 是否是需要验证凭据的在线引擎。
+/// 是否是需要在线验证的引擎（豆包网页匿名，验证的是连通性而不是凭据）。
 pub fn is_online_provider(provider: &str) -> bool {
-    matches!(provider.trim(), DOUBAO | CHATGPT | DEEPSEEK)
+    matches!(provider.trim(), DOUBAO | DOUBAO_WEB | CHATGPT | DEEPSEEK)
 }
 
 fn fingerprint(parts: &[&str]) -> u64 {
@@ -94,6 +99,12 @@ fn current_fingerprint(core: &CoreState, provider: &str) -> Option<u64> {
             let config = doubao_config(core);
             config.ensure().ok()?;
             Some(fingerprint(&[DOUBAO, &config.api_key, &config.resource_id, &config.endpoint]))
+        }
+        DOUBAO_WEB => {
+            let config = doubao_web_config(core);
+            config.ensure().ok()?;
+            let timeout = config.timeout.as_secs().to_string();
+            Some(fingerprint(&[DOUBAO_WEB, &timeout]))
         }
         CHATGPT => {
             let config = chatgpt_config(core);
@@ -129,6 +140,15 @@ pub async fn check(core: &CoreState, provider: &str) -> Result<CredentialCheck, 
             config.ensure().map_err(|error| error.to_string())?;
             let fingerprint = fingerprint(&[DOUBAO, &config.api_key, &config.resource_id, &config.endpoint]);
             let (status, message) = check_doubao(&config).await;
+            (status, message, fingerprint)
+        }
+        DOUBAO_WEB => {
+            let mut config = doubao_web_config(core);
+            config.ensure().map_err(|error| error.to_string())?;
+            let timeout = config.timeout.as_secs().to_string();
+            let fingerprint = fingerprint(&[DOUBAO_WEB, &timeout]);
+            config.timeout = config.timeout.min(DOUBAO_WEB_CHECK_TIMEOUT);
+            let (status, message) = check_doubao_web(&config).await;
             (status, message, fingerprint)
         }
         CHATGPT => {
@@ -185,12 +205,26 @@ async fn check_doubao(config: &doubao::DoubaoConfig) -> (CheckStatus, String) {
     }
 }
 
+/// 豆包网页匿名：游客初始化 + WebSocket 握手成功即视为可用，随即断开。
+async fn check_doubao_web(config: &doubao_web::DoubaoWebConfig) -> (CheckStatus, String) {
+    match doubao_web::check_connection(config).await {
+        Ok(()) => (CheckStatus::Ok, String::new()),
+        Err(error) => (doubao_status(error.kind), error.message),
+    }
+}
+
 /// 豆包错误分类 → 验证结论：鉴权与接入点问题是用户要改的设置，其余只算「没验成」。
 pub fn doubao_status(kind: ErrorKind) -> CheckStatus {
     match kind {
         ErrorKind::Auth | ErrorKind::Protocol => CheckStatus::Invalid,
         _ => CheckStatus::Unknown,
     }
+}
+
+/// 验证失败文案：匿名网页引擎没有凭据，失败的是连通性 / 网页结构。
+pub fn invalid_message(provider: &str, label: &str, reason: &str) -> String {
+    let subject = if provider.trim() == DOUBAO_WEB { "连接" } else { "凭据" };
+    format!("{label}{subject}验证失败：{reason}")
 }
 
 /// ChatGPT：上传 0.5 秒静音。
@@ -301,6 +335,11 @@ mod tests {
         core.apply_settings_update(&serde_json::json!({ "doubao_asr_api_key": "token-a", "doubao_asr_resource_id": "volc.bigasr.sauc.duration" }))
             .unwrap();
         assert!(invalid_reason(&core, DOUBAO).is_none());
+
+        // 豆包网页没有凭据，但超时变化也要让旧验证结果失效
+        let web_fingerprint = current_fingerprint(&core, DOUBAO_WEB).unwrap();
+        core.apply_settings_update(&serde_json::json!({ "doubao_web_timeout_seconds": 31 })).unwrap();
+        assert_ne!(current_fingerprint(&core, DOUBAO_WEB).unwrap(), web_fingerprint);
     }
 
     #[test]
@@ -317,6 +356,14 @@ mod tests {
         assert!(value.get("fingerprint").is_none());
     }
 
+    #[test]
+    fn 匿名网页引擎的失败文案强调连接而不是凭据() {
+        let web = invalid_message(DOUBAO_WEB, "豆包网页语音", "首页结构变化");
+        assert_eq!(web, "豆包网页语音连接验证失败：首页结构变化");
+        let doubao = invalid_message(DOUBAO, "豆包语音", "401");
+        assert_eq!(doubao, "豆包语音凭据验证失败：401");
+    }
+
     #[tokio::test]
     async fn 本地引擎与未配置凭据不做验证() {
         let core = temp_core("unconfigured");
@@ -327,6 +374,7 @@ mod tests {
         assert!(error.contains("DeepSeek API Key"), "{error}");
         assert!(!is_online_provider("qwen_asr"));
         assert!(is_online_provider(" doubao_asr "));
+        assert!(is_online_provider("doubao_web_asr"));
         assert!(is_online_provider("deepseek_asr"));
     }
 }

@@ -38,7 +38,7 @@ test('轮询上限常量与契约一致（15 分钟）', () => {
 test('buildTranscribeRequest：正常构造 snake_case 请求体（M2 含 engine/proofread）', () => {
   assert.deepEqual(
     buildTranscribeRequest({ path: '/tmp/dv/abc.mp4', language: 'zh', wantSegments: false }),
-    { path: '/tmp/dv/abc.mp4', language: 'zh', want_segments: false, engine: 'doubao_asr', proofread: false }
+    { path: '/tmp/dv/abc.mp4', language: 'zh', want_segments: false, engine: 'doubao_web_asr', proofread: false }
   )
   assert.deepEqual(
     buildTranscribeRequest({ path: ' /a/b.wav ', wantSegments: true, engine: 'qwen_asr' }),
@@ -52,7 +52,7 @@ test('buildTranscribeRequest：自动检测原样传给后端', () => {
   assert.equal(buildTranscribeRequest({ path: '/a/b.wav', language: 'auto', engine: 'qwen_asr' }).language, 'auto')
 })
 
-test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法引擎回落豆包', () => {
+test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法引擎回落豆包网页', () => {
   const request = buildTranscribeRequest({
     path: '/a/b.wav',
     proofread: true,
@@ -67,14 +67,14 @@ test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法�
   const bare = buildTranscribeRequest({ path: '/a/b.wav', proofread: true })
   assert.ok(!('proofread_model_id' in bare))
   assert.deepEqual(bare.proofread_options, { batch_segments: 40, context_chars: 200 })
-  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'gpt' }).engine, 'doubao_asr')
-  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'chatgpt_asr' }).engine, 'doubao_asr')
+  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'gpt' }).engine, 'doubao_web_asr')
+  assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'chatgpt_asr' }).engine, 'doubao_web_asr')
 })
 
-test('TRANSCRIBE_ENGINES：四引擎元数据齐备，不标「默认」，描述各一句话', () => {
+test('TRANSCRIBE_ENGINES：五引擎元数据齐备，不标「默认」，描述各一句话', () => {
   assert.deepEqual(
     TRANSCRIBE_ENGINES.map((item) => item.value),
-    ['doubao_asr', 'deepseek_asr', 'whisper', 'qwen_asr']
+    ['doubao_asr', 'doubao_web_asr', 'deepseek_asr', 'whisper', 'qwen_asr']
   )
   for (const item of TRANSCRIBE_ENGINES) {
     assert.ok(!item.badge, `${item.value} 不再带「默认」标记`)
@@ -83,15 +83,16 @@ test('TRANSCRIBE_ENGINES：四引擎元数据齐备，不标「默认」，描�
   assert.doesNotMatch(TRANSCRIBE_ENGINES.find((item) => item.value === 'whisper').desc, /速度快|中文优化/)
 })
 
-test('defaultTranscribeEngine：跟随设置里的识别引擎，文件转写不支持时退到豆包', () => {
-  assert.equal(FALLBACK_TRANSCRIBE_ENGINE, 'doubao_asr')
+test('defaultTranscribeEngine：跟随设置里的识别引擎，文件转写不支持时退到豆包网页', () => {
+  assert.equal(FALLBACK_TRANSCRIBE_ENGINE, 'doubao_web_asr')
   assert.equal(defaultTranscribeEngine('doubao_asr'), 'doubao_asr')
   assert.equal(defaultTranscribeEngine('whisper'), 'whisper')
   assert.equal(defaultTranscribeEngine('qwen_asr'), 'qwen_asr')
   assert.equal(defaultTranscribeEngine('deepseek_asr'), 'deepseek_asr')
-  assert.equal(defaultTranscribeEngine('chatgpt_asr'), 'doubao_asr')
-  assert.equal(defaultTranscribeEngine(undefined), 'doubao_asr')
-  assert.equal(defaultTranscribeEngine(''), 'doubao_asr')
+  assert.equal(defaultTranscribeEngine('doubao_web_asr'), 'doubao_web_asr')
+  assert.equal(defaultTranscribeEngine('chatgpt_asr'), 'doubao_web_asr')
+  assert.equal(defaultTranscribeEngine(undefined), 'doubao_web_asr')
+  assert.equal(defaultTranscribeEngine(''), 'doubao_web_asr')
 })
 
 test('transcribeEngineOptions：豆包 / DeepSeek 未配置、当前本地引擎缺模型时置灰并给出原因', () => {
@@ -101,6 +102,9 @@ test('transcribeEngineOptions：豆包 / DeepSeek 未配置、当前本地引擎
   assert.ok(Object.values(ready).every((item) => !item.disabled && !item.badge && !item.hint))
 
   const noToken = byValue(transcribeEngineOptions({ doubaoKeySet: false, deepseekKeySet: false }))
+  assert.equal(noToken.doubao_web_asr.disabled, false, '豆包网页语音无需密钥')
+  assert.equal(noToken.doubao_web_asr.badge, '')
+  assert.equal(noToken.doubao_web_asr.hint, '')
   assert.equal(noToken.doubao_asr.disabled, true)
   assert.equal(noToken.doubao_asr.badge, '未配置')
   assert.match(noToken.doubao_asr.hint, /Access Token/)
