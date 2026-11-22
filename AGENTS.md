@@ -84,6 +84,7 @@ models/                本地模型（不入库）：faster-whisper-<短名>/（
 | sherpa-onnx 推理库随包 | 打包前 `scripts/prepare-sherpa-onnx.mjs` 按目标平台下载并校验 `vendor/sherpa-onnx-libs.json` 里的资产；升级动态库必须同步 `vendor/c-api.h`、该清单和提示里的包名/版本 |
 | 本地引擎没有模型时 | 设置页可在应用内下载（进度、取消、断点续传、SHA-256 校验、解压、删除，Whisper 会一并装 Silero VAD；国内可切 `hf-mirror.com`）；缺模型时接口只给 409 + 可照做的提示，不 panic；模型不入库，路径见上文「代码布局」 |
 | 图片写剪贴板 | Windows 上必须自己写 `CF_DIB`(BI_RGB) + `CF_DIBV5`(BI_RGB) + `PNG`（`src-tauri/src/clipboard_image.rs`）；换回 arboard 的 BI_BITFIELDS 写法会让 Chromium 系应用粘不出图 |
+| 同时开着两个实例 | 开发态 `tauri dev` 与已安装版（任意版本）同时运行会一起响应全局热键，同一段录音各自识别、各自输出，输入框里出现两遍；单实例靠 single-instance 插件 + 应用数据目录的 `.instance.lock` 文件锁（`src-tauri/src/instance_lock.rs`），后启动的进程会直接退出。旧版本没有文件锁，开发前先退出已安装的版本 |
 | 新增模拟按键 | 自动输入 / 粘贴等自己发出的键盘事件必须打 `att_hotkey::SYNTHETIC_EVENT_TAG`（macOS `EVENT_SOURCE_USER_DATA`、Windows `dwExtraInfo`），否则热键监听会把它清零的修饰键当成用户松开，按住录音时被打断又自动开新一段 |
 | 剪贴板偶发写失败 | 剪贴板同一时刻只允许一个线程打开，写入要重试；失败发生在 `EmptyClipboard` 之后会把用户剪贴板清空 |
 | 录音文件格式 | 新录音落盘为 FLAC（`audio::write_recording_16k`），旧录音仍是 WAV；读录音一律走 `audio::read_audio_16k_mono`（按扩展名分派），回放端点按扩展名给 Content-Type |

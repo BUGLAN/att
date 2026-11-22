@@ -4,7 +4,7 @@
 //! 1. 解析数据目录（env > 开发态仓库 data/ > 应用数据目录）
 //! 2. 一次性迁移（幂等）
 //! 3. CoreState 初始化 + axum 数据面（127.0.0.1，优先固定端口，占用时依次 +1）
-//! 4. 单实例锁（二次启动唤起已有窗口）
+//! 4. 单实例锁（二次启动唤起已有窗口）；插件之外再加一把进程级文件锁兜底（见 instance_lock.rs）
 
 // 注意：Tauri generate_handler 需要命令模块公开可见（__cmd__ 宏重导出）
 pub mod app_update;
@@ -14,6 +14,7 @@ pub mod clipboard_panel;
 pub mod commands;
 pub mod desktop;
 pub mod floating;
+pub mod instance_lock;
 pub mod launch;
 #[cfg(target_os = "macos")]
 mod menu;
@@ -111,6 +112,8 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // 必须最先做：二次启动的进程不能动正在运行的实例的日志、数据与热键
+            claim_single_instance(app);
             let data_dir = resolve_data_dir(app);
             init_logging(&data_dir);
             tracing::info!("数据目录: {}", data_dir.display());
@@ -443,6 +446,24 @@ fn install_panic_hook() {
         tracing::error!("线程 {} panic：{info}\n{backtrace}", thread.name().unwrap_or("<未命名>"));
         default_hook(info);
     }));
+}
+
+/// 单实例兜底：single-instance 插件没拦住（macOS 上它的 /tmp 套接字文件可能已被删）时，
+/// 用应用数据目录里的进程级文件锁再判一次；另一个实例还活着就直接退出，免得两个进程同时响应热键、
+/// 同一段录音输出两遍。加锁本身出错（目录不可写等）不阻断启动。
+fn claim_single_instance(app: &tauri::App) {
+    let Ok(dir) = app.path().app_data_dir() else { return };
+    match instance_lock::acquire(&dir, instance_lock::DEFAULT_WAIT) {
+        Ok(Some(lock)) => {
+            app.manage(lock);
+        }
+        Ok(None) => {
+            // 日志还没初始化（也不能初始化：会把运行中实例的日志改名），只能写 stderr
+            eprintln!("已有另一个落墨实例在运行（开发态与已安装版也算），本进程退出；请先退出那个实例再启动");
+            std::process::exit(0);
+        }
+        Err(error) => eprintln!("单实例锁不可用，照常启动: {error}"),
+    }
 }
 
 /// 数据目录解析：ATT_DATA_DIR > 开发态仓库 data/（编译期锚点）> 应用数据目录。
