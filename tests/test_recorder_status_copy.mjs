@@ -47,6 +47,18 @@ test('deriveCompletionToast：已复制但粘贴失败时单独提示，不再�
   assert.equal(deriveCompletionToast('streaming', copiedOnly), '已复制，粘贴失败（多为缺少「辅助功能」权限）')
 })
 
+test('deriveCompletionToast：目标窗口已切换时只提示已复制，不说粘贴失败', () => {
+  for (const stage of ['transcription', 'optimization', 'streaming']) {
+    const focusChanged = {
+      attempted: true,
+      copied: true,
+      pasted: false,
+      copyError: '已复制，目标窗口已切换，文本已复制到剪贴板'
+    }
+    assert.equal(deriveCompletionToast(stage, focusChanged), '目标窗口已切换，文本已复制到剪贴板', stage)
+  }
+})
+
 test('deriveCompletionToast：未知阶段抛错，避免静默拿到错误文案', () => {
   assert.throws(() => deriveCompletionToast('unknown', { pasted: true }), /未知的完成态阶段/)
   assert.throws(() => deriveCompletionToast(undefined, {}), /未知的完成态阶段/)

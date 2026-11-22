@@ -28,6 +28,8 @@ const COMPLETION_TOAST_COPY = Object.freeze({
 
 // 剪贴板写入成功、自动粘贴失败（多见于 macOS 缺少“辅助功能”权限）。
 const COPIED_NOT_PASTED_TOAST = '已复制，粘贴失败（多为缺少「辅助功能」权限）'
+// 输出前发现录音开始时的目标窗口已不是前台：只复制，不往新焦点窗口里输入。
+const FOCUS_CHANGED_TOAST = '目标窗口已切换，文本已复制到剪贴板'
 
 /**
  * 完成态提示文案。stage 取 transcription / optimization / streaming。
@@ -41,6 +43,10 @@ export function deriveCompletionToast(stage, copyResult) {
 
   if (copyResult.pasted) {
     return copy.copied
+  }
+
+  if (copyResult.copied && copyResult.copyError?.includes('目标窗口已切换')) {
+    return FOCUS_CHANGED_TOAST
   }
 
   if (copyResult.copied && copyResult.copyError) {

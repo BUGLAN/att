@@ -123,6 +123,36 @@ pub fn paste_active() -> Result<(), String> {
     platform::paste()
 }
 
+/// 同 [`paste_active`]，但粘贴前确认目标窗口仍是前台。`None` 表示不限制。
+pub fn paste_active_to(target: Option<FocusTarget>) -> Result<(), String> {
+    std::thread::sleep(PASTE_DELAY);
+    if !focus_matches(target) {
+        return Err("目标窗口已切换".into());
+    }
+    platform::paste()
+}
+
+/// 输出目标窗口：录音开始时的前台窗口。之后焦点变了就不再把结果打进去。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FocusTarget(u64);
+
+/// 记录当前前台窗口；平台拿不到时返回 None（不限制输出）。
+pub fn foreground_target() -> Option<FocusTarget> {
+    platform::foreground_target()
+}
+
+/// 当前前台是否仍是 `target`。`None`（没记录目标）时不拦截，保持旧行为。
+pub fn focus_matches(target: Option<FocusTarget>) -> bool {
+    target_matches(target, platform::foreground_target())
+}
+
+fn target_matches(target: Option<FocusTarget>, current: Option<FocusTarget>) -> bool {
+    match target {
+        None => true,
+        Some(target) => current == Some(target),
+    }
+}
+
 /// 模拟键盘输入前的检查（macOS：辅助功能授权）。
 pub fn ensure_typing_ready() -> Result<(), String> {
     platform::ensure_typing_ready()
@@ -167,6 +197,23 @@ mod platform {
         let key = CFString::new("AXTrustedCheckOptionPrompt");
         let options = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), CFBoolean::true_value().as_CFType())]);
         unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) }
+    }
+
+    /// 当前前台应用（PID）；用来把输出限定在录音开始时的那个应用。
+    pub fn foreground_target() -> Option<super::FocusTarget> {
+        use objc2::msg_send;
+        use objc2::runtime::{AnyClass, AnyObject};
+        let class = AnyClass::get(c"NSWorkspace")?;
+        let workspace: *mut AnyObject = unsafe { msg_send![class, sharedWorkspace] };
+        if workspace.is_null() {
+            return None;
+        }
+        let app: *mut AnyObject = unsafe { msg_send![workspace, frontmostApplication] };
+        if app.is_null() {
+            return None;
+        }
+        let pid: i32 = unsafe { msg_send![app, processIdentifier] };
+        (pid > 0).then_some(super::FocusTarget(pid as u64))
     }
 
     /// 发出一个模拟键盘事件：打上本应用的标记，自己的热键监听据此跳过它（见 att_hotkey::SYNTHETIC_EVENT_TAG）。
@@ -304,6 +351,13 @@ mod platform {
         GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
         VK_BACK, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
     };
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    /// 当前前台窗口句柄；用来把输出限定在录音开始时的那个窗口。
+    pub fn foreground_target() -> Option<super::FocusTarget> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        (!hwnd.is_null()).then_some(super::FocusTarget(hwnd as usize as u64))
+    }
 
     fn key(vk: u16, up: bool) -> INPUT {
         INPUT {
@@ -456,6 +510,10 @@ mod platform {
 
 #[cfg(not(any(target_os = "macos", windows)))]
 mod platform {
+    pub fn foreground_target() -> Option<super::FocusTarget> {
+        None
+    }
+
     pub fn paste() -> Result<(), String> {
         Err("当前平台暂不支持自动粘贴".into())
     }
@@ -490,5 +548,29 @@ mod platform {
 
     pub fn set_output_muted(_muted: bool) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{target_matches, FocusTarget};
+
+    #[test]
+    fn 焦点目标未记录时保持旧行为() {
+        assert!(target_matches(None, Some(FocusTarget(7))));
+        assert!(target_matches(None, None));
+    }
+
+    #[test]
+    fn 焦点目标记录后必须仍是同一窗口() {
+        assert!(target_matches(Some(FocusTarget(7)), Some(FocusTarget(7))));
+        assert!(!target_matches(Some(FocusTarget(7)), Some(FocusTarget(8))));
+        assert!(!target_matches(Some(FocusTarget(7)), None));
+    }
+
+    #[test]
+    fn 焦点目标不匹配时粘贴直接放弃() {
+        let error = super::paste_active_to(Some(FocusTarget(u64::MAX))).unwrap_err();
+        assert_eq!(error, "目标窗口已切换");
     }
 }

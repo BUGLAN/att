@@ -20,8 +20,9 @@
 //! 到点才 stop。修饰键组合偶尔会被系统报告「抬起一下又按回」，零容忍的话说到一半就被打断。
 //!
 //! 自动优化（设置 `auto_optimize` 且已配置默认 LLM 模型）：转写落库后进入 Optimizing，流式增量经
-//! `recording:optimization` 推给前端与悬浮窗；开启自动输出时同时边生成边打进焦点输入框（typing.rs），
-//! 收尾与最终清洗结果对齐。还没打出任何字就失败时退回粘贴原文，保证总有输出。
+//! `recording:optimization` 推给前端与悬浮窗；开启自动输出时同时边生成边打进录音开始时的目标输入框
+//! （typing.rs），收尾与最终清洗结果对齐。目标窗口中途切走时停手，只把全文留在剪贴板。
+//! 还没打出任何字就失败时退回粘贴原文，保证总有输出。
 //! 与旧版语义一致：单段模式优化期间不接受新录音；流式模式允许直接开始下一段，
 //! 此时上一段的优化转入后台，结果只入库、不粘贴（避免粘进新输入框）。
 //!
@@ -49,6 +50,7 @@
 //! 前端事件：`recording:state`（相位 + 文本 + 记录）、`recording:partial`（实时文本）、
 //! `recording:level`（音量 0..1）。
 
+use crate::desktop::FocusTarget;
 use crate::typing::StreamTyping;
 use att_core::llm::cleaning;
 use att_core::llm::optimizer::{self, OptimizeEvent, OptimizeOutcome};
@@ -272,6 +274,8 @@ struct PendingOptimization {
     session_id: u64,
     mode: Mode,
     source: OptimizeSource,
+    /// 开始录音时的前台窗口；优化输出只在它仍是前台时打进输入框
+    focus_target: Option<FocusTarget>,
     record_id: String,
     raw_text: String,
     /// 转写阶段的降级原因（识别中断但有部分文本）
@@ -315,6 +319,8 @@ struct Active {
     stopped_at: Option<Instant>,
     /// 本次用的识别引擎与语言（落库写进记录）
     asr: AsrInfo,
+    /// 开始录音时的前台窗口：结果输出前核对，避免焦点切换后打进别的输入框
+    focus_target: Option<FocusTarget>,
     /// 本地引擎录音会话持有的模型使用闸门，防止录音途中模型被删除。
     _model_gate: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
 }
@@ -713,6 +719,8 @@ impl Actor {
             tracing::info!("{:?} 中按下优化选中文本，忽略", self.phase);
             return crate::floating::nudge(&self.app);
         }
+        // 选区所在的原始应用：优化流式输出时若焦点已经切走，不能再把改写结果打进新窗口。
+        let focus_target = crate::desktop::foreground_target();
         if !att_hotkey::listener::suppresses_keys() {
             // 只读监听（启动时没有「辅助功能」权限）：快捷键的主键已经送进前台应用、替换掉了选区，再复制只会拿到错的内容
             return self.emit_state(
@@ -743,7 +751,7 @@ impl Actor {
         let Some(record_id) = record.get("id").and_then(Value::as_str).map(str::to_string) else {
             return self.emit_state("error", json!({ "message": "保存记录失败，未开始优化" }));
         };
-        self.begin_optimization(Mode::Batch, record_id, text, None, record, OptimizeSource::Selection);
+        self.begin_optimization(Mode::Batch, record_id, text, None, record, OptimizeSource::Selection, focus_target);
     }
 
     /// 语音改写选中文本：先复制选区（不等待用户松开按键），再开始按住录音。
@@ -873,6 +881,9 @@ impl Actor {
         };
         self.next_id += 1;
         let id = self.next_id;
+        // 输出目标：录音开始时的前台窗口。多段收尾 / 优化可能持续数秒，期间用户切走焦点，
+        // 结果不能跟着打进新窗口（尤其别打进设置页或别的输入框）。
+        let focus_target = crate::desktop::foreground_target();
 
         // 采集最先启动（按下即收数），建连与静音并行进行
         let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<i16>>();
@@ -932,6 +943,7 @@ impl Actor {
             started: Instant::now(),
             stopped_at: None,
             asr,
+            focus_target,
             _model_gate: model_gate,
         });
 
@@ -1146,6 +1158,7 @@ impl Actor {
         let voice_rewrite_selection = active.voice_rewrite_selection.take();
         let processing_time = processing_seconds(active.stopped_at, Instant::now());
         let asr = active.asr.clone();
+        let focus_target = active.focus_target;
         self.active = Some(Active { capture: None, cancel: None, ..active });
         let duration = outcome.samples.len() as f64 / SAMPLE_RATE;
         if outcome.cancelled && timed_out {
@@ -1247,6 +1260,7 @@ impl Actor {
                     outcome.error.clone(),
                     record,
                     OptimizeSource::VoiceRewriteSelection { instruction: outcome.text.clone(), selection },
+                    focus_target,
                 );
                 self.active = None;
                 return;
@@ -1272,11 +1286,12 @@ impl Actor {
                     outcome.error.clone(),
                     record,
                     OptimizeSource::Recording,
+                    focus_target,
                 );
                 self.active = None;
                 return;
             }
-            let (copied, pasted, copy_error) = self.auto_copy(&outcome.text, false).await;
+            let (copied, pasted, copy_error) = self.auto_copy(&outcome.text, false, focus_target).await;
             let message = match &outcome.error {
                 Some(error) => format!("识别中断，已保存已识别内容：{error}"),
                 None => "录音已完成".to_string(),
@@ -1299,7 +1314,7 @@ impl Actor {
     }
 
     /// 进入 Optimizing：优化在独立任务里跑（不阻塞 Actor 处理新命令），增量直接推给前端与悬浮窗，
-    /// 开启自动输出时（优化选中文本则总是）同时流式打进焦点输入框。
+    /// 开启自动输出时（优化选中文本则总是）同时流式打进录音开始时的目标输入框。
     fn begin_optimization(
         &mut self,
         mode: Mode,
@@ -1308,13 +1323,14 @@ impl Actor {
         transcribe_error: Option<String>,
         record: Value,
         source: OptimizeSource,
+        focus_target: Option<FocusTarget>,
     ) {
         let session_id = self.next_id;
         let detached = Arc::new(AtomicBool::new(false));
         let typing_halt = Arc::new(AtomicBool::new(false));
         let settings = self.core.settings();
         let output = source.replaces_selection() || settings.auto_copy_to_clipboard;
-        let mut typing = output.then(|| StreamTyping::spawn(typing_halt.clone()));
+        let mut typing = output.then(|| StreamTyping::spawn(typing_halt.clone(), focus_target));
         let preset_id = match &source {
             OptimizeSource::Recording => None,
             OptimizeSource::Selection => settings.rewrite_preset_id.clone(),
@@ -1337,6 +1353,7 @@ impl Actor {
             session_id,
             mode,
             source,
+            focus_target,
             record_id: record_id.clone(),
             raw_text: raw_text.clone(),
             transcribe_error,
@@ -1443,7 +1460,7 @@ impl Actor {
             let copied = replace_selection && typed_any && copy_to_clipboard(&original_text).await;
             (copied, false, None)
         } else {
-            self.deliver(&final_text, optimized, typing, &pending.source).await
+            self.deliver(&final_text, optimized, typing, &pending.source, pending.focus_target).await
         };
         let message = match &pending.transcribe_error {
             Some(error) => format!("识别中断，已保存已识别内容：{error}"),
@@ -1538,16 +1555,17 @@ impl Actor {
         optimized: bool,
         typing: Option<StreamTyping>,
         source: &OptimizeSource,
+        focus_target: Option<FocusTarget>,
     ) -> (bool, bool, Option<String>) {
         let force = source.replaces_selection();
-        let Some(typing) = typing else { return self.auto_copy(final_text, force).await };
+        let Some(typing) = typing else { return self.auto_copy(final_text, force, focus_target).await };
         let typed_any = !typing.typed().is_empty();
         if !typed_any && !optimized {
             abort_typing(Some(typing)).await;
             if force {
                 return (false, false, None);
             }
-            return self.auto_copy(final_text, force).await;
+            return self.auto_copy(final_text, force, focus_target).await;
         }
         let text = final_text.to_string();
         let result = tokio::task::spawn_blocking(move || {
@@ -1562,25 +1580,42 @@ impl Actor {
             }
             Ok((Err(error), _)) if !typed_any => {
                 tracing::warn!("流式输入不可用，改为整段粘贴: {error}");
-                self.auto_copy(final_text, force).await
+                self.auto_copy(final_text, force, focus_target).await
             }
             Ok((Err(error), copied)) => {
                 tracing::warn!("流式输入中断: {error}");
+                let error = if error == crate::typing::FOCUS_CHANGED {
+                    format!("{}，文本已复制到剪贴板", crate::typing::FOCUS_CHANGED)
+                } else {
+                    error
+                };
                 (copied, false, Some(error))
             }
             Err(error) => (false, false, Some(error.to_string())),
         }
     }
 
-    /// 自动复制并粘贴到焦点窗口（设置 auto_copy_to_clipboard；`force` 时不看开关）。
-    async fn auto_copy(&self, text: &str, force: bool) -> (bool, bool, Option<String>) {
+    /// 自动复制并粘贴到录音开始时的目标窗口（设置 auto_copy_to_clipboard；`force` 时不看开关）。
+    /// 目标窗口已不是前台时只写剪贴板，不发送粘贴，避免把文本打进用户后来切到的输入框。
+    async fn auto_copy(
+        &self,
+        text: &str,
+        force: bool,
+        focus_target: Option<FocusTarget>,
+    ) -> (bool, bool, Option<String>) {
         if !force && !self.core.settings().auto_copy_to_clipboard {
             return (false, false, None);
         }
         let text = text.to_string();
         let result = tokio::task::spawn_blocking(move || {
             crate::desktop::write_clipboard(&text)?;
-            crate::desktop::paste_active().map_err(|e| format!("已复制，{e}"))
+            crate::desktop::paste_active_to(focus_target).map_err(|error| {
+                if error == "目标窗口已切换" {
+                    format!("已复制，{}，文本已复制到剪贴板", crate::typing::FOCUS_CHANGED)
+                } else {
+                    format!("已复制，{error}")
+                }
+            })
         })
         .await;
         match result {

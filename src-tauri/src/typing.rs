@@ -1,4 +1,4 @@
-//! 流式输入：把自动优化的结果边生成边「打」进当前焦点输入框（见 recording.rs 的 Optimizing）。
+//! 流式输入：把自动优化的结果边生成边「打」进录音开始时的目标输入框（见 recording.rs 的 Optimizing）。
 //!
 //! - 按键在专用线程里按入队顺序发出，调用方（优化增量回调）只管入队、不阻塞；
 //! - 换行不模拟回车（聊天类应用里回车 = 发送），改为写内部剪贴板后粘贴一个换行；
@@ -6,6 +6,7 @@
 //! - 被取消 / 被新一段录音取代时置 `halt`，线程丢弃剩余队列立即停手：每发几个字就看一眼，
 //!   不会把手上这一整段打完（按住开始下一段时，上一段多打出去的字既进错输入框、也是给热键监听添乱的模拟按键）。
 
+use crate::desktop::FocusTarget;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
@@ -15,6 +16,8 @@ use std::time::Duration;
 const NEWLINE_SETTLE: Duration = Duration::from_millis(150);
 /// 每发出这么多字（或回删这么多次）就检查一次 halt。
 const HALT_CHECK_CHARS: usize = 10;
+/// 录音开始时的目标窗口已不是前台：停止继续输入，剩余文本由调用方复制到剪贴板。
+pub const FOCUS_CHANGED: &str = "目标窗口已切换";
 
 enum Op {
     Text(String),
@@ -30,7 +33,7 @@ pub struct StreamTyping {
 }
 
 impl StreamTyping {
-    pub fn spawn(halt: Arc<AtomicBool>) -> Self {
+    pub fn spawn(halt: Arc<AtomicBool>, target: Option<FocusTarget>) -> Self {
         let (tx, rx) = mpsc::channel::<Op>();
         let worker_halt = halt.clone();
         let worker = std::thread::Builder::new()
@@ -40,6 +43,10 @@ impl StreamTyping {
                 for op in rx {
                     if worker_halt.load(Ordering::SeqCst) {
                         break;
+                    }
+                    // 优化流式输出可能持续数秒：期间用户切了窗口就不要再往新焦点里打字。
+                    if !crate::desktop::focus_matches(target) {
+                        return Err(FOCUS_CHANGED.to_string());
                     }
                     match op {
                         Op::Text(text) => type_text(&text, &worker_halt)?,
