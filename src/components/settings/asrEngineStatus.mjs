@@ -18,6 +18,7 @@ export const RECORDING_MODES = Object.freeze([
 const PROVIDER_LABELS = Object.freeze({
   doubao_asr: '豆包语音',
   doubao_web_asr: '豆包网页语音',
+  doubao_ime_asr: '豆包输入法语音',
   chatgpt_asr: 'ChatGPT 听写',
   deepseek_asr: 'DeepSeek 语音识别',
   wetype_asr: '微信输入法语音',
@@ -56,6 +57,18 @@ export function normalizeLocalModelIdleMinutes(value) {
 
 /** 豆包网页语音的请求超时（秒）：缺省 30，范围 10–300，无效输入回到默认值。 */
 export function normalizeDoubaoWebTimeoutSeconds(value) {
+  if (value === '' || value == null) {
+    return 30
+  }
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) {
+    return 30
+  }
+  return Math.min(300, Math.max(10, Math.round(parsed)))
+}
+
+/** 豆包输入法语音的请求超时（秒）：缺省 30，范围 10–300，无效输入回到默认值。 */
+export function normalizeDoubaoImeTimeoutSeconds(value) {
   if (value === '' || value == null) {
     return 30
   }

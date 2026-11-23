@@ -38,6 +38,12 @@ export const TRANSCRIBE_ENGINES = [
     desc: '豆包网页匿名识别，无需密钥，自动判定语种。'
   },
   {
+    value: 'doubao_ime_asr',
+    label: '豆包输入法语音',
+    tag: '在线',
+    desc: '豆包输入法匿名识别，无需密钥，自动判定语种。'
+  },
+  {
     value: 'deepseek_asr',
     label: 'DeepSeek 语音识别',
     tag: '在线',

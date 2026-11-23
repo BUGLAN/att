@@ -73,7 +73,7 @@ import {
 import { createLatestSaveQueue } from './settingsSaveQueue.mjs'
 import { isWetypeProvider, needsCredentialCheck, requiresCredential } from './onlineEngineStatus.mjs'
 import { normalizeDownloadSource } from './modelManager.mjs'
-import { normalizeDoubaoWebTimeoutSeconds, normalizeLocalModelIdleMinutes, supportsStreaming } from './asrEngineStatus.mjs'
+import { normalizeDoubaoWebTimeoutSeconds, normalizeDoubaoImeTimeoutSeconds, normalizeLocalModelIdleMinutes, supportsStreaming } from './asrEngineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 import { hotwordsText, parseHotwords } from './asrHotwords.mjs'
 import { normalizeLanguageForProvider } from './asrLanguages.mjs'
@@ -372,6 +372,8 @@ function normalizeSettings(value = {}) {
     doubao_asr_end_window_size: value.doubao_asr_end_window_size ?? 800,
     // 豆包网页语音：匿名在线识别，无需凭据，只保留请求超时
     doubao_web_timeout_seconds: normalizeDoubaoWebTimeoutSeconds(value.doubao_web_timeout_seconds),
+    // 豆包输入法语音：虚拟设备匿名在线识别，只保留请求超时
+    doubao_ime_timeout_seconds: normalizeDoubaoImeTimeoutSeconds(value.doubao_ime_timeout_seconds),
     // ChatGPT 听写：明文令牌只存在于表单内存里，初始值恒为空
     chatgpt_asr_api_key: '',
     chatgpt_asr_api_key_clear: false,
@@ -446,6 +448,7 @@ function buildSettingsPayload() {
     doubao_asr_endpoint: form.value.doubao_asr_endpoint,
     doubao_asr_end_window_size: form.value.doubao_asr_end_window_size,
     doubao_web_timeout_seconds: normalizeDoubaoWebTimeoutSeconds(form.value.doubao_web_timeout_seconds),
+    doubao_ime_timeout_seconds: normalizeDoubaoImeTimeoutSeconds(form.value.doubao_ime_timeout_seconds),
     chatgpt_asr_endpoint: form.value.chatgpt_asr_endpoint,
     chatgpt_asr_timeout_seconds: form.value.chatgpt_asr_timeout_seconds,
     deepseek_asr_endpoint: form.value.deepseek_asr_endpoint,

@@ -13,6 +13,7 @@ export const RETRANSCRIBE_MAX_WAIT_MS = 15 * 60 * 1000
 const PROVIDER_LABELS = Object.freeze({
   doubao_asr: '豆包语音',
   doubao_web_asr: '豆包网页语音',
+  doubao_ime_asr: '豆包输入法语音',
   chatgpt_asr: 'ChatGPT 听写',
   deepseek_asr: 'DeepSeek 语音识别',
   wetype_asr: '微信输入法语音',
@@ -24,6 +25,7 @@ const PROVIDER_LABELS = Object.freeze({
 const PROVIDER_SHORT_LABELS = Object.freeze({
   doubao_asr: '豆包语音',
   doubao_web_asr: '豆包网页语音',
+  doubao_ime_asr: '豆包输入法语音',
   chatgpt_asr: 'ChatGPT 听写',
   deepseek_asr: 'DeepSeek',
   wetype_asr: '微信输入法语音',

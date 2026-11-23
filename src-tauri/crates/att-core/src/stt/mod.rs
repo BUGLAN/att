@@ -3,6 +3,7 @@
 //! - [`sauc`]：火山 SAUC 二进制协议编解码（纯函数）
 //! - [`doubao`]：豆包会话（流式推流 / 批量转写）
 //! - [`doubao_web`]：豆包网页匿名语音（游客初始化 + 网页 WebSocket，在线批量）
+//! - [`doubao_ime`]：豆包输入法语音（虚拟设备注册 + 输入法 WebSocket，在线批量）
 //! - [`hotwords`]：个人词表的归一化与 token 预算（目前只有豆包使用）
 //! - [`chatgpt`]：ChatGPT 听写（在线批量，不支持流式）
 //! - [`deepseek`]：DeepSeek 语音识别（在线批量，不支持流式）
@@ -19,6 +20,7 @@ pub mod chatgpt;
 pub mod deepseek;
 pub mod doubao;
 pub mod doubao_web;
+pub mod doubao_ime;
 pub mod hotwords;
 pub mod local;
 pub mod sauc;
@@ -106,6 +108,13 @@ pub fn doubao_web_config(core: &CoreState) -> doubao_web::DoubaoWebConfig {
     doubao_web::DoubaoWebConfig::from_seconds(core.settings().doubao_web_timeout_seconds)
 }
 
+/// 从用户设置组装豆包输入法语音配置。无用户凭据；设备凭据缓存到 data 目录。
+pub fn doubao_ime_config(core: &CoreState) -> doubao_ime::DoubaoImeConfig {
+    doubao_ime::DoubaoImeConfig::from_seconds(core.settings().doubao_ime_timeout_seconds)
+        .with_credential_path(core.data_dir.join("doubao_ime_credentials.json"))
+        .with_crypto(core.crypto.clone())
+}
+
 /// 从用户设置组装 ChatGPT 听写配置（令牌只存密文，运行期解密）。
 pub fn chatgpt_config(core: &CoreState) -> chatgpt::ChatGptConfig {
     let settings = core.settings();
@@ -187,6 +196,7 @@ impl std::fmt::Debug for LocalHandle {
 pub enum Engine {
     Doubao(doubao::DoubaoConfig),
     DoubaoWeb(doubao_web::DoubaoWebConfig),
+    DoubaoIme(doubao_ime::DoubaoImeConfig),
     ChatGpt(chatgpt::ChatGptConfig),
     DeepSeek(deepseek::DeepSeekConfig),
     Local(LocalHandle),
@@ -195,8 +205,16 @@ pub enum Engine {
 }
 
 /// 全部识别引擎的 provider 标识（与设置 `asr_provider` 取值一致），也是「重新识别」可选引擎的顺序。
-pub const PROVIDERS: [&str; 7] =
-    ["doubao_asr", "doubao_web_asr", "chatgpt_asr", "deepseek_asr", "wetype_asr", local::WHISPER, local::QWEN];
+pub const PROVIDERS: [&str; 8] = [
+    "doubao_asr",
+    "doubao_web_asr",
+    "doubao_ime_asr",
+    "chatgpt_asr",
+    "deepseek_asr",
+    "wetype_asr",
+    local::WHISPER,
+    local::QWEN,
+];
 
 /// 一个识别引擎当前能不能用（「重新识别」选引擎用）：只看凭据是否齐备、本地模型文件是否就位，不发网络请求。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -243,7 +261,7 @@ pub fn engine_choices(core: &CoreState) -> Vec<EngineChoice> {
 /// 其余引擎就是设置里的识别语言。
 pub fn effective_language(provider: &str, language: &str) -> String {
     match provider.trim() {
-        "deepseek_asr" | "wetype_asr" | "qwen_asr" | "doubao_web_asr" => "auto".into(),
+        "deepseek_asr" | "wetype_asr" | "qwen_asr" | "doubao_web_asr" | "doubao_ime_asr" => "auto".into(),
         _ => language.to_string(),
     }
 }
@@ -252,6 +270,7 @@ pub fn effective_language(provider: &str, language: &str) -> String {
 fn online_label(provider: &str) -> &'static str {
     match provider {
         "doubao_web_asr" => "豆包网页语音",
+        "doubao_ime_asr" => "豆包输入法语音",
         "chatgpt_asr" => "ChatGPT 听写",
         "deepseek_asr" => "DeepSeek 语音识别",
         "wetype_asr" => "微信输入法语音",
@@ -282,6 +301,11 @@ impl Engine {
                 let config = doubao_web_config(core);
                 config.ensure().map_err(|error| error.to_string())?;
                 Ok(Engine::DoubaoWeb(config))
+            }
+            "doubao_ime_asr" => {
+                let config = doubao_ime_config(core);
+                config.ensure().map_err(|error| error.to_string())?;
+                Ok(Engine::DoubaoIme(config))
             }
             "wetype_asr" => {
                 #[cfg(windows)]
@@ -336,6 +360,7 @@ impl Engine {
         match self {
             Engine::Doubao(_) => "doubao_asr",
             Engine::DoubaoWeb(_) => "doubao_web_asr",
+            Engine::DoubaoIme(_) => "doubao_ime_asr",
             Engine::ChatGpt(_) => "chatgpt_asr",
             Engine::DeepSeek(_) => "deepseek_asr",
             Engine::Local(handle) => handle.kind.provider(),
@@ -357,6 +382,7 @@ impl Engine {
         match self {
             Engine::Doubao(_) => "豆包语音",
             Engine::DoubaoWeb(_) => "豆包网页语音",
+            Engine::DoubaoIme(_) => doubao_ime::LABEL,
             Engine::ChatGpt(_) => "ChatGPT 听写",
             Engine::DeepSeek(_) => "DeepSeek 语音识别",
             Engine::Local(handle) => handle.kind.label(),
@@ -377,6 +403,9 @@ impl Engine {
                 .map_err(|error| error.to_string()),
             Engine::DoubaoWeb(config) => {
                 doubao_web::transcribe_pcm(config, samples).await.map(|text| BatchTranscript { text, warning: None })
+            }
+            Engine::DoubaoIme(config) => {
+                doubao_ime::transcribe_pcm(config, samples).await.map(|text| BatchTranscript { text, warning: None })
             }
             Engine::ChatGpt(config) => {
                 let wav = crate::audio::wav_bytes_16k(samples).map_err(|e| format!("音频编码失败：{e}"))?;

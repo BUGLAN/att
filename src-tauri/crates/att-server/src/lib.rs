@@ -1019,6 +1019,7 @@ fn model_service_payload(core: &CoreState) -> Value {
         None => match settings.asr_provider.as_str() {
             "doubao_asr" => Value::from("bigmodel"),
             "doubao_web_asr" => Value::from("doubao-web"),
+            "doubao_ime_asr" => Value::from("doubao-ime"),
             "chatgpt_asr" => Value::from("chatgpt-dictation"),
             "deepseek_asr" => Value::from("deepseek-asr"),
             "wetype_asr" => Value::from("wetype-voice"),
@@ -2213,13 +2214,27 @@ mod tests {
             body["engines"].as_array().unwrap().iter().map(|e| e["provider"].as_str().unwrap()).collect();
         assert_eq!(
             providers,
-            ["doubao_asr", "doubao_web_asr", "chatgpt_asr", "deepseek_asr", "wetype_asr", "whisper", "qwen_asr"]
+            [
+                "doubao_asr",
+                "doubao_web_asr",
+                "doubao_ime_asr",
+                "chatgpt_asr",
+                "deepseek_asr",
+                "wetype_asr",
+                "whisper",
+                "qwen_asr"
+            ]
         );
         let engines = body["engines"].as_array().unwrap();
         let web = engines.iter().find(|e| e["provider"] == "doubao_web_asr").unwrap();
         assert_eq!(web["available"], json!(true), "豆包网页匿名无需凭据");
         assert_eq!(web["label"], json!("豆包网页语音"));
-        assert!(engines.iter().filter(|e| e["provider"] != "doubao_web_asr").all(|e| e["available"] == json!(false)));
+        assert!(engines
+            .iter()
+            .filter(|e| e["provider"] != "doubao_web_asr" && e["provider"] != "doubao_ime_asr")
+            .all(|e| e["available"] == json!(false)));
+        let ime = engines.iter().find(|e| e["provider"] == "doubao_ime_asr").unwrap();
+        assert_eq!(ime["label"], json!("豆包输入法语音"));
         assert_eq!(body["current"], json!(state.core.settings().asr_provider));
 
         state.core.apply_settings_update(&json!({"deepseek_asr_api_key": "sk-test-123456"})).unwrap();

@@ -56,6 +56,7 @@ const DOUBAO_LANGUAGE_CODES = Object.freeze([
 const PROVIDER_LANGUAGE_CODES = Object.freeze({
   doubao_asr: DOUBAO_LANGUAGE_CODES,
   doubao_web_asr: Object.freeze([]),
+  doubao_ime_asr: Object.freeze([]),
   chatgpt_asr: COMMON_LANGUAGE_CODES,
   deepseek_asr: Object.freeze([]),
   wetype_asr: Object.freeze([]),
@@ -114,6 +115,9 @@ export function languageHint(provider) {
   }
   if (provider === 'doubao_web_asr') {
     return '豆包网页语音由音频自动判定语种，不能手动指定。'
+  }
+  if (provider === 'doubao_ime_asr') {
+    return '豆包输入法语音由音频自动判定语种，请求不携带语言。'
   }
   if (provider === 'deepseek_asr') {
     return 'DeepSeek 语音识别由音频自动判定语种，不能手动指定。'

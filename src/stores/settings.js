@@ -145,6 +145,8 @@ export const useSettingsStore = defineStore('settings', () => {
     doubao_asr_end_window_size: 800,
     // 豆包网页语音（在线批量，匿名 WebSocket）：无需密钥，音频会发往豆包
     doubao_web_timeout_seconds: 30,
+    // 豆包输入法语音（虚拟设备在线）：无需用户密钥，音频会发往豆包
+    doubao_ime_timeout_seconds: 30,
     // ChatGPT 听写 ASR（在线批量）：令牌同样只以「是否已配置」展示，
     // 加密落盘为 chatgpt_asr_api_key_encrypted
     chatgpt_asr_api_key_set: false,

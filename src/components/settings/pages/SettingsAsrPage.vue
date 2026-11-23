@@ -141,6 +141,23 @@
       </div>
     </section>
 
+    <!-- 豆包输入法语音（虚拟设备在线）：无需用户密钥，只配请求超时；音频会发往豆包 -->
+    <section v-if="form.asr_provider === 'doubao_ime_asr'" class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">豆包输入法语音 · 接入配置</h3>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">请求超时</span>
+            <span class="setting-desc">秒；单次识别的网络等待上限（10–300）。</span>
+          </div>
+          <BaseInput v-model.number="form.doubao_ime_timeout_seconds" type="number" min="10" max="300" step="10" aria-label="豆包输入法语音请求超时" />
+        </div>
+        <div class="settings-note">
+          <span>无需密钥：首次使用时自动注册匿名虚拟设备。识别时音频会发往豆包；不支持流式录音，语种由音频自动判定。</span>
+        </div>
+      </div>
+    </section>
+
     <!-- ChatGPT 听写（在线批量）：访问令牌只写不读，后端加密落盘 -->
     <section v-if="form.asr_provider === 'chatgpt_asr'" class="settings-section">
       <div class="settings-group">
@@ -877,6 +894,12 @@ const engines = computed(() => [
     value: 'doubao_web_asr',
     label: '豆包网页语音',
     ...onlineChip('doubao_web_asr'),
+    desc: '单段 / 多段 · 无需密钥'
+  },
+  {
+    value: 'doubao_ime_asr',
+    label: '豆包输入法语音',
+    ...onlineChip('doubao_ime_asr'),
     desc: '单段 / 多段 · 无需密钥'
   },
   {

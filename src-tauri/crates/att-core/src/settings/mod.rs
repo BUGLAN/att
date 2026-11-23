@@ -49,6 +49,7 @@ pub const MODEL_RUNTIME_KEYS: &[&str] = &[
     "doubao_asr_endpoint",
     "doubao_asr_end_window_size",
     "doubao_web_timeout_seconds",
+    "doubao_ime_timeout_seconds",
     "chatgpt_asr_endpoint",
     "chatgpt_asr_timeout_seconds",
     "deepseek_asr_endpoint",
@@ -119,6 +120,9 @@ pub struct UserSettings {
     // ---- 豆包网页匿名语音（无需凭据）----
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub doubao_web_timeout_seconds: i64,
+    // ---- 豆包输入法语音（虚拟设备，无需用户凭据）----
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub doubao_ime_timeout_seconds: i64,
     // ---- ChatGPT 听写 ----
     pub chatgpt_asr_endpoint: String,
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
@@ -228,6 +232,7 @@ impl UserSettings {
             doubao_asr_endpoint: crate::stt::sauc::DEFAULT_ENDPOINT.into(),
             doubao_asr_end_window_size: 800,
             doubao_web_timeout_seconds: crate::stt::doubao_web::DEFAULT_TIMEOUT_SECONDS,
+            doubao_ime_timeout_seconds: crate::stt::doubao_ime::DEFAULT_TIMEOUT_SECONDS,
             chatgpt_asr_endpoint: "https://chatgpt.com/backend-api/transcribe".into(),
             chatgpt_asr_timeout_seconds: 120,
             deepseek_asr_endpoint: crate::stt::deepseek::DEFAULT_ENDPOINT.into(),
@@ -662,6 +667,16 @@ pub fn apply_settings_update(
                     return Err(format!("字段 doubao_web_timeout_seconds 必须在 {min}~{max} 秒之间"));
                 }
                 settings.doubao_web_timeout_seconds = seconds;
+            }
+            "doubao_ime_timeout_seconds" => {
+                let mut seconds = settings.doubao_ime_timeout_seconds;
+                set_i64(&mut seconds, value, &type_error)?;
+                let (min, max) =
+                    (crate::stt::doubao_ime::MIN_TIMEOUT_SECONDS, crate::stt::doubao_ime::MAX_TIMEOUT_SECONDS);
+                if !(min..=max).contains(&seconds) {
+                    return Err(format!("字段 doubao_ime_timeout_seconds 必须在 {min}~{max} 秒之间"));
+                }
+                settings.doubao_ime_timeout_seconds = seconds;
             }
             "chatgpt_asr_timeout_seconds" => set_i64(&mut settings.chatgpt_asr_timeout_seconds, value, &type_error)?,
             "deepseek_asr_timeout_seconds" => set_i64(&mut settings.deepseek_asr_timeout_seconds, value, &type_error)?,

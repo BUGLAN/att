@@ -204,6 +204,7 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
     let qwen = core.local_models.status(core, LocalKind::Qwen);
     let doubao_ready = crate::stt::doubao_config(core).ensure().is_ok();
     let doubao_web_ready = crate::stt::doubao_web_config(core).ensure().is_ok();
+    let doubao_ime_ready = crate::stt::doubao_ime_config(core).ensure().is_ok();
     let deepseek_ready = crate::stt::deepseek_config(core).ensure().is_ok();
     let wetype_ready = crate::stt::Engine::online_for_provider(core, "wetype_asr").is_ok();
     // 只给一句结论 + 去哪下载：完整目录与文件要求仍放在设置页折叠详情里
@@ -232,6 +233,8 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
                 Ok("deepseek_asr")
             } else if doubao_web_ready {
                 Ok("doubao_web_asr")
+            } else if doubao_ime_ready {
+                Ok("doubao_ime_asr")
             } else if wetype_ready {
                 Ok("wetype_asr")
             } else {
@@ -249,6 +252,8 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
         "doubao_asr" => Err(TranscribeError::new(409, "豆包语音未配置 Access Token，请在「设置 → 识别引擎」中填写")),
         "doubao_web_asr" if doubao_web_ready => Ok("doubao_web_asr"),
         "doubao_web_asr" => Err(TranscribeError::new(409, "豆包网页语音当前不可用，请稍后重试")),
+        "doubao_ime_asr" if doubao_ime_ready => Ok("doubao_ime_asr"),
+        "doubao_ime_asr" => Err(TranscribeError::new(409, "豆包输入法语音当前不可用，请稍后重试")),
         "deepseek_asr" if deepseek_ready => Ok("deepseek_asr"),
         "deepseek_asr" => {
             Err(TranscribeError::new(409, "DeepSeek 语音识别未配置 API Key，请在「设置 → 识别引擎」中填写"))
@@ -273,7 +278,7 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
         other => Err(TranscribeError::new(
             422,
             format!(
-                "不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr/doubao_web_asr/deepseek_asr/wetype_asr）"
+                "不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr/doubao_web_asr/doubao_ime_asr/deepseek_asr/wetype_asr）"
             ),
         )),
     }
@@ -655,6 +660,7 @@ async fn run_transcription_locked(
         None => match engine {
             "deepseek_asr" => hook.token.run(run_deepseek(core, &samples, duration, hook)).await?,
             "doubao_web_asr" => hook.token.run(run_doubao_web(core, &samples, duration, hook)).await?,
+            "doubao_ime_asr" => hook.token.run(run_doubao_ime(core, &samples, duration, hook)).await?,
             "wetype_asr" => hook.token.run(run_wetype(core, &samples, duration, hook)).await?,
             _ => hook.token.run(run_doubao(core, language, &samples, duration, engine, hook)).await?,
         },
@@ -783,6 +789,42 @@ fn doubao_web_payload(text: String, duration: f64, samples: usize) -> Value {
         "text": text,
         "duration_seconds": end,
         "engine": "doubao_web_asr",
+        "segments": segments,
+    })
+}
+
+/// 豆包输入法语音：整段发送；协议层按段返回中间稿/最终稿，客户端已按段累积成完整正文。
+async fn run_doubao_ime(
+    core: &CoreState,
+    samples: &[i16],
+    duration: f64,
+    hook: &AsrHook,
+) -> Result<Value, TranscribeError> {
+    let config = crate::stt::doubao_ime_config(core);
+    let mut on_push = |pushed: usize| hook.tick(pushed as f64 / SAMPLE_RATE as f64);
+    let text = crate::stt::doubao_ime::transcribe_pcm_with_progress(&config, samples, &mut on_push).await.map_err(
+        |error| {
+            if hook.token.is_cancelled() {
+                TranscribeError::cancelled()
+            } else {
+                TranscribeError::new(500, format!("转写失败：{error}"))
+            }
+        },
+    )?;
+    Ok(doubao_ime_payload(text, duration, samples.len()))
+}
+
+fn doubao_ime_payload(text: String, duration: f64, samples: usize) -> Value {
+    let end = if duration > 0.0 { duration } else { samples as f64 / SAMPLE_RATE as f64 };
+    let segments = if text.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![json!({ "start": 0.0, "end": end, "text": text.clone() })]
+    };
+    json!({
+        "text": text,
+        "duration_seconds": end,
+        "engine": "doubao_ime_asr",
         "segments": segments,
     })
 }

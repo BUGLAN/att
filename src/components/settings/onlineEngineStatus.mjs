@@ -8,6 +8,7 @@ export const WETYPE_PROVIDER = 'wetype_asr'
 export const ONLINE_PROVIDERS = Object.freeze([
   'doubao_asr',
   'doubao_web_asr',
+  'doubao_ime_asr',
   'chatgpt_asr',
   'deepseek_asr',
   WETYPE_PROVIDER

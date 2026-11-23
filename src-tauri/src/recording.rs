@@ -167,6 +167,7 @@ impl MultiDrainPolicy {
                 doubao_web::estimated_timeout(config, Duration::from_secs_f64(att_core::audio::MAX_SEGMENT_SECONDS))
                     + WATCHDOG_SLACK
             }
+            stt::Engine::DoubaoIme(config) => config.timeout,
             // DeepSeek 在单个 10 秒分段内仍会按暂时性错误重试三次。
             stt::Engine::DeepSeek(config) => {
                 config.timeout.saturating_mul(deepseek::MAX_ATTEMPTS_PER_CHUNK as u32) + Duration::from_secs(3)
@@ -1833,6 +1834,8 @@ fn batch_plan(
         let config = doubao_web::DoubaoWebConfig::from_seconds(doubao_web_timeout_seconds);
         let sessions = doubao_web::session_count_for_duration(recorded + HOLD_RELEASE_GRACE);
         (config.timeout, BatchPlan::DoubaoWeb { sessions })
+    } else if provider == "doubao_ime_asr" {
+        (Duration::from_secs(120), BatchPlan::Single)
     } else if provider == "deepseek_asr" {
         // 按住模式松开后还会多收一小段尾音（不算进 recorded），估算块数时补上，避免边界上少算一块
         let chunks = deepseek::chunk_count_for_duration(recorded + HOLD_RELEASE_GRACE);

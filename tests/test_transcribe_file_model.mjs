@@ -71,10 +71,10 @@ test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法�
   assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'chatgpt_asr' }).engine, 'doubao_web_asr')
 })
 
-test('TRANSCRIBE_ENGINES：六引擎元数据齐备，不标「默认」，描述各一句话', () => {
+test('TRANSCRIBE_ENGINES：七引擎元数据齐备，不标「默认」，描述各一句话', () => {
   assert.deepEqual(
     TRANSCRIBE_ENGINES.map((item) => item.value),
-    ['doubao_asr', 'doubao_web_asr', 'deepseek_asr', 'wetype_asr', 'whisper', 'qwen_asr']
+    ['doubao_asr', 'doubao_web_asr', 'doubao_ime_asr', 'deepseek_asr', 'wetype_asr', 'whisper', 'qwen_asr']
   )
   for (const item of TRANSCRIBE_ENGINES) {
     assert.ok(!item.badge, `${item.value} 不再带「默认」标记`)
