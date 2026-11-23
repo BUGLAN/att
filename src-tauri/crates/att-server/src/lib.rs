@@ -435,6 +435,19 @@ fn engine_status(core: &CoreState) -> EngineStatus {
             loading: false,
         };
     }
+    if settings.asr_provider == "doubao_ime_asr" {
+        let ready = att_core::stt::doubao_ime_config(core).ensure().is_ok();
+        return EngineStatus {
+            ready,
+            error: (!ready).then(|| "豆包输入法语音配置无效".to_string()),
+            streaming_supported: streaming,
+            streaming_available: streaming,
+            streaming_backend: streaming.then_some("doubao_ime"),
+            mode: "online",
+            running: streaming,
+            loading: false,
+        };
+    }
     // 凭据验证「确定不可用」（Token 无效、Resource ID 不符、接入点不存在）时不报就绪；
     // 没验过或只是没验成（网络等）按凭据齐备处理，不拦录音
     let invalid = att_core::stt::verify::invalid_reason(core, &settings.asr_provider);

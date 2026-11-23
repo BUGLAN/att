@@ -13,6 +13,7 @@ use crate::storage::crypto::Crypto;
 use crate::storage::json_store;
 use futures_util::stream::{SplitSink, SplitStream, StreamExt};
 use futures_util::SinkExt;
+use futures_util::FutureExt;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -171,6 +172,20 @@ impl std::fmt::Display for DoubaoImeError {
     }
 }
 impl std::error::Error for DoubaoImeError {}
+
+impl DoubaoImeError {
+    /// 服务端偶发的「service discovery failure」多为虚拟设备会话异常：换一台新注册设备重试一次通常可恢复。
+    fn needs_fresh_device(&self) -> bool {
+        matches!(self.kind, ErrorKind::Server) && self.message.contains("service discovery failure")
+    }
+
+    fn user_facing(mut self) -> Self {
+        if self.message.contains("service discovery failure") {
+            self.message = "豆包输入法语音服务暂时不可用（后端服务发现失败），请稍后重试".into();
+        }
+        self
+    }
+}
 
 // ---------------- protobuf（手写，字段见 doubaoime-asr 的 asr.proto） ----------------
 
@@ -393,6 +408,12 @@ impl Accumulator {
             let pending = std::mem::take(&mut self.pending);
             self.committed.push_str(&pending);
         }
+    }
+
+    fn snapshot(&self) -> String {
+        let mut text = self.committed.clone();
+        text.push_str(&self.pending);
+        text.trim().to_string()
     }
 
     fn finish(&mut self) -> String {
@@ -633,6 +654,17 @@ fn save_credentials(config: &DoubaoImeConfig, path: &Path, credentials: &Credent
     if let Err(error) = json_store::write_json_atomic(path, &value) {
         tracing::warn!("保存豆包输入法设备凭据失败：{error}");
     }
+}
+
+/// 忽略缓存，强制重新注册一台虚拟设备并取新 token（用于服务端偶发 device 会话失败后的重试）。
+async fn refresh_credentials(config: &DoubaoImeConfig) -> Result<Credentials, DoubaoImeError> {
+    let client = http_client(config.timeout)?;
+    let mut credentials = register_device(&client).await?;
+    credentials.token = fetch_token(&client, &credentials.device_id, &credentials.cdid).await?;
+    if let Some(path) = &config.credential_path {
+        save_credentials(config, path, &credentials);
+    }
+    Ok(credentials)
 }
 
 static CREDENTIAL_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
@@ -920,7 +952,27 @@ async fn transcribe_pcm_with_progress_impl(
     if samples.is_empty() {
         return Err(DoubaoImeError::input("音频为空，无法转写"));
     }
-    let credentials = ensure_credentials(config).await?;
+    let mut credentials = ensure_credentials(config).await?;
+    let mut refreshed = false;
+    loop {
+        match run_sessions(config, &credentials, samples, &mut *on_push).await {
+            Ok(text) => return Ok(text),
+            Err(error) if !refreshed && error.needs_fresh_device() => {
+                tracing::warn!("豆包输入法语音会话失败（{}），换一台新虚拟设备重试", error.message);
+                refreshed = true;
+                credentials = refresh_credentials(config).await?;
+            }
+            Err(error) => return Err(error.user_facing()),
+        }
+    }
+}
+
+async fn run_sessions(
+    config: &DoubaoImeConfig,
+    credentials: &Credentials,
+    samples: &[i16],
+    on_push: &mut (dyn FnMut(usize) -> bool + Send),
+) -> Result<String, DoubaoImeError> {
     let mut parts = Vec::new();
     for (index, chunk) in samples.chunks(MAX_SESSION_SAMPLES).enumerate() {
         let base = index * MAX_SESSION_SAMPLES;
@@ -928,7 +980,7 @@ async fn transcribe_pcm_with_progress_impl(
             return Err(DoubaoImeError::input(super::TRANSCRIBE_CANCELLED));
         }
         let mut chunk_progress = |pushed: usize| on_push(base + pushed);
-        let text = transcribe_session(config, &credentials, chunk, &mut chunk_progress).await?;
+        let text = transcribe_session(config, credentials, chunk, &mut chunk_progress).await?;
         if !text.is_empty() {
             parts.push(text);
         }
@@ -958,6 +1010,268 @@ pub async fn check_connection(config: &DoubaoImeConfig) -> Result<(), DoubaoImeE
         timeout(Duration::from_secs(1), stream.close(Some(CloseFrame { code: CloseCode::Normal, reason: "".into() })))
             .await;
     Ok(())
+}
+
+/// 流式中间结果回调：参数是当前的累计文本。
+pub type PartialCallback = Arc<dyn Fn(String) + Send + Sync>;
+
+/// 流式会话：边录边发 20ms PCM 帧，服务端返回的中间稿实时回调给界面。
+pub struct DoubaoImeSession {
+    writer: WsWriter,
+    reader: WsReader,
+    timeout: Duration,
+    request_id: String,
+    token: String,
+    device_id: String,
+    accumulator: Accumulator,
+    frame_index: u32,
+    started_at: i64,
+    session_finished: bool,
+    acked: bool,
+    on_partial: Option<PartialCallback>,
+}
+
+impl DoubaoImeSession {
+    /// 连接并初始化一场流式会话；on_partial 收到的始终是当前累计文本。
+    pub async fn connect(
+        config: &DoubaoImeConfig,
+        _language: &str,
+        on_partial: Option<PartialCallback>,
+    ) -> Result<Self, String> {
+        config.ensure().map_err(|error| error.message)?;
+        let mut credentials = ensure_credentials(config).await.map_err(|error| error.message)?;
+        match Self::connect_with(config, &credentials, on_partial.clone()).await {
+            Ok(session) => Ok(session),
+            Err(error) if error.needs_fresh_device() => {
+                tracing::warn!("豆包输入法流式会话失败（{}），换一台新虚拟设备重试", error.message);
+                credentials = refresh_credentials(config).await.map_err(|error| error.message)?;
+                Self::connect_with(config, &credentials, on_partial).await.map_err(|error| error.user_facing().message)
+            }
+            Err(error) => Err(error.user_facing().message),
+        }
+    }
+
+    async fn connect_with(
+        config: &DoubaoImeConfig,
+        credentials: &Credentials,
+        on_partial: Option<PartialCallback>,
+    ) -> Result<Self, DoubaoImeError> {
+        let stream = connect(config, credentials).await?;
+        let (writer, reader) = stream.split();
+        let mut session = Self {
+            writer,
+            reader,
+            timeout: config.timeout,
+            request_id: Uuid::new_v4().to_string(),
+            token: credentials.token.clone(),
+            device_id: credentials.device_id.clone(),
+            accumulator: Accumulator::default(),
+            frame_index: 0,
+            started_at: now_ms(),
+            session_finished: false,
+            acked: false,
+            on_partial,
+        };
+        session.send("StartTask", None, None, None, true).await?;
+        session.wait_for("TaskStarted").await?;
+        let payload = session_payload(&session.device_id);
+        session.send("StartSession", Some(&payload), None, None, true).await?;
+        session.wait_for("SessionStarted").await?;
+        Ok(session)
+    }
+
+    pub fn current_text(&self) -> String {
+        self.accumulator.snapshot()
+    }
+
+    pub fn acked(&self) -> bool {
+        self.acked
+    }
+
+    async fn send(
+        &mut self,
+        method: &str,
+        payload: Option<&str>,
+        audio: Option<&[u8]>,
+        frame_state: Option<u32>,
+        with_token: bool,
+    ) -> Result<(), DoubaoImeError> {
+        let token = if with_token { Some(self.token.as_str()) } else { None };
+        let packet = encode_request(token, method, payload, audio, &self.request_id, frame_state);
+        self.writer.send(Message::binary(packet)).await.map_err(|error| {
+            tracing::debug!("发送豆包输入法流式请求失败: {error}");
+            DoubaoImeError::network("发送豆包输入法语音请求失败，请重试")
+        })
+    }
+
+    fn emit(&self) {
+        if let Some(callback) = &self.on_partial {
+            callback(self.accumulator.snapshot());
+        }
+    }
+
+    fn handle(&mut self, parsed: Parsed) -> Result<Option<&'static str>, DoubaoImeError> {
+        match parsed {
+            Parsed::TaskStarted => {
+                self.acked = true;
+                Ok(Some("TaskStarted"))
+            }
+            Parsed::SessionStarted => {
+                self.acked = true;
+                Ok(Some("SessionStarted"))
+            }
+            Parsed::SessionFinished => {
+                self.acked = true;
+                self.session_finished = true;
+                Ok(Some("SessionFinished"))
+            }
+            Parsed::VadStart => {
+                self.accumulator.vad_start();
+                self.emit();
+                Ok(None)
+            }
+            Parsed::Interim(text) => {
+                self.acked = true;
+                self.accumulator.interim(text);
+                self.emit();
+                Ok(None)
+            }
+            Parsed::Final(text) => {
+                self.acked = true;
+                self.accumulator.final_result(text);
+                self.emit();
+                Ok(None)
+            }
+            Parsed::Heartbeat | Parsed::Other(_) => {
+                self.acked = true;
+                Ok(None)
+            }
+            Parsed::Failed(detail) => {
+                self.acked = true;
+                Err(DoubaoImeError::server(format!("豆包输入法语音服务返回失败：{detail}")))
+            }
+        }
+    }
+
+    async fn next_parsed(&mut self, deadline: Instant) -> Result<Parsed, DoubaoImeError> {
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(DoubaoImeError::network("等待豆包输入法语音响应超时，请稍后重试"));
+            }
+            match timeout(remaining, self.reader.next()).await {
+                Err(_) => return Err(DoubaoImeError::network("等待豆包输入法语音响应超时，请稍后重试")),
+                Ok(None) => return Err(DoubaoImeError::network("豆包输入法语音连接在会话结束前关闭，请重试")),
+                Ok(Some(Ok(Message::Binary(data)))) => return parse_response(&data),
+                Ok(Some(Ok(Message::Close(_)))) => {
+                    return Err(DoubaoImeError::network("豆包输入法语音连接在会话结束前关闭，请重试"));
+                }
+                Ok(Some(Ok(_))) => continue,
+                Ok(Some(Err(error))) => {
+                    tracing::debug!("读取豆包输入法流式响应失败: {error}");
+                    return Err(DoubaoImeError::network("读取豆包输入法语音响应失败，请重试"));
+                }
+            }
+        }
+    }
+
+    async fn wait_for(&mut self, expected: &str) -> Result<(), DoubaoImeError> {
+        let deadline = Instant::now() + self.timeout + Duration::from_secs(5);
+        loop {
+            let parsed = self.next_parsed(deadline).await?;
+            if let Some(tag) = self.handle(parsed)? {
+                if tag == expected {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    /// 把服务端已经到达的响应全部非阻塞读完，实时更新累计文本。
+    fn drain_ready(&mut self) -> Result<(), DoubaoImeError> {
+        loop {
+            match self.reader.next().now_or_never() {
+                None => return Ok(()),
+                Some(None) => {
+                    return Err(DoubaoImeError::network("豆包输入法语音连接在会话结束前关闭，请重试"));
+                }
+                Some(Some(Ok(Message::Binary(data)))) => {
+                    let parsed = parse_response(&data)?;
+                    let _ = self.handle(parsed)?;
+                }
+                Some(Some(Ok(Message::Close(_)))) => {
+                    return Err(DoubaoImeError::network("豆包输入法语音连接在会话结束前关闭，请重试"));
+                }
+                Some(Some(Ok(_))) => continue,
+                Some(Some(Err(error))) => {
+                    tracing::debug!("读取豆包输入法流式响应失败: {error}");
+                    return Err(DoubaoImeError::network("读取豆包输入法语音响应失败，请重试"));
+                }
+            }
+        }
+    }
+
+    /// 边录边推一段 PCM（16k/mono/PCM16），并即时把中间稿回调出去。
+    pub async fn push(&mut self, samples: &[i16]) -> Result<(), String> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+        let total = samples.len().div_ceil(FRAME_SAMPLES);
+        for index in 0..total {
+            let begin = index * FRAME_SAMPLES;
+            let end = (begin + FRAME_SAMPLES).min(samples.len());
+            let mut owned;
+            let chunk = if end - begin < FRAME_SAMPLES {
+                owned = samples[begin..end].to_vec();
+                owned.resize(FRAME_SAMPLES, 0);
+                owned.as_slice()
+            } else {
+                &samples[begin..end]
+            };
+            let frame_state = if self.frame_index == 0 { FRAME_FIRST } else { FRAME_MIDDLE };
+            let metadata =
+                json!({ "extra": {}, "timestamp_ms": self.started_at + (self.frame_index as i64) * 20 }).to_string();
+            let bytes = pcm16le_bytes(chunk);
+            self.send("TaskRequest", Some(&metadata), Some(&bytes), Some(frame_state), false)
+                .await
+                .map_err(|error| error.message)?;
+            self.frame_index += 1;
+        }
+        self.drain_ready().map_err(|error| error.message)
+    }
+
+    /// 结束会话：补一个 LAST 帧 → FinishSession → 读到底，返回整段文本。
+    pub async fn finish(mut self, timeout: Duration) -> Result<String, String> {
+        let deadline = Instant::now() + timeout + Duration::from_secs(3);
+        let silent = vec![0i16; FRAME_SAMPLES];
+        let bytes = pcm16le_bytes(&silent);
+        let metadata =
+            json!({ "extra": {}, "timestamp_ms": self.started_at + (self.frame_index as i64) * 20 }).to_string();
+        let _ = self.send("TaskRequest", Some(&metadata), Some(&bytes), Some(FRAME_LAST), false).await;
+        self.send("FinishSession", None, None, None, true).await.map_err(|error| error.message)?;
+        loop {
+            let parsed = self.next_parsed(deadline).await.map_err(|error| error.message)?;
+            if let Some(tag) = self.handle(parsed).map_err(|error| error.message)? {
+                if tag == "SessionFinished" {
+                    break;
+                }
+            }
+        }
+        let text = self.accumulator.finish();
+        if text.is_empty() {
+            return Err("豆包输入法语音会话已结束，但没有识别结果".into());
+        }
+        Ok(text)
+    }
+
+    pub async fn cancel(mut self) {
+        let _ = self.send("FinishSession", None, None, None, true).await;
+        let _ = timeout(
+            Duration::from_secs(1),
+            self.writer.send(Message::Close(Some(CloseFrame { code: CloseCode::Normal, reason: "".into() }))),
+        )
+        .await;
+    }
 }
 
 #[cfg(test)]
@@ -1130,7 +1444,7 @@ mod tests {
 
     fn test_config(endpoint: String) -> DoubaoImeConfig {
         DoubaoImeConfig {
-            timeout: Duration::from_secs(2),
+            timeout: Duration::from_secs(5),
             endpoint,
             credential_path: None,
             crypto: None,
@@ -1181,6 +1495,66 @@ mod tests {
         config.timeout = Duration::from_millis(150);
         let error = transcribe_pcm(&config, &vec![0i16; FRAME_SAMPLES]).await.unwrap_err();
         assert!(error.contains("超时"), "{error}");
+    }
+
+    #[test]
+    fn 服务发现失败_判定为可换设备重试并给友好文案() {
+        let error = DoubaoImeError::server(
+            "豆包输入法语音服务返回失败：read backend response: rpc error: code = 2 desc = service discovery failure",
+        );
+        assert!(error.needs_fresh_device());
+        assert!(error.user_facing().message.contains("暂时不可用"));
+    }
+
+    #[tokio::test]
+    async fn 流式会话_推流中间稿与最终文本() {
+        let (endpoint, _methods_rx) =
+            stub_server(StubBehavior { final_extends: true, ..StubBehavior::default() }).await;
+        let config = test_config(endpoint);
+        let partials = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = partials.clone();
+        let callback: PartialCallback = Arc::new(move |text| {
+            sink.lock().unwrap().push(text);
+        });
+        let mut session = DoubaoImeSession::connect(&config, "zh", Some(callback)).await.expect("连接流式会话失败");
+        session.push(&vec![0i16; FRAME_SAMPLES * 2]).await.expect("推流失败");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let _ = session.drain_ready();
+        assert!(session.current_text().contains("你好"), "current={}", session.current_text());
+        let text = session.finish(Duration::from_secs(2)).await.expect("结束流式会话失败");
+        assert_eq!(text, "你好世界。");
+        assert!(!partials.lock().unwrap().is_empty(), "应至少回调一次中间稿");
+    }
+
+    /// 真实流式链路（默认 ignore）：ATT_TEST_WAV=/abs/16k-mono.wav cargo test -p att-core 真实豆包输入法流式 -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn 真实豆包输入法流式_已知音频() {
+        let path = std::env::var("ATT_TEST_WAV").expect("需要 ATT_TEST_WAV 指向 16k 单声道音频");
+        let samples = crate::audio::read_audio_16k_mono(std::path::Path::new(&path)).expect("读取测试音频失败");
+        let dir = std::env::temp_dir().join(format!("att-doubao-ime-stream-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config =
+            DoubaoImeConfig::from_seconds(DEFAULT_TIMEOUT_SECONDS).with_credential_path(dir.join("credentials.json"));
+        let partials = Arc::new(std::sync::Mutex::new(0usize));
+        let sink = partials.clone();
+        let callback: PartialCallback = Arc::new(move |text| {
+            if !text.is_empty() {
+                *sink.lock().unwrap() += 1;
+            }
+        });
+        let mut session =
+            DoubaoImeSession::connect(&config, "zh", Some(callback)).await.expect("流式建连失败");
+        let chunk = SAMPLE_RATE / 10;
+        for piece in samples.chunks(chunk) {
+            session.push(piece).await.expect("流式推流失败");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let text = session.finish(Duration::from_secs(15)).await.expect("流式收尾失败");
+        println!("豆包输入法流式结果：{text}");
+        assert!(!text.trim().is_empty(), "流式结果为空");
+        assert!(*partials.lock().unwrap() > 0, "应至少回调一次中间稿");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 真实链路测试（默认 ignore）：ATT_TEST_WAV=/abs/16k-mono.wav cargo test -p att-core 真实豆包输入法 -- --ignored --nocapture

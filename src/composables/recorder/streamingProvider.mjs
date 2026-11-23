@@ -4,6 +4,7 @@
 const STREAMING_PROVIDER_LABELS = Object.freeze({
   qwen_asr: 'Qwen 流式',
   doubao_asr: '豆包在线流式',
+  doubao_ime_asr: '豆包输入法流式',
   wetype_asr: '微信输入法流式'
 })
 

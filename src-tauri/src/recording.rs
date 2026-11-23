@@ -988,6 +988,7 @@ impl Actor {
         let warm = match streaming_config.as_ref() {
             Some(StreamingConfig::Doubao(config)) => self.take_warm(config),
             None => None,
+            Some(StreamingConfig::DoubaoIme(_)) => None,
             #[cfg(windows)]
             Some(StreamingConfig::WeType(_)) => None,
         };
@@ -1918,6 +1919,7 @@ const WARM_CONNECT_WAIT: Duration = Duration::from_secs(3);
 #[derive(Clone, Debug)]
 enum StreamingConfig {
     Doubao(doubao::DoubaoConfig),
+    DoubaoIme(stt::doubao_ime::DoubaoImeConfig),
     #[cfg(windows)]
     WeType(stt::wetype::WetypeConfig),
 }
@@ -1928,6 +1930,7 @@ fn streaming_config_for(engine: &stt::Engine, mode: Mode) -> Result<Option<Strea
     }
     match engine {
         stt::Engine::Doubao(config) => Ok(Some(StreamingConfig::Doubao(config.clone()))),
+        stt::Engine::DoubaoIme(config) => Ok(Some(StreamingConfig::DoubaoIme(config.clone()))),
         #[cfg(windows)]
         stt::Engine::WeType(config) => Ok(Some(StreamingConfig::WeType(config.clone()))),
         _ => Err(format!("{}暂不支持流式录音，请在设置中改用单段或多段录音模式", engine.label())),
@@ -1938,6 +1941,7 @@ impl StreamingConfig {
     fn label(&self) -> &'static str {
         match self {
             StreamingConfig::Doubao(_) => "豆包语音",
+            StreamingConfig::DoubaoIme(_) => stt::doubao_ime::LABEL,
             #[cfg(windows)]
             StreamingConfig::WeType(_) => stt::wetype::LABEL,
         }
@@ -1946,6 +1950,7 @@ impl StreamingConfig {
     fn finish_timeout(&self) -> Duration {
         match self {
             StreamingConfig::Doubao(_) => doubao::FINISH_TIMEOUT,
+            StreamingConfig::DoubaoIme(config) => config.timeout,
             #[cfg(windows)]
             StreamingConfig::WeType(config) => config.timeout,
         }
@@ -1957,6 +1962,8 @@ fn streaming_message(provider: &str, connecting: bool) -> &'static str {
     match (provider, connecting) {
         ("wetype_asr", true) => "正在连接微信输入法语音",
         ("wetype_asr", false) => "微信输入法转写中",
+        ("doubao_ime_asr", true) => "正在连接豆包输入法服务",
+        ("doubao_ime_asr", false) => "豆包输入法转写中",
         (_, true) => "正在连接豆包语音服务",
         (_, false) => "豆包语音转写中",
     }
@@ -1964,7 +1971,7 @@ fn streaming_message(provider: &str, connecting: bool) -> &'static str {
 
 /// 流式识别中断时是否只留记录、不把半截文字自动送进输入框。
 fn withhold_partial_stream_output(mode: Mode, provider: &str, error: &Option<String>) -> bool {
-    mode == Mode::Streaming && provider == "wetype_asr" && error.is_some()
+    mode == Mode::Streaming && (provider == "wetype_asr" || provider == "doubao_ime_asr") && error.is_some()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1977,6 +1984,7 @@ type StreamingCallback = Arc<dyn Fn(StreamingPartial) + Send + Sync>;
 
 enum StreamingSession {
     Doubao(doubao::DoubaoSession),
+    DoubaoIme(stt::doubao_ime::DoubaoImeSession),
     #[cfg(windows)]
     WeType(stt::wetype::WetypeSession),
 }
@@ -1985,6 +1993,7 @@ impl StreamingSession {
     fn current_text(&self) -> String {
         match self {
             StreamingSession::Doubao(session) => session.current_text(),
+            StreamingSession::DoubaoIme(session) => session.current_text(),
             #[cfg(windows)]
             StreamingSession::WeType(session) => session.current_text(),
         }
@@ -1994,6 +2003,7 @@ impl StreamingSession {
     fn acked(&self) -> bool {
         match self {
             StreamingSession::Doubao(session) => session.acked(),
+            StreamingSession::DoubaoIme(_) => true,
             #[cfg(windows)]
             StreamingSession::WeType(_) => true,
         }
@@ -2002,6 +2012,7 @@ impl StreamingSession {
     async fn push(&mut self, samples: &[i16]) -> Result<(), String> {
         match self {
             StreamingSession::Doubao(session) => session.push(samples).await.map_err(|error| error.to_string()),
+            StreamingSession::DoubaoIme(session) => session.push(samples).await,
             #[cfg(windows)]
             StreamingSession::WeType(session) => session.push(samples).await,
         }
@@ -2012,6 +2023,7 @@ impl StreamingSession {
             StreamingSession::Doubao(session) => {
                 session.finish(timeout, quiet).await.map(|outcome| outcome.text).map_err(|error| error.to_string())
             }
+            StreamingSession::DoubaoIme(session) => session.finish(timeout).await,
             #[cfg(windows)]
             StreamingSession::WeType(session) => session.finish(timeout).await,
         }
@@ -2020,6 +2032,7 @@ impl StreamingSession {
     async fn cancel(self) {
         match self {
             StreamingSession::Doubao(session) => session.cancel().await,
+            StreamingSession::DoubaoIme(session) => session.cancel().await,
             #[cfg(windows)]
             StreamingSession::WeType(session) => session.cancel().await,
         }
@@ -2044,6 +2057,15 @@ fn connect_fresh(config: &StreamingConfig, language: &str, on_partial: Streaming
                     .await
                     .map(StreamingSession::Doubao)
                     .map_err(|error| error.to_string())
+            }
+            StreamingConfig::DoubaoIme(config) => {
+                let callback = on_partial.clone();
+                let adapter: stt::doubao_ime::PartialCallback = Arc::new(move |text: String| {
+                    callback(StreamingPartial { text, pending_chars: 0 });
+                });
+                stt::doubao_ime::DoubaoImeSession::connect(&config, &language, Some(adapter))
+                    .await
+                    .map(StreamingSession::DoubaoIme)
             }
             #[cfg(windows)]
             StreamingConfig::WeType(config) => {
@@ -2123,6 +2145,7 @@ fn connect_stream(
 ) -> ConnectFuture {
     match config {
         StreamingConfig::Doubao(config) => connect_or_reuse(config, language, on_partial, warm),
+        StreamingConfig::DoubaoIme(_) => connect_fresh(config, language, on_partial),
         #[cfg(windows)]
         StreamingConfig::WeType(_) => connect_fresh(config, language, on_partial),
     }

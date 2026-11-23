@@ -372,6 +372,7 @@ impl Engine {
     pub fn supports_streaming(&self) -> bool {
         match self {
             Engine::Doubao(_) => true,
+            Engine::DoubaoIme(_) => true,
             #[cfg(windows)]
             Engine::WeType(_) => true,
             _ => false,

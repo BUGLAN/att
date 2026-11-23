@@ -18,6 +18,7 @@ const NO_VOICE_TOAST = '没有听到声音，检查麦克风'
 
 const STREAMING_PROVIDER_TEXT = Object.freeze({
   doubao_asr: { connecting: '正在连接豆包语音服务', recording: '豆包语音转写中' },
+  doubao_ime_asr: { connecting: '正在连接豆包输入法服务', recording: '豆包输入法转写中' },
   wetype_asr: { connecting: '正在连接微信输入法语音', recording: '微信输入法转写中' }
 })
 

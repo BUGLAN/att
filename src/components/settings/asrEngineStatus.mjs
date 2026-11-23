@@ -7,12 +7,12 @@
 export const LOCAL_PROVIDERS = Object.freeze(['whisper', 'qwen_asr'])
 
 /** 支持流式（边说边出字）的引擎；微信输入法还要求 Windows 与本机输入法在线。 */
-export const STREAMING_PROVIDERS = Object.freeze(['doubao_asr', 'wetype_asr'])
+export const STREAMING_PROVIDERS = Object.freeze(['doubao_asr', 'doubao_ime_asr', 'wetype_asr'])
 
 export const RECORDING_MODES = Object.freeze([
   { value: 'single', label: '单段', desc: '录完整段后一次识别' },
   { value: 'multi', label: '多段', desc: '按静音自动切段，边录边出字' },
-  { value: 'streaming', label: '流式', desc: '边说边出字（豆包语音 / Windows 微信输入法）' }
+  { value: 'streaming', label: '流式', desc: '边说边出字（豆包语音 / 豆包输入法 / Windows 微信输入法）' }
 ])
 
 const PROVIDER_LABELS = Object.freeze({
