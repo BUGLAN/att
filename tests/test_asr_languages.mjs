@@ -18,7 +18,8 @@ const ALL_PROVIDERS = [
   'deepseek_asr',
   'wetype_asr',
   'whisper',
-  'qwen_asr'
+  'qwen_asr',
+  'sense_voice'
 ]
 
 test('语言下拉：所有引擎首项都是自动检测，且选项不重复', () => {
@@ -30,11 +31,12 @@ test('语言下拉：所有引擎首项都是自动检测，且选项不重复',
   }
 })
 
-test('语言下拉：豆包网页 / 微信输入法 / Qwen / DeepSeek 只能自动判定，豆包与 Whisper 可选固定语种', () => {
+test('语言下拉：SenseVoice 支持中粤英日韩，豆包网页 / 微信输入法 / Qwen / DeepSeek 只能自动判定', () => {
   assert.deepEqual(languageOptions('doubao_web_asr').map((item) => item.value), ['auto'])
   assert.deepEqual(languageOptions('qwen_asr').map((item) => item.value), ['auto'])
   assert.deepEqual(languageOptions('deepseek_asr').map((item) => item.value), ['auto'])
   assert.deepEqual(languageOptions('wetype_asr').map((item) => item.value), ['auto'])
+  assert.deepEqual(languageOptions('sense_voice').map((item) => item.value), ['auto', 'zh', 'yue', 'en', 'ja', 'ko'])
 
   const doubao = languageOptions('doubao_asr').map((item) => item.value)
   assert.ok(doubao.includes('zh'))
@@ -79,6 +81,13 @@ test('切换引擎：新引擎不支持当前语言时回落自动检测并提�
   assert.equal(qwen.reset, true)
   assert.match(qwen.message, /Qwen3-ASR不支持「中文」，已改为自动检测/)
 
+  const sense = normalizeLanguageForProvider('sense_voice', 'zh')
+  assert.equal(sense.language, 'zh')
+  assert.equal(sense.reset, false)
+  const senseUnsupported = normalizeLanguageForProvider('sense_voice', 'es')
+  assert.equal(senseUnsupported.language, 'auto')
+  assert.match(senseUnsupported.message, /SenseVoice不支持「西班牙语」，已改为自动检测/)
+
   const deepseek = normalizeLanguageForProvider('deepseek_asr', 'ja')
   assert.equal(deepseek.language, 'auto')
   assert.match(deepseek.message, /DeepSeek 语音识别不支持「日语」，已改为自动检测/)
@@ -97,6 +106,7 @@ test('语言标签与说明：地区码显示基础语种中文名，自动判�
   assert.equal(languageLabel('EN_us'), '英语')
   assert.equal(languageLabel('xx'), 'xx')
   assert.match(languageHint('qwen_asr'), /不支持指定语言/)
+  assert.match(languageHint('sense_voice'), /支持中文、粤语、英语、日语、韩语/)
   assert.match(languageHint('deepseek_asr'), /自动判定/)
   assert.match(languageHint('doubao_web_asr'), /自动判定/)
   assert.match(languageHint('doubao_asr'), /自动检测/)

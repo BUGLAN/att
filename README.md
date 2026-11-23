@@ -27,7 +27,7 @@ macOS 需要授予三项权限：「麦克风」（录音）、「输入监控�
 | 能力 | 说明 |
 | --- | --- |
 | 录音 | 单段 / 多段（静音自动切段，边录边出字）/ 流式（豆包，边说边出字）；按住快捷键录音、松开结束，录音悬浮条实时显示字幕 |
-| 语音识别 | 火山豆包大模型（流式 + 批量）、豆包网页语音（匿名在线批量）、ChatGPT 听写、DeepSeek 语音识别（在线批量）、微信输入法语音（Windows 本机注入）、本地 faster-whisper（CT2 large-v3）、本地 Qwen3-ASR（ONNX）；个人词表（豆包热词 + LLM 纠错） |
+| 语音识别 | 火山豆包大模型（流式 + 批量）、豆包网页语音（匿名在线批量）、ChatGPT 听写、DeepSeek 语音识别（在线批量）、微信输入法语音（Windows 本机注入）、本地 faster-whisper（CT2 large-v3）、本地 Qwen3-ASR（ONNX）、本地 SenseVoice（中粤英日韩 ONNX）；个人词表（豆包热词 + LLM 纠错） |
 | LLM 优化 | 内置服务商目录（DeepSeek / OpenAI / Anthropic / Gemini / 通义 / 豆包方舟 / Kimi / 智谱 / Ollama / 任意 OpenAI 兼容 …），流式输出；可开启「录音后自动优化并输入」 |
 | 提示词预设 | 内置多套预设（通用优化、程序员模式、会议记录、Agent 提示词等，只读），也可以新增、编辑、删除自己的预设 |
 | 优化选中文本 | 在任意应用里选中文字按快捷键，用所选预设改写后流式替换原文 |
@@ -49,8 +49,8 @@ macOS 需要授予三项权限：「麦克风」（录音）、「输入监控�
 
 按住录音与点按录音可以设成不同的键同时使用；想用同一个键，先清空其中一个，同一个键只能启用一种录音方式。
 
-本地识别模型不随安装包分发；Qwen3-ASR 所需的 sherpa-onnx / ONNX Runtime 推理库已包含在安装包里。
-用本地 Whisper / Qwen 时在「设置 → 识别引擎」里直接下载模型（带进度、取消、断点续传、SHA-256 校验与源站固定版本，国内可切 hf-mirror.com 镜像），装好后可查看占用并删除；Whisper 会一并安装 Silero VAD。
+本地识别模型不随安装包分发；Qwen3-ASR / SenseVoice 所需的 sherpa-onnx / ONNX Runtime 推理库已包含在安装包里。
+用本地 Whisper / Qwen / SenseVoice 时在「设置 → 识别引擎」里直接下载模型（带进度、取消、断点续传、SHA-256 校验与源站固定版本，国内可切 hf-mirror.com 镜像），装好后可查看占用并删除；Whisper 会一并安装 Silero VAD。
 豆包网页语音使用网页匿名会话，无需密钥；识别时音频会发往字节跳动服务器，属于非官方链路，服务端协议变化时可能暂时失效。
 微信输入法语音仅支持 Windows：ATT 直接连接本机正在运行的微信输入法，不另起桥进程；首次构建会下载并静态链接 Frida Core（无需 libclang）。该链路不是官方 API，输入法升级后可能失效，音频会经输入法网络层发往腾讯。
 
@@ -66,7 +66,7 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 
 - `cargo` 命令要在 `src-tauri/` 目录内执行（Windows 的 `+crt-static` 配置只在该目录下生效）。
 - 首次构建会编译 CTranslate2（约 10~20 分钟），macOS 需先 `brew install cmake`。
-- 本地 Whisper / Qwen 的模型不随仓库分发；选择对应引擎后在「设置 → 识别引擎」里应用内下载（Whisper 会自动装 Silero VAD，Qwen 走 GitHub Release），模型目录默认 `models/`，可在设置页更改并重启应用生效，也可用启动前环境变量 `ATT_MODELS_DIR` 指定；两者同时存在时环境变量优先。开发态 Qwen 推理库默认放 `models/sherpa-onnx/`，也可用 `ATT_SHERPA_ONNX_DIR` 覆盖；安装包使用随包的 `resources/sherpa-onnx/`。
+- 本地 Whisper / Qwen / SenseVoice 的模型不随仓库分发；选择对应引擎后在「设置 → 识别引擎」里应用内下载（Whisper 会自动装 Silero VAD，Qwen / SenseVoice 走 GitHub Release），模型目录默认 `models/`，可在设置页更改并重启应用生效，也可用启动前环境变量 `ATT_MODELS_DIR` 指定；两者同时存在时环境变量优先。开发态 Qwen / SenseVoice 推理库默认放 `models/sherpa-onnx/`，也可用 `ATT_SHERPA_ONNX_DIR` 覆盖；安装包使用随包的 `resources/sherpa-onnx/`。
 - 开发态的 macOS 权限归属启动 `tauri dev` 的终端应用。
 - 更多开发约定与常见陷阱见 [`AGENTS.md`](AGENTS.md)。
 

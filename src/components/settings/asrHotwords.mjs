@@ -3,7 +3,7 @@
 //
 // 词表与引擎无关地保存在设置 `asr_hotwords`，走两条路：
 // - 识别：只有部分引擎能用，目前只有豆包支持热词直传；faster-whisper（ct2rs 不支持前置提示）、
-//   Qwen3-ASR（sherpa-onnx 无此配置）、ChatGPT 听写（接口只收音频）都不支持；
+//   Qwen3-ASR / SenseVoice（sherpa-onnx 无此配置）、ChatGPT 听写（接口只收音频）都不支持；
 // - LLM 纠错：AI 优化与文件校对的提示词里都会带上词表，与识别引擎无关，前提是配置了 LLM 模型。
 // 归一化与 token 估算规则与后端 att-core `stt/hotwords.rs` 一致，改动时两边一起改。
 

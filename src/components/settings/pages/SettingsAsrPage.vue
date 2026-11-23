@@ -388,6 +388,73 @@
       </div>
     </section>
 
+    <section v-if="form.asr_provider === 'sense_voice'" class="settings-section">
+      <div class="settings-group">
+        <h3 class="settings-group-title">SenseVoice · 本地模型</h3>
+        <LocalModelStatus
+          :view="localView"
+          :models="engineModels"
+          :job="modelJob"
+          :models-dir="modelsDirectoryPath"
+          :is-desktop="isDesktop"
+          :starting-model-id="startingModelId"
+          :vad-warning="modelVadWarning"
+          :releasing="isReleasingModel"
+          @download="downloadModel"
+          @cancel="cancelDownload"
+          @delete="askDeleteModel"
+          @reveal="revealModels"
+          @release="releaseLocalModel"
+        >
+          <template #directory-actions>
+            <ModelsDirectorySetting />
+          </template>
+        </LocalModelStatus>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">模型</span>
+            <span class="setting-desc">单模型支持中 / 粤 / 英 / 日 / 韩。</span>
+          </div>
+          <BaseSelect v-model="form.sense_voice_model" aria-label="SenseVoice 模型">
+            <option v-for="option in senseVoiceOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </BaseSelect>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">下载源</span>
+            <span class="setting-desc">SenseVoice 模型只有 GitHub 官方源，镜像选择对它不生效。</span>
+          </div>
+          <BaseSelect v-model="form.model_download_source" aria-label="模型下载源">
+            <option v-for="source in downloadSources" :key="source.value" :value="source.value">
+              {{ source.label }}
+            </option>
+          </BaseSelect>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">逆文本归一化</span>
+            <span class="setting-desc">把数字、金额等口语转成更易读的书面形式。</span>
+          </div>
+          <label class="toggle-switch">
+            <input v-model="form.sense_voice_use_itn" type="checkbox" aria-label="SenseVoice 逆文本归一化">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <details class="settings-advanced">
+          <summary>高级：推理线程数</summary>
+          <div class="setting-item">
+            <div class="setting-info">
+              <span class="setting-label">CPU 线程数</span>
+              <span class="setting-desc">0 = 默认 2；过高通常收益有限。</span>
+            </div>
+            <BaseInput v-model.number="form.sense_voice_num_threads" type="number" min="0" max="16" step="1" aria-label="SenseVoice CPU 线程数" />
+          </div>
+        </details>
+      </div>
+    </section>
+
     <section v-if="isLocalProvider(form.asr_provider)" class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">本地模型内存</h3>
@@ -569,6 +636,19 @@ const whisperOptions = computed(() => WHISPER_VALUES.map((value) => ({
   value,
   label: whisperOptionLabel(value, settingsStore.modelCatalog.models)
 })))
+const senseVoiceOptions = computed(() => {
+  const options = engineModels.value
+    .filter((model) => model.engine === 'sense_voice' && model.select_value)
+    .map((model) => ({
+      value: model.select_value,
+      label: model.status === 'installed'
+        ? `${model.select_value} · 已安装`
+        : `${model.select_value} · 未安装（${formatBytes(model.download_size)}）`
+    }))
+  return options.length
+    ? options
+    : [{ value: form.value.sense_voice_model, label: form.value.sense_voice_model }]
+})
 
 // 删除模型前的二次确认（录音 / 转写进行中后端会拒绝，提示原因）
 const pendingDelete = ref(null)
@@ -882,7 +962,7 @@ function localChip(value) {
   }
 }
 
-// 本地引擎（faster-whisper / Qwen3-ASR）在 Tauri 版已接入：进程内推理，模型目录见设置文档
+// 本地引擎（faster-whisper / Qwen3-ASR / SenseVoice）在 Tauri 版已接入：进程内推理，模型目录见设置文档
 const engines = computed(() => [
   {
     value: 'doubao_asr',
@@ -932,6 +1012,12 @@ const engines = computed(() => [
     label: 'Qwen3-ASR',
     ...localChip('qwen_asr'),
     desc: '离线，需安装模型'
+  },
+  {
+    value: 'sense_voice',
+    label: 'SenseVoice',
+    ...localChip('sense_voice'),
+    desc: '中粤英日韩 · 本地离线'
   }
 ])
 </script>

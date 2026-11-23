@@ -400,7 +400,7 @@ struct EngineStatus {
 fn engine_status(core: &CoreState) -> EngineStatus {
     let settings = core.settings();
     let streaming = settings.recording_mode == "streaming";
-    // 本地引擎（faster-whisper / Qwen3-ASR）：模型文件就位即可录音（首次推理时懒加载），流式不支持；
+    // 本地引擎（faster-whisper / Qwen3-ASR / SenseVoice）：模型文件就位即可录音（首次推理时懒加载），流式不支持；
     // 加载失败过（文件在但模型/推理库起不来）则不再报就绪，直到设置变化或「开启模型」重试成功
     if let Some(kind) = att_core::stt::local_kind(&settings.asr_provider) {
         let status = core.local_models.status(core, kind);
@@ -585,7 +585,7 @@ async fn settings_put(
                 // 切到本地引擎（或改了它的模型/设备）就在后台预加载，设置页据 /api/health 的
                 // local_engine.loading 显示「加载中」；不再使用的本地模型释放掉，免得常驻占内存
                 let current = att_core::stt::local_kind(&state.core.settings().asr_provider);
-                for kind in [att_core::stt::local::LocalKind::Whisper, att_core::stt::local::LocalKind::Qwen] {
+                for kind in att_core::stt::local::LocalKind::ALL {
                     if Some(kind) != current && state.core.local_models.is_loaded(kind) {
                         state.core.local_models.unload(Some(kind));
                     }
@@ -2235,7 +2235,8 @@ mod tests {
                 "deepseek_asr",
                 "wetype_asr",
                 "whisper",
-                "qwen_asr"
+                "qwen_asr",
+                "sense_voice"
             ]
         );
         let engines = body["engines"].as_array().unwrap();
@@ -2279,6 +2280,49 @@ mod tests {
         let (_, health) = get_json(&state, "/api/health").await;
         assert_eq!(health["model_service_ready"], json!(false));
         assert!(health["model_service_error"].as_str().unwrap().contains("豆包网页语音暂不支持流式录音"), "{health}");
+    }
+
+    #[tokio::test]
+    async fn sensevoice_健康检查_缺模型与流式拒绝有明确结论() {
+        let state = test_state("sensevoice-health").await;
+        state
+            .core
+            .apply_settings_update(&json!({
+                "asr_provider": "sense_voice",
+                "recording_mode": "single"
+            }))
+            .unwrap();
+        let (_, health) = get_json(&state, "/api/health").await;
+        assert_eq!(health["asr_provider"], "sense_voice");
+        assert_eq!(health["local_engine"]["provider"], "sense_voice");
+        assert_eq!(health["local_engine"]["label"], "本地 SenseVoice");
+        assert_eq!(health["local_engine"]["available"], json!(false));
+        assert_eq!(health["local_engine"]["error"], "本地 SenseVoice 模型未安装");
+        assert_eq!(health["model_service_ready"], json!(false));
+        assert_eq!(health["model_service_mode"], "provider");
+        assert_eq!(health["streaming_supported"], json!(false));
+
+        let model_dir = state.core.models_dir.join("sense-voice-zh-en-ja-ko-yue-int8");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("model.int8.onnx"), b"x").unwrap();
+        std::fs::write(model_dir.join("tokens.txt"), b"x").unwrap();
+        let lib_dir = state.core.models_dir.join("sherpa-onnx");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        let library = if cfg!(target_os = "windows") {
+            "sherpa-onnx-c-api.dll"
+        } else if cfg!(target_os = "macos") {
+            "libsherpa-onnx-c-api.dylib"
+        } else {
+            "libsherpa-onnx-c-api.so"
+        };
+        std::fs::write(lib_dir.join(library), b"x").unwrap();
+        state.core.apply_settings_update(&json!({ "recording_mode": "streaming" })).unwrap();
+        let (_, health) = get_json(&state, "/api/health").await;
+        assert_eq!(health["model_service_ready"], json!(false));
+        assert!(
+            health["model_service_error"].as_str().unwrap().contains("本地 SenseVoice暂不支持流式录音"),
+            "{health}"
+        );
     }
 
     #[tokio::test]

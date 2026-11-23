@@ -112,6 +112,7 @@ async fn delete_model(State(state): Shared, Path(id): Path<String>) -> Response 
             // 已验证模型已安装后才走到这里；Windows 上必须先释放映射文件。
             Engine::Whisper => core.local_models.unload(Some(LocalKind::Whisper)),
             Engine::Qwen => core.local_models.unload(Some(LocalKind::Qwen)),
+            Engine::SenseVoice => core.local_models.unload(Some(LocalKind::SenseVoice)),
             Engine::Vad => core.local_models.unload_vad(),
         })
     })
@@ -173,6 +174,7 @@ mod tests {
         let models = body["models"].as_array().unwrap();
         assert!(models.iter().any(|model| model["id"] == "whisper-large-v3-turbo"));
         assert!(models.iter().any(|model| model["id"] == "qwen3-asr-0.6b-int8"));
+        assert!(models.iter().any(|model| model["id"] == "sense-voice-zh-en-ja-ko-yue-int8"));
         assert!(models.iter().any(|model| model["id"] == "silero-vad"));
         assert!(models
             .iter()
@@ -181,6 +183,9 @@ mod tests {
         let qwen = models.iter().find(|model| model["id"] == "qwen3-asr-0.6b-int8").unwrap();
         assert_eq!(qwen["official_only"], true);
         assert_eq!(qwen["archive"], true);
+        let sense_voice = models.iter().find(|model| model["id"] == "sense-voice-zh-en-ja-ko-yue-int8").unwrap();
+        assert_eq!(sense_voice["official_only"], true);
+        assert_eq!(sense_voice["archive"], true);
 
         state
             .core

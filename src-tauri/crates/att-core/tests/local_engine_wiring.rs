@@ -81,3 +81,9 @@ async fn whisper_文件转写全链路() {
 async fn qwen_文件转写全链路() {
     run("qwen", "qwen_asr").await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "需要 sherpa-onnx 推理库、SenseVoice ONNX 模型、ffmpeg 与测试音频"]
+async fn sensevoice_文件转写全链路() {
+    run("sensevoice", "sense_voice").await;
+}

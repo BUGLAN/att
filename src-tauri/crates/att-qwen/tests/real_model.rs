@@ -1,13 +1,14 @@
-//! 真实模型集成测试（默认忽略，避免 CI 里加载 940MB 模型）。
+//! 真实模型集成测试（默认忽略，避免 CI 里加载大模型）。
 //!
-//! 跑法（`models/sherpa-onnx/` 与 `models/qwen3-asr-0.6B-int8/` 就位后）：
+//! 跑法（`models/sherpa-onnx/`、`models/qwen3-asr-0.6B-int8/` 或
+//! `models/sense-voice-zh-en-ja-ko-yue-int8/` 就位后）：
 //!
 //! ```bash
 //! ATT_TEST_WAV=/path/to/16k.wav \
 //!   cargo test -p att-qwen --test real_model -- --ignored --nocapture
 //! ```
 
-use att_qwen::{LocalQwen, QwenConfig, SAMPLE_RATE};
+use att_qwen::{LocalQwen, LocalSenseVoice, QwenConfig, SenseVoiceConfig, SAMPLE_RATE};
 use std::path::{Path, PathBuf};
 
 fn models_dir() -> PathBuf {
@@ -82,4 +83,29 @@ fn 真实音频_整段与长音频分块转写() {
         assert!(segment.end >= segment.start);
         assert!(segment.end - segment.start <= 5.5, "分块时长超上限：{}", segment.end - segment.start);
     }
+}
+
+#[test]
+#[ignore = "需要本机 sherpa-onnx 推理库、SenseVoice ONNX 模型与测试音频"]
+fn sensevoice_真实音频_整段与指定语言() {
+    let wav = std::env::var("ATT_TEST_WAV").expect("请用 ATT_TEST_WAV 指定测试音频");
+    let models = models_dir();
+    assert!(models.is_dir(), "模型根目录不存在：{}", models.display());
+    let mut config = SenseVoiceConfig::new("sense-voice-zh-en-ja-ko-yue-int8", &models);
+    config.language = std::env::var("ATT_TEST_LANGUAGE").unwrap_or_else(|_| "auto".into());
+    let engine = LocalSenseVoice::load(&config).expect("加载本地 SenseVoice");
+    println!("模型：{}，推理库：{}", engine.model_dir().display(), engine.lib_dir().display());
+
+    let samples = read_pcm16k(Path::new(&wav));
+    assert!(!samples.is_empty(), "测试音频为空");
+    let outcome = engine.transcribe(&config.language, &samples).expect("SenseVoice 转写失败");
+    println!(
+        "耗时 {:.2}s / 音频 {:.2}s / 分段 {}：{}",
+        outcome.elapsed,
+        outcome.duration,
+        outcome.segments.len(),
+        outcome.text
+    );
+    assert!(!outcome.text.trim().is_empty(), "转写结果为空");
+    assert!(outcome.duration > 0.0);
 }

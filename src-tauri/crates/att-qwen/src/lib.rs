@@ -1,4 +1,4 @@
-//! 本地 Qwen3-ASR 引擎（ONNX 版，走 sherpa-onnx）。
+//! 本地 Qwen3-ASR / SenseVoice 引擎（ONNX 版，走 sherpa-onnx）。
 //!
 //! 与 Python 版的差异：
 //!
@@ -13,6 +13,10 @@
 //! 推理库在安装包里随 `bundle.resources` 分发；开发态放 `models/sherpa-onnx/`，也可用
 //! `ATT_SHERPA_ONNX_DIR` 覆盖。模型仍不随包：放 `models/qwen3-asr-0.6B-int8/`（或 `ATT_MODELS_DIR`），
 //! 缺失时给出可直接照做的提示。
+//!
+//! SenseVoice 与 Qwen3-ASR 共用同一份 sherpa-onnx 动态库和离线识别 C API，只是
+//! `SherpaOnnxOfflineRecognizerConfig` 换成 `model_config.sense_voice`。它单模型支持
+//! 中文、粤语、英语、日语、韩语，适合 CPU 上快速转写；同样按静音点分块处理长音频。
 
 use std::ffi::{c_char, CStr, CString};
 use std::path::{Path, PathBuf};
@@ -29,6 +33,8 @@ pub const SAMPLE_RATE: usize = 16_000;
 pub const CANCELLED: &str = "转写已取消";
 /// 模型必需文件（sherpa-onnx Qwen3-ASR 导出目录的固定布局）。
 pub const MODEL_FILES: [&str; 3] = ["conv_frontend.onnx", "encoder.int8.onnx", "decoder.int8.onnx"];
+/// SenseVoice 模型目录的必需文件。
+pub const SENSE_VOICE_MODEL_FILES: [&str; 2] = ["model.int8.onnx", "tokens.txt"];
 /// 错误缓冲区长度（与 shim.c 的 ATT_ERR_LEN 一致）。
 const ERR_LEN: usize = 1024;
 
@@ -70,6 +76,42 @@ impl QwenConfig {
     }
 }
 
+/// SenseVoice 引擎配置（由设置页的 `sense_voice_*` 键 + 模型/推理库目录组装）。
+#[derive(Debug, Clone)]
+pub struct SenseVoiceConfig {
+    /// `sense_voice_model`：模型目录、相对模型根的目录名或已知模型名。
+    pub model: String,
+    /// `asr_language` 归一后的语言提示；不属于 zh/en/ja/ko/yue 时传 `auto`。
+    pub language: String,
+    /// 是否启用逆文本归一化（数字、标点等）。
+    pub use_itn: bool,
+    /// ONNX Runtime 线程数（0 = 取默认 2）。
+    pub num_threads: i64,
+    /// 单块音频上限（秒）。
+    pub max_audio_seconds: i64,
+    /// 模型根目录（`models/`）。
+    pub models_dir: PathBuf,
+    /// 推理库目录覆盖；`None` 时按 [`resolve_sense_voice_lib_dir`] 探测。
+    pub lib_dir: Option<PathBuf>,
+    /// 随安装包分发的推理库目录。
+    pub bundled_lib_dir: Option<PathBuf>,
+}
+
+impl SenseVoiceConfig {
+    pub fn new(model: impl Into<String>, models_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            model: model.into(),
+            language: "auto".into(),
+            use_itn: true,
+            num_threads: 2,
+            max_audio_seconds: 30,
+            models_dir: models_dir.into(),
+            lib_dir: None,
+            bundled_lib_dir: None,
+        }
+    }
+}
+
 /// 一个转写分段（秒）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
@@ -91,9 +133,18 @@ pub struct Transcript {
 pub const MODEL_MISSING: &str = "本地 Qwen3-ASR 模型未安装";
 /// 缺 sherpa-onnx 推理库时错误文案的首行结论。
 pub const LIB_MISSING: &str = "本地 Qwen3-ASR 推理库未安装";
+/// SenseVoice 缺模型时错误文案的首行结论。
+pub const SENSE_VOICE_MODEL_MISSING: &str = "本地 SenseVoice 模型未安装";
+/// SenseVoice 缺 sherpa-onnx 推理库时错误文案的首行结论。
+pub const SENSE_VOICE_LIB_MISSING: &str = "本地 SenseVoice 推理库未安装";
 /// 模型目录是否像一份 sherpa-onnx Qwen3-ASR 导出（三个 onnx + tokenizer 目录）。
 pub fn looks_like_model_dir(path: &Path) -> bool {
     path.is_dir() && MODEL_FILES.iter().all(|name| path.join(name).is_file()) && path.join("tokenizer").is_dir()
+}
+
+/// 模型目录是否像一份 sherpa-onnx SenseVoice 导出（模型 + 词表）。
+pub fn looks_like_sense_voice_model_dir(path: &Path) -> bool {
+    path.is_dir() && SENSE_VOICE_MODEL_FILES.iter().all(|name| path.join(name).is_file())
 }
 
 /// 推理库在当前平台的动态库文件名。
@@ -157,26 +208,105 @@ pub fn resolve_model_dir(config: &QwenConfig) -> Result<PathBuf, String> {
     ))
 }
 
+/// 列出 SenseVoice 模型目录候选（不判存在）。
+pub fn sense_voice_model_candidates(model: &str, models_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from(model)];
+    let short = model.replace('\\', "/");
+    let short = short.rsplit('/').next().unwrap_or(model).to_string();
+    candidates.push(models_dir.join(&short));
+    for name in [
+        "sense-voice-zh-en-ja-ko-yue-int8",
+        "sensevoice-zh-en-ja-ko-yue-int8",
+        "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+    ] {
+        candidates.push(models_dir.join(name));
+    }
+    candidates
+}
+
+/// 解析 SenseVoice 模型目录：先按候选顺序找，最后兜底扫描名称含 sense 的模型目录。
+pub fn resolve_sense_voice_model_dir(config: &SenseVoiceConfig) -> Result<PathBuf, String> {
+    let candidates = sense_voice_model_candidates(&config.model, &config.models_dir);
+    for candidate in &candidates {
+        if looks_like_sense_voice_model_dir(candidate) {
+            return Ok(candidate.clone());
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(&config.models_dir) {
+        let mut dirs: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect();
+        dirs.sort();
+        if let Some(found) = dirs.iter().find(|dir| {
+            let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+            name.contains("sense") && looks_like_sense_voice_model_dir(dir)
+        }) {
+            return Ok(found.clone());
+        }
+    }
+    tracing::debug!(
+        "未找到本地 SenseVoice 模型「{}」，已尝试：{}",
+        config.model,
+        candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("、")
+    );
+    let target = config.models_dir.join("sense-voice-zh-en-ja-ko-yue-int8");
+    Err(format!(
+        "{SENSE_VOICE_MODEL_MISSING}\n\
+         在「设置 → 识别引擎」的模型列表里下载；离线时解压到：\n\
+         \t{}\n\
+         目录内需要 {}。",
+        target.display(),
+        SENSE_VOICE_MODEL_FILES.join("、"),
+    ))
+}
+
+#[cfg(test)]
 /// 列出推理库候选目录（不判存在）：显式配置 > `ATT_SHERPA_ONNX_DIR` > 安装包资源 > `<models>/sherpa-onnx`。
 fn lib_dir_candidates(config: &QwenConfig, env_dir: Option<PathBuf>) -> Vec<PathBuf> {
+    lib_dir_candidates_for(config.lib_dir.as_deref(), config.bundled_lib_dir.as_deref(), &config.models_dir, env_dir)
+}
+
+fn lib_dir_candidates_for(
+    lib_dir: Option<&Path>,
+    bundled_lib_dir: Option<&Path>,
+    models_dir: &Path,
+    env_dir: Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(dir) = &config.lib_dir {
-        candidates.push(dir.clone());
+    if let Some(dir) = lib_dir {
+        candidates.push(dir.to_path_buf());
     }
     if let Some(dir) = env_dir {
         candidates.push(dir);
     }
-    if let Some(dir) = &config.bundled_lib_dir {
-        candidates.push(dir.clone());
+    if let Some(dir) = bundled_lib_dir {
+        candidates.push(dir.to_path_buf());
     }
-    candidates.push(config.models_dir.join("sherpa-onnx"));
+    candidates.push(models_dir.join("sherpa-onnx"));
     candidates
 }
 
 /// 解析 sherpa-onnx 推理库目录：显式配置 > `ATT_SHERPA_ONNX_DIR` > 安装包资源 > `<models>/sherpa-onnx`。
 pub fn resolve_lib_dir(config: &QwenConfig) -> Result<PathBuf, String> {
+    resolve_lib_dir_for(config.lib_dir.as_deref(), config.bundled_lib_dir.as_deref(), &config.models_dir, LIB_MISSING)
+}
+
+/// SenseVoice 与 Qwen 共用同一份 sherpa-onnx 推理库，只是缺库文案按引擎区分。
+pub fn resolve_sense_voice_lib_dir(config: &SenseVoiceConfig) -> Result<PathBuf, String> {
+    resolve_lib_dir_for(
+        config.lib_dir.as_deref(),
+        config.bundled_lib_dir.as_deref(),
+        &config.models_dir,
+        SENSE_VOICE_LIB_MISSING,
+    )
+}
+
+fn resolve_lib_dir_for(
+    lib_dir: Option<&Path>,
+    bundled_lib_dir: Option<&Path>,
+    models_dir: &Path,
+    missing_summary: &str,
+) -> Result<PathBuf, String> {
     let env_dir = std::env::var("ATT_SHERPA_ONNX_DIR").ok().filter(|dir| !dir.trim().is_empty()).map(PathBuf::from);
-    let candidates = lib_dir_candidates(config, env_dir);
+    let candidates = lib_dir_candidates_for(lib_dir, bundled_lib_dir, models_dir, env_dir);
     let library = library_file_name();
     for candidate in &candidates {
         if candidate.join(library).is_file() {
@@ -184,21 +314,21 @@ pub fn resolve_lib_dir(config: &QwenConfig) -> Result<PathBuf, String> {
         }
     }
     let package = library_package_name();
-    let target = config.models_dir.join("sherpa-onnx");
+    let target = models_dir.join("sherpa-onnx");
     tracing::debug!(
         "未找到 sherpa-onnx 推理库 {library}，已尝试：{}",
         candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("、")
     );
-    Err(missing_lib_hint(library, package, &target))
+    Err(missing_lib_hint(missing_summary, library, package, &target))
 }
 
 /// 开发态缺推理库时的安装提示。Windows 用 PowerShell 可直接执行的 `curl.exe` / `tar.exe`；
 /// 旧提示里的 `wget` 在 PowerShell 5.1 中只是 `Invoke-WebRequest` 的别名、不会落盘，`&&` 也不是合法运算符。
-fn missing_lib_hint(library: &str, package: &str, target: &Path) -> String {
+fn missing_lib_hint(summary: &str, library: &str, package: &str, target: &Path) -> String {
     #[cfg(target_os = "windows")]
     {
         format!(
-            "{LIB_MISSING}\n\
+            "{summary}\n\
              缺少 {library}，用下面的 PowerShell 命令下载到推理库目录：\n\
              \tNew-Item -ItemType Directory -Force -Path \"{}\" | Out-Null\n\
              \tcurl.exe -L \"https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/{package}\" -o \"$env:TEMP\\{package}\"\n\
@@ -210,7 +340,7 @@ fn missing_lib_hint(library: &str, package: &str, target: &Path) -> String {
     #[cfg(not(target_os = "windows"))]
     {
         format!(
-            "{LIB_MISSING}\n\
+            "{summary}\n\
              缺少 {library}，用下面的命令下载到推理库目录：\n\
              \twget https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/{package}\n\
              \tmkdir -p \"{}\" && tar xvf {package} --strip-components=2 -C \"{}\"",
@@ -506,6 +636,200 @@ impl Drop for LocalQwen {
     }
 }
 
+// ---- SenseVoice C 桥（见 src/shim.c）----
+
+#[repr(C)]
+struct AttSenseVoice {
+    _private: [u8; 0],
+}
+
+extern "C" {
+    fn att_sensevoice_create(
+        lib_dir: *const c_char,
+        model: *const c_char,
+        tokens: *const c_char,
+        language: *const c_char,
+        use_itn: i32,
+        num_threads: i32,
+        err: *mut c_char,
+        err_len: i32,
+    ) -> *mut AttSenseVoice;
+    fn att_sensevoice_transcribe(
+        handle: *mut AttSenseVoice,
+        samples: *const f32,
+        n: i32,
+        sample_rate: i32,
+        err: *mut c_char,
+        err_len: i32,
+    ) -> *mut c_char;
+    fn att_sensevoice_free_text(text: *mut c_char);
+    fn att_sensevoice_destroy(handle: *mut AttSenseVoice);
+}
+
+/// 已加载的本地 SenseVoice（常驻；识别调用内部串行化）。
+pub struct LocalSenseVoice {
+    handle: *mut AttSenseVoice,
+    model_dir: PathBuf,
+    lib_dir: PathBuf,
+    max_audio_seconds: i64,
+    gate: Mutex<()>,
+}
+
+unsafe impl Send for LocalSenseVoice {}
+unsafe impl Sync for LocalSenseVoice {}
+
+impl std::fmt::Debug for LocalSenseVoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalSenseVoice").field("model_dir", &self.model_dir).field("lib_dir", &self.lib_dir).finish()
+    }
+}
+
+impl LocalSenseVoice {
+    /// 加载识别器（同步）。
+    pub fn load(config: &SenseVoiceConfig) -> Result<Self, String> {
+        let model_dir = resolve_sense_voice_model_dir(config)?;
+        let lib_dir = resolve_sense_voice_lib_dir(config)?;
+        let started = Instant::now();
+        let lib_dir_c = to_c_path(&lib_dir)?;
+        let model = to_c_path(&model_dir.join(SENSE_VOICE_MODEL_FILES[0]))?;
+        let tokens = to_c_path(&model_dir.join(SENSE_VOICE_MODEL_FILES[1]))?;
+        let language = CString::new(if config.language.trim().is_empty() { "auto" } else { config.language.trim() })
+            .map_err(|_| "语言参数包含非法字符（NUL）".to_string())?;
+
+        let mut err = [0 as c_char; ERR_LEN];
+        let handle = unsafe {
+            att_sensevoice_create(
+                lib_dir_c.as_ptr(),
+                model.as_ptr(),
+                tokens.as_ptr(),
+                language.as_ptr(),
+                if config.use_itn { 1 } else { 0 },
+                config.num_threads.clamp(0, 64) as i32,
+                err.as_mut_ptr(),
+                ERR_LEN as i32,
+            )
+        };
+        if handle.is_null() {
+            let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
+            return Err(if reason.trim().is_empty() {
+                "加载 SenseVoice 失败（未知原因）".into()
+            } else {
+                reason
+            });
+        }
+        tracing::info!(
+            "本地 SenseVoice 模型已加载：{}（推理库 {}，{:.2}s）",
+            model_dir.display(),
+            lib_dir.display(),
+            started.elapsed().as_secs_f64()
+        );
+        Ok(Self {
+            handle,
+            model_dir,
+            lib_dir,
+            max_audio_seconds: config.max_audio_seconds.clamp(5, 120),
+            gate: Mutex::new(()),
+        })
+    }
+
+    pub fn model_dir(&self) -> &Path {
+        &self.model_dir
+    }
+
+    pub fn lib_dir(&self) -> &Path {
+        &self.lib_dir
+    }
+
+    fn transcribe_chunk(&self, samples: &[i16]) -> Result<String, String> {
+        let mono: Vec<f32> = samples.iter().map(|&s| s as f32 / 32768.0).collect();
+        let mut err = [0 as c_char; ERR_LEN];
+        let text_ptr = unsafe {
+            att_sensevoice_transcribe(
+                self.handle,
+                mono.as_ptr(),
+                mono.len() as i32,
+                SAMPLE_RATE as i32,
+                err.as_mut_ptr(),
+                ERR_LEN as i32,
+            )
+        };
+        if text_ptr.is_null() {
+            let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
+            return Err(if reason.trim().is_empty() {
+                "SenseVoice 推理失败（未知原因）".into()
+            } else {
+                reason
+            });
+        }
+        let text = unsafe { CStr::from_ptr(text_ptr) }.to_string_lossy().to_string();
+        unsafe { att_sensevoice_free_text(text_ptr) };
+        Ok(text.trim().to_string())
+    }
+
+    /// 整段 PCM 转写：超过 `max_audio_seconds` 时按静音切点分块，时间戳按块偏移拼接。
+    pub fn transcribe(&self, language: &str, samples: &[i16]) -> Result<Transcript, String> {
+        self.transcribe_with_progress(language, samples, &mut |_, _| true)
+    }
+
+    /// 同 [`Self::transcribe`]，用法与本地 Qwen 的进度回调一致。
+    pub fn transcribe_with_progress(
+        &self,
+        language: &str,
+        samples: &[i16],
+        on_chunk: &mut dyn FnMut(usize, usize) -> bool,
+    ) -> Result<Transcript, String> {
+        let _guard = self.gate.lock().unwrap_or_else(|error| error.into_inner());
+        let started = Instant::now();
+        let duration = samples.len() as f64 / SAMPLE_RATE as f64;
+        if samples.is_empty() {
+            return Ok(Transcript { text: String::new(), segments: Vec::new(), duration: 0.0, elapsed: 0.0 });
+        }
+        let cut_points = silence_cut_points(samples, SAMPLE_RATE);
+        let chunks = plan_chunks(samples.len(), SAMPLE_RATE, self.max_audio_seconds, &cut_points);
+        tracing::info!(
+            "本地 SenseVoice 转写：语言={language}，时长 {duration:.1}s，分 {} 块（每块 ≤{}s）",
+            chunks.len(),
+            self.max_audio_seconds
+        );
+
+        let mut segments = Vec::new();
+        for (start, end) in chunks {
+            if !on_chunk(start, samples.len()) {
+                return Err(CANCELLED.to_string());
+            }
+            let offset = start as f64 / SAMPLE_RATE as f64;
+            let text = self.transcribe_chunk(&samples[start..end])?;
+            if text.is_empty() {
+                continue;
+            }
+            segments.push(Segment { start: offset, end: end as f64 / SAMPLE_RATE as f64, text });
+        }
+        on_chunk(samples.len(), samples.len());
+        let text = segments.iter().map(|segment| segment.text.as_str()).collect::<Vec<_>>().join(" ");
+        let elapsed = started.elapsed().as_secs_f64();
+        tracing::info!("本地 SenseVoice 转写完成：{} 段，耗时 {elapsed:.2}s", segments.len());
+        Ok(Transcript { text, segments, duration, elapsed })
+    }
+
+    /// 预热：跑一次 0.5s 静音，触发 ONNX Runtime 图初始化。
+    pub fn warmup(&self) {
+        let samples = vec![0i16; SAMPLE_RATE / 2];
+        if let Err(error) = self.transcribe("auto", &samples) {
+            tracing::warn!("本地 SenseVoice 预热失败：{error}");
+        }
+    }
+}
+
+impl Drop for LocalSenseVoice {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { att_sensevoice_destroy(self.handle) };
+            self.handle = std::ptr::null_mut();
+            tracing::info!("本地 SenseVoice 模型已卸载");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,6 +848,15 @@ mod tests {
             std::fs::write(dir.join(file), b"x").unwrap();
         }
         std::fs::write(dir.join("tokenizer").join("vocab.json"), b"{}").unwrap();
+        dir
+    }
+
+    fn make_sense_voice_dir(root: &Path, name: &str) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in SENSE_VOICE_MODEL_FILES {
+            std::fs::write(dir.join(file), b"x").unwrap();
+        }
         dir
     }
 
@@ -564,6 +897,40 @@ mod tests {
         assert!(!error.contains("ATT_MODELS_DIR"), "{error}");
         // 设置里的模型名是兼容字段（默认 1.7B，与实际用的 sherpa 0.6B int8 不符），不进文案
         assert!(!error.contains("Qwen3-ASR-1.7B"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sensevoice_模型目录判定与解析() {
+        let root = temp_dir("sense-look");
+        let dir = make_sense_voice_dir(&root, "sense");
+        assert!(looks_like_sense_voice_model_dir(&dir));
+        std::fs::remove_file(dir.join("tokens.txt")).unwrap();
+        assert!(!looks_like_sense_voice_model_dir(&dir));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let root = temp_dir("sense-resolve");
+        let installed = make_sense_voice_dir(&root, "sense-voice-zh-en-ja-ko-yue-int8");
+        let config = SenseVoiceConfig::new("sense-voice-zh-en-ja-ko-yue-int8", &root);
+        assert_eq!(resolve_sense_voice_model_dir(&config).unwrap(), installed);
+        let _ = std::fs::remove_dir_all(&root);
+
+        let root = temp_dir("sense-scan");
+        let packaged = make_sense_voice_dir(&root, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17");
+        let config = SenseVoiceConfig::new("missing", &root);
+        assert_eq!(resolve_sense_voice_model_dir(&config).unwrap(), packaged);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sensevoice_缺模型文案指向应用内下载() {
+        let root = temp_dir("sense-missing");
+        let config = SenseVoiceConfig::new("sense-voice-zh-en-ja-ko-yue-int8", &root);
+        let error = resolve_sense_voice_model_dir(&config).unwrap_err();
+        assert_eq!(error.lines().next(), Some(SENSE_VOICE_MODEL_MISSING), "{error}");
+        assert!(error.contains("设置 → 识别引擎"), "{error}");
+        assert!(error.contains("model.int8.onnx"), "{error}");
+        assert!(error.contains("tokens.txt"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

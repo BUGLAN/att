@@ -1,6 +1,6 @@
 [package]
 name = "att-qwen"
-description = "本地 Qwen3-ASR 引擎：sherpa-onnx（C API 动态加载）推理，模型为 ONNX 导出版"
+description = "本地 Qwen3-ASR / SenseVoice 引擎：sherpa-onnx（C API 动态加载）推理，模型为 ONNX 导出版"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

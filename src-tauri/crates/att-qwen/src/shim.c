@@ -1,5 +1,5 @@
 /*
- * att-qwen C 桥：把 sherpa-onnx 的 Qwen3-ASR 离线识别包装成 4 个函数。
+ * att-qwen C 桥：把 sherpa-onnx 的 Qwen3-ASR / SenseVoice 离线识别包装成对外的少数字符串接口。
  *
  * 为什么要这层 C 桥：
  *  1. 直接包含 vendored 的官方头 `vendor/c-api.h`（来自 sherpa-onnx v2.0.1），结构体布局与
@@ -319,6 +319,171 @@ char *att_qwen_transcribe(AttQwen *handle, const float *samples, int32_t n, int3
 void att_qwen_free_text(char *text) { free(text); }
 
 void att_qwen_destroy(AttQwen *handle) { att_qwen_release(handle); }
+
+/* ==================== SenseVoice（复用同一份 sherpa-onnx 动态库） ==================== */
+
+typedef struct AttSenseVoice {
+  void *lib;
+  att_fn_create_recognizer create_recognizer;
+  att_fn_destroy_recognizer destroy_recognizer;
+  att_fn_create_stream create_stream;
+  att_fn_destroy_stream destroy_stream;
+  att_fn_accept_waveform accept_waveform;
+  att_fn_decode decode;
+  att_fn_get_result get_result;
+  att_fn_destroy_result destroy_result;
+  const SherpaOnnxOfflineRecognizer *recognizer;
+  char *model;
+  char *tokens;
+  char *language;
+} AttSenseVoice;
+
+static void att_sensevoice_release(AttSenseVoice *handle) {
+  if (!handle) {
+    return;
+  }
+  if (handle->recognizer && handle->destroy_recognizer) {
+    handle->destroy_recognizer(handle->recognizer);
+  }
+  free(handle->model);
+  free(handle->tokens);
+  free(handle->language);
+  att_dlclose(handle->lib);
+  free(handle);
+}
+
+/*
+ * 创建 SenseVoice 识别器。
+ * lib_dir：存放 sherpa-onnx 动态库的目录；model / tokens 指向模型目录里的两个必需文件。
+ */
+AttSenseVoice *att_sensevoice_create(const char *lib_dir, const char *model, const char *tokens,
+                                     const char *language, int32_t use_itn, int32_t num_threads,
+                                     char *err, int32_t err_len) {
+  if (!lib_dir || !model || !tokens || !language) {
+    att_set_error(err, err_len, "参数缺失：推理库目录、模型、词表和语言都是必需的");
+    return NULL;
+  }
+
+  size_t path_len = strlen(lib_dir) + strlen(ATT_LIB_NAME) + 2;
+  char *lib_path = (char *)malloc(path_len);
+  if (!lib_path) {
+    att_set_error(err, err_len, "内存分配失败");
+    return NULL;
+  }
+  snprintf(lib_path, path_len, "%s/%s", lib_dir, ATT_LIB_NAME);
+  AttSenseVoice *handle = (AttSenseVoice *)calloc(1, sizeof(AttSenseVoice));
+  if (!handle) {
+    free(lib_path);
+    att_set_error(err, err_len, "内存分配失败");
+    return NULL;
+  }
+  att_preload_dependencies(lib_dir);
+  handle->lib = att_dlopen(lib_path);
+  if (!handle->lib) {
+    att_set_error(err, err_len,
+                  "无法加载 sherpa-onnx 推理库：%s（请确认该目录下有 %s 与 onnxruntime 依赖）",
+                  lib_path, ATT_LIB_NAME);
+    free(lib_path);
+    att_sensevoice_release(handle);
+    return NULL;
+  }
+  free(lib_path);
+
+  handle->create_recognizer =
+      (att_fn_create_recognizer)att_dlsym(handle->lib, "SherpaOnnxCreateOfflineRecognizer");
+  handle->destroy_recognizer = (att_fn_destroy_recognizer)att_dlsym(
+      handle->lib, "SherpaOnnxDestroyOfflineRecognizer");
+  handle->create_stream =
+      (att_fn_create_stream)att_dlsym(handle->lib, "SherpaOnnxCreateOfflineStream");
+  handle->destroy_stream =
+      (att_fn_destroy_stream)att_dlsym(handle->lib, "SherpaOnnxDestroyOfflineStream");
+  handle->accept_waveform =
+      (att_fn_accept_waveform)att_dlsym(handle->lib, "SherpaOnnxAcceptWaveformOffline");
+  handle->decode = (att_fn_decode)att_dlsym(handle->lib, "SherpaOnnxDecodeOfflineStream");
+  handle->get_result =
+      (att_fn_get_result)att_dlsym(handle->lib, "SherpaOnnxGetOfflineStreamResult");
+  handle->destroy_result = (att_fn_destroy_result)att_dlsym(
+      handle->lib, "SherpaOnnxDestroyOfflineRecognizerResult");
+  if (!handle->create_recognizer || !handle->destroy_recognizer || !handle->create_stream ||
+      !handle->destroy_stream || !handle->accept_waveform || !handle->decode ||
+      !handle->get_result || !handle->destroy_result) {
+    att_set_error(err, err_len, "sherpa-onnx 推理库缺少离线识别符号（版本可能过旧，需 >= 2.0.1）");
+    att_sensevoice_release(handle);
+    return NULL;
+  }
+
+  handle->model = att_strdup(model);
+  handle->tokens = att_strdup(tokens);
+  handle->language = att_strdup(language);
+  if (!handle->model || !handle->tokens || !handle->language) {
+    att_set_error(err, err_len, "内存分配失败");
+    att_sensevoice_release(handle);
+    return NULL;
+  }
+
+  SherpaOnnxOfflineRecognizerConfig config;
+  memset(&config, 0, sizeof(config));
+  config.feat_config.sample_rate = 16000;
+  config.feat_config.feature_dim = 80;
+  config.model_config.tokens = handle->tokens;
+  config.model_config.num_threads = num_threads > 0 ? num_threads : 2;
+  config.model_config.debug = 0;
+  config.model_config.provider = "cpu";
+  config.model_config.sense_voice.model = handle->model;
+  config.model_config.sense_voice.language = handle->language;
+  config.model_config.sense_voice.use_itn = use_itn ? 1 : 0;
+  config.decoding_method = "greedy_search";
+
+  handle->recognizer = handle->create_recognizer(&config);
+  if (!handle->recognizer) {
+    att_set_error(err, err_len,
+                  "创建 SenseVoice 识别器失败（模型文件不完整或与推理库版本不匹配）：%s",
+                  model);
+    att_sensevoice_release(handle);
+    return NULL;
+  }
+  return handle;
+}
+
+/* 识别一段 16k 单声道 float32 PCM；成功返回 malloc 的 UTF-8 文本。 */
+char *att_sensevoice_transcribe(AttSenseVoice *handle, const float *samples, int32_t n,
+                                int32_t sample_rate, char *err, int32_t err_len) {
+  if (!handle || !handle->recognizer) {
+    att_set_error(err, err_len, "识别器未初始化");
+    return NULL;
+  }
+  if (!samples || n <= 0) {
+    att_set_error(err, err_len, "没有音频数据");
+    return NULL;
+  }
+  if (sample_rate <= 0) {
+    sample_rate = 16000;
+  }
+
+  const SherpaOnnxOfflineStream *stream = handle->create_stream(handle->recognizer);
+  if (!stream) {
+    att_set_error(err, err_len, "创建识别流失败");
+    return NULL;
+  }
+  handle->accept_waveform(stream, sample_rate, samples, n);
+  handle->decode(handle->recognizer, stream);
+  const SherpaOnnxOfflineRecognizerResult *result = handle->get_result(stream);
+  char *text = NULL;
+  if (result) {
+    text = att_strdup(result->text);
+    handle->destroy_result(result);
+  }
+  handle->destroy_stream(stream);
+  if (!text) {
+    att_set_error(err, err_len, "识别结果为空指针");
+    return NULL;
+  }
+  return text;
+}
+
+void att_sensevoice_free_text(char *text) { free(text); }
+
+void att_sensevoice_destroy(AttSenseVoice *handle) { att_sensevoice_release(handle); }
 
 /* ==================== Silero VAD（与 Qwen 共用同一份 sherpa-onnx 动态库） ====================
  *

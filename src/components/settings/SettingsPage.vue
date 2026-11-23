@@ -361,6 +361,9 @@ function normalizeSettings(value = {}) {
     qwen_asr_use_forced_aligner: value.qwen_asr_use_forced_aligner ?? false,
     qwen_asr_forced_aligner_model: value.qwen_asr_forced_aligner_model || 'Qwen/Qwen3-ForcedAligner-0.6B',
     qwen_asr_max_audio_seconds: value.qwen_asr_max_audio_seconds ?? 30,
+    sense_voice_model: value.sense_voice_model || 'sense-voice-zh-en-ja-ko-yue-int8',
+    sense_voice_use_itn: value.sense_voice_use_itn ?? true,
+    sense_voice_num_threads: value.sense_voice_num_threads ?? 2,
     model_download_source: normalizeDownloadSource(value.model_download_source),
     local_model_idle_unload_minutes: normalizeLocalModelIdleMinutes(value.local_model_idle_unload_minutes),
     // 豆包语音：明文 Token 只存在于表单内存里，初始值恒为空
@@ -427,6 +430,7 @@ function normalizeSettings(value = {}) {
 
 function buildSettingsPayload() {
   const enableQwenTimestamps = !!form.value.qwen_asr_return_timestamps
+  const senseThreads = Number(form.value.sense_voice_num_threads)
   const payload = {
     asr_provider: form.value.asr_provider,
     asr_language: form.value.asr_language,
@@ -442,6 +446,9 @@ function buildSettingsPayload() {
     qwen_asr_use_forced_aligner: enableQwenTimestamps && form.value.qwen_asr_use_forced_aligner,
     qwen_asr_forced_aligner_model: form.value.qwen_asr_forced_aligner_model,
     qwen_asr_max_audio_seconds: form.value.qwen_asr_max_audio_seconds,
+    sense_voice_model: form.value.sense_voice_model,
+    sense_voice_use_itn: Boolean(form.value.sense_voice_use_itn),
+    sense_voice_num_threads: Number.isFinite(senseThreads) ? senseThreads : 2,
     model_download_source: normalizeDownloadSource(form.value.model_download_source),
     local_model_idle_unload_minutes: normalizeLocalModelIdleMinutes(form.value.local_model_idle_unload_minutes),
     doubao_asr_resource_id: form.value.doubao_asr_resource_id,

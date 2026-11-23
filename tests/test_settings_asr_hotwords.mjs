@@ -55,7 +55,7 @@ const row = (view, key) => view.rows.find((item) => item.key === key)
 
 test('识别：只有豆包支持；其余引擎标「不支持」', () => {
   assert.equal(supportsHotwords('doubao_asr'), true)
-  for (const provider of ['whisper', 'qwen_asr', 'chatgpt_asr']) {
+  for (const provider of ['whisper', 'qwen_asr', 'sense_voice', 'chatgpt_asr']) {
     const asr = row(hotwordView(provider, ['Tauri']), 'asr')
     assert.equal(asr.tone, 'neutral', provider)
     assert.match(asr.label, /^识别 · /)

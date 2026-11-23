@@ -66,6 +66,7 @@ test('识别信息：引擎 · 语言，旧记录没有字段时为空', () => {
   assert.equal(recordAsrSummary({ engine: 'doubao_asr' }), '豆包语音')
   assert.equal(recordAsrSummary({ engine: 'doubao_web_asr', language: 'auto' }), '豆包网页语音 · 自动检测')
   assert.equal(recordAsrSummary({ engine: 'deepseek_asr', language: 'auto' }), 'DeepSeek 语音识别 · 自动检测')
+  assert.equal(recordAsrSummary({ engine: 'sense_voice', language: 'auto' }), '本地 SenseVoice · 自动检测')
   assert.equal(recordAsrSummary({}), '')
 })
 

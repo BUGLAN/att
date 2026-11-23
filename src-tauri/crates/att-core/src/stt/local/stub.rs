@@ -8,6 +8,8 @@ use std::time::Duration;
 pub const WHISPER: &str = "whisper";
 /// 本地 Qwen3-ASR 的 provider 标识。
 pub const QWEN: &str = "qwen_asr";
+/// 本地 SenseVoice 的 provider 标识。
+pub const SENSE_VOICE: &str = "sense_voice";
 /// 关闭 feature 时所有本地引擎入口的统一结论。
 pub const LOCAL_ENGINES_DISABLED: &str = "此构建不含本地引擎";
 
@@ -16,14 +18,18 @@ pub const LOCAL_ENGINES_DISABLED: &str = "此构建不含本地引擎";
 pub enum LocalKind {
     Whisper,
     Qwen,
+    SenseVoice,
 }
 
 impl LocalKind {
+    pub const ALL: [Self; 3] = [Self::Whisper, Self::Qwen, Self::SenseVoice];
+
     /// provider 字符串 → 本地引擎种类（在线引擎返回 `None`）。
     pub fn from_provider(provider: &str) -> Option<Self> {
         match provider.trim() {
             WHISPER => Some(Self::Whisper),
             QWEN => Some(Self::Qwen),
+            SENSE_VOICE => Some(Self::SenseVoice),
             _ => None,
         }
     }
@@ -32,6 +38,7 @@ impl LocalKind {
         match self {
             Self::Whisper => WHISPER,
             Self::Qwen => QWEN,
+            Self::SenseVoice => SENSE_VOICE,
         }
     }
 
@@ -39,6 +46,7 @@ impl LocalKind {
         match self {
             Self::Whisper => "本地 Whisper",
             Self::Qwen => "本地 Qwen3-ASR",
+            Self::SenseVoice => "本地 SenseVoice",
         }
     }
 }

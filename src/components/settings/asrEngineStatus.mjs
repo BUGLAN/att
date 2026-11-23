@@ -4,7 +4,7 @@
 // 录音模式和引擎放在同一页选：流式支持豆包和 Windows 微信输入法，其余引擎的流式卡片直接置灰并说明原因，
 // 而不是让用户去另一页才发现「当前引擎不支持流式」。
 
-export const LOCAL_PROVIDERS = Object.freeze(['whisper', 'qwen_asr'])
+export const LOCAL_PROVIDERS = Object.freeze(['whisper', 'qwen_asr', 'sense_voice'])
 
 /** 支持流式（边说边出字）的引擎；微信输入法还要求 Windows 与本机输入法在线。 */
 export const STREAMING_PROVIDERS = Object.freeze(['doubao_asr', 'doubao_ime_asr', 'wetype_asr'])
@@ -23,7 +23,8 @@ const PROVIDER_LABELS = Object.freeze({
   deepseek_asr: 'DeepSeek 语音识别',
   wetype_asr: '微信输入法语音',
   whisper: 'faster-whisper',
-  qwen_asr: 'Qwen3-ASR'
+  qwen_asr: 'Qwen3-ASR',
+  sense_voice: 'SenseVoice'
 })
 
 export function providerLabel(provider) {

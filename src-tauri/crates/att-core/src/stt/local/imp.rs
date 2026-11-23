@@ -1,4 +1,4 @@
-//! 本地引擎的装配与常驻池（faster-whisper / Qwen3-ASR）。
+//! 本地引擎的装配与常驻池（faster-whisper / Qwen3-ASR / SenseVoice）。
 //!
 //! 两个引擎都是**进程内推理**，模型加载要几秒、单次推理要几百毫秒到几秒，所以这里做三件事：
 //!
@@ -12,7 +12,7 @@
 
 use crate::settings::UserSettings;
 use crate::state::CoreState;
-use att_qwen::{LocalQwen, QwenConfig, SileroVad};
+use att_qwen::{LocalQwen, LocalSenseVoice, QwenConfig, SenseVoiceConfig, SileroVad};
 use att_whisper::{LocalWhisper, WhisperConfig, SAMPLE_RATE};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 pub const WHISPER: &str = "whisper";
 /// 本地 Qwen3-ASR 的 provider 标识。
 pub const QWEN: &str = "qwen_asr";
+/// 本地 SenseVoice 的 provider 标识。
+pub const SENSE_VOICE: &str = "sense_voice";
 /// VAD 区间前后各留的余量（对应 Python `vad_parameters.speech_pad_ms=200`）。
 const VAD_PAD_MS: usize = 200;
 /// 相邻语音区间间隔小于该值时合并，避免同一句话被切成两段重复识别。
@@ -38,14 +40,19 @@ const NO_VAD_CHUNK_ABOVE_SECONDS: usize = 60;
 pub enum LocalKind {
     Whisper,
     Qwen,
+    SenseVoice,
 }
 
 impl LocalKind {
+    /// 全部本地引擎（设置切换、空闲回收等公共遍历）。
+    pub const ALL: [Self; 3] = [Self::Whisper, Self::Qwen, Self::SenseVoice];
+
     /// provider 字符串 → 本地引擎种类（在线引擎返回 `None`）。
     pub fn from_provider(provider: &str) -> Option<Self> {
         match provider.trim() {
             WHISPER => Some(Self::Whisper),
             QWEN => Some(Self::Qwen),
+            SENSE_VOICE => Some(Self::SenseVoice),
             _ => None,
         }
     }
@@ -54,6 +61,7 @@ impl LocalKind {
         match self {
             Self::Whisper => WHISPER,
             Self::Qwen => QWEN,
+            Self::SenseVoice => SENSE_VOICE,
         }
     }
 
@@ -62,6 +70,7 @@ impl LocalKind {
         match self {
             Self::Whisper => "本地 Whisper",
             Self::Qwen => "本地 Qwen3-ASR",
+            Self::SenseVoice => "本地 SenseVoice",
         }
     }
 }
@@ -90,6 +99,7 @@ pub struct LocalEngine {
     kind: LocalKind,
     whisper: Option<Arc<LocalWhisper>>,
     qwen: Option<Arc<LocalQwen>>,
+    sense_voice: Option<Arc<LocalSenseVoice>>,
     /// 仅供 Whisper：先把非语音段剔掉（Silero VAD）
     vad: Option<Arc<SileroVad>>,
     model_dir: PathBuf,
@@ -105,6 +115,7 @@ impl LocalEngine {
             model_dir: engine.model_dir().to_path_buf(),
             whisper: Some(engine),
             qwen: None,
+            sense_voice: None,
             vad,
             use_guard: None,
         }
@@ -116,6 +127,19 @@ impl LocalEngine {
             model_dir: engine.model_dir().to_path_buf(),
             whisper: None,
             qwen: Some(engine),
+            sense_voice: None,
+            vad: None,
+            use_guard: None,
+        }
+    }
+
+    fn sense_voice(engine: Arc<LocalSenseVoice>) -> Self {
+        Self {
+            kind: LocalKind::SenseVoice,
+            model_dir: engine.model_dir().to_path_buf(),
+            whisper: None,
+            qwen: None,
+            sense_voice: Some(engine),
             vad: None,
             use_guard: None,
         }
@@ -141,9 +165,9 @@ impl LocalEngine {
 
     /// 设备/精度描述（`cuda:float16` / `cpu:int8` / `cpu:onnx`）。
     pub fn device(&self) -> String {
-        match (&self.whisper, &self.qwen) {
-            (Some(engine), _) => engine.device().to_string(),
-            (_, Some(_)) => "cpu:onnx".to_string(),
+        match (&self.whisper, &self.qwen, &self.sense_voice) {
+            (Some(engine), _, _) => engine.device().to_string(),
+            (_, Some(_), _) | (_, _, Some(_)) => "cpu:onnx".to_string(),
             _ => "unknown".to_string(),
         }
     }
@@ -156,9 +180,10 @@ impl LocalEngine {
 
     /// 预热（加载后跑一次极短推理，把 ONNX/CTranslate2 的首次开销提前吃掉）。
     pub fn warmup(&self) {
-        match (&self.whisper, &self.qwen) {
-            (Some(engine), _) => engine.warmup(),
-            (_, Some(engine)) => engine.warmup(),
+        match (&self.whisper, &self.qwen, &self.sense_voice) {
+            (Some(engine), _, _) => engine.warmup(),
+            (_, Some(engine), _) => engine.warmup(),
+            (_, _, Some(engine)) => engine.warmup(),
             _ => {}
         }
     }
@@ -177,10 +202,23 @@ impl LocalEngine {
         samples: &[i16],
         on_chunk: &mut dyn FnMut(usize, usize) -> bool,
     ) -> Result<LocalTranscript, String> {
-        match (&self.whisper, &self.qwen) {
-            (Some(whisper), _) => transcribe_whisper(whisper, self.vad.as_deref(), language, samples, on_chunk),
-            (_, Some(qwen)) => {
+        match (&self.whisper, &self.qwen, &self.sense_voice) {
+            (Some(whisper), _, _) => transcribe_whisper(whisper, self.vad.as_deref(), language, samples, on_chunk),
+            (_, Some(qwen), _) => {
                 qwen.transcribe_with_progress(language, samples, on_chunk).map(|outcome| LocalTranscript {
+                    text: outcome.text,
+                    segments: outcome
+                        .segments
+                        .into_iter()
+                        .map(|segment| LocalSegment { start: segment.start, end: segment.end, text: segment.text })
+                        .collect(),
+                    duration: outcome.duration,
+                    elapsed: outcome.elapsed,
+                    device: "cpu:onnx".to_string(),
+                })
+            }
+            (_, _, Some(sense_voice)) => {
+                sense_voice.transcribe_with_progress(language, samples, on_chunk).map(|outcome| LocalTranscript {
                     text: outcome.text,
                     segments: outcome
                         .segments
@@ -348,12 +386,14 @@ struct ModelUsage {
 struct ModelActivity {
     whisper: ModelUsage,
     qwen: ModelUsage,
+    sense_voice: ModelUsage,
 }
 
 fn usage_mut(activity: &mut ModelActivity, kind: LocalKind) -> &mut ModelUsage {
     match kind {
         LocalKind::Whisper => &mut activity.whisper,
         LocalKind::Qwen => &mut activity.qwen,
+        LocalKind::SenseVoice => &mut activity.sense_voice,
     }
 }
 
@@ -396,6 +436,7 @@ fn idle_for(usage: &ModelUsage, now: Instant, threshold: Duration) -> Option<Dur
 pub struct LocalModels {
     whisper: Mutex<Option<Cached<LocalWhisper>>>,
     qwen: Mutex<Option<Cached<LocalQwen>>>,
+    sense_voice: Mutex<Option<Cached<LocalSenseVoice>>>,
     /// Silero VAD（可选；只跟着模型根目录走，加载失败就不启用）
     vad: Mutex<Option<Arc<SileroVad>>>,
     /// 加载串行化：并发请求不会同时加载两份模型
@@ -474,6 +515,12 @@ fn fingerprint(kind: LocalKind, settings: &UserSettings, models_dir: &std::path:
             format!("max_new_tokens={}", settings.qwen_asr_max_new_tokens),
             format!("max_audio_seconds={}", settings.qwen_asr_max_audio_seconds),
         ],
+        LocalKind::SenseVoice => vec![
+            format!("model={}", settings.sense_voice_model),
+            format!("language={}", settings.asr_language),
+            format!("use_itn={}", settings.sense_voice_use_itn),
+            format!("threads={}", settings.sense_voice_num_threads),
+        ],
     };
     parts.push(format!("models_dir={}", models_dir.display()));
     parts.join("|")
@@ -501,12 +548,25 @@ fn qwen_config(core: &CoreState) -> QwenConfig {
     config
 }
 
+fn sense_voice_config(core: &CoreState) -> SenseVoiceConfig {
+    let settings = core.settings();
+    let mut config = SenseVoiceConfig::new(settings.sense_voice_model.clone(), core.models_dir.clone());
+    config.bundled_lib_dir = core.resource_dir.as_ref().map(|dir| dir.join("sherpa-onnx"));
+    let language = settings.asr_language.trim().to_ascii_lowercase();
+    config.language =
+        if matches!(language.as_str(), "zh" | "en" | "ja" | "ko" | "yue") { language } else { "auto".into() };
+    config.use_itn = settings.sense_voice_use_itn;
+    config.num_threads = settings.sense_voice_num_threads.clamp(0, 16);
+    config
+}
+
 impl LocalModels {
     /// 指定引擎是否已加载常驻。
     pub fn is_loaded(&self, kind: LocalKind) -> bool {
         match kind {
             LocalKind::Whisper => self.whisper.lock().unwrap_or_else(|error| error.into_inner()).is_some(),
             LocalKind::Qwen => self.qwen.lock().unwrap_or_else(|error| error.into_inner()).is_some(),
+            LocalKind::SenseVoice => self.sense_voice.lock().unwrap_or_else(|error| error.into_inner()).is_some(),
         }
     }
 
@@ -585,6 +645,14 @@ impl LocalModels {
                 *slot = Some(Cached { engine: engine.clone(), fingerprint });
                 Ok(LocalEngine::qwen(engine).with_use_guard(use_guard))
             }
+            LocalKind::SenseVoice => {
+                let engine = Arc::new(LocalSenseVoice::load(&sense_voice_config(core))?);
+                let mut slot = self.sense_voice.lock().unwrap_or_else(|error| error.into_inner());
+                let mut activity = self.activity.lock().unwrap_or_else(|error| error.into_inner());
+                let use_guard = begin_use(&self.activity, &mut activity, kind);
+                *slot = Some(Cached { engine: engine.clone(), fingerprint });
+                Ok(LocalEngine::sense_voice(engine).with_use_guard(use_guard))
+            }
         }
     }
 
@@ -625,6 +693,11 @@ impl LocalModels {
                 let cached = guard.as_ref().filter(|cached| cached.fingerprint == expected)?;
                 Some(LocalEngine::qwen(cached.engine.clone()))
             }
+            LocalKind::SenseVoice => {
+                let guard = self.sense_voice.lock().unwrap_or_else(|error| error.into_inner());
+                let cached = guard.as_ref().filter(|cached| cached.fingerprint == expected)?;
+                Some(LocalEngine::sense_voice(cached.engine.clone()))
+            }
         }
     }
 
@@ -646,6 +719,13 @@ impl LocalModels {
                 let use_guard = begin_use(&self.activity, &mut activity, kind);
                 Some(LocalEngine::qwen(cached.engine.clone()).with_use_guard(use_guard))
             }
+            LocalKind::SenseVoice => {
+                let guard = self.sense_voice.lock().unwrap_or_else(|error| error.into_inner());
+                let cached = guard.as_ref().filter(|cached| cached.fingerprint == expected)?;
+                let mut activity = self.activity.lock().unwrap_or_else(|error| error.into_inner());
+                let use_guard = begin_use(&self.activity, &mut activity, kind);
+                Some(LocalEngine::sense_voice(cached.engine.clone()).with_use_guard(use_guard))
+            }
         }
     }
 
@@ -656,6 +736,9 @@ impl LocalModels {
             }
             LocalKind::Qwen => {
                 *self.qwen.lock().unwrap_or_else(|error| error.into_inner()) = None;
+            }
+            LocalKind::SenseVoice => {
+                *self.sense_voice.lock().unwrap_or_else(|error| error.into_inner()) = None;
             }
         }
     }
@@ -671,8 +754,9 @@ impl LocalModels {
                 tracing::info!("本地模型手动卸载：{}", kind.label());
             }
             None => {
-                self.invalidate(LocalKind::Whisper);
-                self.invalidate(LocalKind::Qwen);
+                for kind in LocalKind::ALL {
+                    self.invalidate(kind);
+                }
                 *self.vad.lock().unwrap_or_else(|error| error.into_inner()) = None;
                 tracing::info!("本地模型手动卸载：全部引擎");
             }
@@ -687,10 +771,7 @@ impl LocalModels {
             return 0;
         }
         let now = Instant::now();
-        [LocalKind::Whisper, LocalKind::Qwen]
-            .into_iter()
-            .filter(|&kind| self.unload_kind_if_idle(kind, threshold, now))
-            .count()
+        LocalKind::ALL.into_iter().filter(|&kind| self.unload_kind_if_idle(kind, threshold, now)).count()
     }
 
     fn unload_kind_if_idle(&self, kind: LocalKind, threshold: Duration, now: Instant) -> bool {
@@ -714,6 +795,19 @@ impl LocalModels {
             }
             LocalKind::Qwen => {
                 let mut slot = self.qwen.lock().unwrap_or_else(|error| error.into_inner());
+                if slot.as_ref().is_none() {
+                    return false;
+                }
+                let mut activity = self.activity.lock().unwrap_or_else(|error| error.into_inner());
+                let Some(idle) = idle_for(usage_mut(&mut activity, kind), now, threshold) else {
+                    return false;
+                };
+                *slot = None;
+                reset_usage(&mut activity, kind);
+                idle
+            }
+            LocalKind::SenseVoice => {
+                let mut slot = self.sense_voice.lock().unwrap_or_else(|error| error.into_inner());
                 if slot.as_ref().is_none() {
                     return false;
                 }
@@ -796,6 +890,24 @@ impl LocalModels {
                     (Err(error), _) | (_, Err(error)) => unavailable(error),
                 }
             }
+            LocalKind::SenseVoice => {
+                let config = sense_voice_config(core);
+                let model = att_qwen::resolve_sense_voice_model_dir(&config);
+                let lib = att_qwen::resolve_sense_voice_lib_dir(&config);
+                match (model, lib) {
+                    (Ok(dir), Ok(_)) => LocalStatus {
+                        available: true,
+                        loaded,
+                        loading,
+                        error: None,
+                        error_detail: None,
+                        load_error,
+                        model_dir: Some(dir),
+                        device: self.device_of(kind),
+                    },
+                    (Err(error), _) | (_, Err(error)) => unavailable(error),
+                }
+            }
         }
     }
 
@@ -820,6 +932,12 @@ impl LocalModels {
             LocalKind::Qwen => {
                 self.qwen.lock().unwrap_or_else(|error| error.into_inner()).as_ref().map(|_| "cpu:onnx".to_string())
             }
+            LocalKind::SenseVoice => self
+                .sense_voice
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .map(|_| "cpu:onnx".to_string()),
         }
     }
 }
@@ -853,6 +971,7 @@ mod tests {
     fn provider_映射() {
         assert_eq!(LocalKind::from_provider("whisper"), Some(LocalKind::Whisper));
         assert_eq!(LocalKind::from_provider("qwen_asr"), Some(LocalKind::Qwen));
+        assert_eq!(LocalKind::from_provider("sense_voice"), Some(LocalKind::SenseVoice));
         assert_eq!(LocalKind::from_provider("doubao_asr"), None);
         assert_eq!(LocalKind::from_provider("doubao_web_asr"), None);
         assert_eq!(LocalKind::Whisper.label(), "本地 Whisper");
@@ -872,6 +991,11 @@ mod tests {
         let status = models.status(&core, LocalKind::Qwen);
         assert!(!status.available);
         assert_eq!(status.error.as_deref(), Some(att_qwen::MODEL_MISSING));
+        assert!(status.error_detail.unwrap().contains("设置 → 识别引擎"), "详情指向应用内下载");
+
+        let status = models.status(&core, LocalKind::SenseVoice);
+        assert!(!status.available);
+        assert_eq!(status.error.as_deref(), Some(att_qwen::SENSE_VOICE_MODEL_MISSING));
         assert!(status.error_detail.unwrap().contains("设置 → 识别引擎"), "详情指向应用内下载");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -898,6 +1022,13 @@ mod tests {
         // Qwen 只看自己的键：改 Whisper 设置不应影响 Qwen 指纹
         let qwen_a = fingerprint(LocalKind::Qwen, &settings, &models_dir);
         assert_eq!(qwen_a, fingerprint(LocalKind::Qwen, &changed, &models_dir));
+        let sense_a = fingerprint(LocalKind::SenseVoice, &settings, &models_dir);
+        let mut changed = settings.clone();
+        changed.asr_language = "en".into();
+        assert_ne!(sense_a, fingerprint(LocalKind::SenseVoice, &changed, &models_dir));
+        let mut changed = settings.clone();
+        changed.sense_voice_use_itn = !settings.sense_voice_use_itn;
+        assert_ne!(sense_a, fingerprint(LocalKind::SenseVoice, &changed, &models_dir));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

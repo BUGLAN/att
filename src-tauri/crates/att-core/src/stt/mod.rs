@@ -7,7 +7,7 @@
 //! - [`hotwords`]：个人词表的归一化与 token 预算（目前只有豆包使用）
 //! - [`chatgpt`]：ChatGPT 听写（在线批量，不支持流式）
 //! - [`deepseek`]：DeepSeek 语音识别（在线批量，不支持流式）
-//! - [`local`]：本地引擎装配与常驻池（faster-whisper / Qwen3-ASR，进程内推理）
+//! - [`local`]：本地引擎装配与常驻池（faster-whisper / Qwen3-ASR / SenseVoice，进程内推理）
 //! - [`wetype`]：微信输入法语音（仅 Windows，直接注入输入法进程）
 //! - [`verify`]：在线引擎验证（凭据握手 / 匿名连通性，区分「已配置」与「可用」）
 //!
@@ -19,8 +19,8 @@
 pub mod chatgpt;
 pub mod deepseek;
 pub mod doubao;
-pub mod doubao_web;
 pub mod doubao_ime;
+pub mod doubao_web;
 pub mod hotwords;
 pub mod local;
 pub mod sauc;
@@ -163,7 +163,7 @@ pub fn wetype_config(core: &CoreState) -> wetype::WetypeConfig {
     }
 }
 
-/// provider 是否是本地引擎（`whisper` / `qwen_asr`）。
+/// provider 是否是本地引擎（`whisper` / `qwen_asr` / `sense_voice`）。
 pub fn local_kind(provider: &str) -> Option<LocalKind> {
     LocalKind::from_provider(provider)
 }
@@ -205,7 +205,7 @@ pub enum Engine {
 }
 
 /// 全部识别引擎的 provider 标识（与设置 `asr_provider` 取值一致），也是「重新识别」可选引擎的顺序。
-pub const PROVIDERS: [&str; 8] = [
+pub const PROVIDERS: [&str; 9] = [
     "doubao_asr",
     "doubao_web_asr",
     "doubao_ime_asr",
@@ -214,6 +214,7 @@ pub const PROVIDERS: [&str; 8] = [
     "wetype_asr",
     local::WHISPER,
     local::QWEN,
+    local::SENSE_VOICE,
 ];
 
 /// 一个识别引擎当前能不能用（「重新识别」选引擎用）：只看凭据是否齐备、本地模型文件是否就位，不发网络请求。
@@ -257,11 +258,13 @@ pub fn engine_choices(core: &CoreState) -> Vec<EngineChoice> {
         .collect()
 }
 
-/// 这次识别实际用的语言（写进记录）：DeepSeek / Qwen3-ASR 不能指定语言、由模型自行判定，记为 `auto`；
+/// 这次识别实际用的语言（写进记录）：DeepSeek / Qwen3-ASR / SenseVoice 由模型自行判定，记为 `auto`；
 /// 其余引擎就是设置里的识别语言。
 pub fn effective_language(provider: &str, language: &str) -> String {
     match provider.trim() {
-        "deepseek_asr" | "wetype_asr" | "qwen_asr" | "doubao_web_asr" | "doubao_ime_asr" => "auto".into(),
+        "deepseek_asr" | "wetype_asr" | "qwen_asr" | "sense_voice" | "doubao_web_asr" | "doubao_ime_asr" => {
+            "auto".into()
+        }
         _ => language.to_string(),
     }
 }
@@ -504,6 +507,7 @@ mod tests {
     fn 识别语言_不能指定语言的引擎记为自动检测() {
         assert_eq!(effective_language("deepseek_asr", "zh"), "auto");
         assert_eq!(effective_language("qwen_asr", "en"), "auto");
+        assert_eq!(effective_language("sense_voice", "zh"), "auto");
         assert_eq!(effective_language("doubao_web_asr", "zh"), "auto");
         assert_eq!(effective_language("wetype_asr", "zh"), "auto");
         assert_eq!(effective_language("doubao_asr", "yue"), "yue");
@@ -514,6 +518,7 @@ mod tests {
     fn local_kind_识别本地_provider() {
         assert_eq!(local_kind("whisper"), Some(LocalKind::Whisper));
         assert_eq!(local_kind("qwen_asr"), Some(LocalKind::Qwen));
+        assert_eq!(local_kind("sense_voice"), Some(LocalKind::SenseVoice));
         assert_eq!(local_kind("doubao_asr"), None);
         assert_eq!(local_kind("doubao_web_asr"), None);
         assert_eq!(local_kind("wetype_asr"), None);

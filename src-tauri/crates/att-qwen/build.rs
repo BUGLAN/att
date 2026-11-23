@@ -2,7 +2,8 @@
 //!
 //! sherpa-onnx 本体**不在构建期链接**：`shim.c` 用 `LoadLibrary`/`dlopen` 在运行期按路径加载
 //! `libsherpa-onnx-c-api`，所以交叉编译、CI 与没装模型/推理库的机器都能编译通过，
-//! 缺库只在真正用到 Qwen 引擎时给出可读错误（见 [`att_qwen::LocalQwen::load`]）。
+//! 缺库只在真正用到 Qwen / SenseVoice 引擎时给出可读错误（见 [`att_qwen::LocalQwen::load`]、
+//! [`att_qwen::LocalSenseVoice::load`]）。
 
 fn main() {
     println!("cargo:rerun-if-changed=src/shim.c");

@@ -43,7 +43,7 @@ export function downloadLabel(model) {
     : `下载 ${formatBytes(model.download_size)}`
 }
 
-/** 当前识别引擎对应的模型清单；VAD 只给 Whisper 展示（Qwen 不走 Silero VAD）。 */
+/** 当前识别引擎对应的模型清单；VAD 只给 Whisper 展示（Qwen / SenseVoice 不走 Silero VAD）。 */
 export function modelsForProvider(models, provider) {
   const items = Array.isArray(models) ? models : []
   if (provider === 'whisper') {
@@ -51,6 +51,9 @@ export function modelsForProvider(models, provider) {
   }
   if (provider === 'qwen_asr') {
     return items.filter((model) => model.engine === 'qwen_asr')
+  }
+  if (provider === 'sense_voice') {
+    return items.filter((model) => model.engine === 'sense_voice')
   }
   return []
 }
@@ -146,7 +149,7 @@ export function installedModelSelection(job, models) {
     return null
   }
   const model = (Array.isArray(models) ? models : []).find((item) => item.id === job.model_id)
-  const configKeys = new Set(['whisper_model', 'qwen_asr_model'])
+  const configKeys = new Set(['whisper_model', 'qwen_asr_model', 'sense_voice_model'])
   if (!model || model.status !== 'installed' || !configKeys.has(model.config_key) || !model.select_value) {
     return null
   }

@@ -36,7 +36,7 @@ uuid = { version = "1", features = ["v4"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 # 数据备份 / 恢复：zip 打包（CTranslate2 的 ndarray-npy 已带同版本 zip，不会新增下载）
 zip = { version = "2.6", default-features = false, features = ["deflate"] }
-# 本地引擎：faster-whisper（CTranslate2/ct2rs）与 Qwen3-ASR（sherpa-onnx ONNX）
+# 本地引擎：faster-whisper（CTranslate2/ct2rs）与 Qwen3-ASR / SenseVoice（sherpa-onnx ONNX）
 att-whisper = { path = "../att-whisper", optional = true }
 att-qwen = { path = "../att-qwen", optional = true }
 # LLM 网关：native-tls 与 WebSocket 同一套系统 TLS；system-proxy 读系统代理（与 Python httpx 走代理的行为对齐）

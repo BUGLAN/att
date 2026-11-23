@@ -49,7 +49,7 @@ pub struct CoreState {
     pub backup_paths: crate::backup::BackupPathGrants,
     /// 备份 / 恢复期间暂停录音与剪贴板等后台写入；恢复成功后保持到进程重启。
     backup_maintenance: AtomicBool,
-    /// 本地引擎常驻池（faster-whisper / Qwen3-ASR）
+    /// 本地引擎常驻池（faster-whisper / Qwen3-ASR / SenseVoice）
     pub local_models: crate::stt::local::LocalModels,
     /// 本地模型的下载任务与安装状态（设置页 / `/api/models`）
     pub model_manager: Arc<crate::stt::local::download::ModelManager>,

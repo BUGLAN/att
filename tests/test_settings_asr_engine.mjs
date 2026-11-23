@@ -54,7 +54,7 @@ test('录音模式：流式支持豆包与 Windows 微信输入法，其余引�
   assert.equal(supportsStreaming('wetype_asr', 'darwin', true), true)
   assert.equal(recordingModeOptions('wetype_asr', 'darwin', true).find((mode) => mode.value === 'streaming').disabled, false)
 
-  for (const provider of ['whisper', 'qwen_asr', 'chatgpt_asr', 'deepseek_asr', 'doubao_web_asr']) {
+  for (const provider of ['whisper', 'qwen_asr', 'sense_voice', 'chatgpt_asr', 'deepseek_asr', 'doubao_web_asr']) {
     const streaming = recordingModeOptions(provider, 'win32').find((mode) => mode.value === 'streaming')
     assert.equal(streaming.disabled, true, provider)
     assert.match(streaming.hint, /不支持流式/)
@@ -95,6 +95,15 @@ test('本地引擎状态：缺模型 / 加载失败 / 已就绪 / 未加载', ()
   assert.equal(missing.message, '本地 Qwen3-ASR 模型未安装', '结论只有一句')
   assert.equal(missing.detail, '用下面的命令下载：\n\twget https://x/a.tar.bz2', '命令进折叠详情')
   assert.equal(missing.detailLabel, '安装位置')
+  assert.equal(providerLabel('sense_voice'), 'SenseVoice')
+
+  const senseMissing = localEngineView('sense_voice', {
+    provider: 'sense_voice',
+    available: false,
+    error: '本地 SenseVoice 模型未安装'
+  })
+  assert.equal(senseMissing.state, 'missing')
+  assert.equal(senseMissing.message, '本地 SenseVoice 模型未安装')
 
   const failed = localEngineView('whisper', { provider: 'whisper', available: true, load_error: '加载本地 Whisper 模型失败：x' })
   assert.equal(failed.state, 'failed')

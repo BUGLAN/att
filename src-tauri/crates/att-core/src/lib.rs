@@ -10,7 +10,7 @@
 //! - [`migration`]：一次性迁移（热键合并 / 音频错位修复 / 报告）
 //! - [`events`]：进程内事件总线
 //! - [`state`]：CoreState 组装（服务层共享句柄）
-//! - [`stt`]：语音识别引擎（豆包 SAUC、豆包网页匿名、ChatGPT 听写、本地 faster-whisper / Qwen3-ASR + Silero VAD）
+//! - [`stt`]：语音识别引擎（豆包 SAUC、豆包网页匿名、ChatGPT 听写、本地 faster-whisper / Qwen3-ASR / SenseVoice + Silero VAD）
 //! - [`transcribe`]：本地文件转写与 LLM 校对
 //! - [`llm`]：LLM v2（服务商注册表 / 档案与模型存储 / 调用网关）
 //! - [`update`]：检查更新（发布渠道最新版本比较、安装包下载）

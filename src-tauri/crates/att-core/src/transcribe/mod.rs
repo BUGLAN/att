@@ -202,6 +202,7 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
 
     let whisper = core.local_models.status(core, LocalKind::Whisper);
     let qwen = core.local_models.status(core, LocalKind::Qwen);
+    let sense_voice = core.local_models.status(core, LocalKind::SenseVoice);
     let doubao_ready = crate::stt::doubao_config(core).ensure().is_ok();
     let doubao_web_ready = crate::stt::doubao_web_config(core).ensure().is_ok();
     let doubao_ime_ready = crate::stt::doubao_ime_config(core).ensure().is_ok();
@@ -214,11 +215,15 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
     };
 
     match requested.trim().to_lowercase().as_str() {
-        // auto = 本地优先（配置指向本地引擎就用它，否则回落本地 Whisper / Qwen），
+        // auto = 本地优先（配置指向本地引擎就用它，否则回落本地 Whisper / Qwen / SenseVoice），
         // 最后才用在线引擎：豆包 → DeepSeek → 豆包网页（后者无需凭据）
         "auto" | "" => {
             if let Some(kind) = crate::stt::local_kind(&core.settings().asr_provider) {
-                let ready = if kind == LocalKind::Whisper { whisper.available } else { qwen.available };
+                let ready = match kind {
+                    LocalKind::Whisper => whisper.available,
+                    LocalKind::Qwen => qwen.available,
+                    LocalKind::SenseVoice => sense_voice.available,
+                };
                 if ready {
                     return Ok(kind.provider());
                 }
@@ -227,6 +232,8 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
                 Ok("whisper")
             } else if qwen.available {
                 Ok("qwen_asr")
+            } else if sense_voice.available {
+                Ok("sense_voice")
             } else if doubao_ready {
                 Ok("doubao_asr")
             } else if deepseek_ready {
@@ -248,6 +255,8 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
         "whisper" => Err(unavailable(LocalKind::Whisper, &whisper)),
         "qwen_asr" if qwen.available => Ok("qwen_asr"),
         "qwen_asr" => Err(unavailable(LocalKind::Qwen, &qwen)),
+        "sense_voice" if sense_voice.available => Ok("sense_voice"),
+        "sense_voice" => Err(unavailable(LocalKind::SenseVoice, &sense_voice)),
         "doubao_asr" if doubao_ready => Ok("doubao_asr"),
         "doubao_asr" => Err(TranscribeError::new(409, "豆包语音未配置 Access Token，请在「设置 → 识别引擎」中填写")),
         "doubao_web_asr" if doubao_web_ready => Ok("doubao_web_asr"),
@@ -278,7 +287,7 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
         other => Err(TranscribeError::new(
             422,
             format!(
-                "不支持的 engine：{other}（可选 auto/whisper/qwen_asr/doubao_asr/doubao_web_asr/doubao_ime_asr/deepseek_asr/wetype_asr）"
+                "不支持的 engine：{other}（可选 auto/whisper/qwen_asr/sense_voice/doubao_asr/doubao_web_asr/doubao_ime_asr/deepseek_asr/wetype_asr）"
             ),
         )),
     }
@@ -1384,7 +1393,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("att-ft-engine-{}", uuid::Uuid::new_v4()));
         let core = CoreState::init(&dir, crate::Platform::Macos).unwrap();
         #[cfg(feature = "local-engines")]
-        for (engine, summary) in [("whisper", att_whisper::MODEL_MISSING), ("qwen_asr", att_qwen::MODEL_MISSING)] {
+        for (engine, summary) in [
+            ("whisper", att_whisper::MODEL_MISSING),
+            ("qwen_asr", att_qwen::MODEL_MISSING),
+            ("sense_voice", att_qwen::SENSE_VOICE_MODEL_MISSING),
+        ] {
             let error = resolve_engine(&core, engine).unwrap_err();
             assert_eq!(error.status, 409);
             assert!(error.message.starts_with(summary), "{}", error.message);
@@ -1392,7 +1405,7 @@ mod tests {
             assert!(error.message.chars().count() < 60, "{}", error.message);
         }
         #[cfg(not(feature = "local-engines"))]
-        for engine in ["whisper", "qwen_asr"] {
+        for engine in ["whisper", "qwen_asr", "sense_voice"] {
             let error = resolve_engine(&core, engine).unwrap_err();
             assert_eq!(error.status, 409);
             assert!(error.message.contains(crate::stt::local::LOCAL_ENGINES_DISABLED), "{}", error.message);

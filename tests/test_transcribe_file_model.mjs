@@ -71,10 +71,10 @@ test('buildTranscribeRequest：校对开启附带模型与窗口参数；非法�
   assert.equal(buildTranscribeRequest({ path: '/a/b.wav', engine: 'chatgpt_asr' }).engine, 'doubao_web_asr')
 })
 
-test('TRANSCRIBE_ENGINES：七引擎元数据齐备，不标「默认」，描述各一句话', () => {
+test('TRANSCRIBE_ENGINES：八引擎元数据齐备，不标「默认」，描述各一句话', () => {
   assert.deepEqual(
     TRANSCRIBE_ENGINES.map((item) => item.value),
-    ['doubao_asr', 'doubao_web_asr', 'doubao_ime_asr', 'deepseek_asr', 'wetype_asr', 'whisper', 'qwen_asr']
+    ['doubao_asr', 'doubao_web_asr', 'doubao_ime_asr', 'deepseek_asr', 'wetype_asr', 'whisper', 'qwen_asr', 'sense_voice']
   )
   for (const item of TRANSCRIBE_ENGINES) {
     assert.ok(!item.badge, `${item.value} 不再带「默认」标记`)
@@ -88,6 +88,7 @@ test('defaultTranscribeEngine：跟随设置里的识别引擎，文件转写不
   assert.equal(defaultTranscribeEngine('doubao_asr'), 'doubao_asr')
   assert.equal(defaultTranscribeEngine('whisper'), 'whisper')
   assert.equal(defaultTranscribeEngine('qwen_asr'), 'qwen_asr')
+  assert.equal(defaultTranscribeEngine('sense_voice'), 'sense_voice')
   assert.equal(defaultTranscribeEngine('deepseek_asr'), 'deepseek_asr')
   assert.equal(defaultTranscribeEngine('doubao_web_asr'), 'doubao_web_asr')
   assert.equal(defaultTranscribeEngine('wetype_asr'), 'wetype_asr')
@@ -139,6 +140,7 @@ test('transcribeEngineOptions：豆包 / DeepSeek 未配置、当前本地引擎
   assert.equal(missing.whisper.badge, '未安装')
   assert.equal(missing.whisper.hint, '本地 Whisper 模型未安装，可在「设置 → 识别引擎」下载模型。')
   assert.equal(missing.qwen_asr.disabled, false, 'local_engine 只描述设置里选中的那个本地引擎')
+  assert.equal(missing.sense_voice.disabled, false, '未选中的 SenseVoice 不错误置灰')
 
   const loaded = byValue(transcribeEngineOptions({
     doubaoKeySet: true,
@@ -146,6 +148,13 @@ test('transcribeEngineOptions：豆包 / DeepSeek 未配置、当前本地引擎
     localEngine: { provider: 'qwen_asr', available: true, loaded: true }
   }))
   assert.equal(loaded.qwen_asr.disabled, false)
+  const senseMissing = byValue(transcribeEngineOptions({
+    doubaoKeySet: true,
+    deepseekKeySet: true,
+    localEngine: { provider: 'sense_voice', available: false, error: '本地 SenseVoice 模型未安装' }
+  }))
+  assert.equal(senseMissing.sense_voice.disabled, true)
+  assert.equal(senseMissing.sense_voice.hint, '本地 SenseVoice 模型未安装，可在「设置 → 识别引擎」下载模型。')
 })
 
 test('splitSentences：按句切分并过滤空串', () => {

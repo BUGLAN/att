@@ -134,6 +134,9 @@ export const useSettingsStore = defineStore('settings', () => {
     qwen_asr_use_forced_aligner: false,
     qwen_asr_forced_aligner_model: 'Qwen/Qwen3-ForcedAligner-0.6B',
     qwen_asr_max_audio_seconds: 30,
+    sense_voice_model: 'sense-voice-zh-en-ja-ko-yue-int8',
+    sense_voice_use_itn: true,
+    sense_voice_num_threads: 2,
     model_download_source: 'official',
     local_model_idle_unload_minutes: 15,
     // 火山引擎豆包双向流式 ASR（在线识别）

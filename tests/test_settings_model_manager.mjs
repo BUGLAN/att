@@ -45,6 +45,16 @@ const MODELS = [
     download_size: 878_702_423
   },
   {
+    id: 'sense-voice-zh-en-ja-ko-yue-int8',
+    engine: 'sense_voice',
+    title: 'SenseVoice 中粤英日韩 int8',
+    config_key: 'sense_voice_model',
+    select_value: 'sense-voice-zh-en-ja-ko-yue-int8',
+    status: 'missing',
+    installed_bytes: 0,
+    download_size: 163_002_883
+  },
+  {
     id: 'silero-vad',
     engine: 'vad',
     title: 'Silero VAD',
@@ -72,13 +82,14 @@ test('模型状态与下载按钮：已安装 / 部分 / 未安装都带体积',
   assert.equal(downloadLabel({ ...MODELS[1], status: 'partial' }), '继续下载（共 1.5 GB）')
 })
 
-test('按引擎过滤：Whisper 带 VAD，Qwen 不带', () => {
+test('按引擎过滤：Whisper 带 VAD，Qwen / SenseVoice 不带', () => {
   assert.deepEqual(modelsForProvider(MODELS, 'whisper').map((model) => model.id), [
     'whisper-small',
     'whisper-large-v3-turbo',
     'silero-vad'
   ])
   assert.deepEqual(modelsForProvider(MODELS, 'qwen_asr').map((model) => model.id), ['qwen3-asr-0.6b-int8'])
+  assert.deepEqual(modelsForProvider(MODELS, 'sense_voice').map((model) => model.id), ['sense-voice-zh-en-ja-ko-yue-int8'])
   assert.deepEqual(modelsForProvider(MODELS, 'doubao_asr'), [])
   assert.deepEqual(modelsForProvider(null, 'whisper'), [])
 })
@@ -127,7 +138,9 @@ test('下载任务：进度、速度、当前文件、取消与错误', () => {
 test('VAD 提示：只对 Whisper 且未安装时出现', () => {
   assert.match(vadWarning('whisper', MODELS), /未安装 VAD/)
   assert.equal(vadWarning('qwen_asr', MODELS), '')
-  assert.equal(vadWarning('whisper', [{ ...MODELS[3], status: 'installed' }]), '')
+  assert.equal(vadWarning('sense_voice', MODELS), '')
+  const vad = MODELS.find((model) => model.id === 'silero-vad')
+  assert.equal(vadWarning('whisper', [{ ...vad, status: 'installed' }]), '')
   assert.equal(vadWarning('whisper', []), '')
 })
 
@@ -145,6 +158,14 @@ test('下载完成：仅自动选择已安装且带配置键的模型', () => {
     ? { ...model, config_key: 'whisper_model', select_value: 'small' }
     : model)
   assert.deepEqual(installedModelSelection(job, configured), { key: 'whisper_model', value: 'small' })
+  const senseJob = { status: 'done', model_id: 'sense-voice-zh-en-ja-ko-yue-int8' }
+  const senseInstalled = MODELS.map((model) => model.id === 'sense-voice-zh-en-ja-ko-yue-int8'
+    ? { ...model, status: 'installed', installed_bytes: 163_002_883 }
+    : model)
+  assert.deepEqual(installedModelSelection(senseJob, senseInstalled), {
+    key: 'sense_voice_model',
+    value: 'sense-voice-zh-en-ja-ko-yue-int8'
+  })
   assert.equal(installedModelSelection({ ...job, status: 'error' }, configured), null)
   assert.equal(installedModelSelection(job, [{ ...configured[0], status: 'missing' }]), null)
 })

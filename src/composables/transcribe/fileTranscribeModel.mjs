@@ -66,6 +66,12 @@ export const TRANSCRIBE_ENGINES = [
     label: 'Qwen3-ASR',
     tag: '本地',
     desc: '本机离线识别，多语种更好，需要先安装模型和推理库。'
+  },
+  {
+    value: 'sense_voice',
+    label: 'SenseVoice',
+    tag: '本地',
+    desc: '本机离线识别，支持中粤英日韩，需要先安装模型和推理库。'
   }
 ]
 

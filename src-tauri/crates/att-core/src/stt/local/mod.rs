@@ -1,4 +1,4 @@
-//! 本地引擎的装配与常驻池（faster-whisper / Qwen3-ASR）。
+//! 本地引擎的装配与常驻池（faster-whisper / Qwen3-ASR / SenseVoice）。
 //!
 //! 默认 feature `local-engines` 打开时用 [`imp`]：进程内推理、模型常驻、按设置指纹重建；
 //! 关闭时用 [`stub`]：接口保持可用，但所有本地引擎入口统一返回「此构建不含本地引擎」，

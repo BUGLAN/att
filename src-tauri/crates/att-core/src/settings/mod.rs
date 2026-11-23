@@ -45,6 +45,9 @@ pub const MODEL_RUNTIME_KEYS: &[&str] = &[
     "qwen_asr_use_forced_aligner",
     "qwen_asr_forced_aligner_model",
     "qwen_asr_max_audio_seconds",
+    "sense_voice_model",
+    "sense_voice_use_itn",
+    "sense_voice_num_threads",
     "doubao_asr_resource_id",
     "doubao_asr_endpoint",
     "doubao_asr_end_window_size",
@@ -83,7 +86,7 @@ pub const SETTINGS_REVISION: i64 = 2;
 pub struct UserSettings {
     // ---- ASR 基础 ----
     pub asr_provider: String,
-    // whisper | qwen_asr | doubao_asr | doubao_web_asr | chatgpt_asr | deepseek_asr | wetype_asr
+    // whisper | qwen_asr | sense_voice | doubao_asr | doubao_web_asr | chatgpt_asr | deepseek_asr | wetype_asr
     pub asr_language: String, // auto（自动检测）或各引擎支持的语种码，如 zh / en / ja / ko / yue
     /// 本地模型根目录；空值走现有默认查找。仅启动时生效，环境变量 `ATT_MODELS_DIR` 优先。
     #[serde(default)]
@@ -106,6 +109,11 @@ pub struct UserSettings {
     pub qwen_asr_forced_aligner_model: String,
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub qwen_asr_max_audio_seconds: i64,
+    // ---- SenseVoice ----
+    pub sense_voice_model: String,
+    pub sense_voice_use_itn: bool,
+    #[serde(default, deserialize_with = "deserialize_i64_lenient")]
+    pub sense_voice_num_threads: i64,
     /// 本地模型下载源：`official`（Hugging Face / GitHub Releases）或 `mirror`
     /// （Hugging Face 走 hf-mirror.com；没有镜像的项仍走 GitHub）。旧数据缺字段按官方源。
     pub model_download_source: String,
@@ -226,6 +234,9 @@ impl UserSettings {
             qwen_asr_use_forced_aligner: false,
             qwen_asr_forced_aligner_model: "Qwen/Qwen3-ForcedAligner-0.6B".into(),
             qwen_asr_max_audio_seconds: 30,
+            sense_voice_model: "sense-voice-zh-en-ja-ko-yue-int8".into(),
+            sense_voice_use_itn: true,
+            sense_voice_num_threads: 2,
             model_download_source: "official".into(),
             local_model_idle_unload_minutes: 15,
             doubao_asr_resource_id: "volc.seedasr.sauc.duration".into(),
@@ -598,6 +609,7 @@ pub fn apply_settings_update(
             "qwen_asr_model" => set_string(&mut settings.qwen_asr_model, value, &type_error)?,
             "qwen_asr_device" => set_string(&mut settings.qwen_asr_device, value, &type_error)?,
             "qwen_asr_dtype" => set_string(&mut settings.qwen_asr_dtype, value, &type_error)?,
+            "sense_voice_model" => set_string(&mut settings.sense_voice_model, value, &type_error)?,
             "qwen_asr_forced_aligner_model" => {
                 set_string(&mut settings.qwen_asr_forced_aligner_model, value, &type_error)?
             }
@@ -644,6 +656,10 @@ pub fn apply_settings_update(
             // ---- 整数键 ----
             "qwen_asr_max_new_tokens" => set_i64(&mut settings.qwen_asr_max_new_tokens, value, &type_error)?,
             "qwen_asr_max_audio_seconds" => set_i64(&mut settings.qwen_asr_max_audio_seconds, value, &type_error)?,
+            "sense_voice_num_threads" => {
+                set_i64(&mut settings.sense_voice_num_threads, value, &type_error)?;
+                settings.sense_voice_num_threads = settings.sense_voice_num_threads.clamp(0, 16);
+            }
             "model_download_source" => {
                 let source = value.as_str().ok_or_else(|| type_error("字符串"))?;
                 if !matches!(source, "official" | "mirror") {
@@ -695,6 +711,7 @@ pub fn apply_settings_update(
             // ---- 布尔键 ----
             "qwen_asr_return_timestamps" => set_bool(&mut settings.qwen_asr_return_timestamps, value, &type_error)?,
             "qwen_asr_use_forced_aligner" => set_bool(&mut settings.qwen_asr_use_forced_aligner, value, &type_error)?,
+            "sense_voice_use_itn" => set_bool(&mut settings.sense_voice_use_itn, value, &type_error)?,
             "pause_audio_on_recording" => set_bool(&mut settings.pause_audio_on_recording, value, &type_error)?,
             "auto_optimize" => set_bool(&mut settings.auto_optimize, value, &type_error)?,
             "auto_copy_to_clipboard" => set_bool(&mut settings.auto_copy_to_clipboard, value, &type_error)?,
@@ -882,6 +899,9 @@ mod tests {
         assert_eq!(settings.main_window_close_action, "tray");
         assert_eq!(settings.local_model_idle_unload_minutes, 15, "旧 settings.json 取 15 分钟默认值");
         assert_eq!(settings.doubao_web_timeout_seconds, 30, "旧 settings.json 补豆包网页默认超时");
+        assert_eq!(settings.sense_voice_model, "sense-voice-zh-en-ja-ko-yue-int8");
+        assert!(settings.sense_voice_use_itn);
+        assert_eq!(settings.sense_voice_num_threads, 2);
         // 旧热键迁移：Ctrl+Shift+R 保持
         let binding = settings.binding_of(HotkeyAction::Record).unwrap();
         assert_eq!(binding.display(Platform::Linux), "Ctrl+Shift+R");
@@ -898,9 +918,16 @@ mod tests {
         std::fs::write(&path, json!({ "auto_optimize": true }).to_string()).unwrap();
         assert_eq!(UserSettings::load(&path, Platform::Macos).asr_provider, "doubao_asr");
         // 老用户选过的引擎（含旧默认 whisper）原样保留
-        for provider in
-            ["whisper", "qwen_asr", "chatgpt_asr", "doubao_asr", "doubao_web_asr", "deepseek_asr", "wetype_asr"]
-        {
+        for provider in [
+            "whisper",
+            "qwen_asr",
+            "sense_voice",
+            "chatgpt_asr",
+            "doubao_asr",
+            "doubao_web_asr",
+            "deepseek_asr",
+            "wetype_asr",
+        ] {
             std::fs::write(&path, json!({ "asr_provider": provider }).to_string()).unwrap();
             assert_eq!(UserSettings::load(&path, Platform::Windows).asr_provider, provider);
         }
@@ -1208,6 +1235,31 @@ mod tests {
 
         settings.save(&path).unwrap();
         assert_eq!(UserSettings::load(&path, Platform::Macos).asr_language, "auto");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sensevoice_设置项进入运行时白名单并夹取线程数() {
+        let dir = temp_dir("sensevoice");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::with_platform(Platform::Windows);
+        let outcome = apply_settings_update(
+            &mut settings,
+            &json!({
+                "sense_voice_model": "sense-voice-zh-en-ja-ko-yue-int8",
+                "sense_voice_use_itn": false,
+                "sense_voice_num_threads": 99
+            }),
+            Platform::Windows,
+            &crypto,
+        )
+        .unwrap();
+        assert_eq!(settings.sense_voice_model, "sense-voice-zh-en-ja-ko-yue-int8");
+        assert!(!settings.sense_voice_use_itn);
+        assert_eq!(settings.sense_voice_num_threads, 16);
+        for key in ["sense_voice_model", "sense_voice_use_itn", "sense_voice_num_threads"] {
+            assert!(outcome.runtime_keys_changed.contains(&key), "{key}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

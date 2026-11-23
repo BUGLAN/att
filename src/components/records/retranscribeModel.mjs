@@ -18,7 +18,8 @@ const PROVIDER_LABELS = Object.freeze({
   deepseek_asr: 'DeepSeek 语音识别',
   wetype_asr: '微信输入法语音',
   whisper: '本地 Whisper',
-  qwen_asr: '本地 Qwen3-ASR'
+  qwen_asr: '本地 Qwen3-ASR',
+  sense_voice: '本地 SenseVoice'
 })
 
 // 引擎下拉里的短名称（下拉放在记录展开后的半栏里，全称会被截断）
@@ -30,7 +31,8 @@ const PROVIDER_SHORT_LABELS = Object.freeze({
   deepseek_asr: 'DeepSeek',
   wetype_asr: '微信输入法语音',
   whisper: '本地 Whisper',
-  qwen_asr: '本地 Qwen3-ASR'
+  qwen_asr: '本地 Qwen3-ASR',
+  sense_voice: '本地 SenseVoice'
 })
 
 export function asrProviderLabel(provider) {

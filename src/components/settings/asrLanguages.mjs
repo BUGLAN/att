@@ -6,7 +6,8 @@
 // - Whisper / ChatGPT 听写：列常用语种，模型支持的其余语种仍可通过自动检测识别；
 // - DeepSeek：接口没有 language 参数，只能自动判定；
 // - 微信输入法语音：请求不带 language，由输入法服务端自动判定；
-// - Qwen3-ASR：sherpa 配置没有 language 参数，由模型自行判定。
+// - Qwen3-ASR：sherpa 配置没有 language 参数，由模型自行判定；
+// - SenseVoice：支持中 / 粤 / 英 / 日 / 韩，可自动检测或指定语言。
 
 import { providerLabel } from './asrEngineStatus.mjs'
 
@@ -61,7 +62,8 @@ const PROVIDER_LANGUAGE_CODES = Object.freeze({
   deepseek_asr: Object.freeze([]),
   wetype_asr: Object.freeze([]),
   whisper: COMMON_LANGUAGE_CODES,
-  qwen_asr: Object.freeze([])
+  qwen_asr: Object.freeze([]),
+  sense_voice: Object.freeze(['zh', 'yue', 'en', 'ja', 'ko'])
 })
 
 function languageCodes(provider) {
@@ -112,6 +114,9 @@ export function normalizeLanguageForProvider(provider, language) {
 export function languageHint(provider) {
   if (provider === 'qwen_asr') {
     return 'Qwen3-ASR 不支持指定语言，由模型自行判定。'
+  }
+  if (provider === 'sense_voice') {
+    return 'SenseVoice 支持中文、粤语、英语、日语、韩语；自动检测适合混说，固定语种可减少误判。'
   }
   if (provider === 'doubao_web_asr') {
     return '豆包网页语音由音频自动判定语种，不能手动指定。'

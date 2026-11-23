@@ -40,7 +40,7 @@ export const SETTINGS_SECTIONS = Object.freeze([
     group: '语音识别',
     label: '识别引擎',
     desc: '选择识别引擎与录音模式；下方只显示当前引擎需要的配置。',
-    keywords: ['引擎', 'asr', '豆包', 'token', 'resource id', '接入点', 'chatgpt', '令牌', 'whisper', 'qwen', '微信输入法', 'wetype', '识别语言', '语言', '录音模式', '单段', '多段', '流式', '静音分段', '阈值', '本地模型', '加载']
+    keywords: ['引擎', 'asr', '豆包', 'token', 'resource id', '接入点', 'chatgpt', '令牌', 'whisper', 'qwen', 'sensevoice', 'sense voice', '微信输入法', 'wetype', '识别语言', '语言', '录音模式', '单段', '多段', '流式', '静音分段', '阈值', '本地模型', '加载']
   },
   {
     id: 'llm',

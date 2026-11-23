@@ -7,6 +7,7 @@
 //! 安装布局与引擎的探测顺序对齐：
 //! - Whisper：`models/faster-whisper-<短名>/`（旧的单模型目录 `models/faster_whisper/` 仍识别为 large-v3）；
 //! - Qwen3-ASR：GitHub 的 `.tar.bz2` 解压后取模型目录，落到 `models/qwen3-asr-0.6B-int8/`；
+//! - SenseVoice：GitHub 的 `.tar.bz2` 解压后取模型目录，落到 `models/sense-voice-zh-en-ja-ko-yue-int8/`；
 //! - Silero VAD：单文件 `models/silero_vad.onnx`（sherpa-onnx 子目录里的旧位置也识别）。
 
 use serde::Serialize;
@@ -18,6 +19,7 @@ use std::path::{Path, PathBuf};
 pub enum Engine {
     Whisper,
     Qwen,
+    SenseVoice,
     Vad,
 }
 
@@ -26,6 +28,7 @@ impl Engine {
         match self {
             Self::Whisper => "whisper",
             Self::Qwen => "qwen_asr",
+            Self::SenseVoice => "sense_voice",
             Self::Vad => "vad",
         }
     }
@@ -34,6 +37,7 @@ impl Engine {
         match self {
             Self::Whisper => "faster-whisper",
             Self::Qwen => "Qwen3-ASR",
+            Self::SenseVoice => "SenseVoice",
             Self::Vad => "Silero VAD",
         }
     }
@@ -322,6 +326,14 @@ const QWEN_FILES: &[FileSpec] = &[FileSpec {
     url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2"),
 }];
 
+/// SenseVoice 官方 int8 包：GitHub Release，单模型覆盖中 / 粤 / 英 / 日 / 韩。
+const SENSE_VOICE_FILES: &[FileSpec] = &[FileSpec {
+    path: "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+    size: 163_002_883,
+    sha256: "7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e",
+    url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2"),
+}];
+
 const VAD_FILES: &[FileSpec] = &[FileSpec {
     path: "silero_vad.onnx",
     size: 643_854,
@@ -329,7 +341,7 @@ const VAD_FILES: &[FileSpec] = &[FileSpec {
     url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"),
 }];
 
-/// 首批可安装项：Whisper 六档 + Qwen3-ASR + Silero VAD。
+/// 首批可安装项：Whisper 六档 + Qwen3-ASR + SenseVoice + Silero VAD。
 pub static MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "whisper-tiny",
@@ -451,6 +463,23 @@ pub static MODELS: &[ModelSpec] = &[
         files: QWEN_FILES,
     },
     ModelSpec {
+        id: "sense-voice-zh-en-ja-ko-yue-int8",
+        engine: Engine::SenseVoice,
+        name: "sense-voice-zh-en-ja-ko-yue-int8",
+        title: "SenseVoice 中粤英日韩 int8",
+        description: "sherpa-onnx 的 ONNX 版本，约 155 MB；CPU 上较快，中文与粤语表现好。",
+        config_key: "sense_voice_model",
+        select_value: "sense-voice-zh-en-ja-ko-yue-int8",
+        target: "sense-voice-zh-en-ja-ko-yue-int8",
+        single_file: false,
+        required: &["model.int8.onnx", "tokens.txt"],
+        required_dir: None,
+        package: true,
+        repo: None,
+        revision: None,
+        files: SENSE_VOICE_FILES,
+    },
+    ModelSpec {
         id: "silero-vad",
         engine: Engine::Vad,
         name: "silero_vad",
@@ -547,6 +576,15 @@ pub fn existing_paths(spec: &ModelSpec, models_dir: &Path) -> Vec<PathBuf> {
                 push_existing(&mut paths, models_dir.join(name), Path::exists);
             }
         }
+        Engine::SenseVoice => {
+            for name in [
+                "sense-voice-zh-en-ja-ko-yue-int8",
+                "sensevoice-zh-en-ja-ko-yue-int8",
+                "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+            ] {
+                push_existing(&mut paths, models_dir.join(name), Path::exists);
+            }
+        }
         Engine::Vad => {}
     }
     push_existing(&mut paths, models_dir.join(".downloads").join(spec.id), Path::exists);
@@ -637,7 +675,7 @@ mod tests {
 
     #[test]
     fn 清单_地址与哈希格式正确_镜像只影响_hf项() {
-        assert!(MODELS.len() >= 8);
+        assert!(MODELS.len() >= 9);
         for spec in MODELS {
             assert!(!spec.files.is_empty(), "{}", spec.id);
             assert_eq!(spec.files.iter().map(|file| file.size).sum::<u64>(), spec.download_size());
@@ -656,12 +694,18 @@ mod tests {
         }
         assert!(find("whisper-large-v3-turbo").is_some());
         assert!(find("qwen3-asr-0.6b-int8").is_some());
+        assert!(find("sense-voice-zh-en-ja-ko-yue-int8").is_some());
         let turbo = find("whisper-large-v3-turbo").unwrap();
         assert!(turbo
             .file_url(&turbo.files[0], DownloadSource::Official)
             .contains("/resolve/4df90f75321148c3a29a9e2351b7ddf8f5b115a8/"));
         assert_eq!(vad_spec().engine, Engine::Vad);
         assert!(!vad_spec().mirror_supported());
+        let sense_voice = find("sense-voice-zh-en-ja-ko-yue-int8").unwrap();
+        assert_eq!(sense_voice.engine, Engine::SenseVoice);
+        assert_eq!(sense_voice.download_size(), 163_002_883);
+        assert!(!sense_voice.mirror_supported());
+        assert!(sense_voice.package);
         assert_eq!(DownloadSource::parse(" MIRROR "), Some(DownloadSource::Mirror));
         assert_eq!(DownloadSource::parse("official"), Some(DownloadSource::Official));
         assert_eq!(DownloadSource::parse("ftp"), None);
@@ -717,6 +761,15 @@ mod tests {
         let qwen = find("qwen3-asr-0.6b-int8").unwrap();
         assert_eq!(status(qwen, &dir).primary.as_deref(), Some(qwen_dir.as_path()));
 
+        // SenseVoice 官方安装目录与解压包里的一层父目录都能识别
+        let sense_dir = dir.join("sense-voice-zh-en-ja-ko-yue-int8");
+        std::fs::create_dir_all(&sense_dir).unwrap();
+        for name in ["model.int8.onnx", "tokens.txt"] {
+            std::fs::write(sense_dir.join(name), b"x").unwrap();
+        }
+        let sense = find("sense-voice-zh-en-ja-ko-yue-int8").unwrap();
+        assert_eq!(status(sense, &dir).primary.as_deref(), Some(sense_dir.as_path()));
+
         // VAD 两个已知位置都认
         let vad = temp_dir("vad");
         std::fs::write(vad.join("silero_vad.onnx"), b"x").unwrap();
@@ -746,6 +799,14 @@ mod tests {
         let qwen = find("qwen3-asr-0.6b-int8").unwrap();
         let found = find_packaged_dir(&root, qwen.required, qwen.required_dir).unwrap();
         assert_eq!(found, inner);
+
+        let sense_inner = root.join("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17");
+        std::fs::create_dir_all(&sense_inner).unwrap();
+        for name in ["model.int8.onnx", "tokens.txt"] {
+            std::fs::write(sense_inner.join(name), b"x").unwrap();
+        }
+        let sense = find("sense-voice-zh-en-ja-ko-yue-int8").unwrap();
+        assert_eq!(find_packaged_dir(&root, sense.required, sense.required_dir), Some(sense_inner));
         let _ = std::fs::remove_dir_all(&root);
     }
 
