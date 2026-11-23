@@ -1,15 +1,17 @@
 //! 豆包双向流式 ASR 会话（tokio-tungstenite 实现，移植自 Python `doubao_asr_provider.py`）。
 //!
 //! 一条会话的生命周期：
-//! 1. [`DoubaoSession::connect`]：握手（三个鉴权头）→ 发送全量客户端请求；
+//! 1. [`DoubaoSession::open`]：握手（三个鉴权头）；[`DoubaoSession::begin`]：发送全量客户端请求。
+//!    [`DoubaoSession::connect`] 把两步连着做；
 //! 2. [`DoubaoSession::push`]：16k 单声道 i16 PCM 切帧推流（实时 100ms，批量 200ms）；
 //!    后台读任务持续解析服务端帧，按 definite 前缀推进文本并回调中间结果；
 //! 3. [`DoubaoSession::finish`]：发末包 → 等末包结果/关闭/静默窗口 → 返回整场文字稿；
 //! 4. [`DoubaoSession::cancel`]：用户取消，不算失败。
 //!
-//! 预热：流式录音结束后可以先建好下一条连接（[`DoubaoSession::connect`] 不带回调），按下时用
-//! [`WarmKey`] 确认参数没变、[`DoubaoSession::check_alive`] 确认没断，再 [`DoubaoSession::set_partial_callback`]
-//! 接上本次会话的回调直接推流，省掉握手。服务端对不发音频的连接有空闲上限（见 [`WARM_KEEP`]）。
+//! 预热（待命连接）：握手要 1~3 秒，是按下到出字之间最大的一块。空闲时先 [`DoubaoSession::open`]
+//! 握好手、不发全量请求，连接就能一直备着；按下时用 [`WarmKey`] 确认接入参数没变、
+//! [`DoubaoSession::check_alive`] 与 [`DoubaoSession::idle_for`] 确认没断，再 [`DoubaoSession::begin`]
+//! 发请求并直接推流。保活靠心跳，判活与取值见 [`WARM_STALE`]。
 //!
 //! 约定：密钥只进握手头，不落日志、不进错误文案；连接直连（tungstenite 不读系统代理，
 //! 与 Python 版显式 `proxy=None` 语义一致——境内服务不应绕代理）。
@@ -18,7 +20,7 @@ use super::sauc::{self, ErrorInfo, ErrorKind, ServerFrame};
 use futures_util::stream::{SplitSink, StreamExt};
 use futures_util::SinkExt;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::net::TcpStream;
 use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -35,11 +37,23 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// 流式收尾：硬超时与「收到结果后静默多久算收完」
 pub const FINISH_TIMEOUT: Duration = Duration::from_secs(6);
 pub const FINISH_QUIET: Duration = Duration::from_millis(1200);
-/// 预热连接最多保留多久：取实测服务端空闲断开时长的一半，上限 30 秒。
+/// 预热连接多久没收到任何帧就当它断了（判活用墙上时钟，系统睡眠的时间也算进去）。
 ///
-/// 2026-11-21 实测（`examples/doubao_probe.rs` 的 idle 模式，`bigmodel_async` + `*.duration`，3 次一致）：
-/// 发出全量请求后不发音频，8.4 秒时服务端回错误帧「等包超时」并断开 → 取 4 秒。
-pub const WARM_KEEP: Duration = Duration::from_secs(4);
+/// 2026-11-22 实测（`examples/doubao_probe.rs`，`*.duration` 资源）：
+/// - 发出全量请求后不发音频：8.4 秒时服务端回错误帧「等包超时」并断开，WebSocket Ping 续不了命
+///   ——所以预热连接只握手、不发全量请求；
+/// - 只握手不发请求：服务端每 15 秒发一个 Ping，连接留到约 15 分钟（实测 915 秒）才以
+///   close 1000「connection expired」回收（保活方发现后重建一条即可）；期间随时发全量请求 + 音频
+///   都照常识别（空闲 20 / 40 / 60 / 90 秒各测过），计费时长只算音频；
+/// - 全量请求发出后约 0.35 秒服务端回一个空结果帧（`bigmodel` / `bigmodel_async` / `bigmodel_nostream`
+///   都有），可当作「连接真的还通」的回执（见 [`DoubaoSession::acked`]）。
+///
+/// 取 3 个服务端心跳周期；我们自己也按 [`WARM_PING_INTERVAL`] 发 Ping，对端不主动发心跳时靠 Pong 判活。
+pub const WARM_STALE: Duration = Duration::from_secs(45);
+/// 预热连接的心跳间隔。
+pub const WARM_PING_INTERVAL: Duration = Duration::from_secs(15);
+/// 预热连接备到这么久就换一条新的：服务端约 15 分钟回收连接，别让一场识别开在快到期的连接上。
+pub const WARM_MAX_AGE: Duration = Duration::from_secs(300);
 
 /// 豆包会话错误：带归一化分类（上层据此决定「去修复」还是「立即重试」）。
 #[derive(Debug, Clone)]
@@ -132,6 +146,10 @@ struct TranscriptState {
     error: Option<SttError>,
     frame_count: u64,
     last_frame_at: Option<Instant>,
+    /// 最近一次收到对端任何消息（含 Ping / Pong）的墙上时刻；建连时初始化
+    last_inbound_at: Option<SystemTime>,
+    /// 发出全量请求后服务端是否回过二进制帧
+    acked: bool,
 }
 
 impl TranscriptState {
@@ -217,28 +235,22 @@ pub struct FinishOutcome {
     pub audio_duration_ms: i64,
 }
 
-/// 预热连接的匹配键：建连时写进全量请求的参数（接入点、凭据、语言、断句时长、热词）任何一项变了，
-/// 预热连接就不能用。凭据只存摘要，不多留一份明文。
+/// 预热连接的匹配键：握手时用到的参数（接入点、资源、凭据）任何一项变了，预热连接就不能用。
+/// 语言、断句时长、热词写在全量请求里，按下时才发，不影响复用。凭据只存摘要，不多留一份明文。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WarmKey {
     endpoint: String,
     resource_id: String,
     api_key_digest: String,
-    language: String,
-    end_window_size: i64,
-    hotwords: Vec<String>,
 }
 
 impl WarmKey {
-    pub fn new(config: &DoubaoConfig, language: &str) -> Self {
+    pub fn new(config: &DoubaoConfig) -> Self {
         use sha2::{Digest, Sha256};
         Self {
             endpoint: config.endpoint.trim().to_string(),
             resource_id: config.resource_id.trim().to_string(),
             api_key_digest: crate::clipboard::hex(&Sha256::digest(config.api_key.trim().as_bytes())),
-            language: language.to_string(),
-            end_window_size: config.end_window_size,
-            hotwords: config.hotwords.clone(),
         }
     }
 }
@@ -258,8 +270,10 @@ pub struct DoubaoSession {
     pub connect_id: String,
     /// 服务端 X-Tt-Logid：排查时提供给火山侧定位，不含凭据
     pub log_id: String,
-    /// 建连完成（全量请求已发出）的时刻：预热连接据此判断是否过期
+    /// 握手完成的时刻（日志里看预热连接备了多久）
     pub opened_at: Instant,
+    /// 全量请求是否已发出：发出之后才能推音频
+    begun: bool,
 }
 
 impl DoubaoSession {
@@ -270,6 +284,13 @@ impl DoubaoSession {
         context: &str,
         on_partial: Option<PartialCallback>,
     ) -> Result<Self, SttError> {
+        let mut session = Self::open(config).await?;
+        session.begin(config, language, context, on_partial).await?;
+        Ok(session)
+    }
+
+    /// 只握手、不发全量请求：连接可以一直备着（预热），用之前再 [`Self::begin`]。
+    pub async fn open(config: &DoubaoConfig) -> Result<Self, SttError> {
         config.ensure()?;
         let connect_id = uuid::Uuid::new_v4().to_string();
         let mut request = config.endpoint.as_str().into_client_request().map_err(|e| {
@@ -293,7 +314,10 @@ impl DoubaoSession {
             "连接豆包双向流式 ASR"
         );
         let handshake_started = Instant::now();
-        let connected = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(request)).await;
+        // 关掉 Nagle：音频是 100ms 一个的小包，攒包只会让它晚到
+        let connected =
+            tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async_with_config(request, None, true))
+                .await;
         let (stream, response) = match connected {
             Err(_) => {
                 return Err(SttError::new(ErrorKind::Network, "连接豆包语音服务超时（10 秒）", true, "检查网络后重试"));
@@ -318,22 +342,21 @@ impl DoubaoSession {
         let log_id = response.headers().get("x-tt-logid").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
 
         tracing::info!(connect_id = %connect_id, "豆包流式握手完成（{:?}）", handshake_started.elapsed());
-        let (mut writer, mut read) = stream.split();
-        let uid = format!("att-desktop-{}", &connect_id[..8]);
-        let payload = sauc::build_bigmodel_request(&uid, language, context, &config.hotwords, config.end_window_size);
-        if let Err(error) = writer.send(Message::binary(sauc::build_full_client_request(&payload))).await {
-            return Err(SttError::new(ErrorKind::Network, format!("发送请求失败（{error}）"), true, "重新开始录音"));
-        }
+        let (writer, mut read) = stream.split();
 
         let shared = Arc::new(Shared {
-            state: Mutex::new(TranscriptState::default()),
+            state: Mutex::new(TranscriptState { last_inbound_at: Some(SystemTime::now()), ..Default::default() }),
             notify: Notify::new(),
-            on_partial: Mutex::new(on_partial),
+            on_partial: Mutex::new(None),
         });
         let reader_shared = shared.clone();
         let reader_connect_id = connect_id.clone();
         let reader = tokio::spawn(async move {
             while let Some(message) = read.next().await {
+                if message.is_ok() {
+                    // 任何消息（含服务端心跳 Ping、我们心跳的 Pong）都说明连接还通
+                    reader_shared.lock().last_inbound_at = Some(SystemTime::now());
+                }
                 match message {
                     Ok(Message::Binary(data)) => {
                         let partial = handle_frame(&reader_shared, &data, &reader_connect_id);
@@ -380,12 +403,49 @@ impl DoubaoSession {
             connect_id,
             log_id,
             opened_at: Instant::now(),
+            begun: false,
         })
     }
 
-    /// 接上（或换掉）中间结果回调：预热连接在按下复用时调用，之后的结果帧回调给本次会话。
-    pub fn set_partial_callback(&self, on_partial: Option<PartialCallback>) {
+    /// 发送全量请求，开始一场识别；之后才能 [`Self::push`]。`on_partial` 在每个结果帧后以整场当前文本回调。
+    pub async fn begin(
+        &mut self,
+        config: &DoubaoConfig,
+        language: &str,
+        context: &str,
+        on_partial: Option<PartialCallback>,
+    ) -> Result<(), SttError> {
+        self.check_alive()?;
         *self.shared.on_partial.lock().unwrap_or_else(|e| e.into_inner()) = on_partial;
+        let uid = format!("att-desktop-{}", &self.connect_id[..8]);
+        let payload = sauc::build_bigmodel_request(&uid, language, context, &config.hotwords, config.end_window_size);
+        if let Err(error) = self.writer.send(Message::binary(sauc::build_full_client_request(&payload))).await {
+            return Err(SttError::new(ErrorKind::Network, format!("发送请求失败（{error}）"), true, "重新开始录音"));
+        }
+        self.begun = true;
+        Ok(())
+    }
+
+    /// 发一个 WebSocket Ping（预热连接的心跳）：对端回的 Pong 会刷新 [`Self::idle_for`]。
+    pub async fn ping(&mut self) -> Result<(), SttError> {
+        self.check_alive()?;
+        self.writer
+            .send(Message::Ping(Vec::new().into()))
+            .await
+            .map_err(|error| SttError::new(ErrorKind::Network, format!("心跳发送失败（{error}）"), true, ""))
+    }
+
+    /// 距上次收到对端任何消息过了多久（墙上时钟：系统睡眠的时间也算，醒来后据此发现连接早断了）。
+    /// 系统时钟被往回拨时按「刚收到」算，宁可多信一次、由回执超时兜底。
+    pub fn idle_for(&self) -> Duration {
+        let last = self.shared.lock().last_inbound_at;
+        last.and_then(|at| at.elapsed().ok()).unwrap_or_default()
+    }
+
+    /// 全量请求发出后服务端是否回过帧（正常约 0.35 秒内回一个空结果帧）：
+    /// 复用预热连接时据此确认它不是一条「写得进去、其实早断了」的死连接。
+    pub fn acked(&self) -> bool {
+        self.shared.lock().acked
     }
 
     /// 连接被服务端关闭时的 close code（预热实测与日志用）；还开着时为 None。
@@ -424,6 +484,9 @@ impl DoubaoSession {
     /// 追加 16k 单声道 PCM：按帧长切帧发送，不足一帧的留在缓冲里。
     pub async fn push(&mut self, pcm: &[i16]) -> Result<(), SttError> {
         self.check_alive()?;
+        if !self.begun {
+            return Err(SttError::new(ErrorKind::Protocol, "识别请求还没发出，不能推送音频", false, ""));
+        }
         self.buffer.extend_from_slice(pcm);
         while self.buffer.len() >= self.frame_samples {
             let chunk: Vec<i16> = self.buffer.drain(..self.frame_samples).collect();
@@ -509,6 +572,7 @@ impl Drop for DoubaoSession {
 /// 解析一帧并更新状态；文本或确认进度有变化时返回新的中间结果（供回调）。
 fn handle_frame(shared: &Shared, data: &[u8], connect_id: &str) -> Option<Partial> {
     let mut state = shared.lock();
+    state.acked = true;
     match sauc::parse_server_frame(data) {
         ServerFrame::Error { code, message } => {
             let info = sauc::classify_sauc_error(code, &message);
@@ -600,15 +664,16 @@ mod tests {
         }
     }
 
-    /// 本地 WebSocket 桩：收下全量请求后，`on_audio` 为真时每收到一个音频包回一个结果帧，
-    /// 否则一直不回、直到 `close_after` 到点主动关闭（模拟服务端空闲断开）。
+    /// 本地 WebSocket 桩，行为照着实测的服务端：第一个二进制帧是全量请求，回一个空结果帧当回执；
+    /// 之后 `on_audio` 为真时每收到一个音频包回一个结果帧。`close_after` 这么久没收到任何消息就主动关闭
+    /// （模拟服务端断开）；Ping 由 tungstenite 自动回 Pong。
     async fn stub_server(on_audio: bool, close_after: Option<Duration>) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-            let _request = ws.next().await;
+            let mut requested = false;
             let mut sent = 0;
             loop {
                 let next = match close_after {
@@ -622,6 +687,11 @@ mod tests {
                     None => ws.next().await,
                 };
                 match next {
+                    Some(Ok(Message::Binary(_))) if !requested => {
+                        requested = true;
+                        let frame = sauc::build_server_result_frame(&json!({ "result": { "text": "" } }), false, false);
+                        let _ = ws.send(Message::binary(frame)).await;
+                    }
                     Some(Ok(Message::Binary(_))) if on_audio => {
                         sent += 1;
                         let text = if sent == 1 { "你好" } else { "你好世界" };
@@ -638,36 +708,45 @@ mod tests {
     }
 
     #[test]
-    fn 预热匹配键_参数变了就不复用_只预热按时长计费() {
+    fn 预热匹配键_只看握手参数_只预热按时长计费() {
         let config = local_config("ws://127.0.0.1:1".into());
-        let key = WarmKey::new(&config, "zh");
-        assert_eq!(key, WarmKey::new(&config.clone(), "zh"));
-        assert_ne!(key, WarmKey::new(&config, "en"), "语言变了");
-        for change in [
-            DoubaoConfig { api_key: "other".into(), ..config.clone() },
-            DoubaoConfig { resource_id: "volc.seedasr.sauc.concurrent".into(), ..config.clone() },
+        let key = WarmKey::new(&config);
+        // 断句时长、热词写在全量请求里，按下时才发：变了照样复用
+        for same in [
             DoubaoConfig { end_window_size: 1200, ..config.clone() },
             DoubaoConfig { hotwords: Vec::new(), ..config.clone() },
         ] {
-            assert_ne!(key, WarmKey::new(&change, "zh"), "{change:?}");
+            assert_eq!(key, WarmKey::new(&same), "{same:?}");
+        }
+        for change in [
+            DoubaoConfig { api_key: "other".into(), ..config.clone() },
+            DoubaoConfig { resource_id: "volc.seedasr.sauc.concurrent".into(), ..config.clone() },
+            DoubaoConfig { endpoint: "ws://127.0.0.1:2".into(), ..config.clone() },
+        ] {
+            assert_ne!(key, WarmKey::new(&change), "{change:?}");
         }
         assert!(!format!("{key:?}").contains("test-key"), "匹配键里不留明文凭据");
         assert!(warm_allowed(&config));
         assert!(!warm_allowed(&DoubaoConfig { resource_id: "volc.seedasr.sauc.concurrent".into(), ..config }));
-        assert!(WARM_KEEP <= Duration::from_secs(30));
+        assert!(WARM_PING_INTERVAL * 2 < WARM_STALE, "漏一次心跳不该被当成断开");
+        assert!(WARM_MAX_AGE < Duration::from_secs(900), "要赶在服务端回收之前换新");
     }
 
     #[tokio::test]
-    async fn 预热连接_按下时接上回调_推流收到中间结果() {
+    async fn 预热连接_按下时才发请求_推流收到中间结果() {
         let endpoint = stub_server(true, None).await;
-        // 预热：建连时还没有会话回调
-        let mut session = DoubaoSession::connect(&local_config(endpoint), "zh", "", None).await.unwrap();
+        let config = local_config(endpoint);
+        // 预热：只握手，不发全量请求
+        let mut session = DoubaoSession::open(&config).await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(session.check_alive().is_ok());
+        assert!(!session.acked());
+        assert!(session.push(&[0i16; 16]).await.is_err(), "请求没发出前不能推音频");
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
-        session.set_partial_callback(Some(Arc::new(move |partial: Partial| sink.lock().unwrap().push(partial.text))));
+        let callback: PartialCallback = Arc::new(move |partial: Partial| sink.lock().unwrap().push(partial.text));
+        session.begin(&config, "zh", "", Some(callback)).await.unwrap();
         session.push(&vec![0i16; sauc::STREAM_CHUNK_SAMPLES * 2]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             while seen.lock().unwrap().len() < 2 {
@@ -677,15 +756,37 @@ mod tests {
         .await
         .expect("接上的回调应收到中间结果");
         assert_eq!(*seen.lock().unwrap(), ["你好", "你好世界"]);
+        assert!(session.acked(), "服务端回过帧");
         session.cancel().await;
     }
 
     #[tokio::test]
-    async fn 预热连接_服务端空闲断开后_check_alive_报错() {
+    async fn 预热连接_心跳的回应刷新空闲时长() {
+        let endpoint = stub_server(false, None).await;
+        let mut session = DoubaoSession::open(&local_config(endpoint)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(session.idle_for() >= Duration::from_millis(100), "没有任何来帧，空闲时长在涨");
+        session.ping().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while session.idle_for() >= Duration::from_millis(100) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("收到 Pong 后空闲时长应归零");
+        assert!(!session.acked(), "心跳不算识别请求的回执");
+        session.cancel().await;
+    }
+
+    #[tokio::test]
+    async fn 预热连接_服务端断开后_不能再用() {
         let endpoint = stub_server(false, Some(Duration::from_millis(100))).await;
-        let session = DoubaoSession::connect(&local_config(endpoint), "zh", "", None).await.unwrap();
+        let config = local_config(endpoint);
+        let mut session = DoubaoSession::open(&config).await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), session.wait_closed()).await.expect("应等到断开");
         assert!(session.check_alive().is_err(), "断开的预热连接不能再用");
+        assert!(session.begin(&config, "zh", "", None).await.is_err());
+        assert!(session.ping().await.is_err());
     }
 
     #[test]

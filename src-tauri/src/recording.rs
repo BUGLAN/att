@@ -31,10 +31,16 @@
 //! 典型是按住十几秒没说话、底噪被识别成一个词），三种模式一律不送优化、不复制也不输入，
 //! 悬浮窗提示检查麦克风；记录照常保存（error 字段注明），便于回听排查。
 //!
-//! 豆包流式预热：流式录音结束后（按时长计费的资源才做），后台再建一条连接留 [`doubao::WARM_KEEP`]；
-//! 这段时间内再按下、且引擎 / 模式 / 接入参数没变，就直接复用它推流，省掉握手（实测首字从 2.2~2.9s 降到 0.8~1.4s）。
-//! 预热槽只在 Actor 里推进；复用的连接在出字前就断了，会话任务静默改为新建并重发已收的音频。
-//! 微信输入法没有预热：每次流式录音都由输入法内的常驻编码器新建一条 voice_id。
+//! 豆包流式预热（待命连接）：设置是「流式 + 豆包 + 按时长计费」时，空闲期间一直备着一条握好手、
+//! 还没发识别请求的连接（握手 1~3 秒，是按下到出字之间最大的一块）。按下时接入参数没变就直接在它上面
+//! 发请求推流，实测首字从按下后 2.6~3.8s 降到 1.6s 左右（基本只剩开口说话本身的时间）。
+//! - 何时建：启动后、每段录音结束后、连接断开后；[`WARM_TICK`] 定时巡检兜底（改了设置、建连失败后退避重试）；
+//! - 保活与判活在 [`keep_warm`]：定时心跳，[`doubao::WARM_STALE`] 没有任何来帧就重建，
+//!   备满 [`doubao::WARM_MAX_AGE`] 也换一条新的（服务端约 15 分钟回收连接）；
+//! - 复用的连接可能是「写得进去、其实早断了」的死连接（刚从睡眠醒来、网络切换）：发出请求后
+//!   [`WARM_ACK_TIMEOUT`] 内没有回执、或出字前推流失败，会话任务静默改为新建并重发已收的音频。
+//!
+//! 预热槽只在 Actor 里推进。微信输入法没有预热：每次流式录音都由输入法内的常驻编码器新建一条 voice_id。
 //!
 //! 三防御语义在这里天然成立：
 //! - 不丢开头：采集先于建连启动，建连期间的样本缓存在会话任务里，就绪后统一冲刷；
@@ -230,19 +236,99 @@ enum Cmd {
     FinalizeTimeout(u64, bool),
     /// 按住模式的松开缓冲到点（会话 id, 缓冲序号）：期间没重新按下才真正收尾
     ReleaseGrace(u64, u64),
-    /// 豆包预热连接到期或建连失败（预热序号）：还没被取走就关掉
-    WarmExpired(u64),
+    /// 豆包预热连接没了（预热序号, 握手后活了多久；建连失败为 0）：断开 / 无响应 / 建连失败
+    WarmEnded(u64, Duration),
+    /// 预热巡检：该有预热连接而没有时建一条，设置变了就关掉
+    WarmTick,
 }
 
-/// 预热连接的建连结果：预热任务建好后送进来，按下时由会话任务取走。
+/// 预热连接的交接：按下时会话任务从这里拿到握好手的连接（或建连失败的原因）。
 type WarmReceiver = oneshot::Receiver<Result<doubao::DoubaoSession, doubao::SttError>>;
+type WarmSender = oneshot::Sender<Result<doubao::DoubaoSession, doubao::SttError>>;
 
-/// 豆包预热槽（只在 Actor 里读写）：上一段流式录音结束后建的下一条连接。
+/// 豆包预热槽（只在 Actor 里读写）。连接本身由 [`keep_warm`] 任务拿着保活，这里只留认领它的口子。
 struct WarmSlot {
     generation: u64,
-    /// 建连时的参数：按下时参数变了就不能用
+    /// 握手时的参数：按下时参数变了就不能用
     key: doubao::WarmKey,
-    session: WarmReceiver,
+    /// 认领：把交接通道发给保活任务，它握好手就把连接送过去；这个口子被丢掉时保活任务关掉连接
+    claim: oneshot::Sender<WarmSender>,
+}
+
+/// 预热巡检间隔：启动后第一条预热连接、改设置后的跟进、建连失败后的重试都靠它。
+const WARM_TICK: Duration = Duration::from_secs(15);
+/// 启动后多久做第一次巡检（避开启动高峰）。
+const WARM_FIRST_TICK: Duration = Duration::from_secs(3);
+/// 预热连接活过这么久才算「建成过」：之后断开立刻重建；没活到就断的按失败退避，免得对着坏网络反复握手。
+const WARM_HEALTHY: Duration = Duration::from_secs(30);
+/// 预热连续失败时的最长重试间隔。
+const WARM_RETRY_MAX: Duration = Duration::from_secs(300);
+/// 复用预热连接发出识别请求后，等服务端回执的上限（正常约 0.35 秒）；超过就当死连接、改为新建。
+const WARM_ACK_TIMEOUT: Duration = Duration::from_millis(1500);
+/// 等回执期间的轮询间隔（音频已经停了、没有别的事件唤醒循环时用）。
+const WARM_ACK_POLL: Duration = Duration::from_millis(50);
+
+/// 预热第 `failures` 次连续失败后隔多久再试：15s、30s、60s… 封顶 [`WARM_RETRY_MAX`]。
+fn warm_backoff(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(8);
+    (WARM_TICK * 2u32.pow(doublings)).min(WARM_RETRY_MAX)
+}
+
+/// 预热连接的保活任务：握手 → 定时心跳 → 被认领时交出去。返回握手后活了多久；
+/// `None` 表示连接已交出或槽已被丢弃（Actor 自己知道，不用回报）。
+async fn keep_warm(config: doubao::DoubaoConfig, mut claim: oneshot::Receiver<WarmSender>) -> Option<Duration> {
+    let started = Instant::now();
+    let mut session = match doubao::DoubaoSession::open(&config).await {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::info!("豆包预热建连失败，按下时照常新建：{error}");
+            // 已经有人在等这条连接：把失败告诉它，让它马上新建
+            if let Ok(reply) = claim.try_recv() {
+                let _ = reply.send(Err(error));
+            }
+            return Some(Duration::ZERO);
+        }
+    };
+    tracing::info!(connect_id = %session.connect_id, "豆包预热连接已建好（{:?}）", started.elapsed());
+    let mut heartbeat = tokio::time::interval(doubao::WARM_PING_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let reason = loop {
+        tokio::select! {
+            biased;
+            claimed = &mut claim => {
+                match claimed {
+                    Ok(reply) => {
+                        if let Err(Ok(session)) = reply.send(Ok(session)) {
+                            // 会话任务已经不在了（刚按下就取消）
+                            session.cancel().await;
+                        }
+                    }
+                    Err(_) => {
+                        tracing::debug!(connect_id = %session.connect_id, "豆包预热连接关闭（不再需要）");
+                        session.cancel().await;
+                    }
+                }
+                return None;
+            }
+            _ = session.wait_closed() => break "服务端断开".to_string(),
+            _ = heartbeat.tick() => {
+                if session.opened_at.elapsed() >= doubao::WARM_MAX_AGE {
+                    break "到龄换新".to_string();
+                }
+                let idle = session.idle_for();
+                if idle >= doubao::WARM_STALE {
+                    break format!("{}s 没有任何来帧", idle.as_secs());
+                }
+                if let Err(error) = session.ping().await {
+                    break error.to_string();
+                }
+            }
+        }
+    };
+    let lived = session.opened_at.elapsed();
+    tracing::info!(connect_id = %session.connect_id, "豆包预热连接结束（{reason}，已待命 {lived:?}）");
+    session.cancel().await;
+    Some(lived)
 }
 
 /// 一次优化从哪来：决定提示词、结果要不要强制输出、收尾文案。
@@ -402,9 +488,18 @@ impl RecordingController {
             next_release: 0,
             warm: None,
             next_warm: 0,
+            warm_failures: 0,
+            warm_retry_at: None,
             snapshot: snapshot.clone(),
         };
         tauri::async_runtime::spawn(actor.run(rx));
+        let tick_tx = tx.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(WARM_FIRST_TICK).await;
+            while tick_tx.send(Cmd::WarmTick).is_ok() {
+                tokio::time::sleep(WARM_TICK).await;
+            }
+        });
         Self { tx, snapshot, cancel_binding, core: controller_core }
     }
 
@@ -464,6 +559,9 @@ struct Actor {
     /// 豆包流式预热连接（见模块说明）
     warm: Option<WarmSlot>,
     next_warm: u64,
+    /// 预热连续失败次数与下次允许重试的时刻（退避，见 [`warm_backoff`]）
+    warm_failures: u32,
+    warm_retry_at: Option<Instant>,
     snapshot: Arc<Mutex<Value>>,
 }
 
@@ -502,83 +600,96 @@ impl Actor {
                 }
                 Cmd::Done(id, outcome) => {
                     if self.is_current(id) {
-                        let streaming = self.active.as_ref().is_some_and(|active| active.mode == Mode::Streaming);
                         self.finish(outcome).await;
-                        if streaming {
-                            self.prewarm();
-                        }
                     }
+                    // 会话任务结束（含被取消的）说明刚用掉一条连接：马上备好下一条，不等巡检与退避
+                    self.warm_retry_at = None;
+                    self.maintain_warm();
                 }
                 Cmd::Optimized(id, record_id, outcome, typing) => {
                     self.on_optimized(id, record_id, outcome, typing).await
                 }
                 Cmd::FinalizeTimeout(id, hard) => self.on_finalize_timeout(id, hard).await,
                 Cmd::ReleaseGrace(id, token) => self.on_release_grace(id, token),
-                Cmd::WarmExpired(generation) => {
+                Cmd::WarmEnded(generation, lived) => {
                     if self.warm.as_ref().is_some_and(|slot| slot.generation == generation) {
-                        self.drop_warm("到期");
+                        self.warm = None;
+                        if lived >= WARM_HEALTHY {
+                            // 用了一阵才断（服务端回收、网络切换）：立刻重建
+                            self.warm_failures = 0;
+                            self.warm_retry_at = None;
+                            self.maintain_warm();
+                        } else {
+                            self.warm_failures += 1;
+                            self.warm_retry_at = Some(Instant::now() + warm_backoff(self.warm_failures));
+                        }
                     }
                 }
+                Cmd::WarmTick => self.maintain_warm(),
             }
         }
     }
 
-    /// 流式录音结束后预热下一条豆包连接：只在设置仍是「流式 + 豆包 + 按时长计费」时做。
-    /// 建连失败、到期都静默丢弃，下一次按下照旧新建。
-    fn prewarm(&mut self) {
-        self.drop_warm("被新的预热替换");
+    /// 当前设置下该不该备着预热连接：流式 + 豆包 + 凭据齐全 + 按时长计费。该备时返回接入配置。
+    fn warm_target(&self) -> Option<doubao::DoubaoConfig> {
         let settings = self.core.settings();
         // 只看设置、不走 Engine::resolve（它对本地引擎有预加载的副作用）
         if settings.recording_mode != "streaming" || settings.asr_provider != "doubao_asr" {
-            return;
+            return None;
         }
         let config = stt::doubao_config(&self.core);
-        if config.ensure().is_err() || !doubao::warm_allowed(&config) {
+        (config.ensure().is_ok() && doubao::warm_allowed(&config)).then_some(config)
+    }
+
+    /// 让预热槽跟上当前设置：不该有（或接入参数变了）就关掉，该有而没有就建一条。
+    /// 流式录音进行中不建（那条连接正在用，结束时会再来一次）；连续失败后在退避期内不建。
+    fn maintain_warm(&mut self) {
+        let target = self.warm_target();
+        if let Some(slot) = &self.warm {
+            if target.as_ref().is_some_and(|config| doubao::WarmKey::new(config) == slot.key) {
+                return;
+            }
+            self.drop_warm("设置已变");
+        }
+        let Some(config) = target else { return };
+        if self.active.as_ref().is_some_and(|active| active.mode == Mode::Streaming) {
             return;
         }
-        let language = settings.asr_language.clone();
+        if self.warm_retry_at.is_some_and(|at| Instant::now() < at) {
+            return;
+        }
         self.next_warm += 1;
         let generation = self.next_warm;
-        let (session_tx, session_rx) = oneshot::channel();
-        self.warm = Some(WarmSlot { generation, key: doubao::WarmKey::new(&config, &language), session: session_rx });
+        let (claim_tx, claim_rx) = oneshot::channel();
+        self.warm = Some(WarmSlot { generation, key: doubao::WarmKey::new(&config), claim: claim_tx });
         let tx = self.tx.clone();
         tauri::async_runtime::spawn(async move {
-            let started = Instant::now();
-            match doubao::DoubaoSession::connect(&config, &language, "", None).await {
-                Ok(session) => {
-                    tracing::info!(connect_id = %session.connect_id, "豆包预热连接已建好（{:?}）", started.elapsed());
-                    // 已经没人要（新录音开始了、槽被换掉）时这里会被丢弃，连接随之关闭
-                    let _ = session_tx.send(Ok(session));
-                    tokio::time::sleep(doubao::WARM_KEEP).await;
-                }
-                Err(error) => {
-                    tracing::info!("豆包预热建连失败，下次按下照常新建：{error}");
-                    let _ = session_tx.send(Err(error));
-                }
+            if let Some(lived) = keep_warm(config, claim_rx).await {
+                let _ = tx.send(Cmd::WarmEnded(generation, lived));
             }
-            let _ = tx.send(Cmd::WarmExpired(generation));
         });
     }
 
-    /// 关掉预热连接（还在建连的随预热任务结束）。
+    /// 关掉预热连接：丢掉认领口子，保活任务随之关闭连接（还在握手的握完就关）。
     fn drop_warm(&mut self, reason: &str) {
-        if let Some(mut slot) = self.warm.take() {
-            if let Ok(Ok(session)) = slot.session.try_recv() {
-                tracing::debug!(connect_id = %session.connect_id, "豆包预热连接关闭（{reason}）");
-                tauri::async_runtime::spawn(session.cancel());
-            }
+        if self.warm.take().is_some() {
+            tracing::debug!("豆包预热连接不再保留（{reason}）");
         }
     }
 
-    /// 按下流式录音时取走参数一致的预热连接；参数变了（换了引擎设置 / 语言 / 热词）就关掉。
-    fn take_warm(&mut self, config: &doubao::DoubaoConfig, language: &str) -> Option<WarmReceiver> {
+    /// 按下流式录音时认领预热连接；接入参数变了（换了接入点 / 资源 / 凭据）就关掉。
+    /// 返回的通道里稍后会收到握好手的连接：还在握手时由会话任务等它。
+    fn take_warm(&mut self, config: &doubao::DoubaoConfig) -> Option<WarmReceiver> {
         let slot = self.warm.take()?;
-        if slot.key == doubao::WarmKey::new(config, language) {
-            return Some(slot.session);
+        if slot.key != doubao::WarmKey::new(config) {
+            tracing::debug!("豆包预热连接不再保留（接入参数已变）");
+            return None;
         }
-        self.warm = Some(slot);
-        self.drop_warm("识别参数已变");
-        None
+        let (reply_tx, reply_rx) = oneshot::channel();
+        // 保活任务刚好结束（连接断了，回报还在路上）时认领不到，照常新建
+        slot.claim.send(reply_tx).ok()?;
+        self.warm_failures = 0;
+        Some(reply_rx)
     }
 
     fn is_current(&self, id: u64) -> bool {
@@ -872,18 +983,12 @@ impl Actor {
             Err(message) => return self.fail_start(message),
         };
         let language = settings.asr_language.clone();
-        // 预热连接只给豆包：换了引擎 / 模式就关掉，参数变了也不复用
+        // 预热连接只给豆包流式用；别的录音不动它（设置真变了由巡检关掉）
         let warm = match streaming_config.as_ref() {
-            Some(StreamingConfig::Doubao(config)) => self.take_warm(config, &language),
-            None => {
-                self.drop_warm("本次不是豆包流式录音");
-                None
-            }
+            Some(StreamingConfig::Doubao(config)) => self.take_warm(config),
+            None => None,
             #[cfg(windows)]
-            Some(StreamingConfig::WeType(_)) => {
-                self.drop_warm("本次不是豆包流式录音");
-                None
-            }
+            Some(StreamingConfig::WeType(_)) => None,
         };
         let asr = AsrInfo {
             provider: engine.provider(),
@@ -1803,8 +1908,8 @@ async fn mute_output() -> bool {
     .unwrap_or(false)
 }
 
-/// 按下时预热连接还在建连，最多等它这么久（正常 1~1.5 秒建好）；再久就当网络不好、直接新建，
-/// 两段加起来不至于超出收尾看门狗给建连留的预算太多。
+/// 按下时预热连接还在握手，最多等它这么久（正常 1~1.5 秒握好，它比现在新建起步早）；再久就当网络不好、
+/// 直接新建，两段加起来不至于超出收尾看门狗给建连留的预算太多。
 const WARM_CONNECT_WAIT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug)]
@@ -1882,6 +1987,15 @@ impl StreamingSession {
         }
     }
 
+    /// 识别请求发出后服务端是否回过帧（复用预热连接时确认它没死）。
+    fn acked(&self) -> bool {
+        match self {
+            StreamingSession::Doubao(session) => session.acked(),
+            #[cfg(windows)]
+            StreamingSession::WeType(_) => true,
+        }
+    }
+
     async fn push(&mut self, samples: &[i16]) -> Result<(), String> {
         match self {
             StreamingSession::Doubao(session) => session.push(samples).await.map_err(|error| error.to_string()),
@@ -1943,7 +2057,7 @@ fn connect_fresh(config: &StreamingConfig, language: &str, on_partial: Streaming
     })
 }
 
-/// 优先用预热连接：等它建好（最多 [`WARM_CONNECT_WAIT`]）、确认没断就接上回调直接用；否则照旧新建。
+/// 优先用预热连接：等它握好手（最多 [`WARM_CONNECT_WAIT`]）、确认没断就发识别请求直接用；否则照旧新建。
 fn connect_or_reuse(
     config: &doubao::DoubaoConfig,
     language: &str,
@@ -1953,24 +2067,42 @@ fn connect_or_reuse(
     let streaming_config = StreamingConfig::Doubao(config.clone());
     let Some(warm) = warm else { return connect_fresh(&streaming_config, language, on_partial) };
     let fresh = connect_fresh(&streaming_config, language, on_partial.clone());
+    let config = config.clone();
+    let language = language.to_string();
     Box::pin(async move {
         let reason = match tokio::time::timeout(WARM_CONNECT_WAIT, warm).await {
-            Ok(Ok(Ok(session))) => match session.check_alive() {
-                Ok(()) => {
-                    tracing::info!(
-                        connect_id = %session.connect_id,
-                        "复用豆包预热连接（已空闲 {:?}）",
-                        session.opened_at.elapsed()
-                    );
-                    let callback = on_partial.clone();
-                    let adapter: doubao::PartialCallback = Arc::new(move |partial: doubao::Partial| {
-                        callback(StreamingPartial { text: partial.text, pending_chars: partial.pending_chars });
-                    });
-                    session.set_partial_callback(Some(adapter));
-                    return (Ok(StreamingSession::Doubao(session)), true);
+            Ok(Ok(Ok(mut session))) => {
+                let idle = session.idle_for();
+                let begun = match session.check_alive() {
+                    Err(error) => Err(format!("已断开：{error}")),
+                    // 心跳早该到了却没到（典型是刚从睡眠醒来）：别在死连接上浪费回执超时
+                    Ok(()) if idle >= doubao::WARM_STALE => Err(format!("{}s 没有任何来帧", idle.as_secs())),
+                    Ok(()) => {
+                        let callback = on_partial.clone();
+                        let adapter: doubao::PartialCallback = Arc::new(move |partial: doubao::Partial| {
+                            callback(StreamingPartial { text: partial.text, pending_chars: partial.pending_chars });
+                        });
+                        session
+                            .begin(&config, &language, "", Some(adapter))
+                            .await
+                            .map_err(|error| format!("发送识别请求失败：{error}"))
+                    }
+                };
+                match begun {
+                    Ok(()) => {
+                        tracing::info!(
+                            connect_id = %session.connect_id,
+                            "复用豆包预热连接（已待命 {:?}）",
+                            session.opened_at.elapsed()
+                        );
+                        return (Ok(StreamingSession::Doubao(session)), true);
+                    }
+                    Err(reason) => {
+                        session.cancel().await;
+                        reason
+                    }
                 }
-                Err(error) => format!("已断开：{error}"),
-            },
+            }
             Ok(Ok(Err(error))) => format!("预热建连失败：{error}"),
             Ok(Err(_)) => "预热任务已结束".to_string(),
             Err(_) => "预热建连超时".to_string(),
@@ -1993,21 +2125,52 @@ fn connect_stream(
     }
 }
 
-/// 流式会话：建连与采集并行，建连期间样本先缓存，就绪后冲刷；音频通道关闭即发末包收尾。
-///
-/// 有预热连接时先试它；复用的连接在出字前推流失败（服务端恰好在按下时断开）就改为新建、
-/// 把已收的音频重发一遍，用户无感。
+/// 流式会话任务：把中间结果接到界面（悬浮窗 + 前端事件），识别本身在 [`streaming_session`]。
 #[allow(clippy::too_many_arguments)]
 async fn streaming_task(
     id: u64,
     config: StreamingConfig,
     language: String,
     warm: Option<WarmReceiver>,
-    mut audio_rx: mpsc::UnboundedReceiver<Vec<i16>>,
-    mut cancel_rx: oneshot::Receiver<()>,
+    audio_rx: mpsc::UnboundedReceiver<Vec<i16>>,
+    cancel_rx: oneshot::Receiver<()>,
     heard: Arc<AtomicBool>,
     live: Arc<AtomicBool>,
     app: AppHandle,
+    tx: mpsc::UnboundedSender<Cmd>,
+) {
+    let on_text: StreamingCallback = Arc::new(move |partial: StreamingPartial| {
+        let StreamingPartial { text, pending_chars } = partial;
+        // 已经出字就算说过话（小声说话电平可能压在阈值下，但识别出来了）
+        if !text.trim().is_empty() {
+            heard.store(true, Ordering::Relaxed);
+        }
+        if live.load(Ordering::SeqCst) {
+            // pending：末尾还没确认的字数，悬浮窗把这截显示成淡白色。
+            // live 只挡已结束的旧会话；与松开并发的那一刻由 update_partial 在锁内按「仍是聽」再判一次
+            crate::floating::update_partial(
+                &app,
+                json!({ "phase": "recording", "mode": "streaming", "text": text, "pending": pending_chars, "duration": 0 }),
+            );
+        }
+        let _ = app.emit("recording:partial", json!({ "text": text }));
+    });
+    streaming_session(id, config, language, warm, audio_rx, cancel_rx, on_text, tx).await;
+}
+
+/// 流式会话：建连与采集并行，建连期间样本先缓存，就绪后冲刷；音频通道关闭即发末包收尾。
+///
+/// 有预热连接时先试它；复用的连接在出字前推流失败、或发出识别请求后迟迟没有回执（死连接）
+/// 就改为新建、把已收的音频重发一遍，用户无感。
+#[allow(clippy::too_many_arguments)]
+async fn streaming_session(
+    id: u64,
+    config: StreamingConfig,
+    language: String,
+    warm: Option<WarmReceiver>,
+    mut audio_rx: mpsc::UnboundedReceiver<Vec<i16>>,
+    mut cancel_rx: oneshot::Receiver<()>,
+    on_text: StreamingCallback,
     tx: mpsc::UnboundedSender<Cmd>,
 ) {
     let started = Instant::now();
@@ -2015,23 +2178,11 @@ async fn streaming_task(
     let mut ready_at: Option<Duration> = None;
     let first_text_at: Arc<OnceLock<Duration>> = Arc::new(OnceLock::new());
     let first_text_mark = first_text_at.clone();
-    let partial_app = app.clone();
     let on_partial: StreamingCallback = Arc::new(move |partial: StreamingPartial| {
-        let StreamingPartial { text, pending_chars } = partial;
-        // 已经出字就算说过话（小声说话电平可能压在阈值下，但识别出来了）
-        if !text.trim().is_empty() {
-            heard.store(true, Ordering::Relaxed);
+        if !partial.text.trim().is_empty() {
             let _ = first_text_mark.set(started.elapsed());
         }
-        if live.load(Ordering::SeqCst) {
-            // pending：末尾还没确认的字数，悬浮窗把这截显示成淡白色。
-            // live 只挡已结束的旧会话；与松开并发的那一刻由 update_partial 在锁内按「仍是聽」再判一次
-            crate::floating::update_partial(
-                &partial_app,
-                json!({ "phase": "recording", "mode": "streaming", "text": text, "pending": pending_chars, "duration": 0 }),
-            );
-        }
-        let _ = partial_app.emit("recording:partial", json!({ "text": text }));
+        on_text(partial);
     });
     let mut connect = connect_stream(&config, &language, on_partial.clone(), warm);
     // 当前会话是否复用的预热连接（出字前出错时据此改为新建）
@@ -2044,9 +2195,35 @@ async fn streaming_task(
     let mut pending: Vec<i16> = Vec::new();
     let mut all: Vec<i16> = Vec::new();
     let mut failure: Option<String> = None;
+    // 复用预热连接后等服务端回执的截止时刻；等到之前即使音频已停也不收尾（死连接上收尾只会白等到超时）
+    let mut ack_deadline: Option<Instant> = None;
 
-    while audio_open || !connect_done {
+    while audio_open || !connect_done || ack_deadline.is_some() {
+        if let Some(deadline) = ack_deadline {
+            if failure.is_some() || session.as_ref().is_none_or(StreamingSession::acked) {
+                ack_deadline = None;
+            } else if Instant::now() >= deadline {
+                tracing::info!(
+                    "预热连接 {WARM_ACK_TIMEOUT:?} 内没有回执，按死连接处理：改为新建并重发 {} 采样",
+                    all.len()
+                );
+                if let Some(stale) = session.take() {
+                    // 死连接上发关闭帧可能卡住，别挡着新建
+                    tokio::spawn(stale.cancel());
+                }
+                pending = all.clone();
+                connect = connect_stream(&config, &language, on_partial.clone(), None);
+                connect_done = false;
+                reused = false;
+                ack_deadline = None;
+            }
+            if !(audio_open || !connect_done || ack_deadline.is_some()) {
+                break;
+            }
+        }
         tokio::select! {
+            // 等回执期间保证循环被唤醒（音频已停时没有别的事件）
+            _ = tokio::time::sleep(WARM_ACK_POLL), if ack_deadline.is_some() => {}
             _ = &mut cancel_rx => {
                 // 取消也带回已收的音频与文字：用户取消时由 Actor 丢弃，看门狗超时时据此保存
                 let text = session.as_ref().map(StreamingSession::current_text).unwrap_or_default();
@@ -2078,6 +2255,9 @@ async fn streaming_task(
                                 let _ = tx.send(Cmd::Failed(id));
                             }
                             pending = Vec::new();
+                        }
+                        if reused && failure.is_none() {
+                            ack_deadline = Some(Instant::now() + WARM_ACK_TIMEOUT);
                         }
                         if ready_at.is_none() {
                             ready_at = Some(started.elapsed());
@@ -2162,7 +2342,11 @@ async fn streaming_task(
     let ms = |d: Option<Duration>| d.map(|d| format!("{}ms", d.as_millis())).unwrap_or_else(|| "-".into());
     tracing::info!(
         "流式出字耗时（距按下，{}）：建连就绪 {}，首字 {}，松开 {}，收尾 {}",
-        if reused_any { "复用预热连接" } else { "新建连接" },
+        match (reused_any, reused) {
+            (true, true) => "复用预热连接",
+            (true, false) => "预热连接中途失效、改为新建",
+            _ => "新建连接",
+        },
         ms(ready_at),
         ms(first_text_at.get().copied()),
         ms(Some(released_at)),
@@ -2392,13 +2576,212 @@ mod tests {
         HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, MULTI_DRAIN_DEFAULT_FALLBACK, MULTI_DRAIN_SCHEDULING_SLACK,
         MULTI_TRANSCRIBE_CONCURRENCY, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
     };
+    use super::{
+        keep_warm, streaming_session, warm_backoff, Cmd, SessionOutcome, StreamingCallback, StreamingPartial,
+        WarmReceiver, WarmSender, WARM_ACK_TIMEOUT, WARM_CONNECT_WAIT, WARM_HEALTHY, WARM_RETRY_MAX, WARM_TICK,
+    };
     use att_core::settings::hotkey::HotkeyAction::{ClipboardPanel, Record, RecordToggle, VoiceRewriteSelection};
     use att_core::settings::hotkey::ModSet;
     use att_core::stt::{self, doubao};
     use att_hotkey::KeyPhase::{Pressed, Released};
     use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+    use tokio::sync::{mpsc, oneshot};
 
+    /// 本地豆包桩里一条连接的行为。
+    #[derive(Clone, Copy)]
+    enum StubConn {
+        /// 握手成功后什么都不回（「写得进去、其实早断了」的死连接）
+        Dead,
+        /// 全量请求回一个空结果帧当回执，音频包回带文字的结果帧，末包回末包结果
+        Alive,
+    }
+
+    fn stub_result_frame(text: &str, last: bool) -> Vec<u8> {
+        let body = json!({ "result": { "text": text } }).to_string().into_bytes();
+        // 头：版本 1 / 头长 1，full server response + 序号标志（末包 0b0011），JSON 不压缩
+        let mut frame = vec![0x11, if last { 0x93 } else { 0x91 }, 0x10, 0x00];
+        frame.extend_from_slice(&(if last { -1i32 } else { 1 }).to_be_bytes());
+        frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&body);
+        frame
+    }
+
+    /// 本地豆包桩：按连接顺序套用 `scripts` 里的行为（用完后沿用最后一个）；返回接入点地址与已接受的连接数。
+    async fn stub_doubao(scripts: Vec<StubConn>) -> (String, Arc<AtomicUsize>) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { return };
+                let index = counter.fetch_add(1, Ordering::SeqCst);
+                let script = scripts[index.min(scripts.len() - 1)];
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    let mut requested = false;
+                    while let Some(Ok(message)) = ws.next().await {
+                        let Message::Binary(data) = message else { continue };
+                        if matches!(script, StubConn::Dead) {
+                            continue;
+                        }
+                        let reply = if !requested {
+                            requested = true;
+                            stub_result_frame("", false)
+                        } else {
+                            // 音频帧 flags 的 bit1 = 末包
+                            stub_result_frame("你好世界", data[1] & 0b0010 != 0)
+                        };
+                        let _ = ws.send(Message::binary(reply)).await;
+                    }
+                });
+            }
+        });
+        (format!("ws://{address}"), accepted)
+    }
+
+    fn stub_config(endpoint: String) -> doubao::DoubaoConfig {
+        doubao::DoubaoConfig {
+            api_key: "test-key".into(),
+            resource_id: "volc.seedasr.sauc.duration".into(),
+            endpoint,
+            end_window_size: 800,
+            hotwords: Vec::new(),
+        }
+    }
+
+    /// 跑一场流式会话：推 0.5 秒音频后松开，返回会话结果与中间结果里见过的文字。
+    async fn run_streaming_session(
+        config: doubao::DoubaoConfig,
+        warm: Option<WarmReceiver>,
+    ) -> (SessionOutcome, Vec<String>) {
+        let (audio_tx, audio_rx) = mpsc::unbounded_channel();
+        let (_cancel_tx, cancel_rx) = oneshot::channel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let on_text: StreamingCallback = Arc::new(move |partial: StreamingPartial| {
+            sink.lock().unwrap().push(partial.text);
+        });
+        audio_tx.send(vec![0i16; 8000]).unwrap();
+        drop(audio_tx);
+        let session =
+            streaming_session(7, StreamingConfig::Doubao(config), "zh".into(), warm, audio_rx, cancel_rx, on_text, tx);
+        tokio::time::timeout(Duration::from_secs(10), session).await.expect("会话应在超时前结束");
+        let mut outcome = None;
+        while let Ok(cmd) = rx.try_recv() {
+            if let Cmd::Done(7, done) = cmd {
+                outcome = Some(done);
+            }
+        }
+        let texts = seen.lock().unwrap().clone();
+        (outcome.expect("会话应回报结果"), texts)
+    }
+
+    /// 起一个保活任务并认领它握好手的连接。
+    fn claim_warm(config: &doubao::DoubaoConfig) -> (WarmReceiver, tokio::task::JoinHandle<Option<Duration>>) {
+        let (claim_tx, claim_rx) = oneshot::channel();
+        let keeper = tokio::spawn(keep_warm(config.clone(), claim_rx));
+        let (reply_tx, reply_rx) = oneshot::channel();
+        assert!(claim_tx.send(reply_tx).is_ok());
+        (reply_rx, keeper)
+    }
+
+    #[tokio::test]
+    async fn 流式会话_复用预热连接_不再握手() {
+        let (endpoint, accepted) = stub_doubao(vec![StubConn::Alive]).await;
+        let config = stub_config(endpoint);
+        let (warm, keeper) = claim_warm(&config);
+        let (outcome, texts) = run_streaming_session(config, Some(warm)).await;
+        assert_eq!(outcome.text, "你好世界");
+        assert!(outcome.error.is_none() && !outcome.cancelled);
+        assert_eq!(outcome.samples.len(), 8000);
+        assert!(texts.contains(&"你好世界".to_string()));
+        assert_eq!(accepted.load(Ordering::SeqCst), 1, "整场只握了预热那一次手");
+        assert_eq!(keeper.await.unwrap(), None, "连接已交出，保活任务不回报");
+    }
+
+    #[tokio::test]
+    async fn 流式会话_预热连接是死连接_回执超时后新建并重发() {
+        // 第一条（预热）握手后再无回应；第二条（回退新建）正常
+        let (endpoint, accepted) = stub_doubao(vec![StubConn::Dead, StubConn::Alive]).await;
+        let config = stub_config(endpoint);
+        let (warm, _keeper) = claim_warm(&config);
+        let started = Instant::now();
+        let (outcome, _) = run_streaming_session(config, Some(warm)).await;
+        assert_eq!(outcome.text, "你好世界", "音频重发到新连接后照常出字");
+        assert!(outcome.error.is_none());
+        assert_eq!(accepted.load(Ordering::SeqCst), 2);
+        assert!(started.elapsed() >= WARM_ACK_TIMEOUT, "等满回执超时才回退");
+        assert!(started.elapsed() < WARM_ACK_TIMEOUT + Duration::from_secs(3), "回退后不该再拖");
+    }
+
+    #[tokio::test]
+    async fn 流式会话_预热握手失败_直接新建() {
+        let (endpoint, accepted) = stub_doubao(vec![StubConn::Alive]).await;
+        let config = stub_config(endpoint);
+        // 预热任务连的是一个没人监听的端口：握手失败，按下的人拿到失败后马上新建
+        let unused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_endpoint = format!("ws://{}", unused.local_addr().unwrap());
+        drop(unused);
+        let (warm, keeper) = claim_warm(&stub_config(dead_endpoint));
+        let (outcome, _) = run_streaming_session(config, Some(warm)).await;
+        assert_eq!(outcome.text, "你好世界");
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+        assert_eq!(keeper.await.unwrap(), Some(Duration::ZERO), "建连失败回报存活 0");
+    }
+
+    #[tokio::test]
+    async fn 预热保活_槽被丢弃就关连接_服务端断开回报存活时长() {
+        use futures_util::StreamExt;
+
+        // 槽被丢弃（设置变了）：保活任务关掉连接、不回报
+        let (endpoint, accepted) = stub_doubao(vec![StubConn::Alive]).await;
+        let (claim_tx, claim_rx) = oneshot::channel::<WarmSender>();
+        let keeper = tokio::spawn(keep_warm(stub_config(endpoint), claim_rx));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while accepted.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("预热应握上手");
+        drop(claim_tx);
+        assert_eq!(tokio::time::timeout(Duration::from_secs(3), keeper).await.unwrap().unwrap(), None);
+
+        // 服务端握手后马上断开：回报存活时长（很短，Actor 据此退避）
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = ws.close(None).await;
+            while ws.next().await.is_some() {}
+        });
+        let (_claim_tx, claim_rx) = oneshot::channel::<WarmSender>();
+        let lived = tokio::time::timeout(Duration::from_secs(3), keep_warm(stub_config(endpoint), claim_rx))
+            .await
+            .expect("断开后保活任务应结束")
+            .expect("断开要回报");
+        assert!(lived < WARM_HEALTHY);
+    }
+
+    #[test]
+    fn 预热连续失败_重试间隔翻倍并封顶() {
+        assert_eq!(warm_backoff(1), WARM_TICK);
+        assert_eq!(warm_backoff(2), WARM_TICK * 2);
+        assert_eq!(warm_backoff(3), WARM_TICK * 4);
+        assert_eq!(warm_backoff(10), WARM_RETRY_MAX);
+        assert_eq!(warm_backoff(u32::MAX), WARM_RETRY_MAX);
+        // 回执超时要盖得住正常回执（约 0.35 秒），又不能比重新握手还久
+        assert!(WARM_ACK_TIMEOUT > Duration::from_millis(700) && WARM_ACK_TIMEOUT < WARM_CONNECT_WAIT);
+    }
     #[test]
     fn 按住录音_按下开始_松开收尾() {
         assert_eq!(record_hotkey_step(Record, Pressed, Phase::Idle, false), RecordHotkeyStep::ResumeOrStart);

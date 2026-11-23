@@ -98,6 +98,9 @@ windows = { version = "0.62", features = [
 # 测试里用 att-core 的本地 HTTP 桩（DeepSeek 等上游），只编译进 test/bench
 [dev-dependencies]
 att-core = { path = "crates/att-core", features = ["test-support"] }
+# 录音流式会话测试用的本地 WebSocket 桩（预热连接复用 / 死连接回退）
+tokio-tungstenite = "0.28"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 # 本地 Whisper 推理在 dev（tauri dev）下也必须优化编译：cmake crate 按 opt-level/debug 选 CMAKE_BUILD_TYPE，
 # opt-level=0 时 CTranslate2 按 Debug（-O0）编译，large-v3 在 CPU 上要约 9 倍音频时长（实测 7.8s 音频 69s）。
