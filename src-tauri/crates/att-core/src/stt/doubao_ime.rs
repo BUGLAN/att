@@ -12,8 +12,8 @@ use super::sauc::ErrorKind;
 use crate::storage::crypto::Crypto;
 use crate::storage::json_store;
 use futures_util::stream::{SplitSink, SplitStream, StreamExt};
-use futures_util::SinkExt;
 use futures_util::FutureExt;
+use futures_util::SinkExt;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -526,33 +526,24 @@ async fn register_device(client: &reqwest::Client) -> Result<Credentials, Doubao
         reqwest::Url::parse(REGISTER_URL).map_err(|_| DoubaoImeError::protocol("注册地址无效"))?,
         &device_register_query(&cdid),
     );
-    let response = client
-        .post(url)
-        .header("User-Agent", USER_AGENT)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| {
-            tracing::debug!("豆包输入法设备注册失败: {error}");
-            DoubaoImeError::network("注册豆包输入法虚拟设备失败，请检查网络后重试")
-        })?;
+    let response = client.post(url).header("User-Agent", USER_AGENT).json(&body).send().await.map_err(|error| {
+        tracing::debug!("豆包输入法设备注册失败: {error}");
+        DoubaoImeError::network("注册豆包输入法虚拟设备失败，请检查网络后重试")
+    })?;
     if !response.status().is_success() {
         return Err(DoubaoImeError::network(format!(
             "注册豆包输入法虚拟设备失败（HTTP {}）",
             response.status().as_u16()
         )));
     }
-    let value: Value = response
-        .json()
-        .await
-        .map_err(|_| DoubaoImeError::protocol("豆包输入法设备注册响应不是有效 JSON"))?;
+    let value: Value =
+        response.json().await.map_err(|_| DoubaoImeError::protocol("豆包输入法设备注册响应不是有效 JSON"))?;
     let device_id = scalar(&value, "device_id_str")
         .or_else(|| value.get("device_id").map(value_text))
         .filter(|text| !text.is_empty() && text != "0")
         .ok_or_else(|| DoubaoImeError::protocol("豆包输入法设备注册未返回 device_id"))?;
-    let install_id = scalar(&value, "install_id_str")
-        .or_else(|| value.get("install_id").map(value_text))
-        .unwrap_or_default();
+    let install_id =
+        scalar(&value, "install_id_str").or_else(|| value.get("install_id").map(value_text)).unwrap_or_default();
     Ok(Credentials { device_id, install_id, cdid, token: String::new() })
 }
 
@@ -607,10 +598,8 @@ async fn fetch_token(client: &reqwest::Client, device_id: &str, cdid: &str) -> R
             response.status().as_u16()
         )));
     }
-    let value: Value = response
-        .json()
-        .await
-        .map_err(|_| DoubaoImeError::protocol("豆包输入法 token 响应不是有效 JSON"))?;
+    let value: Value =
+        response.json().await.map_err(|_| DoubaoImeError::protocol("豆包输入法 token 响应不是有效 JSON"))?;
     value
         .pointer("/data/settings/asr_config/app_key")
         .or_else(|| value.pointer("/settings/asr_config/app_key"))
@@ -1459,8 +1448,7 @@ mod tests {
 
     #[tokio::test]
     async fn 会话_中间稿与最终稿_成功拼接() {
-        let (endpoint, methods_rx) =
-            stub_server(StubBehavior { final_extends: true, ..StubBehavior::default() }).await;
+        let (endpoint, methods_rx) = stub_server(StubBehavior { final_extends: true, ..StubBehavior::default() }).await;
         let config = test_config(endpoint);
         let samples = vec![0i16; FRAME_SAMPLES * 3];
         let text = transcribe_pcm(&config, &samples).await.unwrap();
@@ -1543,8 +1531,7 @@ mod tests {
                 *sink.lock().unwrap() += 1;
             }
         });
-        let mut session =
-            DoubaoImeSession::connect(&config, "zh", Some(callback)).await.expect("流式建连失败");
+        let mut session = DoubaoImeSession::connect(&config, "zh", Some(callback)).await.expect("流式建连失败");
         let chunk = SAMPLE_RATE / 10;
         for piece in samples.chunks(chunk) {
             session.push(piece).await.expect("流式推流失败");
