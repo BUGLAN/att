@@ -2283,7 +2283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sensevoice_健康检查_缺模型与流式拒绝有明确结论() {
+    async fn sensevoice_健康检查_不可用原因与流式拒绝有明确结论() {
         let state = test_state("sensevoice-health").await;
         state
             .core
@@ -2297,7 +2297,13 @@ mod tests {
         assert_eq!(health["local_engine"]["provider"], "sense_voice");
         assert_eq!(health["local_engine"]["label"], "本地 SenseVoice");
         assert_eq!(health["local_engine"]["available"], json!(false));
-        assert_eq!(health["local_engine"]["error"], "本地 SenseVoice 模型未安装");
+        // CI 用 --no-default-features 关闭本地引擎，此时构建必须明确说明不含本地引擎；
+        // 默认构建才检查具体模型是否安装。
+        #[cfg(feature = "local-engines")]
+        let unavailable = "本地 SenseVoice 模型未安装";
+        #[cfg(not(feature = "local-engines"))]
+        let unavailable = att_core::stt::local::LOCAL_ENGINES_DISABLED;
+        assert_eq!(health["local_engine"]["error"], unavailable);
         assert_eq!(health["model_service_ready"], json!(false));
         assert_eq!(health["model_service_mode"], "provider");
         assert_eq!(health["streaming_supported"], json!(false));
@@ -2319,10 +2325,11 @@ mod tests {
         state.core.apply_settings_update(&json!({ "recording_mode": "streaming" })).unwrap();
         let (_, health) = get_json(&state, "/api/health").await;
         assert_eq!(health["model_service_ready"], json!(false));
-        assert!(
-            health["model_service_error"].as_str().unwrap().contains("本地 SenseVoice暂不支持流式录音"),
-            "{health}"
-        );
+        #[cfg(feature = "local-engines")]
+        let streaming_error = "本地 SenseVoice暂不支持流式录音";
+        #[cfg(not(feature = "local-engines"))]
+        let streaming_error = att_core::stt::local::LOCAL_ENGINES_DISABLED;
+        assert!(health["model_service_error"].as_str().unwrap().contains(streaming_error), "{health}");
     }
 
     #[tokio::test]
