@@ -113,32 +113,6 @@ body::before {
 
 /* Processing State */
 
-/* Recording Status（状态胶囊样式已随 RecordingStatus 组件删除；侧边栏连接状态改用 .ui-meta） */
-
-.status-ready {
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-    opacity: 1;
-}
-
-.status-ready.hidden {
-    opacity: 0;
-    transform: translateX(-100%);
-}
-
-.status-recording {
-    opacity: 0;
-    transform: translateX(20px);
-    position: absolute;
-}
-
-.status-recording.visible {
-    opacity: 1;
-    transform: translateX(0);
-    position: relative;
-}
-
 .duration {
     font-family: var(--font-mono);
     font-size: var(--fs-base);
@@ -318,49 +292,6 @@ textarea:focus-visible {
 .nav-item:focus-visible {
     outline: none;
     box-shadow: var(--focus-ring);
-}
-
-/* ============================================
-   Records Section
-   ============================================ */
-.records-section {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    margin-bottom: var(--space-lg);
-    overflow: hidden;
-}
-
-.records-list {
-    max-height: 400px;
-    overflow-y: auto;
-    padding: var(--space-md);
-}
-
-/* ------------------------------------------------------------
-   记录列表使用细滚动条，颜色/圆角全部取自 tokens.css。
-   ------------------------------------------------------------ */
-.records-list {
-    scrollbar-width: thin;
-    scrollbar-color: var(--scroll-thumb) transparent;
-}
-
-.records-list::-webkit-scrollbar {
-    width: var(--scroll-size-thin);
-    height: var(--scroll-size-thin);
-}
-
-.records-list::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.records-list::-webkit-scrollbar-thumb {
-    background: var(--scroll-thumb);
-    border-radius: var(--r-full);
-}
-
-.records-list::-webkit-scrollbar-thumb:hover {
-    background: var(--scroll-thumb-hover);
 }
 
 /* Record Status Badge */
@@ -945,10 +876,6 @@ textarea:focus-visible {
     gap: var(--space-sm);
     padding: var(--space-lg);
     border-top: 1px solid var(--border);
-}
-
-.form-group.half {
-    flex: 1;
 }
 
 /* ============================================
