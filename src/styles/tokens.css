@@ -19,11 +19,7 @@
   --gray-800: #1f1f23;
   --gray-700: #2d2d32;
   --gray-600: #3f3f46;
-  --gray-500: #52525b;
-  --gray-400: #71717a;
   --gray-300: #a1a1aa;
-  --gray-200: #d4d4d8;
-  --gray-100: #e4e4e7;
   --gray-50: #f4f4f5;
 
   /* ---------- 2. 语义表面三级色阶：底 → 面 → 卡 → 抬升 → 悬停 ---------- */
@@ -32,7 +28,6 @@
   --bg-card: var(--gray-850);      /* 卡片 */
   --bg-raise: var(--gray-800);     /* 抬升控件：输入框、按钮 */
   --bg-hover: var(--gray-700);     /* 悬停 */
-  --bg-hover-strong: var(--gray-600); /* 悬停（更亮一档，用于卡片悬停渐变） */
   --line: var(--gray-800);         /* 常规描边 */
   --line-strong: var(--gray-700);  /* 强描边 / 分隔 */
   --line-soft: rgba(255, 255, 255, 0.06);        /* 半透明面板上的柔描边 */
@@ -45,7 +40,6 @@
      让浮层在同一套灰阶里继续分层。 */
   --white-veil: rgba(255, 255, 255, 0.03);        /* 内高光 / 极淡底 */
   --white-tint: rgba(255, 255, 255, 0.05);        /* 半透明表面悬停 */
-  --white-tint-strong: rgba(255, 255, 255, 0.09); /* 半透明表面按下 / 选中 */
 
   /* 遮罩（scrim）：弹窗与浮层背后的压暗层。全应用只用这几档，
      不再出现 0.72 / 0.8 / 0.16 等随手写的透明度。
@@ -69,12 +63,9 @@
   --accent-ink: #1a1400;  /* 金底上的深色文字：7.59:1 on --accent */
   --accent-veil: rgba(201, 162, 39, 0.06);        /* 极淡：大面积氛围 / 卡片光泽 */
   --accent-faint: rgba(201, 162, 39, 0.10);       /* 淡：图标底 / 内高光 */
-  --accent-soft: rgba(201, 162, 39, 0.14);        /* 淡底：渐变起点 */
   --accent-dim: rgba(201, 162, 39, 0.15);         /* 选中底：导航 / 卡片选中 */
-  --accent-tint: rgba(201, 162, 39, 0.22);        /* 图标底 / 内描边 */
   --accent-line: rgba(201, 162, 39, 0.30);        /* 金色描边（常规） */
   --accent-line-strong: rgba(201, 162, 39, 0.42); /* 金色描边（激活 / 悬停） */
-  --accent-glow: rgba(201, 162, 39, 0.40);        /* 金色外发光 */
   --accent-halo: rgba(201, 162, 39, 0.08);        /* 按钮 / 卡片外环 */
 
   /* ---------- 5. 语义色（唯一来源，禁止再写 #f59e0b / #38bdf8 等） ---------- */
@@ -92,22 +83,17 @@
   --warn-line: rgba(245, 165, 36, 0.28);
   --err-line: rgba(248, 113, 113, 0.28);
   --info-line: rgba(96, 165, 250, 0.28);
-  --ok-tint: rgba(74, 222, 128, 0.18);
-  --warn-tint: rgba(245, 165, 36, 0.18);
   --err-tint: rgba(248, 113, 113, 0.18);
-  --info-tint: rgba(96, 165, 250, 0.18);
   --ok-line-soft: rgba(74, 222, 128, 0.35);
   --err-line-soft: rgba(248, 113, 113, 0.35);
-  --danger-glow: rgba(248, 113, 113, 0.30);
 
-  /* ---------- 6. 间距（8 基数）/ 圆角（悬浮窗标准） / 字号七级 ---------- */
+  /* ---------- 6. 间距（8 基数）/ 圆角（悬浮窗标准） / 字号六级 ---------- */
   --s-1: 4px;
   --s-2: 8px;
   --s-3: 12px;
   --s-4: 16px;
   --s-6: 24px;
   --s-8: 32px;
-  --s-12: 48px;
 
   /* 圆角以录音悬浮窗为唯一标准（floating.css）：走方正、不用整圆。
      容器 / 卡片 / 弹窗 / 面板一律 --r-md；控件（按钮、输入框、搜索框、导航项、标签、徽标）
@@ -126,14 +112,12 @@
   --fs-md: 15px;
   --fs-lg: 18px;
   --fs-xl: 24px;
-  --fs-2xl: 32px;
 
   /* ---------- 7. 阴影三级 + 描边高光 + 统一焦点环 ---------- */
   --e-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --e-2: 0 4px 12px rgba(0, 0, 0, 0.5);
   --e-3: 0 8px 32px rgba(0, 0, 0, 0.6);
   --e-4: 0 18px 44px rgba(0, 0, 0, 0.5);   /* 悬浮卡 / 图片预览 */
-  --e-hover: 0 16px 40px rgba(0, 0, 0, 0.28); /* 卡片悬停抬升 */
   --edge-hi: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   --focus-ring: 0 0 0 2px var(--accent);
   --focus-halo: 0 0 0 2px var(--accent-dim);
@@ -143,12 +127,8 @@
      让深色面板有上亮下暗的实体感，而不是纯色贴片。 */
   --grad-card: linear-gradient(180deg, var(--gray-850), var(--gray-900));
   --grad-raise: linear-gradient(180deg, var(--gray-800), var(--gray-850));
-  --grad-raise-hi: linear-gradient(180deg, var(--gray-700), var(--gray-800)); /* 抬升表面的悬停档 */
-  --grad-accent: linear-gradient(180deg, var(--accent-soft), var(--bg-raise));
-  --grad-sheen: linear-gradient(135deg, var(--accent-veil), transparent 45%);
 
   /* ---------- 8. z-index 层级（唯一体系） ---------- */
-  --z-content: 1;
   --z-titlebar: 60;
   --z-nav: 100;
   --z-overlay: 400;
@@ -160,7 +140,6 @@
   /* ---------- 9. 动效：三档时长 + 统一缓动 ---------- */
   --t-fast: 150ms;
   --t-base: 250ms;
-  --t-slow: 400ms;
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
 
   /* ---------- 10. 字体栈：纯系统字体，离线可用（不依赖远程字体） ---------- */
@@ -187,38 +166,24 @@
   --scroll-thumb-hover: rgba(201, 162, 39, 0.72);
 
   /* ---------- 12. 旧名兼容别名（保证既有组件无需改名即享受同一套令牌） ---------- */
-  --bg-primary: var(--bg-base);
   --bg-secondary: var(--bg-surface);
   --bg-elevated: var(--bg-raise);
   --border: var(--line);
-  --border-light: var(--line-strong);
 
   --text-primary: var(--text-1);
   --text-secondary: var(--text-2);
   --text-muted: var(--text-3);
-
-  --success: var(--ok);
-  --danger: var(--err);
 
   --space-xs: var(--s-1);
   --space-sm: var(--s-2);
   --space-md: var(--s-4);
   --space-lg: var(--s-6);
   --space-xl: var(--s-8);
-  --space-2xl: var(--s-12);
 
-
-  --shadow-sm: var(--e-1);
-  --shadow-md: var(--e-2);
   --shadow-lg: var(--e-3);
-  --shadow-glow: 0 0 40px var(--accent-glow);
-  --shadow-danger: 0 0 40px var(--danger-glow);
 
   --transition-fast: var(--t-fast) var(--ease);
   --transition-base: var(--t-base) var(--ease);
-  --transition-slow: var(--t-slow) var(--ease);
-
-  --font-display: var(--font-sans);
 
   --titlebar-height: 44px;
   --sidebar-width: 220px;
