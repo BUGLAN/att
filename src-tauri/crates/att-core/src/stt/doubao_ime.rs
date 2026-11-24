@@ -28,7 +28,6 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
-pub const PROVIDER: &str = "doubao_ime_asr";
 pub const LABEL: &str = "豆包输入法语音";
 
 pub const REGISTER_URL: &str = "https://log.snssdk.com/service/2/device_register/";

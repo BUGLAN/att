@@ -186,16 +186,10 @@ impl GuestContext {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Envelope {
     task_id: Option<String>,
-    message_id: Option<String>,
-    namespace: Option<String>,
     event: Option<String>,
     status_code: Option<u64>,
-    status_text: Option<String>,
     payload: Option<String>,
     data: Option<Vec<u8>>,
-    seq_id: Option<u64>,
-    session_id: Option<String>,
-    log_id: Option<String>,
 }
 
 pub(crate) fn encode_request(
@@ -280,10 +274,8 @@ fn decode_binary_response(data: &[u8]) -> Result<Envelope, DoubaoWebError> {
         match wire {
             0 => {
                 let value = read_varint(data, &mut offset)?;
-                match number {
-                    5 => envelope.status_code = Some(value),
-                    9 => envelope.seq_id = Some(value),
-                    _ => {}
+                if number == 5 {
+                    envelope.status_code = Some(value);
                 }
             }
             1 => {
@@ -306,14 +298,9 @@ fn decode_binary_response(data: &[u8]) -> Result<Envelope, DoubaoWebError> {
                 offset = end;
                 match number {
                     1 => envelope.task_id = Some(utf8_field(bytes)?),
-                    2 => envelope.message_id = Some(utf8_field(bytes)?),
-                    3 => envelope.namespace = Some(utf8_field(bytes)?),
                     4 => envelope.event = Some(utf8_field(bytes)?),
-                    6 => envelope.status_text = Some(utf8_field(bytes)?),
                     7 => envelope.payload = Some(utf8_field(bytes)?),
                     8 => envelope.data = Some(bytes.to_vec()),
-                    10 => envelope.session_id = Some(utf8_field(bytes)?),
-                    11 => envelope.log_id = Some(utf8_field(bytes)?),
                     _ => {}
                 }
             }
@@ -343,19 +330,14 @@ fn decode_text_response(text: &str) -> Result<Envelope, DoubaoWebError> {
     let string = |key: &str| object.get(key).and_then(Value::as_str).map(str::to_string);
     Ok(Envelope {
         task_id: string("task_id"),
-        message_id: string("message_id"),
-        namespace: string("namespace"),
         event: string("event"),
         status_code: object
             .get("status_code")
             .and_then(|value| value.as_u64().or_else(|| value.as_str().and_then(|text| text.parse().ok()))),
-        status_text: string("status_text"),
         payload: object.get("payload").map(|value| match value {
             Value::String(text) => text.clone(),
             other => other.to_string(),
         }),
-        session_id: string("session_id"),
-        log_id: string("log_id"),
         ..Envelope::default()
     })
 }
@@ -815,7 +797,6 @@ mod tests {
         ];
         let response = decode_binary_response(&packet).unwrap();
         assert_eq!(response.task_id.as_deref(), Some("task-1"));
-        assert_eq!(response.namespace.as_deref(), Some("VoiceGenie"));
         assert_eq!(response.event.as_deref(), Some("TaskStarted"));
         assert_eq!(response.status_code, Some(SUCCESS_STATUS));
         assert_eq!(response.payload.as_deref(), Some(r#"{"ok":true}"#));

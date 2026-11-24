@@ -29,7 +29,6 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 
-pub const PROVIDER: &str = "wetype_asr";
 pub const LABEL: &str = "微信输入法语音";
 
 const PROCESS_NAME: &str = "wetype_update.exe";
