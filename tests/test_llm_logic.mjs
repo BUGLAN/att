@@ -2,16 +2,14 @@
  * LLM 设置页纯逻辑回归测试（src/components/settings/llm/llmLogic.mjs）。
  *
  * 锁死的点：
- * 1. 模型串组装与后端 compose_model_string 一致（新模型零发版的关键约定）；
- * 2. 手输模型名解析：分隔、去重、非法项单独报告；
- * 3. 错误分级 → 中文文案（P7：建议可执行）；
- * 4. 展示映射（状态徽章 / 延迟 / 参数摘要 / 密钥提示）。
+ * 1. 手输模型名解析：分隔、去重、非法项单独报告；
+ * 2. 错误分级 → 中文文案（P7：建议可执行）；
+ * 3. 展示映射（状态徽章 / 延迟 / 参数摘要 / 密钥提示）。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  composeCustomModelString,
   errorCopy,
   formatLatency,
   groupModelsByProfile,
@@ -24,19 +22,6 @@ import {
   statusTone,
   STATUS_LABELS
 } from '../src/components/settings/llm/llmLogic.mjs'
-
-// ==================== 模型串组装 ====================
-
-test('composeCustomModelString：含斜杠的本地网关模型 ID 整串包 openai/（2026-10-22 实测踩坑）', () => {
-  assert.equal(
-    composeCustomModelString('group/deepseek-v4.1-flash'),
-    'openai/group/deepseek-v4.1-flash',
-    '绝不能把首段 group 透传给 LiteLLM 当服务商前缀'
-  )
-  assert.equal(composeCustomModelString('deepseek-flash'), 'openai/deepseek-flash')
-  assert.equal(composeCustomModelString('openai/mistral'), 'openai/mistral', '对已是 openai/ 开头的 ID 幂等')
-  assert.equal(composeCustomModelString('  '), '')
-})
 
 // ==================== 手输解析 ====================
 

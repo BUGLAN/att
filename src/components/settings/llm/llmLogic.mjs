@@ -2,7 +2,6 @@
  * LLM 设置页纯逻辑（不依赖 Vue / 浏览器全局，供 tests/test_llm_logic.mjs 锁定）。
  *
  * 约定：
- * - 模型名组装规则必须与后端 att_core::llm::registry::compose_model_string 一致；
  * - 错误分级文案给出可执行建议（P7）；
  * - 状态徽章与延迟格式化是纯展示映射。
  */
@@ -29,20 +28,6 @@ const FALLBACK_HINTS = {
   provider_error: '上游服务故障，请稍后重试',
   unsupported_provider: '可在档案编辑里改用「自定义 OpenAI 兼容」端点',
   unknown: '请查看日志获取详情'
-}
-
-/**
- * custom 档案的模型串组装（与后端 compose_model_string 的 custom 分支一致）：
- * 恒为 openai/<完整模型ID>，对已是 openai/ 开头的 ID 幂等。
- * 本地网关的模型 ID 常自带斜杠（group/deepseek-v4.1-flash），若原样透传，
- * LiteLLM 会把首段误当服务商前缀（实测报 "LLM Provider NOT provided"）。
- */
-export function composeCustomModelString(modelName) {
-  const name = String(modelName || '').trim()
-  if (!name) {
-    return ''
-  }
-  return 'openai/' + (name.startsWith('openai/') ? name.slice('openai/'.length) : name)
 }
 
 /** 模型名合法性：与后端 is_valid_model_string 同一字符集。 */
