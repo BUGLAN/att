@@ -29,7 +29,8 @@ test('页面解析：未知 id 回落默认页', () => {
 
 test('搜索：关键词大小写不敏感，只保留命中页并去掉空分组', () => {
   const groups = buildNavGroups('  Token ')
-  assert.deepEqual(groups.map((group) => group.label), ['语音识别'])
+  // 识别引擎与「诊断 → 外部 API」都有令牌，系统组也要出现
+  assert.deepEqual(groups.map((group) => group.label), ['语音识别', '系统'])
   assert.equal(groups[0].items[0].id, 'asr')
 
   const hotkey = buildNavGroups('热键')

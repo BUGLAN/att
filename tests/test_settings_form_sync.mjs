@@ -45,11 +45,11 @@ test('存在未提交改动时必须禁止用服务端值覆盖表单', () => {
 
 // 锁死的真实踩坑：保存 Token 后后端已返回 *_api_key_set: true，但当时表单里还留着明文 Token，
 // watch(settings) 判成「有未提交改动」跳过重建，卡片一直显示「未配置」。
-// 这些字段不进快照，必须无条件跟随服务端。
-test('密钥「是否已保存」只由服务端维护：三个字段都要取到', () => {
+// 这些字段不进快照，必须无条件跟随服务端（含外部 API 持久令牌「是否已生成」）。
+test('密钥与持久令牌「是否已保存」只由服务端维护：四个字段都要取到', () => {
   assert.deepEqual(
     [...SERVER_OWNED_FIELDS].sort(),
-    ['chatgpt_asr_api_key_set', 'deepseek_asr_api_key_set', 'doubao_asr_api_key_set']
+    ['api_token_set', 'chatgpt_asr_api_key_set', 'deepseek_asr_api_key_set', 'doubao_asr_api_key_set']
   )
 })
 
@@ -64,12 +64,33 @@ test('豆包网页语音无需凭据：不额外产生服务端维护字段', ()
 
 test('serverOwnedPatch 跟随服务端值（保存 / 清除 Token 两个方向）', () => {
   assert.deepEqual(
-    serverOwnedPatch({ doubao_asr_api_key_set: true, chatgpt_asr_api_key_set: false, deepseek_asr_api_key_set: false, asr_provider: 'doubao_asr' }),
-    { doubao_asr_api_key_set: true, chatgpt_asr_api_key_set: false, deepseek_asr_api_key_set: false }
+    serverOwnedPatch({
+      doubao_asr_api_key_set: true,
+      chatgpt_asr_api_key_set: false,
+      deepseek_asr_api_key_set: false,
+      api_token_set: true,
+      asr_provider: 'doubao_asr'
+    }),
+    {
+      doubao_asr_api_key_set: true,
+      chatgpt_asr_api_key_set: false,
+      deepseek_asr_api_key_set: false,
+      api_token_set: true
+    }
   )
   assert.deepEqual(
-    serverOwnedPatch({ doubao_asr_api_key_set: false, chatgpt_asr_api_key_set: true, deepseek_asr_api_key_set: true }),
-    { doubao_asr_api_key_set: false, chatgpt_asr_api_key_set: true, deepseek_asr_api_key_set: true }
+    serverOwnedPatch({
+      doubao_asr_api_key_set: false,
+      chatgpt_asr_api_key_set: true,
+      deepseek_asr_api_key_set: true,
+      api_token_set: false
+    }),
+    {
+      doubao_asr_api_key_set: false,
+      chatgpt_asr_api_key_set: true,
+      deepseek_asr_api_key_set: true,
+      api_token_set: false
+    }
   )
 })
 
@@ -77,12 +98,14 @@ test('serverOwnedPatch 缺字段 / 空值按「未保存」处理，且只返回
   assert.deepEqual(serverOwnedPatch({}), {
     doubao_asr_api_key_set: false,
     chatgpt_asr_api_key_set: false,
-    deepseek_asr_api_key_set: false
+    deepseek_asr_api_key_set: false,
+    api_token_set: false
   })
   assert.deepEqual(serverOwnedPatch(null), {
     doubao_asr_api_key_set: false,
     chatgpt_asr_api_key_set: false,
-    deepseek_asr_api_key_set: false
+    deepseek_asr_api_key_set: false,
+    api_token_set: false
   })
   assert.deepEqual(Object.keys(serverOwnedPatch({ hotkey: {}, doubao_asr_api_key_set: true })).sort(), [...SERVER_OWNED_FIELDS].sort())
 })

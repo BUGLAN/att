@@ -916,8 +916,12 @@ fn validate_encrypted_credentials_with_key(stage: &Path) -> Result<(), BackupErr
     Ok(())
 }
 
-const ENCRYPTED_SETTINGS_FIELDS: [&str; 3] =
-    ["doubao_asr_api_key_encrypted", "chatgpt_asr_api_key_encrypted", "deepseek_asr_api_key_encrypted"];
+const ENCRYPTED_SETTINGS_FIELDS: [&str; 4] = [
+    "doubao_asr_api_key_encrypted",
+    "chatgpt_asr_api_key_encrypted",
+    "deepseek_asr_api_key_encrypted",
+    "api_token_encrypted",
+];
 
 fn read_backup_json(path: &Path, label: &str) -> Result<Option<Value>, BackupError> {
     if !path.is_file() {

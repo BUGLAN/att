@@ -156,6 +156,24 @@ mod tests {
         app.clone().oneshot(builder.body(Body::empty()).unwrap()).await.unwrap().status()
     }
 
+    async fn post_path(app: &Router, token: &str, path: &str) -> StatusCode {
+        let body = json!({ "path": path }).to_string();
+        app.clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/transcribe")
+                    .header("host", "127.0.0.1")
+                    .header("content-type", "application/json")
+                    .header("x-att-token", token)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
     #[tokio::test]
     async fn 转写接口默认要求token() {
         let app = router(test_state());
@@ -199,5 +217,36 @@ mod tests {
         // 随后因为路径未登记返回 404，而不是「没有可用引擎」409。
         let status = post_body(&app, Some("test-token"), r#"{"path":"C:\\not-registered\\a.mp3"}"#).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "auto 没有回落到豆包网页语音");
+    }
+
+    #[tokio::test]
+    async fn 配置允许目录后_目录内通过路径校验_目录外仍被拒() {
+        let state = test_state();
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("att-transcribe-api-dir-{}-{stamp}", std::process::id()));
+        let allowed = root.join("allowed");
+        let sibling = root.join("allowed2");
+        std::fs::create_dir_all(&allowed).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let inside = allowed.join("inside.mp3");
+        let outside = sibling.join("outside.mp3");
+        std::fs::write(&inside, b"not-a-real-mp3").unwrap();
+        std::fs::write(&outside, b"not-a-real-mp3").unwrap();
+        state
+            .core
+            .apply_settings_update(&json!({ "api_transcribe_allowed_dirs": [allowed.to_string_lossy()] }))
+            .unwrap();
+        let app = router(state);
+
+        // 允许目录内的文件已过鉴权与路径校验（后续可能因不是真音频返回 415/500，但不再是 403）
+        let inside_status = post_path(&app, "test-token", inside.to_str().unwrap()).await;
+        assert_ne!(inside_status, StatusCode::UNAUTHORIZED);
+        assert_ne!(inside_status, StatusCode::FORBIDDEN, "允许目录内的文件不应被路径白名单拒绝");
+
+        // 前缀相近的兄弟目录不能沾光；`..` 穿越到目录外同样拒绝
+        assert_eq!(post_path(&app, "test-token", outside.to_str().unwrap()).await, StatusCode::FORBIDDEN);
+        let escaped = allowed.join("..").join("allowed2").join("outside.mp3");
+        assert_eq!(post_path(&app, "test-token", escaped.to_str().unwrap()).await, StatusCode::FORBIDDEN);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

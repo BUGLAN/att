@@ -356,6 +356,12 @@ export function useElectron() {
     return invoke('open_models_directory')
   }
 
+  // 设置 → 诊断 →「外部 API」：选择允许外部调用转写的目录（系统对话框）；取消返回 null
+  async function openTranscribeDirectory() {
+    if (!isDesktop) return null
+    return invoke('open_transcribe_directory')
+  }
+
   // 「转文字」页：把用户选择 / 拖入 / 手动确认的本地文件登记进转写白名单（HTTP 接口只接受登记过的文件）
   async function allowTranscribePath(path) {
     if (!isDesktop) return ''
@@ -419,6 +425,7 @@ export function useElectron() {
     chooseBackupExportPath,
     chooseBackupImportPath,
     openModelsDirectory,
+    openTranscribeDirectory,
     restartApp,
     allowTranscribePath,
     filePathForFile,

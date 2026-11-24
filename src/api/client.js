@@ -481,6 +481,8 @@ export const api = {
 
   getSettings: () => request('GET', '/settings'),
   saveSettings: (settings) => request('PUT', '/settings', { body: settings }),
+  // 设置 → 诊断 →「外部 API」显式显示 / 复制持久令牌时读取明文；响应不缓存、不进普通设置
+  revealApiToken: () => request('GET', '/settings/api-token'),
   getHealth: (probeRuntime = false) => request('GET', `/health${probeRuntime ? '?probe_runtime=true' : ''}`),
   // 本地模型：清单 / 后台下载 / 进度 / 取消 / 删除（模型体积大，下载在数据面后台进行）
   getModels: () => request('GET', '/models'),

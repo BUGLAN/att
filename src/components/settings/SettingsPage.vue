@@ -412,6 +412,13 @@ function normalizeSettings(value = {}) {
     clipboard_max_items: normalizeLimit(value.clipboard_max_items),
     clipboard_retention_days: normalizeLimit(value.clipboard_retention_days),
     audio_retention_days: normalizeLimit(value.audio_retention_days),
+    api_token_enabled: value.api_token_enabled === true,
+    api_token_set: value.api_token_set === true,
+    api_transcribe_allowed_dirs: Array.isArray(value.api_transcribe_allowed_dirs)
+      ? value.api_transcribe_allowed_dirs
+        .filter((dir) => typeof dir === 'string' && dir.trim())
+        .map((dir) => dir.trim())
+      : [],
     rewrite_enabled: value.rewrite_enabled ?? true,
     rewrite_hotkey: normalizeHotkeyConfig(value.rewrite_hotkey, getDefaultRewriteHotkey()),
     // 语音改写默认没有组合键；服务端 disabled 时返回空 display，不能落回录音默认键
@@ -481,6 +488,10 @@ function buildSettingsPayload() {
     clipboard_max_items: normalizeLimit(form.value.clipboard_max_items),
     clipboard_retention_days: normalizeLimit(form.value.clipboard_retention_days),
     audio_retention_days: normalizeLimit(form.value.audio_retention_days),
+    api_token_enabled: Boolean(form.value.api_token_enabled),
+    api_transcribe_allowed_dirs: Array.isArray(form.value.api_transcribe_allowed_dirs)
+      ? form.value.api_transcribe_allowed_dirs.map((dir) => String(dir || '').trim()).filter(Boolean)
+      : [],
     rewrite_enabled: Boolean(form.value.rewrite_enabled),
     rewrite_hotkey: normalizeHotkeyConfig(form.value.rewrite_hotkey, getDefaultRewriteHotkey()),
     voice_rewrite_enabled: Boolean(form.value.voice_rewrite_enabled),

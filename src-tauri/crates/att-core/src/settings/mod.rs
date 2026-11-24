@@ -187,6 +187,13 @@ pub struct UserSettings {
     /// 录音音频保留天数（0 = 永久，见 [`AUDIO_RETENTION_DAYS_LIMIT`]）：超过天数的记录只删音频文件，记录与文字保留；收藏的不删
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub audio_retention_days: i64,
+    // ---- 数据面外部访问 ----
+    /// 允许外部进程用固定的持久令牌调用数据面（仅回环）；旧数据缺字段 = 关闭。
+    pub api_token_enabled: bool,
+    /// 持久令牌密文（Fernet）：首次开启时生成，关闭后保留；绝不出现在 GET /api/settings。
+    pub api_token_encrypted: Option<String>,
+    /// 外部 API 允许转写的目录（绝对路径；空 = 仍只允许界面里登记过的精确路径）。
+    pub api_transcribe_allowed_dirs: Vec<String>,
     /// 透明透传键：仅存在于 PUT 白名单（与 Python 行为一致），UI 选择后原样保存。
     pub audio_input_device: Option<String>,
     // ---- 录音 ----
@@ -267,6 +274,9 @@ impl UserSettings {
             clipboard_max_items: 0,
             clipboard_retention_days: 0,
             audio_retention_days: 0,
+            api_token_enabled: false,
+            api_token_encrypted: None,
+            api_transcribe_allowed_dirs: Vec::new(),
             audio_input_device: None,
             recording_mode: "single".into(),
             silence_threshold: 1.5,
@@ -426,7 +436,10 @@ impl UserSettings {
                 // 密文字段绝不外发
                 if matches!(
                     key.as_str(),
-                    "doubao_asr_api_key_encrypted" | "chatgpt_asr_api_key_encrypted" | "deepseek_asr_api_key_encrypted"
+                    "doubao_asr_api_key_encrypted"
+                        | "chatgpt_asr_api_key_encrypted"
+                        | "deepseek_asr_api_key_encrypted"
+                        | "api_token_encrypted"
                 ) {
                     continue;
                 }
@@ -436,6 +449,7 @@ impl UserSettings {
         view["doubao_asr_api_key_set"] = json!(self.doubao_asr_api_key_encrypted.is_some());
         view["chatgpt_asr_api_key_set"] = json!(self.chatgpt_asr_api_key_encrypted.is_some());
         view["deepseek_asr_api_key_set"] = json!(self.deepseek_asr_api_key_encrypted.is_some());
+        view["api_token_set"] = json!(self.api_token_encrypted.is_some());
         for &(action, hotkey_key, enabled_key) in EXTRA_HOTKEY_FIELDS {
             let binding = self.binding_or_default(action, platform);
             view[hotkey_key] = binding.to_legacy(platform);
@@ -543,6 +557,45 @@ pub fn apply_settings_update(
                 if value.as_bool().unwrap_or(false) {
                     settings.deepseek_asr_api_key_encrypted = None;
                 }
+            }
+            // ---- 数据面外部访问 ----
+            "api_token_enabled" => {
+                let enabled = value.as_bool().ok_or_else(|| type_error("布尔值"))?;
+                settings.api_token_enabled = enabled;
+                // 首次开启（或密文已损坏 / 密钥不匹配）时生成一次；之后重启保持同一令牌
+                let usable = settings
+                    .api_token_encrypted
+                    .as_deref()
+                    .and_then(|token| crypto.decrypt(token))
+                    .is_some_and(|token| !token.is_empty());
+                if enabled && !usable {
+                    settings.api_token_encrypted = Some(crypto.encrypt(&new_api_token()));
+                }
+            }
+            "api_transcribe_allowed_dirs" => {
+                let items = value.as_array().ok_or_else(|| type_error("字符串数组"))?;
+                let mut dirs: Vec<String> = Vec::new();
+                for item in items {
+                    let raw = item.as_str().ok_or_else(|| type_error("字符串数组"))?.trim().trim_matches('"');
+                    if raw.is_empty() {
+                        continue;
+                    }
+                    let path = std::path::Path::new(raw);
+                    if !path.is_absolute() {
+                        return Err(format!("字段 api_transcribe_allowed_dirs 里的路径必须是绝对路径：{raw}"));
+                    }
+                    // 目录存在时按 canonicalize 后的形态保存（消掉 `..` / 尾部分隔符）；
+                    // 不存在时保留原样，之后目录出现仍能匹配
+                    let normalized = std::fs::canonicalize(path)
+                        .map(crate::state::tidy)
+                        .unwrap_or_else(|_| path.to_path_buf())
+                        .to_string_lossy()
+                        .into_owned();
+                    if !dirs.iter().any(|existing| same_path_text(existing, &normalized)) {
+                        dirs.push(normalized);
+                    }
+                }
+                settings.api_transcribe_allowed_dirs = dirs;
             }
             // 已在循环前处理
             "hotkeys" => {}
@@ -764,6 +817,23 @@ fn set_i64(slot: &mut i64, value: &Value, type_error: &dyn Fn(&str) -> String) -
 fn set_bool(slot: &mut bool, value: &Value, type_error: &dyn Fn(&str) -> String) -> Result<(), String> {
     *slot = value.as_bool().ok_or_else(|| type_error("布尔值"))?;
     Ok(())
+}
+
+/// 生成持久 API 令牌：两段 UUID v4 拼成 64 位十六进制（约 244 位随机熵）。
+fn new_api_token() -> String {
+    format!("att_{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
+}
+
+/// 路径文本是否同一条：Windows 盘符 / 大小写不敏感，其它平台按原样比较。
+fn same_path_text(left: &str, right: &str) -> bool {
+    #[cfg(windows)]
+    {
+        left.eq_ignore_ascii_case(right)
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
 }
 
 /// 宽容整数反序列化：Python / 前端可能把整数语义字段写成浮点数
@@ -1199,6 +1269,83 @@ mod tests {
         assert!(apply_settings_update(&mut settings, &json!({ "audio_retention_days": -1 }), Platform::Macos, &crypto)
             .is_err());
         assert_eq!(settings.audio_retention_days, 30, "越界值不能留下");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 持久api令牌_首次开启生成_重启保持_关闭后密文不外发() {
+        let dir = temp_dir("api-token");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"asr_provider":"doubao_asr"}"#).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Macos);
+        assert!(!settings.api_token_enabled, "旧数据默认关闭");
+        assert!(settings.api_token_encrypted.is_none());
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+
+        apply_settings_update(&mut settings, &json!({ "api_token_enabled": true }), Platform::Macos, &crypto).unwrap();
+        let token = crypto.decrypt(settings.api_token_encrypted.as_deref().unwrap()).unwrap();
+        assert!(token.starts_with("att_") && token.len() > 40, "持久令牌需要足够随机: {token}");
+        settings.save(&path).unwrap();
+
+        // 重启（重新加载 settings.json）后仍是同一令牌
+        let reloaded = UserSettings::load(&path, Platform::Macos);
+        assert!(reloaded.api_token_enabled);
+        assert_eq!(crypto.decrypt(reloaded.api_token_encrypted.as_deref().unwrap()).unwrap(), token);
+
+        // 前端整份设置回存（开关仍是 true）不能换令牌
+        apply_settings_update(&mut settings, &json!({ "api_token_enabled": true }), Platform::Macos, &crypto).unwrap();
+        assert_eq!(crypto.decrypt(settings.api_token_encrypted.as_deref().unwrap()).unwrap(), token);
+
+        let view = settings.public_view(Platform::Macos);
+        assert_eq!(view["api_token_enabled"], true);
+        assert_eq!(view["api_token_set"], true);
+        assert!(view.get("api_token_encrypted").is_none(), "密文不能出现在 GET 视图");
+
+        apply_settings_update(&mut settings, &json!({ "api_token_enabled": false }), Platform::Macos, &crypto).unwrap();
+        assert!(!settings.api_token_enabled);
+        assert!(settings.api_token_encrypted.is_some(), "关闭只停用，不销毁令牌");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 外部转写允许目录_默认空_绝对路径去重_相对路径拒绝() {
+        let dir = temp_dir("api-dirs");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"asr_provider":"doubao_asr"}"#).unwrap();
+        let mut settings = UserSettings::load(&path, Platform::Macos);
+        assert!(settings.api_transcribe_allowed_dirs.is_empty(), "旧数据 = 保持现有精确白名单");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+
+        let root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let root_text = root.to_string_lossy().into_owned();
+        apply_settings_update(
+            &mut settings,
+            &json!({ "api_transcribe_allowed_dirs": [root_text.clone(), root_text.clone()] }),
+            Platform::Macos,
+            &crypto,
+        )
+        .unwrap();
+        assert_eq!(settings.api_transcribe_allowed_dirs.len(), 1, "重复目录只保留一条");
+
+        let err = apply_settings_update(
+            &mut settings,
+            &json!({ "api_transcribe_allowed_dirs": ["relative/dir"] }),
+            Platform::Macos,
+            &crypto,
+        )
+        .unwrap_err();
+        assert!(err.contains("必须是绝对路径"), "{err}");
+        assert_eq!(settings.api_transcribe_allowed_dirs.len(), 1, "校验失败不能留下半份目录");
+        assert!(apply_settings_update(
+            &mut settings,
+            &json!({ "api_transcribe_allowed_dirs": "not-an-array" }),
+            Platform::Macos,
+            &crypto,
+        )
+        .is_err());
+
+        settings.save(&path).unwrap();
+        assert_eq!(UserSettings::load(&path, Platform::Macos).api_transcribe_allowed_dirs.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

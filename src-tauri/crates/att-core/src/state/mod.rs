@@ -103,6 +103,24 @@ pub(crate) fn tidy(path: PathBuf) -> PathBuf {
     resolved
 }
 
+/// 目录前缀比较：只按完整路径段匹配，避免 `/a/b` 误放行 `/a/bc`。
+///
+/// Windows 的盘符与文件名大小写不敏感，canonicalize 通常已统一大小写；
+/// 这里仍按小写比较兜底，并同时接受 `/` 与 `\`。
+fn path_has_prefix(path: &Path, dir: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let path = path.to_string_lossy().replace('/', "\\").to_lowercase();
+        let dir = dir.to_string_lossy().replace('/', "\\").to_lowercase();
+        let dir = dir.trim_end_matches('\\');
+        path == dir || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('\\'))
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(dir)
+    }
+}
+
 impl CoreState {
     /// 初始化（迁移已在此前完成）：建目录 → 加载密钥 → 加载设置。
     pub fn init(data_dir: &Path, platform: Platform) -> Result<Self, CoreError> {
@@ -281,6 +299,36 @@ impl CoreState {
     /// 该路径是否已经由本机用户登记为可转写。
     pub fn is_transcribe_allowed(&self, path: &Path) -> bool {
         self.transcribe_allowed.lock().unwrap_or_else(|e| e.into_inner()).contains(path)
+    }
+
+    /// 该路径是否允许文件转写：界面登记过的精确路径，或位于「外部 API 允许的目录」内。
+    ///
+    /// `path` 必须已经 canonicalize（HTTP 校验与登记入口都会先做），这样 `..` 与符号链接
+    /// 不可能绕过目录前缀比较。目录本身在每次比较时重新 canonicalize：设置里存的是文本，
+    /// 目录被移动 / 删除后自动失效。
+    pub fn is_transcribe_permitted(&self, path: &Path) -> bool {
+        if self.is_transcribe_allowed(path) {
+            return true;
+        }
+        let dirs = self.settings().api_transcribe_allowed_dirs;
+        dirs.iter()
+            .filter_map(|dir| std::fs::canonicalize(dir.trim()).ok())
+            .map(tidy)
+            .any(|dir| path_has_prefix(path, &dir))
+    }
+
+    /// 当前启用的持久 API 令牌明文（未开启 / 未配置 / 密文损坏时 None）。
+    ///
+    /// 只供数据面鉴权与「设置 → 诊断」显式读取；不进入 `GET /api/settings` 或日志。
+    pub fn api_token(&self) -> Option<String> {
+        let cipher = {
+            let settings = self.settings.lock().unwrap_or_else(|e| e.into_inner());
+            if !settings.api_token_enabled {
+                return None;
+            }
+            settings.api_token_encrypted.clone()
+        };
+        cipher.as_deref().and_then(|token| self.crypto.decrypt(token)).filter(|t| !t.is_empty())
     }
 
     /// 提示词预设库：内置 `prompts_dir` + 自定义 `data/custom_prompts.json`。

@@ -90,6 +90,14 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 录音回放 / 图片 / 导出等 `<audio>`、`<img>` 无法带请求头的地址改用 `?token=`。文件转写还要求
 路径在界面里选择 / 拖入 / 手动确认过的精确白名单内，HTTP 调用不能自行扩大范围。
 
+外部进程（例如 SourceFlow）可以在「设置 → 诊断 → 外部 API」开启**持久访问令牌**：首次开启时生成
+一个随机令牌并加密保存在数据目录，应用重启后保持不变；界面默认脱敏，点「显示 / 复制」才会读取明文，
+令牌不会写进日志或 `GET /api/settings`。同一位置还可以配置**允许转写的目录**（绝对路径，子目录自动
+包含）；留空时行为与旧版一致，只允许界面登记过的精确文件。两项能力都只对回环地址开放，非回环请求
+仍返回 403。外部调用流程：`POST /api/transcribe`（`X-ATT-Token` 用持久令牌，`path` 位于允许目录内，
+`want_segments: true` 时每个 segment 带秒为单位的 `start` / `end`）拿到 `job_id` 后轮询
+`GET /api/transcribe/jobs/{id}`。
+
 发布：`scripts/prepare-sherpa-onnx.mjs` 会按目标平台下载 sherpa-onnx v2.0.1、校验固定 SHA-256 后放进安装包资源；
 版本号写在 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`（及对应 lock 文件），
 用 `npm run version:bump -- 2.8.0` 一次改齐（`node scripts/bump-version.mjs --check` 只校验，Node 测试里也会校验）；

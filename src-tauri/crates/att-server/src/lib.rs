@@ -4,10 +4,13 @@
 //! （`<audio>` / `<img>` / 下载等带不了请求头的 GET 用 `?token=`）。来源按协议 + 主机名
 //! 精确匹配本地页面与 Tauri 自定义来源，Host 只允许 `127.0.0.1` / `localhost`（挡住 DNS rebinding）；
 //! `/api/health` 虽不要求令牌，也必须通过回环 Host 校验。
+//! 用户在「设置 → 诊断 → 外部 API」开启持久令牌后，外部进程也可用它代替本次启动的 token；
+//! 持久令牌只存 Fernet 密文，`GET /api/settings` 只返回是否已生成。
 //!
 //! 端点一览：
 //! - GET /api/health（前端 runtimeStatus：model_service_* 与 streaming_*）
 //! - GET/PUT /api/settings（白名单/脱敏契约保真）
+//! - GET /api/settings/api-token（诊断页显式显示 / 复制持久令牌，禁止缓存）
 //! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出、重新识别）；
 //!   搜索支持状态与本地日期筛选，/api/records/export 批量导出（Markdown / TXT / JSON / CSV）
 //! - /api/prompts：列出（内置 + 自定义）、新建 / 修改 / 删除自定义预设、PUT /api/prompts/default 设默认
@@ -35,7 +38,7 @@ use att_core::records::export::{self as record_export, ExportFormat};
 use att_core::records::{RecordError, RecordFilter, RecordUpdate};
 use att_core::state::CoreState;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{header, HeaderMap, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
@@ -67,14 +70,15 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .allow_headers(tower_http::cors::Any);
 
     // 令牌校验在 CORS 内侧：预检由 CORS 层直接应答，不会要求 X-ATT-Token。
-    // 除 /api/health 外所有端点都必须带本次启动的令牌；health 仍校验回环 Host。
-    let guard_token = state.token.clone();
+    // 除 /api/health 外所有端点都必须带本次启动的令牌或已开启的持久令牌；health 仍校验回环 Host。
+    let guard_state = state.clone();
     let maintenance_core = state.core.clone();
     Router::new()
         .route("/", get(root))
         .route("/api/health", get(health))
         // 设置
         .route("/api/settings", get(settings_get).put(settings_put))
+        .route("/api/settings/api-token", get(api_token_get))
         // 记录
         .route("/api/records", get(records_list))
         .route("/api/records/search", get(records_search))
@@ -127,8 +131,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
             }
         }))
         .layer(middleware::from_fn(move |req, next| {
-            let token = guard_token.clone();
-            async move { data_plane_guard(token, req, next).await }
+            let state = guard_state.clone();
+            async move { data_plane_guard(state, req, next).await }
         }))
         .layer(cors)
         .with_state(state)
@@ -152,7 +156,11 @@ fn token_from_query(query: &str) -> Option<&str> {
 /// - `/api/health` 不需要令牌，但仍须回环 Host；CORS 预检直接放行（浏览器预检不带令牌）；
 /// - 其余请求必须带 `X-ATT-Token`；GET/HEAD（录音回放、图片、导出）也接受 `?token=`；
 /// - 除预检外的请求 Host 只能是 `127.0.0.1[:端口]` / `localhost[:端口]`，挡住 DNS rebinding。
-async fn data_plane_guard(token: String, req: axum::extract::Request, next: Next) -> axum::response::Response {
+async fn data_plane_guard(
+    state: Arc<ServerState>,
+    req: axum::extract::Request,
+    next: Next,
+) -> axum::response::Response {
     if req.method() == Method::OPTIONS {
         return next.run(req).await;
     }
@@ -178,7 +186,10 @@ async fn data_plane_guard(token: String, req: axum::extract::Request, next: Next
         .then(|| req.uri().query().and_then(token_from_query))
         .flatten();
     let actual = header_token.or(query_token).unwrap_or("");
-    if !token_matches(&token, actual) {
+    // 两个令牌都完整比较，不在命中第一个时提前返回（保持常量时间语义）
+    let session_ok = token_matches(&state.token, actual);
+    let persistent_ok = state.core.api_token().is_some_and(|token| token_matches(&token, actual));
+    if !(session_ok | persistent_ok) {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "detail": "缺少或错误的 X-ATT-Token" }))).into_response();
     }
 
@@ -562,6 +573,21 @@ async fn health(State(state): State<Arc<ServerState>>) -> Json<Value> {
 
 async fn settings_get(State(state): State<Arc<ServerState>>) -> Json<Value> {
     Json(state.core.public_settings())
+}
+
+/// GET /api/settings/api-token：诊断页显式「显示 / 复制」持久令牌时读取明文。
+///
+/// 令牌不进 `GET /api/settings`、日志与普通响应；这里禁止缓存，关闭持久令牌时返回 null。
+async fn api_token_get(State(state): State<Arc<ServerState>>) -> axum::response::Response {
+    let settings = state.core.settings();
+    let token = if settings.api_token_enabled { state.core.api_token() } else { None };
+    let mut response = Json(json!({
+        "enabled": settings.api_token_enabled,
+        "token": token,
+    }))
+    .into_response();
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 async fn settings_put(
@@ -1479,6 +1505,100 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let _ = response.into_body().collect().await;
+    }
+
+    #[tokio::test]
+    async fn 持久令牌_开启后可替代会话令牌_关闭后失效_仍限回环() {
+        let state = test_state("persistent-token").await;
+        let request = |token: &str, host: &str| {
+            axum::http::Request::builder()
+                .uri("/api/settings")
+                .header("x-att-token", token.to_string())
+                .header("host", host.to_string())
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        state.core.apply_settings_update(&json!({ "api_token_enabled": true })).unwrap();
+        let token = state.core.api_token().expect("开启后应能读到持久令牌");
+        assert!(token.starts_with("att_"), "持久令牌应带可识别前缀: {token}");
+
+        // 持久令牌 + 回环 Host → 200；错误令牌仍 401
+        assert_eq!(
+            router(state.clone()).oneshot(request(&token, "127.0.0.1:17890")).await.unwrap().status(),
+            StatusCode::OK
+        );
+        // GET / HEAD 也接受 ?token=（媒体元素带不了请求头）
+        let query = axum::http::Request::builder()
+            .uri(format!("/api/settings?token={token}"))
+            .header("host", "127.0.0.1:17890")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(router(state.clone()).oneshot(query).await.unwrap().status(), StatusCode::OK);
+        assert_eq!(
+            router(state.clone()).oneshot(request("wrong-token", "127.0.0.1:17890")).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        // 令牌正确但 Host 非回环 → 403
+        assert_eq!(
+            router(state.clone()).oneshot(request(&token, "evil.com")).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // 关闭后同一持久令牌立即失效；本次会话令牌仍可用
+        state.core.apply_settings_update(&json!({ "api_token_enabled": false })).unwrap();
+        assert_eq!(
+            router(state.clone()).oneshot(request(&token, "127.0.0.1:17890")).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            router(state.clone()).oneshot(request("test-token", "127.0.0.1:17890")).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn 令牌接口_仅在诊断读取时返回明文_设置视图只给是否生成() {
+        let state = test_state("api-token-reveal").await;
+        state.core.apply_settings_update(&json!({ "api_token_enabled": true })).unwrap();
+        let token = state.core.api_token().expect("开启后应能读到持久令牌");
+
+        // 诊断读取也在统一鉴权层内侧：不带令牌仍是 401
+        let unauthorized = router(state.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/settings/api-token")
+                    .header("host", "127.0.0.1:17890")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let (status, headers, bytes) = get_raw(&state, "/api/settings/api-token", &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["enabled"], true);
+        assert_eq!(body["token"], token);
+
+        // GET /api/settings 只给开关与「是否已生成」，绝不带密文或明文
+        let (status, settings) = get_json(&state, "/api/settings").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(settings["api_token_enabled"], true);
+        assert_eq!(settings["api_token_set"], true);
+        assert!(settings.get("api_token_encrypted").is_none());
+        assert!(!settings.to_string().contains(&token), "设置响应不能出现令牌明文");
+
+        // 关闭后接口返回 enabled=false / token=null，历史令牌不再暴露
+        state.core.apply_settings_update(&json!({ "api_token_enabled": false })).unwrap();
+        let (status, headers, bytes) = get_raw(&state, "/api/settings/api-token", &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["enabled"], false);
+        assert!(body["token"].is_null());
     }
 
     #[tokio::test]

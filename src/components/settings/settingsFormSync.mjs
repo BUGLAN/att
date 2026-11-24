@@ -43,7 +43,8 @@ export function hasPendingSettingsEdits({ initialized, draftSnapshot, savedSnaps
 export const SERVER_OWNED_FIELDS = Object.freeze([
   'doubao_asr_api_key_set',
   'chatgpt_asr_api_key_set',
-  'deepseek_asr_api_key_set'
+  'deepseek_asr_api_key_set',
+  'api_token_set'
 ])
 // 豆包网页语音无需凭据，不在这里登记「是否已保存」字段。
 
