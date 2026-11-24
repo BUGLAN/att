@@ -1,4 +1,3 @@
-import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { api as httpApi, getBackendPort } from '@/api/client'
 
@@ -68,8 +67,6 @@ async function removeAllChannelListeners(channel) {
 }
 
 export function useElectron() {
-  const isReady = ref(isDesktop)
-
   function debugLog(scope, message, details) {
     if (isDesktop) {
       void invoke('debug_log', { scope, message, details: toPlainObject(details) }).catch(() => {})
@@ -190,13 +187,6 @@ export function useElectron() {
       }
 
       throw new Error('Image clipboard API unavailable')
-    },
-    pasteActive: async () => {
-      if (isDesktop) {
-        return invoke('paste_active')
-      }
-
-      throw new Error('System paste is only available in desktop mode')
     }
   }
 
@@ -397,7 +387,6 @@ export function useElectron() {
   return {
     isElectron,
     isDesktop,
-    isReady,
     api,
     windowControl,
     tray,

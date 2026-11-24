@@ -312,7 +312,6 @@ pub fn run() {
             commands::read_clipboard_text,
             commands::write_clipboard_text,
             commands::write_clipboard_image,
-            commands::paste_active,
             commands::get_clipboard_panel_context,
             commands::hide_clipboard_panel,
             commands::clipboard_panel_finish,

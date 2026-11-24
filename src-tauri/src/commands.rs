@@ -203,13 +203,6 @@ pub fn resolve_clipboard_image_path(data_dir: &std::path::Path, raw_path: &str) 
     Ok(resolved)
 }
 
-/// 模拟「粘贴」到焦点窗口（Cmd/Ctrl+V）。
-#[tauri::command]
-pub async fn paste_active() -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(crate::desktop::paste_active).await.map_err(|e| err(e.to_string()))??;
-    Ok(json!({ "success": true }))
-}
-
 // ---------------- 剪贴板悬浮框 ----------------
 
 /// 悬浮框页面的上下文（回车行为、唤起快捷键），每次唤起时读取。
