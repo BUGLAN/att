@@ -111,6 +111,7 @@ mod tests {
     use att_core::state::CoreState;
     use axum::body::Body;
     use axum::Router;
+    use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     fn test_state() -> Arc<ServerState> {
@@ -156,22 +157,19 @@ mod tests {
         app.clone().oneshot(builder.body(Body::empty()).unwrap()).await.unwrap().status()
     }
 
-    async fn post_path(app: &Router, token: &str, path: &str) -> StatusCode {
-        let body = json!({ "path": path }).to_string();
-        app.clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/api/transcribe")
-                    .header("host", "127.0.0.1")
-                    .header("content-type", "application/json")
-                    .header("x-att-token", token)
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-            .status()
+    async fn post_json(app: &Router, token: Option<&str>, body: Value) -> (StatusCode, Value) {
+        let mut builder = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/transcribe")
+            .header("host", "127.0.0.1")
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            builder = builder.header("x-att-token", token);
+        }
+        let response = app.clone().oneshot(builder.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
     #[tokio::test]
@@ -220,33 +218,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 配置允许目录后_目录内通过路径校验_目录外仍被拒() {
+    async fn 有效令牌_任意目录的音频都受理并完成() {
         let state = test_state();
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let root = std::env::temp_dir().join(format!("att-transcribe-api-dir-{}-{stamp}", std::process::id()));
-        let allowed = root.join("allowed");
-        let sibling = root.join("allowed2");
-        std::fs::create_dir_all(&allowed).unwrap();
-        std::fs::create_dir_all(&sibling).unwrap();
-        let inside = allowed.join("inside.mp3");
-        let outside = sibling.join("outside.mp3");
-        std::fs::write(&inside, b"not-a-real-mp3").unwrap();
-        std::fs::write(&outside, b"not-a-real-mp3").unwrap();
-        state
-            .core
-            .apply_settings_update(&json!({ "api_transcribe_allowed_dirs": [allowed.to_string_lossy()] }))
-            .unwrap();
+        let root = std::env::temp_dir().join(format!("att-transcribe-any-path-{}-{stamp}", std::process::id()));
+        let audio_dir = root.join("not-configured").join("nested");
+        std::fs::create_dir_all(&audio_dir).unwrap();
+        let audio = audio_dir.join("a.mp3");
+        // 内容只用于算缓存哈希；命中缓存后不会跑 ffmpeg / 在线引擎，测试不依赖外部工具。
+        let content = b"att-arbitrary-local-audio";
+        std::fs::write(&audio, content).unwrap();
+        let hash = "ac1f620dc728330558fbf6270fe4bab4a09e75291d28e48c8dc10dad29319660";
+        let mut cache = serde_json::Map::new();
+        cache.insert(
+            hash.to_string(),
+            json!({
+                "engines": {
+                    "doubao_web_asr": {
+                        "text": "任意目录也可转写",
+                        "duration_seconds": 1.0,
+                        "engine": "doubao_web_asr",
+                        "cached_at": 0.0
+                    }
+                },
+                "_last_used": 0.0
+            }),
+        );
+        std::fs::write(
+            state.core.data_dir.join("transcribe_file_cache.json"),
+            serde_json::to_vec(&Value::Object(cache)).unwrap(),
+        )
+        .unwrap();
         let app = router(state);
 
-        // 允许目录内的文件已过鉴权与路径校验（后续可能因不是真音频返回 415/500，但不再是 403）
-        let inside_status = post_path(&app, "test-token", inside.to_str().unwrap()).await;
-        assert_ne!(inside_status, StatusCode::UNAUTHORIZED);
-        assert_ne!(inside_status, StatusCode::FORBIDDEN, "允许目录内的文件不应被路径白名单拒绝");
+        let body = json!({ "path": audio.to_string_lossy(), "engine": "doubao_web_asr" });
+        let (status, payload) = post_json(&app, Some("test-token"), body.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        assert_eq!(payload["text"], json!("任意目录也可转写"));
+        assert_eq!(payload["cached"], json!(true));
 
-        // 前缀相近的兄弟目录不能沾光；`..` 穿越到目录外同样拒绝
-        assert_eq!(post_path(&app, "test-token", outside.to_str().unwrap()).await, StatusCode::FORBIDDEN);
-        let escaped = allowed.join("..").join("allowed2").join("outside.mp3");
-        assert_eq!(post_path(&app, "test-token", escaped.to_str().unwrap()).await, StatusCode::FORBIDDEN);
+        // 同一路径没有令牌仍然拒绝
+        assert_eq!(post_json(&app, None, body).await.0, StatusCode::UNAUTHORIZED);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

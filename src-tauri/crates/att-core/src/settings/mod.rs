@@ -192,7 +192,8 @@ pub struct UserSettings {
     pub api_token_enabled: bool,
     /// 持久令牌密文（Fernet）：首次开启时生成，关闭后保留；绝不出现在 GET /api/settings。
     pub api_token_encrypted: Option<String>,
-    /// 外部 API 允许转写的目录（绝对路径；空 = 仍只允许界面里登记过的精确路径）。
+    /// 旧版「外部 API 允许转写的目录」：数据面改为只认令牌后不再参与转写校验，
+    /// 仅保留字段以便读旧 settings.json / 兼容旧客户端的 PUT。
     pub api_transcribe_allowed_dirs: Vec<String>,
     /// 透明透传键：仅存在于 PUT 白名单（与 Python 行为一致），UI 选择后原样保存。
     pub audio_input_device: Option<String>,
@@ -1308,12 +1309,12 @@ mod tests {
     }
 
     #[test]
-    fn 外部转写允许目录_默认空_绝对路径去重_相对路径拒绝() {
+    fn 旧版允许目录字段_默认空_绝对路径去重_相对路径拒绝() {
         let dir = temp_dir("api-dirs");
         let path = dir.join("settings.json");
         std::fs::write(&path, r#"{"asr_provider":"doubao_asr"}"#).unwrap();
         let mut settings = UserSettings::load(&path, Platform::Macos);
-        assert!(settings.api_transcribe_allowed_dirs.is_empty(), "旧数据 = 保持现有精确白名单");
+        assert!(settings.api_transcribe_allowed_dirs.is_empty(), "旧数据缺字段 = 空列表");
         let crypto = Crypto::load_or_create(&dir).unwrap();
 
         let root = std::fs::canonicalize(std::env::temp_dir()).unwrap();

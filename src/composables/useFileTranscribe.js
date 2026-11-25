@@ -391,7 +391,7 @@ export function useFileTranscribe() {
       return { status: 'failed', error: message }
     }
 
-    // 数据面只接受本机用户确认过的文件：选择 / 拖入 / 手动输入的路径在发起请求前逐个登记
+    // 界面内先确认文件存在（数据面只认令牌，这里只是防误操作）
     if (isDesktop) {
       try {
         await allowTranscribePath(request.path)

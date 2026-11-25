@@ -293,12 +293,12 @@ fn resolve_engine(core: &CoreState, requested: &str) -> Result<&'static str, Tra
     }
 }
 
-/// 路径校验：绝对路径 → canonicalize → 文件存在 → 扩展名可识别 → 精确白名单或允许目录。
+/// 路径校验：绝对路径 → canonicalize → 文件存在 → 扩展名可识别。
 ///
-/// 精确白名单在界面选择 / 拖入 / 手动确认文件时由 Tauri 命令写入；允许目录由用户在
-/// 「设置 → 诊断 → 外部 API」里显式配置（默认空）。两者都在 canonicalize 之后比较，
-/// `..` 与符号链接不能绕过目录边界。
-fn validate_path(core: &CoreState, raw: &str) -> Result<PathBuf, TranscribeError> {
+/// 数据面以 `X-ATT-Token` 作为唯一授权（路由层在进入这里之前已经校验）：令牌有效即可转写
+/// 任意可读的本地音视频文件，不再要求文件在界面里登记过或位于配置的目录内。界面里的
+/// 文件白名单只用于防误操作，不参与这里的判断。
+fn validate_path(raw: &str) -> Result<PathBuf, TranscribeError> {
     let raw = raw.trim().trim_matches('"');
     if raw.is_empty() {
         return Err(TranscribeError::new(404, "缺少文件路径"));
@@ -318,12 +318,6 @@ fn validate_path(core: &CoreState, raw: &str) -> Result<PathBuf, TranscribeError
         let suffix =
             path.extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_else(|| "无后缀".into());
         return Err(TranscribeError::new(415, format!("无法解码：不支持的文件类型「{suffix}」")));
-    }
-    if !core.is_transcribe_permitted(&path) {
-        return Err(TranscribeError::new(
-            403,
-            "不允许转写该文件：请先在应用内选择或拖入文件，或在「设置 → 诊断 → 外部 API」中允许所在目录",
-        ));
     }
     Ok(path)
 }
@@ -571,7 +565,7 @@ pub async fn handle(core: Arc<CoreState>, request: TranscribeRequest) -> Result<
             ));
         }
     }
-    let path = validate_path(&core, &request.path)?;
+    let path = validate_path(&request.path)?;
     let hash = content_hash(&path).await?;
     let transcriber = &core.transcriber;
 
@@ -1358,71 +1352,39 @@ mod tests {
     fn 路径与扩展名校验() {
         let dir = std::env::temp_dir().join(format!("att-ft-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let core = CoreState::init(&dir, crate::Platform::Windows).unwrap();
-        assert_eq!(validate_path(&core, "").unwrap_err().status, 404);
-        assert_eq!(validate_path(&core, "relative.mp3").unwrap_err().status, 404);
+        assert_eq!(validate_path("").unwrap_err().status, 404);
+        assert_eq!(validate_path("relative.mp3").unwrap_err().status, 404);
         let text = dir.join("a.txt");
         std::fs::write(&text, b"x").unwrap();
-        assert_eq!(validate_path(&core, text.to_str().unwrap()).unwrap_err().status, 415);
+        assert_eq!(validate_path(text.to_str().unwrap()).unwrap_err().status, 415);
         let audio = dir.join("a.MP3");
         std::fs::write(&audio, b"x").unwrap();
-        assert_eq!(validate_path(&core, audio.to_str().unwrap()).unwrap_err().status, 403, "未登记的文件默认拒绝");
-        core.allow_transcribe_file(&audio).unwrap();
-        assert!(validate_path(&core, &format!("\"{}\"", audio.display())).is_ok());
+        // 数据面只认令牌：任意可读的音频文件都通过路径校验，不再要求界面登记
+        let resolved = validate_path(audio.to_str().unwrap()).expect("任意可读音频都应通过路径校验");
+        assert_eq!(resolved, std::fs::canonicalize(&audio).map(crate::state::tidy).unwrap());
+        assert!(validate_path(&format!("\"{}\"", audio.display())).is_ok());
+        let missing = dir.join("missing.mp3");
+        assert_eq!(validate_path(missing.to_str().unwrap()).unwrap_err().status, 404);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn 路径校验_canonicalize_后匹配白名单() {
+    fn 路径校验_canonicalize_消掉相对段() {
         let dir = std::env::temp_dir().join(format!("att-ft-canon-{}", uuid::Uuid::new_v4()));
         let media_dir = dir.join("media");
         std::fs::create_dir_all(&media_dir).unwrap();
         let audio = media_dir.join("a.mp3");
         std::fs::write(&audio, b"x").unwrap();
-        let core = CoreState::init(&dir.join("data"), crate::Platform::Windows).unwrap();
 
-        let allowed = core.allow_transcribe_file(&audio).unwrap();
-        // 带 `..` 的原始路径 canonicalize 后应命中同一条白名单
+        let canonical = std::fs::canonicalize(&audio).map(crate::state::tidy).unwrap();
+        // 带 `..` 的原始路径 canonicalize 后应得到同一个文件
         let indirect = media_dir.join("..").join("media").join("a.mp3");
-        assert_eq!(validate_path(&core, indirect.to_str().unwrap()).unwrap(), allowed);
+        assert_eq!(validate_path(indirect.to_str().unwrap()).unwrap(), canonical);
 
-        // 目录外的文件即使存在也不在白名单里
+        // 目录外的文件同样可转写（授权在令牌，不在目录）
         let outside = dir.join("outside.mp3");
         std::fs::write(&outside, b"x").unwrap();
-        assert_eq!(validate_path(&core, outside.to_str().unwrap()).unwrap_err().status, 403);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn 外部转写允许目录_子文件放行_前缀相近与穿越拒绝() {
-        let dir = std::env::temp_dir().join(format!("att-ft-api-dir-{}", uuid::Uuid::new_v4()));
-        let allowed = dir.join("allowed");
-        let sibling = dir.join("allowed2");
-        std::fs::create_dir_all(allowed.join("nested")).unwrap();
-        std::fs::create_dir_all(&sibling).unwrap();
-        let inside = allowed.join("nested").join("a.mp3");
-        let neighbor = sibling.join("b.mp3");
-        std::fs::write(&inside, b"x").unwrap();
-        std::fs::write(&neighbor, b"x").unwrap();
-        let core = CoreState::init(&dir.join("data"), crate::Platform::Windows).unwrap();
-
-        // 未配置允许目录：保持原行为，一律拒绝
-        assert_eq!(validate_path(&core, inside.to_str().unwrap()).unwrap_err().status, 403);
-
-        core.apply_settings_update(&json!({ "api_transcribe_allowed_dirs": [allowed.to_string_lossy()] })).unwrap();
-        assert!(validate_path(&core, inside.to_str().unwrap()).is_ok(), "允许目录下的文件应放行");
-        assert_eq!(
-            validate_path(&core, neighbor.to_str().unwrap()).unwrap_err().status,
-            403,
-            "allowed 不能放行 allowed2"
-        );
-        // `..` 已在 canonicalize 阶段消掉，最终落在目录外仍然拒绝
-        let escaped = allowed.join("..").join("allowed2").join("b.mp3");
-        assert_eq!(validate_path(&core, escaped.to_str().unwrap()).unwrap_err().status, 403);
-
-        // 清空允许目录后恢复「只认界面登记过的精确路径」
-        core.apply_settings_update(&json!({ "api_transcribe_allowed_dirs": [] })).unwrap();
-        assert_eq!(validate_path(&core, inside.to_str().unwrap()).unwrap_err().status, 403);
+        assert!(validate_path(outside.to_str().unwrap()).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

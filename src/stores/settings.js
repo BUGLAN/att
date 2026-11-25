@@ -174,10 +174,9 @@ export const useSettingsStore = defineStore('settings', () => {
     clipboard_retention_days: 0,
     // 录音音频保留天数：0 = 永久
     audio_retention_days: 0,
-    // 外部 API：持久令牌（密文只在后端）+ 允许转写的目录（空 = 仅界面登记过的精确路径）
+    // 外部 API：持久令牌（密文只在后端）；数据面只认令牌，不再要求目录授权
     api_token_enabled: false,
     api_token_set: false,
-    api_transcribe_allowed_dirs: [],
     audio_input_device: 'default',
     hotkey: getDefaultHotkey(),
     // 统一浮层已下线：clipboard_overlay_* 键一并移除，

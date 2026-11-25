@@ -24,7 +24,7 @@
       </div>
     </section>
 
-    <!-- 外部 API：给 SourceFlow 等外部进程一个稳定的回环令牌和可转写目录；默认全关，不影响界面内转写 -->
+    <!-- 外部 API：给 SourceFlow 等外部进程一个稳定的回环令牌；令牌即授权，默认全关 -->
     <section class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">外部 API</h3>
@@ -64,38 +64,12 @@
             </BaseButton>
           </div>
         </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">允许转写的目录</span>
-            <span class="setting-desc">这些目录下的音频可通过 /api/transcribe 转写，子目录自动包含。留空时仍只允许在应用内选择 / 拖入的文件。</span>
-          </div>
-          <div class="setting-actions-inline diag-actions api-dir-actions">
-            <BaseInput
-              v-model="directoryDraft"
-              size="sm"
-              placeholder="D:\audio 或 /Users/me/audio"
-              aria-label="允许转写的目录路径"
-              @keydown.enter.prevent="addDirectory"
-            />
-            <BaseButton variant="outline" size="sm" :disabled="!directoryDraft.trim()" @click="addDirectory">
-              添加
-            </BaseButton>
-            <BaseButton v-if="isDesktop" variant="outline" size="sm" :loading="pickingDirectory" @click="pickDirectory">
-              浏览…
-            </BaseButton>
-          </div>
-        </div>
-        <div v-if="form.api_transcribe_allowed_dirs?.length" class="api-dir-list">
-          <div v-for="(dir, index) in form.api_transcribe_allowed_dirs" :key="`${dir}-${index}`" class="api-dir-item">
-            <span class="ui-mono api-dir-path">{{ dir }}</span>
-            <BaseButton variant="ghost" size="sm" @click="removeDirectory(index)">移除</BaseButton>
-          </div>
-        </div>
         <div class="settings-note">
           <span>
             POST http://127.0.0.1:{{ appInfo?.backend_port || 17890 }}/api/transcribe，请求头 X-ATT-Token
-            用上面的令牌，请求体如 {"path":"D:/audio/a.mp3","want_segments":true,"async_job":true}；返回任务号后用
-            GET /api/transcribe/jobs/{id} 轮询。
+            用上面的令牌，path 可以是任意可读的本地音视频文件（不再需要目录授权），请求体如
+            {"path":"D:/audio/a.mp3","want_segments":true,"async_job":true}；返回任务号后用 GET
+            /api/transcribe/jobs/{id} 轮询。
           </span>
         </div>
         <div class="settings-note">
@@ -325,7 +299,7 @@
 import { computed, inject, nextTick, onMounted, ref, watch } from 'vue'
 import { providerLabel } from '../asrEngineStatus.mjs'
 import { SETTINGS_CTX } from '../settingsContext.js'
-import { addAllowedDirectory, apiTokenDisplay } from '../apiAccess.mjs'
+import { apiTokenDisplay } from '../apiAccess.mjs'
 import {
   audioRetentionConfirm,
   audioRetentionOptions,
@@ -337,7 +311,6 @@ import {
 } from '../storageUsage.mjs'
 import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
-import BaseInput from '@/components/common/BaseInput.vue'
 import BaseSelect from '@/components/common/BaseSelect.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import BackupExportDialog from '../BackupExportDialog.vue'
@@ -355,7 +328,6 @@ const {
   revealAppPath,
   chooseBackupExportPath,
   chooseBackupImportPath,
-  openTranscribeDirectory,
   clipboard,
   recording,
   restartApp
@@ -381,8 +353,6 @@ const importSummary = computed(() => {
 })
 
 // ---- 外部 API ----
-const directoryDraft = ref('')
-const pickingDirectory = ref(false)
 const revealedToken = ref('')
 const tokenRevealed = ref(false)
 const revealingToken = ref(false)
@@ -437,43 +407,6 @@ async function copyToken() {
     appStore.showToast('持久访问令牌已复制', { tone: 'success' })
   } catch (error) {
     appStore.showToast(String(error?.message || error), { tone: 'error' })
-  }
-}
-
-function addDirectory() {
-  const result = addAllowedDirectory(form.value.api_transcribe_allowed_dirs, directoryDraft.value)
-  if (result.error) {
-    appStore.showToast(result.error, { tone: 'error' })
-    return
-  }
-  form.value.api_transcribe_allowed_dirs = result.list
-  directoryDraft.value = ''
-}
-
-function removeDirectory(index) {
-  form.value.api_transcribe_allowed_dirs.splice(index, 1)
-}
-
-async function pickDirectory() {
-  if (pickingDirectory.value) {
-    return
-  }
-  pickingDirectory.value = true
-  try {
-    const picked = await openTranscribeDirectory()
-    if (!picked) {
-      return
-    }
-    const result = addAllowedDirectory(form.value.api_transcribe_allowed_dirs, picked)
-    if (result.error) {
-      appStore.showToast(result.error, { tone: 'error' })
-      return
-    }
-    form.value.api_transcribe_allowed_dirs = result.list
-  } catch (error) {
-    appStore.showToast(String(error?.message || error || '无法选择目录'), { tone: 'error' })
-  } finally {
-    pickingDirectory.value = false
   }
 }
 
@@ -660,32 +593,6 @@ onMounted(async () => {
 <style scoped>
 .diag-actions {
   justify-content: flex-end;
-}
-
-.api-dir-actions {
-  flex-wrap: wrap;
-}
-
-.api-dir-actions :deep(.ui-input) {
-  width: 260px;
-}
-
-.api-dir-list {
-  display: grid;
-  gap: var(--s-2);
-}
-
-.api-dir-item {
-  padding: var(--s-2) var(--s-3);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--bg-raise);
-}
-
-.api-dir-path {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--text-1);
 }
 
 .mono {

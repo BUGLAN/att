@@ -444,23 +444,10 @@ pub async fn open_models_directory(app: AppHandle) -> Option<String> {
     picked.into_path().ok().map(|path| path.to_string_lossy().into_owned())
 }
 
-/// 设置 → 诊断 →「外部 API」：选择一个允许外部调用转写的目录；用户取消返回 None。
-#[tauri::command]
-pub async fn open_transcribe_directory(app: AppHandle) -> Option<String> {
-    use tauri_plugin_dialog::DialogExt;
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog().file().set_title("选择外部 API 允许转写的目录").blocking_pick_folder()
-    })
-    .await
-    .ok()
-    .flatten()?;
-    picked.into_path().ok().map(|path| path.to_string_lossy().into_owned())
-}
-
 /// 允许转写一个本机文件：用户在界面里选择 / 拖入 / 手动确认路径后由前端调用。
 ///
-/// 这是 HTTP 转写接口的精确白名单入口；外部网页与进程无法调用 Tauri 命令，
-/// 即使拿到数据面地址也不能自行扩大可读文件范围。
+/// 数据面已改为只认 `X-ATT-Token`，这里登记的白名单只用于界面内防误操作，
+/// 不再作为 `/api/transcribe` 的门槛。
 #[tauri::command]
 pub fn allow_transcribe_path(state: State<'_, AppState>, path: String) -> Result<String, String> {
     let resolved = state.core.allow_transcribe_file(std::path::Path::new(&path))?;
