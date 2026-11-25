@@ -369,6 +369,17 @@
         </LocalModelStatus>
         <div class="setting-item">
           <div class="setting-info">
+            <span class="setting-label">运行设备</span>
+            <span class="setting-desc">{{ qwenDeviceHint }}</span>
+          </div>
+          <BaseSelect v-model="form.qwen_asr_device" aria-label="Qwen3-ASR 运行设备">
+            <option v-for="option in qwenDeviceOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </BaseSelect>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
             <span class="setting-label">下载源</span>
             <span class="setting-desc">Qwen 模型目前只有 GitHub 官方源，镜像选择对它不生效。</span>
           </div>
@@ -378,8 +389,8 @@
             </option>
           </BaseSelect>
         </div>
-        <!-- 模型目录自动查找（models/ 下的 Qwen3-ASR ONNX），推理固定走 CPU；
-             旧版的设备 / dtype / 时间戳 / 强制对齐器选项在 Rust 引擎里没有作用，已从界面移除（字段保留兼容旧数据） -->
+        <!-- 模型目录自动查找（models/ 下的 Qwen3-ASR ONNX），运行设备见上方「运行设备」（macOS 走 CoreML）；
+             dtype / 时间戳 / 强制对齐器选项在 Rust 引擎里没有作用，仍从界面移除（字段保留兼容旧数据） -->
         <details class="settings-advanced">
           <summary>高级：输出长度、音频长度上限</summary>
           <div class="setting-item">
@@ -428,6 +439,17 @@
           </div>
           <BaseSelect v-model="form.sense_voice_model" aria-label="SenseVoice 模型">
             <option v-for="option in senseVoiceOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </BaseSelect>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">运行设备</span>
+            <span class="setting-desc">{{ senseVoiceDeviceHint }}</span>
+          </div>
+          <BaseSelect v-model="form.sense_voice_device" aria-label="SenseVoice 运行设备">
+            <option v-for="option in senseVoiceDeviceOptions" :key="option.value" :value="option.value">
               {{ option.label }}
             </option>
           </BaseSelect>
@@ -648,15 +670,24 @@ const whisperOptions = computed(() => WHISPER_VALUES.map((value) => ({
   value,
   label: whisperOptionLabel(value, settingsStore.modelCatalog.models)
 })))
-// 运行设备：macOS 只到 CPU，其它平台可到 GPU（CUDA）；见 deviceOptions.mjs
+// 运行设备：faster-whisper 在 macOS 只到 CPU；Qwen3-ASR / SenseVoice 在 macOS 走 CoreML、其它平台 CUDA。见 deviceOptions.mjs
 const whisperDeviceOptions = computed(() => deviceOptionsFor('whisper', platform))
 const whisperDeviceHint = computed(() => deviceHintFor('whisper', platform))
+const qwenDeviceOptions = computed(() => deviceOptionsFor('qwen_asr', platform))
+const qwenDeviceHint = computed(() => deviceHintFor('qwen_asr', platform))
+const senseVoiceDeviceOptions = computed(() => deviceOptionsFor('sense_voice', platform))
+const senseVoiceDeviceHint = computed(() => deviceHintFor('sense_voice', platform))
 // 平台不支持的值（例如旧数据在 macOS 上存了 cuda）回落到自动，避免下拉无匹配项
 onMounted(() => {
-  const normalized = normalizeDeviceValue('whisper', platform, form.value.whisper_device)
-  if (normalized !== form.value.whisper_device) {
-    form.value.whisper_device = normalized
+  const normalize = (key, kind) => {
+    const normalized = normalizeDeviceValue(kind, platform, form.value[key])
+    if (normalized !== form.value[key]) {
+      form.value[key] = normalized
+    }
   }
+  normalize('whisper_device', 'whisper')
+  normalize('qwen_asr_device', 'qwen_asr')
+  normalize('sense_voice_device', 'sense_voice')
 })
 const senseVoiceOptions = computed(() => {
   const options = engineModels.value

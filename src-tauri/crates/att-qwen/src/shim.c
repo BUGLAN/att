@@ -179,7 +179,7 @@ static char *att_strdup(const char *value) {
  */
 AttQwen *att_qwen_create(const char *lib_dir, const char *conv_frontend, const char *encoder,
                          const char *decoder, const char *tokenizer, int32_t num_threads,
-                         int32_t max_new_tokens, char *err, int32_t err_len) {
+                         const char *provider, int32_t max_new_tokens, char *err, int32_t err_len) {
   if (!lib_dir || !conv_frontend || !encoder || !decoder || !tokenizer) {
     att_set_error(err, err_len, "参数缺失：推理库目录与模型文件路径都是必需的");
     return NULL;
@@ -250,7 +250,7 @@ AttQwen *att_qwen_create(const char *lib_dir, const char *conv_frontend, const c
   config.model_config.tokens = "";
   config.model_config.num_threads = num_threads > 0 ? num_threads : 2;
   config.model_config.debug = 0;
-  config.model_config.provider = "cpu";
+  config.model_config.provider = (provider && provider[0]) ? provider : "cpu";
   config.model_config.model_type = "";
   config.model_config.modeling_unit = "";
   config.model_config.bpe_vocab = "";
@@ -358,7 +358,7 @@ static void att_sensevoice_release(AttSenseVoice *handle) {
  */
 AttSenseVoice *att_sensevoice_create(const char *lib_dir, const char *model, const char *tokens,
                                      const char *language, int32_t use_itn, int32_t num_threads,
-                                     char *err, int32_t err_len) {
+                                     const char *provider, char *err, int32_t err_len) {
   if (!lib_dir || !model || !tokens || !language) {
     att_set_error(err, err_len, "参数缺失：推理库目录、模型、词表和语言都是必需的");
     return NULL;
@@ -428,7 +428,7 @@ AttSenseVoice *att_sensevoice_create(const char *lib_dir, const char *model, con
   config.model_config.tokens = handle->tokens;
   config.model_config.num_threads = num_threads > 0 ? num_threads : 2;
   config.model_config.debug = 0;
-  config.model_config.provider = "cpu";
+  config.model_config.provider = (provider && provider[0]) ? provider : "cpu";
   config.model_config.sense_voice.model = handle->model;
   config.model_config.sense_voice.language = handle->language;
   config.model_config.sense_voice.use_itn = use_itn ? 1 : 0;

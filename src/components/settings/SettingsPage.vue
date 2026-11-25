@@ -449,6 +449,7 @@ function buildSettingsPayload() {
     qwen_asr_forced_aligner_model: form.value.qwen_asr_forced_aligner_model,
     qwen_asr_max_audio_seconds: form.value.qwen_asr_max_audio_seconds,
     sense_voice_model: form.value.sense_voice_model,
+    sense_voice_device: form.value.sense_voice_device,
     sense_voice_use_itn: Boolean(form.value.sense_voice_use_itn),
     sense_voice_num_threads: Number.isFinite(senseThreads) ? senseThreads : 2,
     model_download_source: normalizeDownloadSource(form.value.model_download_source),
