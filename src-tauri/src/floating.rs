@@ -55,6 +55,13 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .accept_first_mouse(true)
         .shadow(false)
         .visible(false);
+    // Windows：tao 0.37.1 起，用 `.focused(false)` 创建的窗口在后续 `show()` 时会被激活（tao PR #1342），
+    // 悬浮窗一出现就抢走前台焦点，输出阶段复核「前台窗口仍是录音开始时的那个」必然失败（#100），
+    // 结果只写剪贴板、进不了原输入框。`.focusable(false)` 让 tao 给窗口加 `WS_EX_NOACTIVATE`，
+    // 显示（`ShowWindow(SW_SHOW)`）不再激活窗口；显隐仍走 `window.show()` / `hide()`，
+    // 保证 tao 的可见性缓存与点击穿透循环一致。
+    #[cfg(windows)]
+    let builder = builder.focusable(false);
     builder.build()?;
     tauri::async_runtime::spawn(click_through_loop(app.clone()));
     Ok(())
