@@ -167,7 +167,8 @@ impl LocalEngine {
     pub fn device(&self) -> String {
         match (&self.whisper, &self.qwen, &self.sense_voice) {
             (Some(engine), _, _) => engine.device().to_string(),
-            (_, Some(_), _) | (_, _, Some(_)) => "cpu:onnx".to_string(),
+            (_, Some(engine), _) => format!("{}:onnx", engine.provider()),
+            (_, _, Some(engine)) => format!("{}:onnx", engine.provider()),
             _ => "unknown".to_string(),
         }
     }
@@ -214,7 +215,7 @@ impl LocalEngine {
                         .collect(),
                     duration: outcome.duration,
                     elapsed: outcome.elapsed,
-                    device: "cpu:onnx".to_string(),
+                    device: format!("{}:onnx", qwen.provider()),
                 })
             }
             (_, _, Some(sense_voice)) => {
@@ -227,7 +228,7 @@ impl LocalEngine {
                         .collect(),
                     duration: outcome.duration,
                     elapsed: outcome.elapsed,
-                    device: "cpu:onnx".to_string(),
+                    device: format!("{}:onnx", sense_voice.provider()),
                 })
             }
             _ => Err("本地引擎未就绪".into()),
@@ -512,11 +513,13 @@ fn fingerprint(kind: LocalKind, settings: &UserSettings, models_dir: &std::path:
         ],
         LocalKind::Qwen => vec![
             format!("model={}", settings.qwen_asr_model),
+            format!("device={}", settings.qwen_asr_device),
             format!("max_new_tokens={}", settings.qwen_asr_max_new_tokens),
             format!("max_audio_seconds={}", settings.qwen_asr_max_audio_seconds),
         ],
         LocalKind::SenseVoice => vec![
             format!("model={}", settings.sense_voice_model),
+            format!("device={}", settings.sense_voice_device),
             format!("language={}", settings.asr_language),
             format!("use_itn={}", settings.sense_voice_use_itn),
             format!("threads={}", settings.sense_voice_num_threads),
@@ -537,10 +540,23 @@ fn whisper_config(core: &CoreState) -> WhisperConfig {
         .with_compute_type(whisper_compute_type())
 }
 
+/// 把设置里的设备值归一为 sherpa-onnx 的 provider（cpu / cuda / coreml）。
+///
+/// 默认（auto / 空 / 未知）走 CPU，保持既有行为不变；显式选择 cuda / coreml 才会尝试加速，
+/// 加速运行库不可用时由 att-qwen 回退 CPU（见 #127 提供加速运行库）。
+fn resolve_sherpa_provider(device: &str) -> String {
+    match device.trim().to_ascii_lowercase().as_str() {
+        "cuda" | "gpu" => "cuda".to_string(),
+        "coreml" | "metal" | "apple" => "coreml".to_string(),
+        _ => "cpu".to_string(),
+    }
+}
+
 fn qwen_config(core: &CoreState) -> QwenConfig {
     let settings = core.settings();
     let mut config = QwenConfig::new(settings.qwen_asr_model.clone(), core.models_dir.clone());
     config.bundled_lib_dir = core.resource_dir.as_ref().map(|dir| dir.join("sherpa-onnx"));
+    config.provider = resolve_sherpa_provider(&settings.qwen_asr_device);
     config.max_new_tokens = settings.qwen_asr_max_new_tokens;
     config.max_audio_seconds = settings.qwen_asr_max_audio_seconds;
     // 默认 2 线程：与 sherpa-onnx 官方示例一致，再高在 CPU 上收益有限
@@ -552,6 +568,7 @@ fn sense_voice_config(core: &CoreState) -> SenseVoiceConfig {
     let settings = core.settings();
     let mut config = SenseVoiceConfig::new(settings.sense_voice_model.clone(), core.models_dir.clone());
     config.bundled_lib_dir = core.resource_dir.as_ref().map(|dir| dir.join("sherpa-onnx"));
+    config.provider = resolve_sherpa_provider(&settings.sense_voice_device);
     let language = settings.asr_language.trim().to_ascii_lowercase();
     config.language =
         if matches!(language.as_str(), "zh" | "en" | "ja" | "ko" | "yue") { language } else { "auto".into() };
@@ -929,15 +946,18 @@ impl LocalModels {
                 .unwrap_or_else(|error| error.into_inner())
                 .as_ref()
                 .map(|cached| cached.engine.device().to_string()),
-            LocalKind::Qwen => {
-                self.qwen.lock().unwrap_or_else(|error| error.into_inner()).as_ref().map(|_| "cpu:onnx".to_string())
-            }
+            LocalKind::Qwen => self
+                .qwen
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .map(|cached| format!("{}:onnx", cached.engine.provider())),
             LocalKind::SenseVoice => self
                 .sense_voice
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .as_ref()
-                .map(|_| "cpu:onnx".to_string()),
+                .map(|cached| format!("{}:onnx", cached.engine.provider())),
         }
     }
 }
@@ -1029,7 +1049,26 @@ mod tests {
         let mut changed = settings.clone();
         changed.sense_voice_use_itn = !settings.sense_voice_use_itn;
         assert_ne!(sense_a, fingerprint(LocalKind::SenseVoice, &changed, &models_dir));
+        // Qwen / SenseVoice 的设备变化也要让指纹失效
+        let mut changed = settings.clone();
+        changed.qwen_asr_device = "coreml".into();
+        assert_ne!(qwen_a, fingerprint(LocalKind::Qwen, &changed, &models_dir));
+        let mut changed = settings.clone();
+        changed.sense_voice_device = "cuda".into();
+        assert_ne!(sense_a, fingerprint(LocalKind::SenseVoice, &changed, &models_dir));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 设备值归一为_sherpa_provider() {
+        assert_eq!(resolve_sherpa_provider("auto"), "cpu");
+        assert_eq!(resolve_sherpa_provider(""), "cpu");
+        assert_eq!(resolve_sherpa_provider("  cpu "), "cpu");
+        assert_eq!(resolve_sherpa_provider("cuda"), "cuda");
+        assert_eq!(resolve_sherpa_provider("GPU"), "cuda");
+        assert_eq!(resolve_sherpa_provider("coreml"), "coreml");
+        assert_eq!(resolve_sherpa_provider("metal"), "coreml");
+        assert_eq!(resolve_sherpa_provider("apple"), "coreml");
     }
 
     #[test]

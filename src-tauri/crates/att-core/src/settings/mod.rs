@@ -46,6 +46,7 @@ pub const MODEL_RUNTIME_KEYS: &[&str] = &[
     "qwen_asr_forced_aligner_model",
     "qwen_asr_max_audio_seconds",
     "sense_voice_model",
+    "sense_voice_device",
     "sense_voice_use_itn",
     "sense_voice_num_threads",
     "doubao_asr_resource_id",
@@ -111,6 +112,8 @@ pub struct UserSettings {
     pub qwen_asr_max_audio_seconds: i64,
     // ---- SenseVoice ----
     pub sense_voice_model: String,
+    /// 执行设备：auto | cpu | cuda | coreml（macOS 走 CoreML）。默认 auto（当前等价 CPU）。
+    pub sense_voice_device: String,
     pub sense_voice_use_itn: bool,
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub sense_voice_num_threads: i64,
@@ -243,6 +246,7 @@ impl UserSettings {
             qwen_asr_forced_aligner_model: "Qwen/Qwen3-ForcedAligner-0.6B".into(),
             qwen_asr_max_audio_seconds: 30,
             sense_voice_model: "sense-voice-zh-en-ja-ko-yue-int8".into(),
+            sense_voice_device: "auto".into(),
             sense_voice_use_itn: true,
             sense_voice_num_threads: 2,
             model_download_source: "official".into(),
@@ -664,6 +668,7 @@ pub fn apply_settings_update(
             "qwen_asr_device" => set_string(&mut settings.qwen_asr_device, value, &type_error)?,
             "qwen_asr_dtype" => set_string(&mut settings.qwen_asr_dtype, value, &type_error)?,
             "sense_voice_model" => set_string(&mut settings.sense_voice_model, value, &type_error)?,
+            "sense_voice_device" => set_string(&mut settings.sense_voice_device, value, &type_error)?,
             "qwen_asr_forced_aligner_model" => {
                 set_string(&mut settings.qwen_asr_forced_aligner_model, value, &type_error)?
             }

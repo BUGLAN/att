@@ -54,6 +54,8 @@ pub struct QwenConfig {
     pub max_new_tokens: i64,
     /// ONNX Runtime 线程数（0 = 取默认 2）。
     pub num_threads: i64,
+    /// 执行设备 provider：`cpu` | `cuda` | `coreml`（由设置页设备选择决定）。
+    pub provider: String,
     /// 模型根目录（`models/`）。
     pub models_dir: PathBuf,
     /// 推理库目录覆盖；`None` 时按 [`resolve_lib_dir`] 探测。
@@ -69,6 +71,7 @@ impl QwenConfig {
             max_audio_seconds: 30,
             max_new_tokens: 512,
             num_threads: 2,
+            provider: "cpu".into(),
             models_dir: models_dir.into(),
             lib_dir: None,
             bundled_lib_dir: None,
@@ -87,6 +90,8 @@ pub struct SenseVoiceConfig {
     pub use_itn: bool,
     /// ONNX Runtime 线程数（0 = 取默认 2）。
     pub num_threads: i64,
+    /// 执行设备 provider：`cpu` | `cuda` | `coreml`（由设置页设备选择决定）。
+    pub provider: String,
     /// 单块音频上限（秒）。
     pub max_audio_seconds: i64,
     /// 模型根目录（`models/`）。
@@ -104,6 +109,7 @@ impl SenseVoiceConfig {
             language: "auto".into(),
             use_itn: true,
             num_threads: 2,
+            provider: "cpu".into(),
             max_audio_seconds: 30,
             models_dir: models_dir.into(),
             lib_dir: None,
@@ -443,6 +449,7 @@ extern "C" {
         decoder: *const c_char,
         tokenizer: *const c_char,
         num_threads: i32,
+        provider: *const c_char,
         max_new_tokens: i32,
         err: *mut c_char,
         err_len: i32,
@@ -465,6 +472,8 @@ pub struct LocalQwen {
     model_dir: PathBuf,
     lib_dir: PathBuf,
     max_audio_seconds: i64,
+    /// 生效的执行设备（cpu / cuda / coreml）。
+    provider: String,
     /// sherpa-onnx 的 recognizer 本身是可变状态，串行调用
     gate: Mutex<()>,
 }
@@ -484,7 +493,66 @@ fn to_c_path(path: &Path) -> Result<CString, String> {
     CString::new(text.clone()).map_err(|_| format!("路径包含非法字符（NUL）：{text}"))
 }
 
+/// 用指定 provider 建 Qwen 识别器（provider 字符串在调用期间有效即可）。
+fn qwen_create_handle(
+    lib_dir: &CString,
+    conv_frontend: &CString,
+    encoder: &CString,
+    decoder: &CString,
+    tokenizer: &CString,
+    config: &QwenConfig,
+    provider: &str,
+    err: *mut c_char,
+) -> *mut AttQwen {
+    let provider_c = CString::new(provider).unwrap_or_else(|_| CString::new("cpu").unwrap());
+    unsafe {
+        att_qwen_create(
+            lib_dir.as_ptr(),
+            conv_frontend.as_ptr(),
+            encoder.as_ptr(),
+            decoder.as_ptr(),
+            tokenizer.as_ptr(),
+            config.num_threads.clamp(0, 64) as i32,
+            provider_c.as_ptr(),
+            config.max_new_tokens.clamp(16, 4096) as i32,
+            err,
+            ERR_LEN as i32,
+        )
+    }
+}
+
+/// 用指定 provider 建 SenseVoice 识别器。
+fn sense_voice_create_handle(
+    lib_dir: &CString,
+    model: &CString,
+    tokens: &CString,
+    language: &CString,
+    config: &SenseVoiceConfig,
+    provider: &str,
+    err: *mut c_char,
+) -> *mut AttSenseVoice {
+    let provider_c = CString::new(provider).unwrap_or_else(|_| CString::new("cpu").unwrap());
+    unsafe {
+        att_sensevoice_create(
+            lib_dir.as_ptr(),
+            model.as_ptr(),
+            tokens.as_ptr(),
+            language.as_ptr(),
+            if config.use_itn { 1 } else { 0 },
+            config.num_threads.clamp(0, 64) as i32,
+            provider_c.as_ptr(),
+            err,
+            ERR_LEN as i32,
+        )
+    }
+}
+
 impl LocalQwen {
+    /// 生效的执行设备（cpu / cuda / coreml），用于健康面板与日志。
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
     /// 加载识别器（同步、耗时 1~2s）。
     pub fn load(config: &QwenConfig) -> Result<Self, String> {
         let model_dir = resolve_model_dir(config)?;
@@ -497,20 +565,21 @@ impl LocalQwen {
         let decoder = to_c_path(&model_dir.join(MODEL_FILES[2]))?;
         let tokenizer = to_c_path(&model_dir.join("tokenizer"))?;
 
+        let requested = if config.provider.trim().is_empty() { "cpu" } else { config.provider.trim() };
+        let mut effective = requested.to_string();
         let mut err = [0 as c_char; ERR_LEN];
-        let handle = unsafe {
-            att_qwen_create(
-                lib_dir_c.as_ptr(),
-                conv_frontend.as_ptr(),
-                encoder.as_ptr(),
-                decoder.as_ptr(),
-                tokenizer.as_ptr(),
-                config.num_threads.clamp(0, 64) as i32,
-                config.max_new_tokens.clamp(16, 4096) as i32,
-                err.as_mut_ptr(),
-                ERR_LEN as i32,
-            )
-        };
+        let mut handle = qwen_create_handle(
+            &lib_dir_c, &conv_frontend, &encoder, &decoder, &tokenizer, config, requested, err.as_mut_ptr(),
+        );
+        if handle.is_null() && effective != "cpu" {
+            let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
+            tracing::warn!("本地 Qwen3-ASR 使用 {effective} 加载失败，回退 CPU：{}", reason.trim());
+            err = [0 as c_char; ERR_LEN];
+            handle = qwen_create_handle(
+                &lib_dir_c, &conv_frontend, &encoder, &decoder, &tokenizer, config, "cpu", err.as_mut_ptr(),
+            );
+            effective = "cpu".into();
+        }
         if handle.is_null() {
             let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
             return Err(if reason.trim().is_empty() {
@@ -520,9 +589,10 @@ impl LocalQwen {
             });
         }
         tracing::info!(
-            "本地 Qwen3-ASR 模型已加载：{}（推理库 {}，{:.2}s）",
+            "本地 Qwen3-ASR 模型已加载：{}（推理库 {}，设备 {}，{:.2}s）",
             model_dir.display(),
             lib_dir.display(),
+            effective,
             started.elapsed().as_secs_f64()
         );
         Ok(Self {
@@ -530,6 +600,7 @@ impl LocalQwen {
             model_dir,
             lib_dir,
             max_audio_seconds: config.max_audio_seconds.clamp(5, 120),
+            provider: effective,
             gate: Mutex::new(()),
         })
     }
@@ -651,6 +722,7 @@ extern "C" {
         language: *const c_char,
         use_itn: i32,
         num_threads: i32,
+        provider: *const c_char,
         err: *mut c_char,
         err_len: i32,
     ) -> *mut AttSenseVoice;
@@ -672,6 +744,8 @@ pub struct LocalSenseVoice {
     model_dir: PathBuf,
     lib_dir: PathBuf,
     max_audio_seconds: i64,
+    /// 生效的执行设备（cpu / cuda / coreml）。
+    provider: String,
     gate: Mutex<()>,
 }
 
@@ -685,6 +759,11 @@ impl std::fmt::Debug for LocalSenseVoice {
 }
 
 impl LocalSenseVoice {
+    /// 生效的执行设备（cpu / cuda / coreml），用于健康面板与日志。
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
     /// 加载识别器（同步）。
     pub fn load(config: &SenseVoiceConfig) -> Result<Self, String> {
         let model_dir = resolve_sense_voice_model_dir(config)?;
@@ -696,19 +775,21 @@ impl LocalSenseVoice {
         let language = CString::new(if config.language.trim().is_empty() { "auto" } else { config.language.trim() })
             .map_err(|_| "语言参数包含非法字符（NUL）".to_string())?;
 
+        let requested = if config.provider.trim().is_empty() { "cpu" } else { config.provider.trim() };
+        let mut effective = requested.to_string();
         let mut err = [0 as c_char; ERR_LEN];
-        let handle = unsafe {
-            att_sensevoice_create(
-                lib_dir_c.as_ptr(),
-                model.as_ptr(),
-                tokens.as_ptr(),
-                language.as_ptr(),
-                if config.use_itn { 1 } else { 0 },
-                config.num_threads.clamp(0, 64) as i32,
-                err.as_mut_ptr(),
-                ERR_LEN as i32,
-            )
-        };
+        let mut handle = sense_voice_create_handle(
+            &lib_dir_c, &model, &tokens, &language, config, requested, err.as_mut_ptr(),
+        );
+        if handle.is_null() && effective != "cpu" {
+            let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
+            tracing::warn!("本地 SenseVoice 使用 {effective} 加载失败，回退 CPU：{}", reason.trim());
+            err = [0 as c_char; ERR_LEN];
+            handle = sense_voice_create_handle(
+                &lib_dir_c, &model, &tokens, &language, config, "cpu", err.as_mut_ptr(),
+            );
+            effective = "cpu".into();
+        }
         if handle.is_null() {
             let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
             return Err(if reason.trim().is_empty() {
@@ -718,9 +799,10 @@ impl LocalSenseVoice {
             });
         }
         tracing::info!(
-            "本地 SenseVoice 模型已加载：{}（推理库 {}，{:.2}s）",
+            "本地 SenseVoice 模型已加载：{}（推理库 {}，设备 {}，{:.2}s）",
             model_dir.display(),
             lib_dir.display(),
+            effective,
             started.elapsed().as_secs_f64()
         );
         Ok(Self {
@@ -728,6 +810,7 @@ impl LocalSenseVoice {
             model_dir,
             lib_dir,
             max_audio_seconds: config.max_audio_seconds.clamp(5, 120),
+            provider: effective,
             gate: Mutex::new(()),
         })
     }
