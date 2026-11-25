@@ -76,6 +76,28 @@ async fn whisper_文件转写全链路() {
     run("whisper", "whisper").await;
 }
 
+/// 健康面板（`/api/health` 的 `local_engine.device`）读的是真实生效设备：
+/// CPU 构建必须是 `cpu:int8`，CUDA 构建在 GPU 上必须是 `cuda:float16`。
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "需要本地 faster-whisper 模型、ffmpeg 与测试音频"]
+async fn whisper_健康状态显示真实设备() {
+    let wav = std::env::var("ATT_TEST_WAV").expect("请用 ATT_TEST_WAV 指定测试音频（wav/mp3/mp4 均可）");
+    let core = prepare("whisper-health", "whisper");
+    core.allow_transcribe_file(Path::new(&wav)).expect("测试音频应能登记进转写白名单");
+    let outcome = transcribe::handle(core.clone(), request(wav, "whisper"))
+        .await
+        .unwrap_or_else(|error| panic!("转写应成功，实际 {}：{}", error.status, error.message));
+    drop(outcome);
+    let status = core.local_models.status(&core, att_core::stt::local::LocalKind::Whisper);
+    println!("health.local_engine.device = {:?}", status.device);
+    assert!(status.loaded, "转写后模型应保持常驻");
+    assert!(
+        matches!(status.device.as_deref(), Some("cuda:float16") | Some("cpu:int8")),
+        "健康面板应显示真实生效设备，实际 {:?}",
+        status.device
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "需要 sherpa-onnx 推理库、Qwen3-ASR ONNX 模型、ffmpeg 与测试音频"]
 async fn qwen_文件转写全链路() {

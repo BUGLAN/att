@@ -17,16 +17,19 @@ serde_json = { workspace = true }
 # - macOS：Apple Clang 不支持 `-fopenmp`，ct2rs 的 openmp-runtime-comp 还会去链 GNU `gomp`，
 #   这里改用 ct2rs 推荐的 Accelerate（Apple 的 BLAS，走 AMX）+ 默认 ruy（int8 GEMM）。
 [target.'cfg(target_os = "macos")'.dependencies]
-ct2rs = { version = "0.10.2", features = ["whisper", "accelerate"] }
+ct2rs = { version = "0.11.3", features = ["whisper", "accelerate"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-ct2rs = { version = "0.10.2", features = ["whisper", "dnnl", "openmp-runtime-comp"] }
+ct2rs = { version = "0.11.3", features = ["whisper", "dnnl", "openmp-runtime-comp"] }
 
 [features]
 default = []
-# CUDA 推理：需要本机有 CUDA Toolkit + cuDNN，且编译耗时明显更长。
-# cuda-dynamic-loading 让二进制在没有 CUDA 的机器上仍可启动（运行期按需加载）。
-cuda = ["ct2rs/cuda", "ct2rs/cudnn", "ct2rs/cuda-dynamic-loading"]
+# 便携 CUDA 推理：编译需要 CUDA Toolkit，运行期由 cuda-dynamic-loading 按需加载 cuBLAS。
+# 不静态导入 CUDA 运行库，未装 CUDA 的机器仍能启动，加载模型失败后自动回退 CPU + int8。
+cuda = ["ct2rs/cuda", "ct2rs/cuda-dynamic-loading"]
+# 追加 cuDNN 卷积加速：编译与运行都需要 cuDNN 9（Windows 上链接 cudnn.lib / cudnn64_9.dll）。
+# 打开后二进制启动时就会加载 cuDNN，没有安装 cuDNN 的机器无法启动，只给确定有 GPU + cuDNN 的构建用。
+cuda-cudnn = ["cuda", "ct2rs/cudnn"]
 
 [dev-dependencies]
 # 集成测试读 WAV

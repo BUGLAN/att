@@ -20,8 +20,8 @@
 //!
 //! [CTranslate2]: https://github.com/OpenNMT/CTranslate2
 
-use ct2rs::sys::{ComputeType, Device, WhisperOptions};
-use ct2rs::{Config as Ct2Config, Whisper};
+// ct2rs 0.11 起 sys 类型统一从 crate 根导出（0.10 的 `ct2rs::sys::*` 路径已移除）
+use ct2rs::{ComputeType, Config as Ct2Config, Device, Whisper, WhisperOptions};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -35,6 +35,93 @@ const SILENCE_RELATIVE_THRESHOLD: f64 = 0.02;
 const SILENCE_PAD_MS: usize = 200;
 /// 少于该长度（毫秒）视为纯静音，不送推理。
 const MIN_SPEECH_MS: usize = 200;
+
+/// 编译时启用的推理后端（`cpu` / `cuda` / `cuda+cudnn`），用于日志与问题排查。
+pub fn build_backend() -> &'static str {
+    if cfg!(feature = "cuda-cudnn") {
+        "cuda+cudnn"
+    } else if cfg!(feature = "cuda") {
+        "cuda"
+    } else {
+        "cpu"
+    }
+}
+
+/// 目录里是否有 CTranslate2 运行期要加载的 cuBLAS。
+///
+/// `cuda-dynamic-loading` 只把 cuBLAS 留到运行时 `LoadLibrary`/`dlopen`：
+/// 有 NVIDIA 驱动但没装 CUDA Toolkit 的机器会先成功创建 CUDA 模型，等到首次推理才在
+/// CTranslate2 内部加载失败（多线程下还会卡在静态初始化里）。加载前先按同样的搜索路径预检，
+/// 缺库时直接回退 CPU，不让用户卡在第一次转写上。
+#[cfg(windows)]
+fn has_cublas(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy().to_ascii_lowercase();
+        name.starts_with("cublas64_") && name.ends_with(".dll")
+    })
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn has_cublas(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        name.starts_with("libcublas.so.")
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn has_cublas(_dir: &Path) -> bool {
+    false
+}
+
+/// CUDA 构建在尝试 GPU 之前检查 cuBLAS 是否可用。
+///
+/// 搜索顺序与 CTranslate2 的 `cuda-dynamic-loading` 一致：`CUDA_PATH/bin` 优先，其后是 PATH；
+/// Linux 额外看 `LD_LIBRARY_PATH` 与常见安装目录。
+fn cuda_runtime_available() -> Result<(), String> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(root) = std::env::var_os("CUDA_PATH") {
+        let root = PathBuf::from(root);
+        dirs.push(root.join("bin"));
+        dirs.push(root.join("lib64"));
+    }
+    #[cfg(windows)]
+    {
+        // LoadLibrary 先找 exe 所在目录，再找 PATH；随包分发 cuBLAS 时也要能识别
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                dirs.push(dir.to_path_buf());
+            }
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            dirs.push(cwd);
+        }
+        if let Some(path) = std::env::var_os("PATH") {
+            dirs.extend(std::env::split_paths(&path));
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(path) = std::env::var_os("LD_LIBRARY_PATH") {
+            dirs.extend(std::env::split_paths(&path));
+        }
+        dirs.extend(
+            ["/usr/local/cuda/lib64", "/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu"].map(PathBuf::from),
+        );
+    }
+    if dirs.iter().any(|dir| has_cublas(dir)) {
+        return Ok(());
+    }
+    Err("未找到 cuBLAS 运行库（cublas64_*.dll / libcublas.so.*）：请安装与编译时匹配的 CUDA Toolkit，或把它的库目录加入 PATH / LD_LIBRARY_PATH".into())
+}
 
 /// 引擎配置（由设置页的 `whisper_*` 键 + 模型目录组装）。
 #[derive(Debug, Clone)]
@@ -320,7 +407,17 @@ impl LocalWhisper {
         ensure_preprocessor_config(&model_dir)?;
         let started = Instant::now();
         let cuda_built = cfg!(feature = "cuda");
+        tracing::info!("本地 Whisper 构建后端：{}", build_backend());
         let (mut device, mut compute, mut label) = resolve_precision(&config.device, &config.compute_type, cuda_built);
+        // 只有真的编进 CUDA（运行期动态加载 cuBLAS）才需要预检；CPU 构建会直接加载失败并回退
+        if cuda_built && device == Device::CUDA {
+            if let Err(reason) = cuda_runtime_available() {
+                tracing::warn!("本地 Whisper 无法使用 CUDA，回退 CPU + int8：{reason}");
+                device = Device::CPU;
+                compute = ComputeType::INT8;
+                label = "cpu";
+            }
+        }
         let build = |device: Device, compute: ComputeType| {
             Whisper::new(&model_dir, Ct2Config { device, compute_type: compute, ..Default::default() })
         };
@@ -622,6 +719,32 @@ mod tests {
         let (device, compute, _) = resolve_precision("cpu", "float32", true);
         assert_eq!(device, Device::CPU);
         assert_eq!(compute, ComputeType::FLOAT32);
+
+        // 显式要 CUDA 时先按 CUDA + float16 尝试，加载失败由 load 回退 CPU（CPU 构建也走这条）
+        let (device, compute, label) = resolve_precision("cuda", "auto", false);
+        assert_eq!(device, Device::CUDA);
+        assert_eq!(compute, ComputeType::FLOAT16);
+        assert_eq!(label, "cuda");
+    }
+
+    #[test]
+    fn 构建后端标签与_cuda_特性一致() {
+        let label = build_backend();
+        assert_eq!(label == "cpu", !cfg!(feature = "cuda"), "构建后端标签：{label}");
+        assert_eq!(label == "cuda+cudnn", cfg!(feature = "cuda-cudnn"), "构建后端标签：{label}");
+    }
+
+    #[test]
+    fn cublas_预检_能识别运行库文件() {
+        let root = temp_dir("cublas");
+        assert!(!has_cublas(&root));
+        #[cfg(windows)]
+        std::fs::write(root.join("CUBLAS64_13.DLL"), b"x").unwrap();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        std::fs::write(root.join("libcublas.so.12"), b"x").unwrap();
+        #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+        assert!(has_cublas(&root));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

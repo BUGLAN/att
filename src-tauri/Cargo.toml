@@ -31,6 +31,13 @@ edition.workspace = true
 license.workspace = true
 default-run = "att-app"
 
+[features]
+# 可选 CUDA 推理：`ATT_CUDA=1 npm run tauri:build`（或 `tauri build --features cuda`）。
+# 默认关闭，普通构建与分发都不要求本机有 CUDA；特性一路传给 att-core → att-whisper。
+cuda = ["att-core/cuda"]
+# 追加 cuDNN 卷积加速（运行机器必须安装 cuDNN），见 att-whisper 的 Cargo.toml。
+cuda-cudnn = ["att-core/cuda-cudnn"]
+
 [lib]
 name = "att_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

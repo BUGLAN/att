@@ -51,6 +51,7 @@ macOS 需要授予三项权限：「麦克风」（录音）、「输入监控�
 
 本地识别模型不随安装包分发；Qwen3-ASR / SenseVoice 所需的 sherpa-onnx / ONNX Runtime 推理库已包含在安装包里。
 用本地 Whisper / Qwen / SenseVoice 时在「设置 → 识别引擎」里直接下载模型（带进度、取消、断点续传、SHA-256 校验与源站固定版本，国内可切 hf-mirror.com 镜像），装好后可查看占用并删除；Whisper 会一并安装 Silero VAD。
+本地 Whisper 默认用 CPU + int8（安装包也是）；要在这台机器上用 CUDA 加速，按「开发」一节的 `ATT_CUDA` 自建即可，没有 GPU 的机器会自动回退 CPU。
 豆包网页语音使用网页匿名会话，无需密钥；识别时音频会发往字节跳动服务器，属于非官方链路，服务端协议变化时可能暂时失效。
 微信输入法语音仅支持 Windows：ATT 直接连接本机正在运行的微信输入法，不另起桥进程；首次构建会下载并静态链接 Frida Core（无需 libclang）。该链路不是官方 API，输入法升级后可能失效，音频会经输入法网络层发往腾讯。
 
@@ -70,6 +71,42 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 - 开发态的 macOS 权限归属启动 `tauri dev` 的终端应用。
 - 更多开发约定与常见陷阱见 [`AGENTS.md`](AGENTS.md)。
 
+### 本地 Whisper CUDA 加速（可选）
+
+默认构建不启用 CUDA，本地 Whisper 走 CPU + int8。需要 GPU 加速时，在编译机装好 CUDA Toolkit 后用
+`ATT_CUDA=1` 启动构建（Windows cmd / PowerShell / bash）：
+
+```bat
+set ATT_CUDA=1 && npm run tauri:dev
+set ATT_CUDA=1 && npm run tauri:build
+```
+
+```powershell
+$env:ATT_CUDA = '1'; npm run tauri:dev
+$env:ATT_CUDA = '1'; npm run tauri:build
+```
+
+```bash
+ATT_CUDA=1 npm run tauri:dev
+ATT_CUDA=1 npm run tauri:build
+```
+
+- 启动脚本会把 `--features cuda` 传给 Tauri，再经 `att-core` 传到 `att-whisper`（ct2rs 0.11.3 /
+  CTranslate2 4.9.1 的 `cuda` + `cuda-dynamic-loading`）。编译需要 CUDA Toolkit（实测 13.0，最低 11.0）；
+  cuBLAS 在运行期按需加载，模型加载前会先检查它是否就位。
+- CUDA 构建的 `whisper_device=auto` 会先尝试 GPU（float16），健康面板 / 日志显示真实生效设备：
+  `cuda:float16`；没有可用 GPU、或只有驱动没有 CUDA 运行库时自动回退 `cpu:int8`，进程不会因缺 CUDA 退出，
+  也不会卡在第一次转写上。
+- 需要 cuDNN 卷积加速时再加 `ATT_CUDNN=1`（或直接 `ATT_CUDA=cudnn`）。该变体编译与运行都需要 cuDNN 9
+  （实测 9.28.1.4；Windows 为 `cudnn64_9.dll`），且二进制启动时就会加载 cuDNN——没有安装 cuDNN 的机器无法运行，
+  只给确定有 GPU + cuDNN 的机器用。
+- 未设置这些变量时构建与以前完全一致；macOS 固定走 Accelerate，不支持 CUDA。
+- 同时保留 CPU 与 CUDA 两套产物时建议用不同的 `CARGO_TARGET_DIR`；切换 feature 会重新编译
+  CTranslate2（首次约 20–40 分钟）。RTX 50 系（sm_120）可在 NVIDIA 新卡上设 `CUDA_ARCH_LIST=12.0`
+  生成原生代码，不设时按 CT2 的常见架构 + PTX 由驱动 JIT。
+- Windows 报 `No CUDA toolset found` 时，说明 CUDA Toolkit 没装 Visual Studio 集成：重跑 CUDA 安装器勾选
+  Visual Studio Integration，或改用 Ninja 生成器（`CMAKE_GENERATOR=Ninja`，并保证 C/C++ 与 Rust 都用静态 CRT）。
+
 可选环境变量（应用不读 `.env` 文件，需在启动前设置）：
 
 | 变量 | 作用 |
@@ -77,7 +114,9 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 | `ATT_DATA_DIR` | 数据目录（默认：开发态为仓库 `data/`，安装版为系统应用数据目录） |
 | `ATT_MODELS_DIR` / `ATT_SHERPA_ONNX_DIR` | 本地模型根目录（优先于设置页，重启生效） / sherpa-onnx 动态库目录 |
 | `ATT_SILERO_VAD` | Silero VAD 模型文件（默认在模型目录里找 `silero_vad.onnx`） |
-| `ATT_WHISPER_COMPUTE_TYPE` | Whisper 计算精度（默认 `auto`：CUDA 用 float16，CPU 用 int8） |
+| `ATT_CUDA` | 构建时开关（仅 `npm run tauri:dev` / `tauri:build` 读取）：`1` 启用 CUDA 构建；`cudnn` = CUDA + cuDNN |
+| `ATT_CUDNN` | 构建时开关：`1` 在 CUDA 构建上追加 cuDNN（运行机器需安装 cuDNN 9） |
+| `ATT_WHISPER_COMPUTE_TYPE` | Whisper 计算精度（默认 `auto`：CUDA 构建用 float16，CPU 用 int8） |
 | `ATT_QWEN_THREADS` | Qwen 推理线程数（默认 2） |
 | `ATT_FFMPEG_DIR` | ffmpeg 所在目录（文件转写；默认查 PATH 与 Homebrew 常见路径） |
 | `ATT_PROMPTS_DIR` | 内置提示词目录 |
