@@ -71,25 +71,15 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 - 开发态的 macOS 权限归属启动 `tauri dev` 的终端应用。
 - 更多开发约定与常见陷阱见 [`AGENTS.md`](AGENTS.md)。
 
-### 本地 Whisper CUDA 加速（可选）
+### 本地 Whisper CUDA 加速
 
-默认构建不启用 CUDA，本地 Whisper 走 CPU + int8。需要 GPU 加速时，在编译机装好 CUDA Toolkit 后用
-`ATT_CUDA=1` 启动构建（Windows cmd / PowerShell / bash）：
+构建机**检测到 CUDA Toolkit（CUDA_PATH / CUDA_HOME）就默认启用 CUDA 构建**（Windows / Linux）；运行时再由
+「设置 → 识别引擎 → 运行设备」在 CPU / GPU 间切换，**不需要命令行开关**。没装 CUDA Toolkit 的构建机自动保持
+CPU + int8；macOS 固定走 Accelerate，不支持 CUDA。
 
-```bat
-set ATT_CUDA=1 && npm run tauri:dev
-set ATT_CUDA=1 && npm run tauri:build
-```
-
-```powershell
-$env:ATT_CUDA = '1'; npm run tauri:dev
-$env:ATT_CUDA = '1'; npm run tauri:build
-```
-
-```bash
-ATT_CUDA=1 npm run tauri:dev
-ATT_CUDA=1 npm run tauri:build
-```
+- 强制开启（即使没检测到）：ATT_CUDA=1 npm run tauri:dev / tauri:build
+- 强制关闭（即使装了 CUDA Toolkit，例如出纯 CPU 包）：ATT_CUDA=0 或 ATT_CPU=1
+- npm run tauri:dev、tauri:build、tauri dev/build 都走同一个启动脚本，行为一致。
 
 - 启动脚本会把 `--features cuda` 传给 Tauri，再经 `att-core` 传到 `att-whisper`（ct2rs 0.11.3 /
   CTranslate2 4.9.1 的 `cuda` + `cuda-dynamic-loading`）。编译需要 CUDA Toolkit（实测 13.0，最低 11.0）；
@@ -100,7 +90,7 @@ ATT_CUDA=1 npm run tauri:build
 - 需要 cuDNN 卷积加速时再加 `ATT_CUDNN=1`（或直接 `ATT_CUDA=cudnn`）。该变体编译与运行都需要 cuDNN 9
   （实测 9.28.1.4；Windows 为 `cudnn64_9.dll`），且二进制启动时就会加载 cuDNN——没有安装 cuDNN 的机器无法运行，
   只给确定有 GPU + cuDNN 的机器用。
-- 未设置这些变量时构建与以前完全一致；macOS 固定走 Accelerate，不支持 CUDA。
+- 默认（未显式关闭）在 Windows / Linux 上按“检测到 CUDA Toolkit 即启用”处理；ATT_CUDA=0 / ATT_CPU=1 可强制回到纯 CPU。macOS 固定走 Accelerate，不支持 CUDA。
 - 同时保留 CPU 与 CUDA 两套产物时建议用不同的 `CARGO_TARGET_DIR`；切换 feature 会重新编译
   CTranslate2（首次约 20–40 分钟）。RTX 50 系（sm_120）可在 NVIDIA 新卡上设 `CUDA_ARCH_LIST=12.0`
   生成原生代码，不设时按 CT2 的常见架构 + PTX 由驱动 JIT。
@@ -114,8 +104,9 @@ ATT_CUDA=1 npm run tauri:build
 | `ATT_DATA_DIR` | 数据目录（默认：开发态为仓库 `data/`，安装版为系统应用数据目录） |
 | `ATT_MODELS_DIR` / `ATT_SHERPA_ONNX_DIR` | 本地模型根目录（优先于设置页，重启生效） / sherpa-onnx 动态库目录 |
 | `ATT_SILERO_VAD` | Silero VAD 模型文件（默认在模型目录里找 `silero_vad.onnx`） |
-| `ATT_CUDA` | 构建时开关（仅 `npm run tauri:dev` / `tauri:build` 读取）：`1` 启用 CUDA 构建；`cudnn` = CUDA + cuDNN |
+| `ATT_CUDA` | 构建时开关：默认在 Windows/Linux 检测到 CUDA Toolkit 即启用；`1` 强制启用，`0`/`off` 强制关闭；`cudnn` = CUDA + cuDNN |
 | `ATT_CUDNN` | 构建时开关：`1` 在 CUDA 构建上追加 cuDNN（运行机器需安装 cuDNN 9） |
+| `ATT_CPU` | 构建时开关：`1` 强制纯 CPU 构建（忽略默认的 CUDA 自动启用） |
 | `ATT_WHISPER_COMPUTE_TYPE` | Whisper 计算精度（默认 `auto`：CUDA 构建用 float16，CPU 用 int8） |
 | `ATT_QWEN_THREADS` | Qwen 推理线程数（默认 2） |
 | `ATT_FFMPEG_DIR` | ffmpeg 所在目录（文件转写；默认查 PATH 与 Homebrew 常见路径） |

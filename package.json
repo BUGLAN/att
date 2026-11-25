@@ -6,7 +6,7 @@
     "dev": "vite --strictPort",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
+    "tauri": "node scripts/run-tauri.mjs",
     "tauri:dev": "node scripts/run-tauri.mjs dev",
     "tauri:build": "node scripts/run-tauri.mjs build",
     "prepare:sherpa": "node scripts/prepare-sherpa-onnx.mjs",
