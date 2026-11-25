@@ -322,6 +322,17 @@
         </div>
         <div class="setting-item">
           <div class="setting-info">
+            <span class="setting-label">运行设备</span>
+            <span class="setting-desc">{{ whisperDeviceHint }}</span>
+          </div>
+          <BaseSelect v-model="form.whisper_device" aria-label="Whisper 运行设备">
+            <option v-for="option in whisperDeviceOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </BaseSelect>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
             <span class="setting-label">下载源</span>
             <span class="setting-desc">国内网络打不开 Hugging Face 时切到镜像；GitHub 项仍走官方。</span>
           </div>
@@ -558,6 +569,7 @@ import {
   vadWarning,
   whisperOptionLabel
 } from '../modelManager.mjs'
+import { deviceHintFor, deviceOptionsFor, normalizeDeviceValue } from '../deviceOptions.mjs'
 import { hotwordView, parseHotwords } from '../asrHotwords.mjs'
 import {
   credentialNote,
@@ -636,6 +648,16 @@ const whisperOptions = computed(() => WHISPER_VALUES.map((value) => ({
   value,
   label: whisperOptionLabel(value, settingsStore.modelCatalog.models)
 })))
+// 运行设备：macOS 只到 CPU，其它平台可到 GPU（CUDA）；见 deviceOptions.mjs
+const whisperDeviceOptions = computed(() => deviceOptionsFor('whisper', platform))
+const whisperDeviceHint = computed(() => deviceHintFor('whisper', platform))
+// 平台不支持的值（例如旧数据在 macOS 上存了 cuda）回落到自动，避免下拉无匹配项
+onMounted(() => {
+  const normalized = normalizeDeviceValue('whisper', platform, form.value.whisper_device)
+  if (normalized !== form.value.whisper_device) {
+    form.value.whisper_device = normalized
+  }
+})
 const senseVoiceOptions = computed(() => {
   const options = engineModels.value
     .filter((model) => model.engine === 'sense_voice' && model.select_value)
