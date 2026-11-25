@@ -39,6 +39,7 @@ fn shown_signal() -> &'static Notify {
 /// 预创建隐藏的悬浮窗（首次录音时立即可显示，不等页面加载）。
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     if app.get_webview_window(LABEL).is_some() {
+        tracing::debug!("悬浮窗已存在，复用（label={LABEL}）");
         return Ok(());
     }
     let builder = tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("floating.html".into()))
@@ -62,7 +63,12 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     // 保证 tao 的可见性缓存与点击穿透循环一致。
     #[cfg(windows)]
     let builder = builder.focusable(false);
-    builder.build()?;
+    let window = builder.build()?;
+    tracing::debug!(
+        "悬浮窗创建成功：label={LABEL} size={:?} visible={:?}",
+        window.outer_size().ok(),
+        window.is_visible().ok()
+    );
     tauri::async_runtime::spawn(click_through_loop(app.clone()));
     Ok(())
 }
@@ -128,6 +134,7 @@ async fn click_through_loop(app: AppHandle) {
 /// 放到鼠标所在显示器的底部居中（多屏时跟着用户正在看的那块屏），取不到再退回主显示器。
 fn position_bottom_center(window: &tauri::WebviewWindow) {
     let Some(monitor) = monitor_under_cursor(window).or_else(|| window.primary_monitor().ok().flatten()) else {
+        tracing::warn!("悬浮窗定位：取不到任何显示器，跳过");
         return;
     };
     // 先在该显示器的物理像素里算好（窗口的物理尺寸按它落到的那块屏的缩放算）
@@ -135,6 +142,14 @@ fn position_bottom_center(window: &tauri::WebviewWindow) {
     let area = monitor.work_area();
     let x = area.position.x as f64 + (area.size.width as f64 - WIDTH * scale) / 2.0;
     let y = area.position.y as f64 + area.size.height as f64 - (HEIGHT + BOTTOM_OFFSET) * scale;
+    tracing::debug!(
+        "悬浮窗定位：monitor={:?} scale={scale} work_area=({},{} {}x{}) → ({x:.0}, {y:.0})",
+        monitor.name(),
+        area.position.x,
+        area.position.y,
+        area.size.width,
+        area.size.height
+    );
     // macOS 的全局坐标是点：各显示器的物理坐标是按各自缩放放大的，除回该屏缩放才是全局坐标；
     // Windows 的物理坐标本身就是全局虚拟桌面坐标（逻辑坐标会按窗口当前所在屏的缩放换算，跨屏混合缩放时算偏）
     #[cfg(target_os = "macos")]
@@ -216,11 +231,23 @@ fn publish(app: &AppHandle, decide: impl FnOnce(Option<&Value>) -> Option<Value>
 }
 
 fn show_window(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(LABEL) else { return };
+    let Some(window) = app.get_webview_window(LABEL) else {
+        tracing::warn!("悬浮窗 show：找不到窗口（label={LABEL}），可能未创建成功");
+        return;
+    };
     if !window.is_visible().unwrap_or(false) {
         position_bottom_center(&window);
+        tracing::debug!(
+            "悬浮窗 show 前：pos={:?} size={:?} scale={:?}",
+            window.outer_position().ok(),
+            window.outer_size().ok(),
+            window.scale_factor().ok()
+        );
         let _ = window.show();
         shown_signal().notify_one();
+        tracing::debug!("悬浮窗 show 后：visible={:?}", window.is_visible().ok());
+    } else {
+        tracing::debug!("悬浮窗已可见，跳过 show");
     }
 }
 
