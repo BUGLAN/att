@@ -502,6 +502,7 @@ typedef const SherpaOnnxSpeechSegment *(*att_fn_vad_front)(
     const SherpaOnnxVoiceActivityDetector *);
 typedef void (*att_fn_vad_pop)(const SherpaOnnxVoiceActivityDetector *);
 typedef void (*att_fn_vad_flush)(const SherpaOnnxVoiceActivityDetector *);
+typedef void (*att_fn_vad_reset)(const SherpaOnnxVoiceActivityDetector *);
 typedef void (*att_fn_destroy_segment)(const SherpaOnnxSpeechSegment *);
 
 typedef struct AttVad {
@@ -513,6 +514,7 @@ typedef struct AttVad {
   att_fn_vad_front front;
   att_fn_vad_pop pop;
   att_fn_vad_flush flush;
+  att_fn_vad_reset reset;
   att_fn_destroy_segment destroy_segment;
   const SherpaOnnxVoiceActivityDetector *vad;
   char *model;
@@ -566,9 +568,11 @@ AttVad *att_vad_create(const char *lib_dir, const char *model, float threshold,
   handle->front = (att_fn_vad_front)att_dlsym(handle->lib, "SherpaOnnxVoiceActivityDetectorFront");
   handle->pop = (att_fn_vad_pop)att_dlsym(handle->lib, "SherpaOnnxVoiceActivityDetectorPop");
   handle->flush = (att_fn_vad_flush)att_dlsym(handle->lib, "SherpaOnnxVoiceActivityDetectorFlush");
+  handle->reset = (att_fn_vad_reset)att_dlsym(handle->lib, "SherpaOnnxVoiceActivityDetectorReset");
   handle->destroy_segment = (att_fn_destroy_segment)att_dlsym(handle->lib, "SherpaOnnxDestroySpeechSegment");
   if (!handle->create || !handle->destroy || !handle->accept || !handle->is_empty ||
-      !handle->front || !handle->pop || !handle->flush || !handle->destroy_segment) {
+      !handle->front || !handle->pop || !handle->flush || !handle->reset ||
+      !handle->destroy_segment) {
     att_set_error(err, err_len, "sherpa-onnx 推理库缺少 VAD 符号（版本可能过旧，需 >= 2.0.1）");
     att_vad_release(handle);
     return NULL;
@@ -610,6 +614,12 @@ char *att_vad_speech_ranges(AttVad *handle, const float *samples, int32_t n, cha
     att_set_error(err, err_len, "没有音频数据");
     return NULL;
   }
+  /*
+   * 每次调用都当作一段独立音频处理：先复位内部环形缓冲、next_window_start_ 与已排队区间。
+   * 否则 SpeechSegment.start 是「探测器生命周期内的绝对采样位置」，会跨调用持续累加，
+   * 第二次调用的区间起点已超过本次音频长度，被上层过滤成空表 —— 表现为「第二次提示没有语音内容」。
+   */
+  handle->reset(handle->vad);
   for (int32_t offset = 0; offset < n; offset += handle->window_size) {
     int32_t count = handle->window_size;
     if (offset + count > n) {
