@@ -28,8 +28,7 @@ fn read_pcm16k(path: &Path) -> Vec<i16> {
         }
         hound::SampleFormat::Float => reader.samples::<f32>().map(|s| s.unwrap()).collect(),
     };
-    let mono: Vec<f32> =
-        samples.chunks(channels).map(|frame| frame.iter().sum::<f32>() / channels as f32).collect();
+    let mono: Vec<f32> = samples.chunks(channels).map(|frame| frame.iter().sum::<f32>() / channels as f32).collect();
     if spec.sample_rate as usize == SAMPLE_RATE {
         return mono.iter().map(|v| (v * 32767.0).clamp(-32768.0, 32767.0) as i16).collect();
     }
@@ -70,12 +69,6 @@ fn vad_句柄复用_第二次应返回与第一次一致() {
     }
 
     assert!(!results[0].is_empty(), "第一次应有语音区间");
-    assert_eq!(
-        results[0], results[1],
-        "同一段音频第二次的语音区间应与第一次一致（不一致说明 VAD 句柄未重置）"
-    );
-    assert_eq!(
-        results[0], results[2],
-        "同一段音频第三次的语音区间应与第一次一致（不一致说明 VAD 句柄未重置）"
-    );
+    assert_eq!(results[0], results[1], "同一段音频第二次的语音区间应与第一次一致（不一致说明 VAD 句柄未重置）");
+    assert_eq!(results[0], results[2], "同一段音频第三次的语音区间应与第一次一致（不一致说明 VAD 句柄未重置）");
 }

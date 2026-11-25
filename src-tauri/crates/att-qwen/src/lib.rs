@@ -569,14 +569,28 @@ impl LocalQwen {
         let mut effective = requested.to_string();
         let mut err = [0 as c_char; ERR_LEN];
         let mut handle = qwen_create_handle(
-            &lib_dir_c, &conv_frontend, &encoder, &decoder, &tokenizer, config, requested, err.as_mut_ptr(),
+            &lib_dir_c,
+            &conv_frontend,
+            &encoder,
+            &decoder,
+            &tokenizer,
+            config,
+            requested,
+            err.as_mut_ptr(),
         );
         if handle.is_null() && effective != "cpu" {
             let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
             tracing::warn!("本地 Qwen3-ASR 使用 {effective} 加载失败，回退 CPU：{}", reason.trim());
             err = [0 as c_char; ERR_LEN];
             handle = qwen_create_handle(
-                &lib_dir_c, &conv_frontend, &encoder, &decoder, &tokenizer, config, "cpu", err.as_mut_ptr(),
+                &lib_dir_c,
+                &conv_frontend,
+                &encoder,
+                &decoder,
+                &tokenizer,
+                config,
+                "cpu",
+                err.as_mut_ptr(),
             );
             effective = "cpu".into();
         }
@@ -778,16 +792,13 @@ impl LocalSenseVoice {
         let requested = if config.provider.trim().is_empty() { "cpu" } else { config.provider.trim() };
         let mut effective = requested.to_string();
         let mut err = [0 as c_char; ERR_LEN];
-        let mut handle = sense_voice_create_handle(
-            &lib_dir_c, &model, &tokens, &language, config, requested, err.as_mut_ptr(),
-        );
+        let mut handle =
+            sense_voice_create_handle(&lib_dir_c, &model, &tokens, &language, config, requested, err.as_mut_ptr());
         if handle.is_null() && effective != "cpu" {
             let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
             tracing::warn!("本地 SenseVoice 使用 {effective} 加载失败，回退 CPU：{}", reason.trim());
             err = [0 as c_char; ERR_LEN];
-            handle = sense_voice_create_handle(
-                &lib_dir_c, &model, &tokens, &language, config, "cpu", err.as_mut_ptr(),
-            );
+            handle = sense_voice_create_handle(&lib_dir_c, &model, &tokens, &language, config, "cpu", err.as_mut_ptr());
             effective = "cpu".into();
         }
         if handle.is_null() {
