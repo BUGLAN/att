@@ -42,8 +42,47 @@ permissions:
   contents: write
 
 jobs:
+  # 先一次性创建（或复用）该 tag 的 GitHub Release，再跑各平台矩阵打包。
+  #
+  # tauri-action v1 只有在找不到 release 时才调用 github.rest.repos.createRelease()。
+  # macOS / Windows 两个矩阵 job 并行、都把同一个 tagName 交给 tauri-action，找不到时
+  # 都会各自 create，属于并发创建同一个 Release 的竞态，可能撞 422，或偶发 403
+  # "Resource not accessible by integration" / 静默失败（日志停在
+  # "Couldn't find release with tag … Creating one." 后该步骤直接判失败）。
+  #
+  # 预创建（发布态、非草稿，与下方 releaseDraft: false 一致）后，矩阵 job 里 tauri-action
+  # 的 getReleaseByTag 会命中已有 release，只做「更新 name/body + 上传附件」，
+  # createRelease 这条易失败 / 易竞态的调用不再执行。
+  create-release:
+    name: 创建 Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: 确保 Release 存在
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG 已存在，复用。"
+          else
+            echo "为 $RELEASE_TAG 创建 Release……"
+            # 并发或重试时可能已被别人创建：create 失败（已存在）就再查一次确认，视为成功。
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "$RELEASE_TAG" \
+              --notes "安装包正在构建，完成后会自动写入发布说明。" \
+              || gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          fi
+
   build:
     name: 打包 ${{ matrix.label }}
+    # 先建好 Release，矩阵任务只负责上传，避免并发 createRelease
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
