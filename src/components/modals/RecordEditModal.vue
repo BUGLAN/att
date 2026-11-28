@@ -27,29 +27,38 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useRecordsStore } from '@/stores/records'
 import { useElectron } from '@/composables/useElectron'
 import Modal from '@/components/common/Modal.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 import BaseTextarea from '@/components/common/BaseTextarea.vue'
+import { recordEditText, resolveRecordEditSync } from './recordEditModel.mjs'
 
 const appStore = useAppStore()
 const recordsStore = useRecordsStore()
 const { clipboard } = useElectron()
 
-const record = computed(() => appStore.currentRecord)
-const editText = ref('')
+// 弹窗打开后固定编辑这条记录。currentRecord 可能因新录音、优化或重新识别而切换。
+const recordId = ref(appStore.currentRecord?.id || null)
+const record = ref(appStore.currentRecord)
+const editText = ref(recordEditText(record.value))
+const baselineText = ref(editText.value)
 
-watch(record, (newRecord) => {
-  if (!newRecord) {
-    editText.value = ''
-    return
-  }
+watch(() => appStore.currentRecord, (newRecord) => {
+  const synced = resolveRecordEditSync({
+    recordId: recordId.value,
+    editedText: editText.value,
+    baselineText: baselineText.value,
+    nextRecord: newRecord
+  })
+  if (!synced) return
 
-  editText.value = newRecord.optimized_text || newRecord.raw_text || ''
-}, { immediate: true })
+  record.value = synced.record
+  editText.value = synced.text
+  baselineText.value = synced.baselineText
+})
 
 function close() {
   appStore.closeModal('recordEdit')
@@ -62,7 +71,7 @@ async function copyField(text) {
 }
 
 async function save() {
-  if (!record.value) {
+  if (!record.value || !recordId.value) {
     return
   }
 
@@ -71,8 +80,10 @@ async function save() {
     : { raw_text: editText.value, is_modified: true }
 
   try {
-    const updated = await recordsStore.updateRecord(record.value.id, payload)
-    appStore.setCurrentRecord({ ...record.value, ...updated })
+    const updated = await recordsStore.updateRecord(recordId.value, payload)
+    if (appStore.currentRecord?.id === recordId.value) {
+      appStore.setCurrentRecord({ ...appStore.currentRecord, ...updated })
+    }
     appStore.showToast('记录已保存', { tone: 'success' })
     close()
   } catch (error) {
