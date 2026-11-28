@@ -11,6 +11,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -388,10 +389,14 @@ impl Updater {
 
 impl CheckResult {
     fn failed(current_version: &str, error: String) -> Self {
+        Self::version_error(current_version, None, error)
+    }
+
+    fn version_error(current_version: &str, latest_version: Option<String>, error: String) -> Self {
         Self {
             status: "error",
             current_version: current_version.to_string(),
-            latest_version: None,
+            latest_version,
             release_name: None,
             release_url: None,
             notes: None,
@@ -502,7 +507,21 @@ fn describe_request_error(error: &reqwest::Error) -> String {
 /// 结合当前版本与平台得出检查结果（纯函数，便于测试）。
 pub fn evaluate(current_version: &str, release: Release, os: &str, arch: &str) -> CheckResult {
     let latest = release.tag.trim_start_matches(['v', 'V']).to_string();
-    let newer = is_newer(&latest, current_version);
+    let Some(latest_version) = parse_version(&release.tag) else {
+        return CheckResult::version_error(
+            current_version,
+            Some(release.tag.clone()),
+            format!("无法识别最新版本号「{}」", release.tag),
+        );
+    };
+    let Some(current) = parse_version(current_version) else {
+        return CheckResult::version_error(
+            current_version,
+            Some(latest),
+            format!("无法识别当前版本号「{current_version}」"),
+        );
+    };
+    let newer = compare_versions(&latest_version, &current) == Ordering::Greater;
     CheckResult {
         status: if newer { "available" } else { "latest" },
         current_version: current_version.to_string(),
@@ -517,36 +536,94 @@ pub fn evaluate(current_version: &str, release: Release, os: &str, arch: &str) -
     }
 }
 
-/// 解析 `1.2.3` / `v1.2.3-beta.1`：数字段 + 可选预发布标记。
-fn parse_version(text: &str) -> Option<(Vec<u64>, Option<String>)> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrereleaseIdentifier {
+    Numeric(String),
+    Text(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Version {
+    core: Vec<u64>,
+    prerelease: Option<Vec<PrereleaseIdentifier>>,
+}
+
+/// 解析 `1.2.3` / `v1.2.3-beta.1`：数字段 + 可选的 SemVer 预发布标识。
+fn parse_version(text: &str) -> Option<Version> {
     let text = text.trim().trim_start_matches(['v', 'V']);
     let text = text.split('+').next()?; // 忽略构建元数据
     let (core, pre) = match text.split_once('-') {
-        Some((core, pre)) => (core, Some(pre.to_string())),
+        Some((core, pre)) => (core, Some(parse_prerelease(pre)?)),
         None => (text, None),
     };
     let parts = core.split('.').map(|p| p.parse::<u64>().ok()).collect::<Option<Vec<_>>>()?;
-    (!parts.is_empty()).then_some((parts, pre))
+    (!parts.is_empty()).then_some(Version { core: parts, prerelease: pre })
 }
 
-/// `candidate` 是否比 `current` 新（解析失败按「不是更新」处理，避免误报）。
-pub fn is_newer(candidate: &str, current: &str) -> bool {
-    let (Some((a, a_pre)), Some((b, b_pre))) = (parse_version(candidate), parse_version(current)) else {
-        return false;
-    };
-    let len = a.len().max(b.len());
-    for i in 0..len {
-        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
-        if x != y {
-            return x > y;
+fn parse_prerelease(text: &str) -> Option<Vec<PrereleaseIdentifier>> {
+    if text.is_empty() {
+        return None;
+    }
+    text.split('.')
+        .map(|part| {
+            if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
+                return None;
+            }
+            if part.bytes().all(|byte| byte.is_ascii_digit()) {
+                Some(PrereleaseIdentifier::Numeric(part.to_string()))
+            } else {
+                Some(PrereleaseIdentifier::Text(part.to_string()))
+            }
+        })
+        .collect()
+}
+
+fn compare_numeric_identifiers(left: &str, right: &str) -> Ordering {
+    let left = left.trim_start_matches('0');
+    let right = right.trim_start_matches('0');
+    let left = if left.is_empty() { "0" } else { left };
+    let right = if right.is_empty() { "0" } else { right };
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+fn compare_prereleases(left: &[PrereleaseIdentifier], right: &[PrereleaseIdentifier]) -> Ordering {
+    for (left, right) in left.iter().zip(right) {
+        let ordering = match (left, right) {
+            (PrereleaseIdentifier::Numeric(left), PrereleaseIdentifier::Numeric(right)) => {
+                compare_numeric_identifiers(left, right)
+            }
+            (PrereleaseIdentifier::Numeric(_), PrereleaseIdentifier::Text(_)) => Ordering::Less,
+            (PrereleaseIdentifier::Text(_), PrereleaseIdentifier::Numeric(_)) => Ordering::Greater,
+            (PrereleaseIdentifier::Text(left), PrereleaseIdentifier::Text(right)) => left.cmp(right),
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
         }
     }
-    // 数字相同：正式版比预发布新；都是预发布时按字典序
-    match (a_pre, b_pre) {
-        (None, Some(_)) => true,
-        (Some(x), Some(y)) => x > y,
-        _ => false,
+    left.len().cmp(&right.len())
+}
+
+fn compare_versions(left: &Version, right: &Version) -> Ordering {
+    let len = left.core.len().max(right.core.len());
+    for i in 0..len {
+        let ordering = left.core.get(i).unwrap_or(&0).cmp(right.core.get(i).unwrap_or(&0));
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
     }
+    match (&left.prerelease, &right.prerelease) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(left), Some(right)) => compare_prereleases(left, right),
+    }
+}
+
+/// `candidate` 是否比 `current` 新；任一版本无法解析时返回 `None`。
+pub fn is_newer(candidate: &str, current: &str) -> Option<bool> {
+    let candidate = parse_version(candidate)?;
+    let current = parse_version(current)?;
+    Some(compare_versions(&candidate, &current) == Ordering::Greater)
 }
 
 /// 选择适合本机的安装包：macOS → `.dmg`，Windows → `-setup.exe`（其次 `.msi`），Linux → `.AppImage` / `.deb`；
@@ -600,13 +677,28 @@ mod tests {
 
     #[test]
     fn 版本比较() {
-        assert!(is_newer("2.6.0", "2.5.1"));
-        assert!(is_newer("v2.10.0", "2.9.9"), "按数字比较而不是字符串");
-        assert!(is_newer("2.5.1", "2.5.1-beta.2"), "正式版比同号预发布新");
-        assert!(!is_newer("2.5.1", "2.5.1"));
-        assert!(!is_newer("2.5.0", "2.5.1"));
-        assert!(!is_newer("2.5", "2.5.0"), "缺省段按 0");
-        assert!(!is_newer("nightly", "2.5.1"), "解析不了不当作更新");
+        assert_eq!(is_newer("2.6.0", "2.5.1"), Some(true));
+        assert_eq!(is_newer("v2.10.0", "2.9.9"), Some(true), "按数字比较而不是字符串");
+        assert_eq!(is_newer("2.5.1", "2.5.1-beta.2"), Some(true), "正式版比同号预发布新");
+        assert_eq!(is_newer("2.5.1", "2.5.1"), Some(false));
+        assert_eq!(is_newer("2.5.0", "2.5.1"), Some(false));
+        assert_eq!(is_newer("2.5", "2.5.0"), Some(false), "缺省段按 0");
+        assert_eq!(is_newer("nightly", "2.5.1"), None, "解析失败要能与旧版本区分");
+        assert_eq!(is_newer("2.0.0-beta.10", "2.0.0-beta.9"), Some(true));
+        let ordered = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+        ];
+        for pair in ordered.windows(2) {
+            assert_eq!(is_newer(pair[1], pair[0]), Some(true), "{} 应新于 {}", pair[1], pair[0]);
+        }
+        assert_eq!(is_newer("1.0.0-1", "1.0.0-alpha"), Some(false));
     }
 
     #[test]
@@ -631,6 +723,33 @@ mod tests {
         assert!(parse_release("<html>").unwrap_err().contains("无法解析"));
         assert!(describe_status(404, r#"{"message":"Not Found"}"#).contains("HTTP 404"));
         assert!(describe_status(403, "").contains("频率限制"));
+
+        let invalid = evaluate(
+            "2.12.0",
+            Release { tag: "release-2026".into(), assets: assets(), ..Release::default() },
+            "macos",
+            "aarch64",
+        );
+        assert_eq!(invalid.status, "error");
+        assert_eq!(invalid.latest_version.as_deref(), Some("release-2026"));
+        assert!(invalid.asset.is_none());
+        assert!(invalid.error.unwrap().contains("release-2026"));
+
+        let invalid_current = evaluate(
+            "development",
+            Release { tag: "v2.13.0".into(), assets: assets(), ..Release::default() },
+            "macos",
+            "aarch64",
+        );
+        assert_eq!(invalid_current.status, "error");
+        assert_eq!(invalid_current.latest_version.as_deref(), Some("2.13.0"));
+        assert!(invalid_current.asset.is_none());
+        assert!(invalid_current.error.unwrap().contains("development"));
+
+        let available = evaluate("2.12.0", Release { tag: "v2.13.0".into(), ..Release::default() }, "macos", "aarch64");
+        assert_eq!(available.status, "available");
+        let latest = evaluate("2.12.0", Release { tag: "v2.12.0".into(), ..Release::default() }, "macos", "aarch64");
+        assert_eq!(latest.status, "latest");
     }
 
     /// 记录调用次数的假应用内更新器（真正的下载 / 安装在桌面壳里，这里只验状态机）
