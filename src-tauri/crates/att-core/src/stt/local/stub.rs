@@ -1,5 +1,6 @@
 //! 关闭 `local-engines` feature 时的空实现：接口保持可用，统一返回「此构建不含本地引擎」。
 
+use super::LOCAL_ENGINES_DISABLED;
 use crate::state::CoreState;
 use std::path::PathBuf;
 use std::time::Duration;
