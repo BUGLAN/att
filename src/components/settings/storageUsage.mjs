@@ -1,7 +1,8 @@
 // 设置 → 诊断 →「存储」的展示模型（不依赖 Vue，供 tests/test_storage_usage.mjs 锁定）。
 //
 // 后端：GET /api/storage → { items: [{ key, label, path, files, bytes }], total_bytes, measured_at }（缓存 1 分钟）；
-// POST /api/storage/orphans/clear 清空 audio/orphans/。
+// POST /api/storage/orphans/clear 清理 audio/orphans/：仍被记录引用的移回录音目录，其余删除，
+// 返回 { deleted, bytes, restored, kept }。
 // 录音音频保留天数（settings.audio_retention_days，0 = 永久）：每天检查一次，只删音频文件，记录与文字保留，收藏的不删；
 // 改紧了（永久→有天数、天数变小）会立即删掉过期音频，先确认。
 
@@ -56,6 +57,19 @@ export function storageRows(report) {
 export function hasOrphans(report) {
   const orphans = (Array.isArray(report?.items) ? report.items : []).find((item) => item.key === 'orphans')
   return Number(orphans?.files) > 0
+}
+
+/** 清理孤儿音频后的提示：删了多少；仍被记录引用的移回了多少、因同名冲突留在原处多少 */
+export function orphanCleanupToast(result) {
+  const count = (value) => Math.max(0, Number(value) || 0)
+  const parts = [`已清理 ${count(result?.deleted)} 个孤儿音频（${formatBytes(result?.bytes)}）`]
+  if (count(result?.restored) > 0) {
+    parts.push(`${count(result.restored)} 个文件仍被记录引用，已移回`)
+  }
+  if (count(result?.kept) > 0) {
+    parts.push(`${count(result.kept)} 个仍被引用的文件与录音目录里的同名文件冲突，未删除，留在孤儿目录`)
+  }
+  return parts.join('；')
 }
 
 /** 录音音频保留天数的下拉：0 = 永久保留；当前值不在预设里也列出来 */

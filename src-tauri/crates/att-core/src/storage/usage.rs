@@ -5,6 +5,7 @@
 
 use crate::state::CoreState;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -106,10 +107,30 @@ pub fn dir_usage(dir: &Path) -> (u64, u64) {
     (files, bytes)
 }
 
-/// 清空孤儿音频目录里的文件（含子目录），目录本身保留。返回（删掉的文件数, 字节数）。
-pub fn clear_dir_files(dir: &Path) -> std::io::Result<(u64, u64)> {
-    let mut deleted = 0u64;
-    let mut bytes = 0u64;
+/// 一次「清理孤儿音频」的结果。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct OrphanCleanup {
+    /// 删掉的文件数
+    pub deleted: u64,
+    /// 删掉的字节数
+    pub bytes: u64,
+    /// 仍被记录引用、已移回录音目录的文件数
+    pub restored: u64,
+    /// 仍被记录引用、但录音目录里已有同名文件：两份都不动，留在孤儿目录
+    pub kept: u64,
+}
+
+/// 清理孤儿目录：仍被记录引用的文件移回 `audio_dir`，其余删除，目录本身保留。
+///
+/// `referenced` 是全部记录 `normalize_audio_rel(audio_path)` 的集合（相对 `audio_dir` 的文件名）。
+/// 孤儿是迁移时判定的，解析失败的记录会被跳过、它的录音被当成孤儿隔离（发生过 886 个 WAV 整批误隔离）；
+/// 记录后来修好或从备份恢复后，删除前必须再核对一次引用，否则会永久删掉仍有记录指向的录音。
+pub fn clear_orphan_files(
+    dir: &Path,
+    audio_dir: &Path,
+    referenced: &HashSet<String>,
+) -> std::io::Result<OrphanCleanup> {
+    let mut result = OrphanCleanup::default();
     let mut pending = vec![dir.to_path_buf()];
     while let Some(current) = pending.pop() {
         let entries = match std::fs::read_dir(&current) {
@@ -121,15 +142,31 @@ pub fn clear_dir_files(dir: &Path) -> std::io::Result<(u64, u64)> {
             let Ok(file_type) = entry.file_type() else { continue };
             if file_type.is_dir() {
                 pending.push(entry.path());
-            } else if file_type.is_file() || file_type.is_symlink() {
-                let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
-                std::fs::remove_file(entry.path())?;
-                deleted += 1;
-                bytes += size;
+                continue;
             }
+            if !(file_type.is_file() || file_type.is_symlink()) {
+                continue;
+            }
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if referenced.contains(&name) {
+                let target = audio_dir.join(&name);
+                if target.exists() {
+                    result.kept += 1;
+                } else {
+                    std::fs::create_dir_all(audio_dir)?;
+                    std::fs::rename(&path, &target)?;
+                    result.restored += 1;
+                }
+                continue;
+            }
+            let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            std::fs::remove_file(&path)?;
+            result.deleted += 1;
+            result.bytes += size;
         }
     }
-    Ok((deleted, bytes))
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -145,10 +182,34 @@ mod tests {
         assert_eq!(dir_usage(&dir), (2, 1024));
         assert_eq!(dir_usage(&dir.join("missing")), (0, 0));
 
-        assert_eq!(clear_dir_files(&dir).unwrap(), (2, 1024));
+        let none = HashSet::new();
+        let cleared = clear_orphan_files(&dir, &dir.join("records"), &none).unwrap();
+        assert_eq!((cleared.deleted, cleared.bytes, cleared.restored), (2, 1024, 0));
         assert_eq!(dir_usage(&dir), (0, 0));
         assert!(dir.is_dir(), "目录本身保留");
-        assert_eq!(clear_dir_files(&dir.join("missing")).unwrap(), (0, 0));
+        assert_eq!(clear_orphan_files(&dir.join("missing"), &dir, &none).unwrap(), OrphanCleanup::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 清理孤儿_仍被引用的移回_其余删除() {
+        let dir = std::env::temp_dir().join(format!("att-orphans-{}", uuid::Uuid::new_v4()));
+        let (orphans, audio) = (dir.join("orphans"), dir.join("records"));
+        std::fs::create_dir_all(orphans.join("sub")).unwrap();
+        std::fs::create_dir_all(&audio).unwrap();
+        std::fs::write(orphans.join("a.wav"), vec![1u8; 100]).unwrap();
+        std::fs::write(orphans.join("dup.wav"), vec![2u8; 10]).unwrap();
+        std::fs::write(audio.join("dup.wav"), vec![3u8; 20]).unwrap();
+        std::fs::write(orphans.join("old.wav"), vec![0u8; 1000]).unwrap();
+        std::fs::write(orphans.join("sub").join("x.wav"), vec![0u8; 24]).unwrap();
+        let referenced: HashSet<String> = ["a.wav", "dup.wav"].into_iter().map(String::from).collect();
+
+        let result = clear_orphan_files(&orphans, &audio, &referenced).unwrap();
+        assert_eq!(result, OrphanCleanup { deleted: 2, bytes: 1024, restored: 1, kept: 1 });
+        assert_eq!(std::fs::read(audio.join("a.wav")).unwrap(), vec![1u8; 100], "被引用的移回录音目录");
+        assert_eq!(std::fs::read(audio.join("dup.wav")).unwrap(), vec![3u8; 20], "录音目录里的同名文件不被覆盖");
+        assert!(orphans.join("dup.wav").is_file(), "同名冲突时孤儿副本也不删");
+        assert!(!orphans.join("old.wav").exists() && !orphans.join("sub").join("x.wav").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

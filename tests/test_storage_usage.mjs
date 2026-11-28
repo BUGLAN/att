@@ -10,6 +10,7 @@ import {
   formatBytes,
   hasOrphans,
   isTighter,
+  orphanCleanupToast,
   storageRows
 } from '../src/components/settings/storageUsage.mjs'
 
@@ -64,4 +65,17 @@ test('录音音频保留天数：永久在首项，改紧才确认', () => {
   assert.equal(copy.title, '只保留 30 天内的录音音频？')
   assert.match(copy.description, /记录和文字都保留/)
   assert.match(copy.description, /收藏的记录不受影响/)
+})
+
+test('清理孤儿音频提示：仍被记录引用的移回数量要说出来', () => {
+  assert.equal(orphanCleanupToast({ deleted: 3, bytes: 2048, restored: 0, kept: 0 }), '已清理 3 个孤儿音频（2 KB）')
+  assert.equal(
+    orphanCleanupToast({ deleted: 1, bytes: 50, restored: 2, kept: 0 }),
+    '已清理 1 个孤儿音频（50 B）；2 个文件仍被记录引用，已移回'
+  )
+  assert.equal(
+    orphanCleanupToast({ deleted: 0, bytes: 0, restored: 0, kept: 1 }),
+    '已清理 0 个孤儿音频（0 B）；1 个仍被引用的文件与录音目录里的同名文件冲突，未删除，留在孤儿目录'
+  )
+  assert.equal(orphanCleanupToast(null), '已清理 0 个孤儿音频（0 B）')
 })

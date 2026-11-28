@@ -244,7 +244,7 @@
     <ConfirmDialog
       v-model="isOrphanConfirmVisible"
       title="清理孤儿音频？"
-      description="这些是升级迁移时没有记录认领、被隔离到 audio/orphans/ 的旧录音，删除后无法恢复。"
+      description="这些是升级迁移时没有记录认领、被隔离到 audio/orphans/ 的旧录音。清理前会再核对一次，仍被记录引用的移回录音目录，其余删除后无法恢复。"
       confirm-text="清理"
       @confirm="clearOrphans"
     />
@@ -325,6 +325,7 @@ import {
   audioRetentionOptions,
   formatBytes,
   hasOrphans,
+  orphanCleanupToast,
   isTighter,
   normalizeLimit,
   storageRows
@@ -493,7 +494,7 @@ async function clearOrphans() {
   clearingOrphans.value = true
   try {
     const result = await api.clearOrphanAudio()
-    appStore.showToast(`已清理 ${result?.deleted ?? 0} 个孤儿音频（${formatBytes(result?.bytes)}）`, { tone: 'success' })
+    appStore.showToast(orphanCleanupToast(result), { tone: 'success' })
   } catch (error) {
     appStore.showToast(String(error?.message || error), { tone: 'error' })
   } finally {

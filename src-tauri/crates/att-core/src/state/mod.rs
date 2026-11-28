@@ -258,9 +258,21 @@ impl CoreState {
         }
     }
 
-    /// 清理孤儿音频（`audio/orphans/`）：返回（删掉的文件数, 字节数）。
-    pub fn clear_orphan_audio(&self) -> std::io::Result<(u64, u64)> {
-        let result = crate::storage::usage::clear_dir_files(&crate::storage::usage::orphan_audio_dir(&self.data_dir));
+    /// 清理孤儿音频（`audio/orphans/`）：删除前先核对全部记录的引用，仍被引用的移回录音目录，其余删除。
+    pub fn clear_orphan_audio(&self) -> std::io::Result<crate::storage::usage::OrphanCleanup> {
+        let referenced: std::collections::HashSet<String> = self
+            .records
+            .load_all()
+            .0
+            .iter()
+            .filter(|record| !record.audio_path.is_empty())
+            .map(|record| crate::records::normalize_audio_rel(&record.audio_path))
+            .collect();
+        let result = crate::storage::usage::clear_orphan_files(
+            &crate::storage::usage::orphan_audio_dir(&self.data_dir),
+            self.records.audio_dir(),
+            &referenced,
+        );
         self.storage_usage.invalidate();
         result
     }

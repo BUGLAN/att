@@ -2144,6 +2144,18 @@ mod tests {
         let orphans = state.core.data_dir.join("audio").join("orphans");
         std::fs::create_dir_all(&orphans).unwrap();
         std::fs::write(orphans.join("old.wav"), vec![0u8; 50]).unwrap();
+        // 迁移时记录损坏被跳过、录音被误隔离；记录后来修好了（旧版相对仓库根的路径形态）
+        std::fs::write(orphans.join("kept.wav"), vec![7u8; 64]).unwrap();
+        state
+            .core
+            .records
+            .insert(att_core::records::Record {
+                id: "rec-kept".into(),
+                audio_path: "data\\audio\\records\\kept.wav".into(),
+                raw_text: Some("修好的记录".into()),
+                ..Default::default()
+            })
+            .unwrap();
 
         let (status, report) = get_json(&state, "/api/storage?refresh=true").await;
         assert_eq!(status, StatusCode::OK, "{report}");
@@ -2153,12 +2165,17 @@ mod tests {
         let keys: Vec<&str> = report["items"].as_array().unwrap().iter().map(|i| i["key"].as_str().unwrap()).collect();
         assert_eq!(keys, ["audio", "records", "clipboard", "logs", "orphans", "models"]);
         assert_eq!(item(&report, "audio")["bytes"], json!(300));
-        assert_eq!(item(&report, "orphans")["files"], json!(1));
-        assert!(report["total_bytes"].as_u64().unwrap() >= 350);
+        assert_eq!(item(&report, "orphans")["files"], json!(2));
+        assert!(report["total_bytes"].as_u64().unwrap() >= 414);
 
         let (status, cleared) = request_with_body(&state, "POST", "/api/storage/orphans/clear", json!({})).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(cleared, json!({ "deleted": 1, "bytes": 50 }));
+        assert_eq!(cleared, json!({ "deleted": 1, "bytes": 50, "restored": 1, "kept": 0 }));
+        // 仍被记录引用的录音移回录音目录，记录可以正常回放
+        assert!(!orphans.join("kept.wav").exists());
+        let (status, _headers, body) = get_raw(&state, "/api/records/rec-kept/audio", &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, vec![7u8; 64]);
         // 清理后作废缓存：不带 refresh 也能看到新数字
         let (_, report) = get_json(&state, "/api/storage").await;
         assert_eq!(item(&report, "orphans")["bytes"], json!(0));
