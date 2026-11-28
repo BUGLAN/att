@@ -58,13 +58,14 @@ macOS 需要授予三项权限：「麦克风」（录音）、「输入监控�
 ## 开发
 
 ```bash
-npm install
+npm ci                   # 按 package-lock.json 安装依赖（与 CI、发布一致）
 npm run tauri:dev        # 开发运行：Vite(8090) + Tauri 壳 + 内嵌数据面，数据目录 = 仓库 data/
 npm run tauri:build      # 本地打包
 npm run prepare:sherpa   # 单独下载并校验当前平台的 sherpa-onnx 推理库（tauri:build 会自动执行）
 npm test                 # = test:node（前端纯逻辑用例）+ test:rust（cargo test --workspace）
 ```
 
+- 前端统一用 npm（`package.json` 的 `packageManager`），不要用 pnpm / yarn 安装：它们不读 `package-lock.json`，解析出的版本会和 CI、发布产物不一致；加减依赖用 `npm install <包>` 并一起提交 `package-lock.json`。
 - `cargo` 命令要在 `src-tauri/` 目录内执行（Windows 的 `+crt-static` 配置只在该目录下生效）。
 - 首次构建会编译 CTranslate2（约 10~20 分钟），macOS 需先 `brew install cmake`。
 - 本地 Whisper / Qwen / SenseVoice 的模型不随仓库分发；选择对应引擎后在「设置 → 识别引擎」里应用内下载（Whisper 会自动装 Silero VAD，Qwen / SenseVoice 走 GitHub Release），模型目录默认 `models/`，可在设置页更改并重启应用生效，也可用启动前环境变量 `ATT_MODELS_DIR` 指定；两者同时存在时环境变量优先。开发态 Qwen / SenseVoice 推理库默认放 `models/sherpa-onnx/`，也可用 `ATT_SHERPA_ONNX_DIR` 覆盖；安装包使用随包的 `resources/sherpa-onnx/`。

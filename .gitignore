@@ -33,6 +33,10 @@ Thumbs.db
 
 node_modules
 
+# 前端统一用 npm（package-lock.json）；其他包管理器的锁文件不入库
+pnpm-lock.yaml
+yarn.lock
+
 # 审计与设计工具产物（保留在本地，不纳入版本库）
 .tmp-shots/
 .stitch/

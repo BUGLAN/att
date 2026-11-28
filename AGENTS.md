@@ -10,7 +10,7 @@
 ## 1. 命令
 
 ```bash
-npm install
+npm ci                                 # 按 package-lock.json 安装；前端统一用 npm，不要用 pnpm / yarn
 npm run tauri:dev                      # Vite(8090) + Tauri 壳 + 内嵌 axum 数据面（127.0.0.1:17890）
 npm run build                          # 前端构建
 npm run test:rust                      # = cd src-tauri && cargo test --workspace
