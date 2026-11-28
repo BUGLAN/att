@@ -79,6 +79,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 /// 低于该时长视为误触（不建记录、不计费）。
 const MIN_DURATION_SECONDS: f64 = 0.3;
+/// 识别结果为空时，超过该时长的录音仍保存成失败记录，便于换引擎重新识别。
+const EMPTY_TRANSCRIPT_RECORD_SECONDS: f64 = 3.0;
 /// 累计这么久的音频高于静音阈值才算「说过话」：按键的咔哒声、麦克风上电的爆音只有一两块（20ms/块），
 /// 单块过阈值就算的话，敲一下热键也会被当成说话、进入「轉」。
 const HEARD_MIN_VOICED: Duration = Duration::from_millis(100);
@@ -147,6 +149,21 @@ fn start_failure_phase(has_optimization: bool) -> Phase {
 fn next_session_id(counter: &mut u64) -> u64 {
     *counter += 1;
     *counter
+}
+
+/// Actor 侧留一份采集音频。会话任务卡死时拿不到它自己的 `all`，仍可用这里落盘。
+fn append_captured_samples(samples: &Mutex<Vec<i16>>, pcm: &[i16]) {
+    let mut samples = samples.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    samples.extend_from_slice(pcm);
+}
+
+fn snapshot_captured_samples(samples: &Mutex<Vec<i16>>) -> Vec<i16> {
+    samples.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+}
+
+/// 识别为空是否要保存失败记录：短录音仍按误触/空操作处理。
+fn should_record_empty_transcript(duration: f64) -> bool {
+    duration > EMPTY_TRANSCRIPT_RECORD_SECONDS
 }
 
 /// 批量识别的请求形态：决定收尾预算怎么算。
@@ -423,6 +440,8 @@ struct Active {
     stopped_at: Option<Instant>,
     /// 本次用的识别引擎与语言（落库写进记录）
     asr: AsrInfo,
+    /// 采集回调同步归档的整段 PCM；会话任务无回应时看门狗据此保住录音。
+    captured_samples: Arc<Mutex<Vec<i16>>>,
     /// 开始录音时的前台窗口：结果输出前核对，避免焦点切换后打进别的输入框
     focus_target: Option<FocusTarget>,
     /// 本地引擎录音会话持有的模型使用闸门，防止录音途中模型被删除。
@@ -1026,6 +1045,8 @@ impl Actor {
         // 与多段切段同一个阈值判定「有没有说话」（多段模式本就据此丢弃无声分片）
         let heard = Arc::new(AtomicBool::new(false));
         let heard_by_level = heard.clone();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_by_chunk = captured.clone();
         let silence_db = settings.silence_level as f64;
         let mut voiced_samples = 0usize;
         let on_chunk: att_audio::ChunkCallback = Box::new(move |pcm, level| {
@@ -1035,6 +1056,7 @@ impl Actor {
                     heard_by_level.store(true, Ordering::Relaxed);
                 }
             }
+            append_captured_samples(&captured_by_chunk, pcm);
             let _ = audio_tx.send(pcm.to_vec());
             if last_level_emit.elapsed() >= LEVEL_EMIT_INTERVAL {
                 last_level_emit = Instant::now();
@@ -1085,6 +1107,7 @@ impl Actor {
             started: Instant::now(),
             stopped_at: None,
             asr,
+            captured_samples: captured,
             focus_target,
             _model_gate: model_gate,
         });
@@ -1248,7 +1271,8 @@ impl Actor {
             }
             return;
         }
-        self.finish(SessionOutcome { samples: Vec::new(), text: String::new(), error: None, cancelled: true }).await;
+        let samples = snapshot_captured_samples(&active.captured_samples);
+        self.finish(SessionOutcome { samples, text: String::new(), error: None, cancelled: true }).await;
     }
 
     fn cancel(&mut self) {
@@ -1333,12 +1357,32 @@ impl Actor {
                     self.emit_state("error", json!({ "message": error, "record": record }));
                 }
                 None => {
-                    let message = if voice_rewrite_selection.is_some() {
-                        "没有识别到语音内容，选中文字未改动"
+                    if should_record_empty_transcript(duration) {
+                        let error = "未识别到文字".to_string();
+                        let record = self
+                            .save_record(
+                                &outcome.samples,
+                                duration,
+                                None,
+                                Some(error.clone()),
+                                processing_time,
+                                Some(&asr),
+                            )
+                            .await;
+                        let message = if voice_rewrite_selection.is_some() {
+                            format!("{error}，选中文字未改动")
+                        } else {
+                            error
+                        };
+                        self.emit_state("error", json!({ "message": message, "record": record }));
                     } else {
-                        "没有识别到语音内容"
-                    };
-                    self.emit_state("completed", json!({ "message": message, "text": "" }))
+                        let message = if voice_rewrite_selection.is_some() {
+                            "没有识别到语音内容，选中文字未改动"
+                        } else {
+                            "没有识别到语音内容"
+                        };
+                        self.emit_state("completed", json!({ "message": message, "text": "" }));
+                    }
                 }
             }
         } else if let Some(activity) = missing_voice(&outcome.samples) {
@@ -2622,13 +2666,15 @@ async fn multi_task(
 mod tests {
     use super::recording_state_uses_asr;
     use super::{
-        abort_multi_segments, batch_plan, cancel_binding_modifiers, compose_voice_rewrite_raw_text, counts_as_timeout,
-        finalize_budget, finalize_budget_for_provider, join_multi_texts, missing_voice, next_session_id,
-        no_voice_state, parse_multi_drain_fallback, processing_seconds, quiet_end_message, quiet_end_reason,
-        record_hotkey_step, recorded_until, spawn_multi_segment, start_cancel_modifiers, start_failure_phase,
-        streaming_config_for, withhold_partial_stream_output, BatchPlan, Mode, MultiDrainPolicy, Phase,
-        RecordHotkeyStep, StreamingConfig, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, MULTI_DRAIN_DEFAULT_FALLBACK,
-        MULTI_DRAIN_SCHEDULING_SLACK, MULTI_TRANSCRIBE_CONCURRENCY, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
+        abort_multi_segments, append_captured_samples, batch_plan, cancel_binding_modifiers,
+        compose_voice_rewrite_raw_text, counts_as_timeout, finalize_budget, finalize_budget_for_provider,
+        join_multi_texts, missing_voice, next_session_id, no_voice_state, parse_multi_drain_fallback,
+        processing_seconds, quiet_end_message, quiet_end_reason, record_hotkey_step, recorded_until,
+        should_record_empty_transcript, snapshot_captured_samples, spawn_multi_segment, start_cancel_modifiers,
+        start_failure_phase, streaming_config_for, withhold_partial_stream_output, BatchPlan, Mode, MultiDrainPolicy,
+        Phase, RecordHotkeyStep, StreamingConfig, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS,
+        MULTI_DRAIN_DEFAULT_FALLBACK, MULTI_DRAIN_SCHEDULING_SLACK, MULTI_TRANSCRIBE_CONCURRENCY, NO_VOICE_MESSAGE,
+        WATCHDOG_SLACK,
     };
     use super::{
         keep_warm, streaming_session, warm_backoff, Cmd, SessionOutcome, StreamingCallback, StreamingPartial,
@@ -2919,6 +2965,22 @@ mod tests {
         assert_eq!(next_session_id(&mut optimization), 2, "优化选中文本不推进录音会话号");
         assert_eq!(next_session_id(&mut optimization), 3);
         assert_eq!(next_session_id(&mut optimization), 4);
+    }
+
+    #[test]
+    fn 看门狗归档保留全部已采集音频() {
+        let samples = Mutex::new(Vec::new());
+        append_captured_samples(&samples, &[1, 2, 3]);
+        append_captured_samples(&samples, &[4, 5]);
+        assert_eq!(snapshot_captured_samples(&samples), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn 识别为空只有超过三秒才保存失败记录() {
+        assert!(!should_record_empty_transcript(MIN_DURATION_SECONDS));
+        assert!(!should_record_empty_transcript(2.9));
+        assert!(!should_record_empty_transcript(3.0));
+        assert!(should_record_empty_transcript(10.0));
     }
 
     #[test]
