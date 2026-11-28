@@ -319,6 +319,18 @@ impl UserSettings {
                 Self::with_platform(platform)
             });
             settings.ensure_default_bindings(platform);
+            for binding in &mut settings.hotkeys {
+                if binding.enabled && !binding.is_valid() {
+                    tracing::warn!(
+                        action = binding.action.label(),
+                        display = %binding.display(platform),
+                        modifiers = ?binding.modifiers,
+                        hid_key = ?binding.hid_key,
+                        "加载时停用不合法的快捷键绑定"
+                    );
+                    binding.enabled = false;
+                }
+            }
             settings
         })
     }
@@ -814,10 +826,16 @@ pub fn apply_settings_update(
         }
     }
 
-    // 语音改写、切换优化预设默认没有组合键；若界面只打开了开关却没录入按键，不能让空组合进入监听
-    for action in [HotkeyAction::VoiceRewriteSelection, HotkeyAction::CyclePreset] {
-        if settings.binding_of(action).is_some_and(|b| b.enabled && b.modifiers.is_empty() && b.hid_key.is_none()) {
-            return Err(format!("{}的快捷键不能为空，请先录入组合键", action.label()));
+    // 所有启用的绑定都必须符合设置页录入规则；默认空的动作只能在录入组合键后启用
+    for binding in settings.hotkeys.iter().filter(|binding| binding.enabled) {
+        if !binding.is_valid() {
+            if binding.modifiers.is_empty() && binding.hid_key.is_none() {
+                return Err(format!("{}的快捷键不能为空，请先录入组合键", binding.action.label()));
+            }
+            return Err(format!(
+                "{}的快捷键需要至少一个修饰键；只用修饰键时至少两个；主键只能是字母或数字",
+                binding.action.label()
+            ));
         }
     }
 
@@ -1704,6 +1722,73 @@ mod tests {
             "clipboard_panel_enabled": false
         });
         assert!(apply_settings_update(&mut settings, &disabled, Platform::Macos, &crypto).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 更新快捷键_拒绝所有不合规的启用组合() {
+        let dir = temp_dir("hotkey-validation");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+
+        let cases = [
+            (
+                json!({"action": "record", "trigger": "hold", "modifiers": {}, "enabled": true}),
+                "按住录音的快捷键不能为空，请先录入组合键",
+            ),
+            (
+                json!({"action": "record", "trigger": "hold", "modifiers": {"ctrl": true}, "enabled": true}),
+                "按住录音的快捷键需要至少一个修饰键；只用修饰键时至少两个；主键只能是字母或数字",
+            ),
+            (
+                json!({"action": "record", "trigger": "hold", "modifiers": {}, "hid_key": 21, "enabled": true}),
+                "按住录音的快捷键需要至少一个修饰键；只用修饰键时至少两个；主键只能是字母或数字",
+            ),
+            (
+                json!({"action": "record", "trigger": "hold", "modifiers": {"ctrl": true}, "hid_key": 144, "enabled": true}),
+                "按住录音的快捷键需要至少一个修饰键；只用修饰键时至少两个；主键只能是字母或数字",
+            ),
+        ];
+
+        for (binding, expected) in cases {
+            let mut settings = UserSettings::with_platform(Platform::Macos);
+            let body = json!({ "hotkeys": [binding] });
+            let err = apply_settings_update(&mut settings, &body, Platform::Macos, &crypto).unwrap_err();
+            assert_eq!(err, expected);
+        }
+
+        let mut settings = UserSettings::with_platform(Platform::Macos);
+        let disabled = json!({
+            "hotkeys": [{"action": "record", "trigger": "hold", "modifiers": {}, "enabled": false}]
+        });
+        apply_settings_update(&mut settings, &disabled, Platform::Macos, &crypto).unwrap();
+        assert!(!settings.binding_of(HotkeyAction::Record).unwrap().enabled, "未启用的非法组合可以保留");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 加载快捷键_停用不合规绑定且保留其他设置() {
+        let dir = temp_dir("hotkey-load-validation");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            json!({
+                "asr_provider": "doubao_asr",
+                "auto_optimize": true,
+                "hotkeys": [
+                    {"action": "record", "trigger": "hold", "modifiers": {}, "enabled": true}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let settings = UserSettings::load(&path, Platform::Macos);
+        let record = settings.binding_of(HotkeyAction::Record).unwrap();
+        assert!(!record.enabled);
+        assert!(record.modifiers.is_empty() && record.hid_key.is_none(), "只停用，不改原组合");
+        assert_eq!(settings.asr_provider, "doubao_asr");
+        assert!(settings.auto_optimize);
+        assert_eq!(settings.public_view(Platform::Macos)["hotkey_enabled"], false);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

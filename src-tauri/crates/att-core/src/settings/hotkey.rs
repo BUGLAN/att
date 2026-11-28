@@ -215,6 +215,20 @@ impl HotkeyBinding {
         self.modifiers == other.modifiers && self.hid_key == other.hid_key
     }
 
+    /// 设置页可录入的启用绑定是否合规。未启用的绑定和内部取消键不参与校验。
+    pub fn is_valid(&self) -> bool {
+        if !self.enabled || self.action == HotkeyAction::CancelRecording {
+            return true;
+        }
+        if self.modifiers.is_empty() {
+            return false;
+        }
+        match self.hid_key {
+            Some(hid_key) => char_from_hid(hid_key).is_some(),
+            None => self.modifiers.len() >= 2,
+        }
+    }
+
     /// 兼容旧版的主键字符（仅字母数字在旧格式里存在）。
     pub fn legacy_key_char(&self) -> Option<String> {
         self.hid_key.and_then(char_from_hid).map(|c| c.to_string())
@@ -467,5 +481,62 @@ mod tests {
         assert_eq!(hid_from_char('0'), Some(0x27));
         assert_eq!(hid_from_char('!'), None, "非字母数字（旧版 Shift+数字的 char）不在映射内");
         assert_eq!(char_from_hid(0x04), Some('a'));
+    }
+
+    #[test]
+    fn 校验_启用绑定组合规则() {
+        let mut binding = HotkeyBinding::default_for(HotkeyAction::Record, Platform::Macos);
+        assert!(binding.is_valid(), "默认 ⌘⇧R 合规");
+
+        binding.modifiers = ModSet::default();
+        binding.hid_key = None;
+        assert!(!binding.is_valid(), "空组合不能启用");
+
+        binding.modifiers = ModSet::new(true, false, false, false);
+        assert!(!binding.is_valid(), "只有一个修饰键且无主键不能启用");
+
+        binding.modifiers = ModSet::new(true, false, false, true);
+        assert!(binding.is_valid(), "纯修饰键组合至少两个修饰键");
+
+        binding.modifiers = ModSet::new(true, false, false, false);
+        binding.hid_key = hid_from_char('r');
+        assert!(binding.is_valid(), "一个修饰键加字母主键合规");
+
+        binding.modifiers = ModSet::default();
+        assert!(!binding.is_valid(), "主键必须同时有修饰键");
+
+        binding.modifiers = ModSet::new(true, false, false, false);
+        binding.hid_key = Some(0x90);
+        assert!(!binding.is_valid(), "主键只接受字母或数字");
+
+        binding.enabled = false;
+        assert!(binding.is_valid(), "未启用的绑定不校验");
+
+        binding = HotkeyBinding {
+            action: HotkeyAction::CancelRecording,
+            trigger: TriggerMode::Toggle,
+            modifiers: ModSet::default(),
+            hid_key: Some(0x29),
+            enabled: true,
+        };
+        assert!(binding.is_valid(), "内部 Esc 不校验");
+    }
+
+    #[test]
+    fn 校验_mac与windows默认绑定均合规() {
+        for platform in [Platform::Macos, Platform::Windows] {
+            for action in [
+                HotkeyAction::Record,
+                HotkeyAction::RecordToggle,
+                HotkeyAction::ShowMainWindow,
+                HotkeyAction::ClipboardPanel,
+                HotkeyAction::RewriteSelection,
+                HotkeyAction::VoiceRewriteSelection,
+                HotkeyAction::CyclePreset,
+            ] {
+                let binding = HotkeyBinding::default_for(action, platform);
+                assert!(binding.is_valid(), "{} 的 {:?} 默认绑定应合规", platform.as_str(), action);
+            }
+        }
     }
 }

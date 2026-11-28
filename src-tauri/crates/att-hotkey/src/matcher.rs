@@ -95,6 +95,9 @@ impl Matcher {
         let Some(spec) = &self.spec else {
             return false;
         };
+        if spec.modifiers.is_empty() && spec.hid_key.is_none() {
+            return false;
+        }
         if self.mods != spec.modifiers {
             return false;
         }
@@ -150,6 +153,14 @@ mod tests {
         assert_eq!(m.on_key(49, None, false), None);
         assert_eq!(m.on_modifiers(CMD), Some(KeyPhase::Released));
         assert_eq!(m.on_modifiers(ModSet::default()), None);
+    }
+
+    #[test]
+    fn 空组合_什么都没按也不匹配() {
+        let mut m = Matcher::default();
+        m.set_spec(spec(ModSet::default(), None));
+        assert_eq!(m.on_modifiers(ModSet::default()), None);
+        assert!(!m.is_latched());
     }
 
     #[test]
