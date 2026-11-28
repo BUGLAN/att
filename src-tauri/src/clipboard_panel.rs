@@ -29,7 +29,7 @@ pub fn create(app: &AppHandle, backend_port: u16, backend_token: &str) -> tauri:
         "window.__ATT_BACKEND_PORT__ = {backend_port}; window.__ATT_BACKEND_TOKEN__ = \"{backend_token}\"; window.__ATT_IS_DESKTOP__ = true;"
     );
     tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("clipboard-panel.html".into()))
-        .title("ATT 剪贴板")
+        .title("落墨")
         .inner_size(960.0, 276.0)
         .decorations(false)
         .transparent(true)

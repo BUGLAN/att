@@ -3,8 +3,8 @@
 // 平台加速能力：
 // - faster-whisper 走 CTranslate2：macOS 无 CUDA / Metal 后端，只有 CPU（Apple Accelerate）；
 //   其它平台在 CUDA 版构建下可用 GPU。
-// - Qwen3-ASR / SenseVoice 走 sherpa-onnx（ONNX Runtime）：macOS 可用 CoreML（Apple GPU / 神经引擎），
-//   Windows / Linux 可用 CUDA。
+// - Qwen3-ASR / SenseVoice 走 sherpa-onnx（ONNX Runtime）：auto 固定走 CPU，macOS 可显式选择 CoreML，
+//   Windows / Linux 可显式选择 CUDA。
 // 见 att-qwen/vendor/c-api.h 中 provider 取值（cpu / cuda / coreml）。
 
 const DEVICE_LABELS = {
@@ -50,8 +50,8 @@ export function deviceHintFor(kind, platform) {
       : '自动：有可用 CUDA 时用 GPU，否则 CPU；GPU 需 CUDA 版构建（ATT_CUDA=1）与 NVIDIA 显卡，缺省回退 CPU。'
   }
   return mac
-    ? '自动：优先 CoreML（Apple GPU / 神经引擎），不支持时回退 CPU。'
-    : '自动：有可用 CUDA 时用 GPU，否则 CPU；GPU 需 GPU 版推理库与 NVIDIA 显卡，缺省回退 CPU。'
+    ? '自动 = CPU；需要加速请显式选择 CoreML（Apple GPU / 神经引擎）。'
+    : '自动 = CPU；需要 GPU 加速请显式选择 GPU（CUDA）。'
 }
 
 // 归一设备值：别名映射 + 平台不支持的值回落到 auto。

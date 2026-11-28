@@ -33,8 +33,8 @@ test('Qwen3-ASR / SenseVoice：macOS 用 CoreML，Windows/Linux 用 CUDA', () =>
 test('提示文案区分平台与引擎', () => {
   assert.match(deviceHintFor('whisper', 'darwin'), /Accelerate/)
   assert.match(deviceHintFor('whisper', 'win32'), /CUDA 版构建/)
-  assert.match(deviceHintFor('qwen_asr', 'darwin'), /CoreML/)
-  assert.match(deviceHintFor('sense_voice', 'win32'), /GPU/)
+  assert.match(deviceHintFor('qwen_asr', 'darwin'), /自动 = CPU.*显式选择 CoreML/)
+  assert.match(deviceHintFor('sense_voice', 'win32'), /自动 = CPU.*显式选择 GPU/)
 })
 
 test('归一设备值：别名映射 + 平台不支持回落 auto', () => {

@@ -1,5 +1,5 @@
 // 识别引擎页纯逻辑（src/components/settings/asrEngineStatus.mjs）单元测试。
-// 覆盖：流式对豆包与 Windows 微信输入法可用、模式冲突提示、本地引擎加载状态的各个分支。
+// 覆盖：流式对豆包、豆包输入法与 Windows 微信输入法可用，模式冲突提示和本地引擎加载状态。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -37,10 +37,14 @@ test('豆包网页语音：展示名独立，超时缺省 30 秒并限制在 10�
   assert.equal(normalizeDoubaoWebTimeoutSeconds(999), 300)
 })
 
-test('录音模式：流式支持豆包与 Windows 微信输入法，其余引擎置灰并说明原因', () => {
+test('录音模式：流式支持豆包、豆包输入法与 Windows 微信输入法，其余引擎置灰并说明原因', () => {
   const doubao = recordingModeOptions('doubao_asr', 'darwin')
   assert.deepEqual(doubao.map((mode) => mode.value), ['single', 'multi', 'streaming'])
   assert.ok(doubao.every((mode) => !mode.disabled))
+
+  const doubaoIme = recordingModeOptions('doubao_ime_asr', 'darwin')
+  assert.equal(doubaoIme.find((mode) => mode.value === 'streaming').disabled, false)
+  assert.equal(supportsStreaming('doubao_ime_asr', 'darwin'), true)
 
   const wetypeWindows = recordingModeOptions('wetype_asr', 'win32')
   assert.equal(wetypeWindows.find((mode) => mode.value === 'streaming').disabled, false)

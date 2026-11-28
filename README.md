@@ -26,8 +26,8 @@ macOS 需要授予三项权限：「麦克风」（录音）、「输入监控�
 
 | 能力 | 说明 |
 | --- | --- |
-| 录音 | 单段 / 多段（静音自动切段，边录边出字）/ 流式（豆包，边说边出字）；按住快捷键录音、松开结束，录音悬浮条实时显示字幕 |
-| 语音识别 | 火山豆包大模型（流式 + 批量）、豆包网页语音（匿名在线批量）、ChatGPT 听写、DeepSeek 语音识别（在线批量）、微信输入法语音（Windows 本机注入）、本地 faster-whisper（CT2 large-v3）、本地 Qwen3-ASR（ONNX）、本地 SenseVoice（中粤英日韩 ONNX）；个人词表（豆包热词 + LLM 纠错） |
+| 录音 | 单段 / 多段（静音自动切段，边录边出字）/ 流式（豆包语音、豆包输入法语音、Windows 微信输入法，边说边出字）；按住快捷键录音、松开结束，录音悬浮条实时显示字幕 |
+| 语音识别 | 火山豆包大模型（流式 + 批量）、豆包网页语音（匿名在线批量）、豆包输入法语音（`doubao_ime_asr`，匿名在线批量）、ChatGPT 听写、DeepSeek 语音识别（在线批量）、微信输入法语音（Windows 本机注入）、本地 faster-whisper（CT2 large-v3）、本地 Qwen3-ASR（ONNX）、本地 SenseVoice（中粤英日韩 ONNX）；个人词表（豆包热词 + LLM 纠错） |
 | LLM 优化 | 内置服务商目录（DeepSeek / OpenAI / Anthropic / Gemini / 通义 / 豆包方舟 / Kimi / 智谱 / Ollama / 任意 OpenAI 兼容 …），流式输出；可开启「录音后自动优化并输入」 |
 | 提示词预设 | 内置多套预设（通用优化、程序员模式、会议记录、Agent 提示词等，只读），也可以新增、编辑、删除自己的预设 |
 | 优化选中文本 | 在任意应用里选中文字按快捷键，用所选预设改写后流式替换原文 |
@@ -69,6 +69,7 @@ npm test                 # = test:node（前端纯逻辑用例）+ test:rust（c
 - `cargo` 命令要在 `src-tauri/` 目录内执行（Windows 的 `+crt-static` 配置只在该目录下生效）。
 - 首次构建会编译 CTranslate2（约 10~20 分钟），macOS 需先 `brew install cmake`。
 - 本地 Whisper / Qwen / SenseVoice 的模型不随仓库分发；选择对应引擎后在「设置 → 识别引擎」里应用内下载（Whisper 会自动装 Silero VAD，Qwen / SenseVoice 走 GitHub Release），模型目录默认 `models/`，可在设置页更改并重启应用生效，也可用启动前环境变量 `ATT_MODELS_DIR` 指定；两者同时存在时环境变量优先。开发态 Qwen / SenseVoice 推理库默认放 `models/sherpa-onnx/`，也可用 `ATT_SHERPA_ONNX_DIR` 覆盖；安装包使用随包的 `resources/sherpa-onnx/`。
+- 品牌与托盘图标由 `scripts/generate_brand_icons.py` 从 Noto Serif TC 字形生成，并直接更新 `src-tauri/icons/`、`src-tauri/icons/tray/` 与 `src/assets/brand-mark.svg`；运行时用 `--font` 指定字体文件，并安装 `fontTools`、`Pillow`、`numpy`。
 - 开发态的 macOS 权限归属启动 `tauri dev` 的终端应用。
 - 更多开发约定与常见陷阱见 [`AGENTS.md`](AGENTS.md)。
 
@@ -110,9 +111,12 @@ CPU + int8；macOS 固定走 Accelerate，不支持 CUDA。
 | `ATT_CPU` | 构建时开关：`1` 强制纯 CPU 构建（忽略默认的 CUDA 自动启用） |
 | `ATT_WHISPER_COMPUTE_TYPE` | Whisper 计算精度（默认 `auto`：CUDA 构建用 float16，CPU 用 int8） |
 | `ATT_QWEN_THREADS` | Qwen 推理线程数（默认 2） |
+| `ATT_MULTI_DRAIN_FALLBACK_SECONDS` | 多段录音收尾保底等待秒数（默认 120，最大 7 天；实际等待还会按段数与单段超时放大） |
 | `ATT_FFMPEG_DIR` | ffmpeg 所在目录（文件转写；默认查 PATH 与 Homebrew 常见路径） |
 | `ATT_PROMPTS_DIR` | 内置提示词目录 |
 | `ATT_BACKEND_PORT` | 数据面优先端口（默认 17890；被占用时依次 +1 重试，上限内都不行才随机） |
+| `ATT_SHERPA_CACHE_DIR` | `prepare:sherpa` / 打包时下载 sherpa-onnx 压缩包的缓存目录（默认在系统临时目录） |
+| `FRIDA_CORE_DEVKIT_DIR` | Windows 构建微信输入法语音时指定的本地 Frida Core devkit 目录（不设则自动下载固定版本） |
 | `ATT_UPDATE_URL` | 检查更新的地址 |
 | `ATT_FORCE_MIGRATION=1` | 重跑一次性数据迁移 |
 | `DOUBAO_ASR_API_KEY` | 豆包密钥兜底（设置页填写的优先） |

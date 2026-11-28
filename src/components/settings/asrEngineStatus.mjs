@@ -1,7 +1,7 @@
 // 识别引擎页的纯逻辑：录音模式与引擎的兼容关系、本地引擎加载状态的展示模型
 // （不依赖 Vue，供 tests/test_settings_asr_engine.mjs 锁定）。
 //
-// 录音模式和引擎放在同一页选：流式支持豆包和 Windows 微信输入法，其余引擎的流式卡片直接置灰并说明原因，
+// 录音模式和引擎放在同一页选：流式支持豆包、豆包输入法和 Windows 微信输入法，其余引擎的流式卡片直接置灰并说明原因，
 // 而不是让用户去另一页才发现「当前引擎不支持流式」。
 
 export const LOCAL_PROVIDERS = Object.freeze(['whisper', 'qwen_asr', 'sense_voice'])

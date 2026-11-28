@@ -43,7 +43,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
     let builder = tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("floating.html".into()))
-        .title("ATT Floating")
+        .title("落墨")
         .inner_size(WIDTH, HEIGHT)
         .decorations(false)
         .transparent(true)

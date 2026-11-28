@@ -35,17 +35,18 @@ ATT_TEST_WAV=/abs/path/audio.wav cargo test -p att-core    --test local_engine_w
 src-tauri/
   src/                 Tauri 壳：recording.rs（录音 Actor）、tray / floating / clipboard（监控）/ desktop（粘贴/静音）/ commands
   .cargo/config.toml   Windows MSVC 必须 `+crt-static`：CTranslate2 静态库按 /MT 编译，否则 LNK2038
-  crates/att-core/     领域内核：settings / records / llm（注册表·存储·网关·优化）/ stt（豆包·ChatGPT·DeepSeek·local 常驻池）/
+  crates/att-core/     领域内核：settings / records / llm（注册表·存储·网关·优化）/
+                       stt（doubao / doubao_web / doubao_ime / chatgpt / deepseek / wetype / verify / hotwords / local 常驻池）/
                        transcribe（文件转写·校对）/ clipboard / prompts（内置 + 自定义预设）/ update（检查更新）/
                        storage（原子写·Fernet）/ migration
   crates/att-whisper/  本地 faster-whisper：ct2rs（CTranslate2）绑定，兼容应用内下载目录与旧 CT2 目录
-  crates/att-qwen/     本地 Qwen3-ASR：sherpa-onnx C API（运行期 dlopen）+ ONNX 模型；C 桥见 src/shim.c，
+  crates/att-qwen/     本地 Qwen3-ASR / SenseVoice：sherpa-onnx C API（运行期 dlopen）+ ONNX 模型；C 桥见 src/shim.c，
                        推理库版本/哈希见 vendor/sherpa-onnx-libs.json
   crates/att-storage/  无业务依赖的原子文件 / JSON 原语，供 att-core 与本地引擎共用
   crates/att-server/   axum 数据面（仅回环），只提供前端在用的接口和 README 写明的外部转写接口
   crates/att-audio/    cpal 麦克风采集
   crates/att-hotkey/   全局热键（macOS CGEventTap / Windows RegisterHotKey + WH_KEYBOARD_LL）
-src/                   Vue 前端；桌面能力只经 composables/useElectron.js，HTTP 只经 api/client.js
+src/                   Vue 前端；桌面能力与 HTTP 按 §3 第 5 条的包装层约定访问
 prompts/*.txt          内置提示词预设（只读，打包时作为资源随包）；用户自定义预设在 data/custom_prompts.json
 src-tauri/resources/sherpa-onnx/  打包时由 scripts/prepare-sherpa-onnx.mjs 下载的推理库（不入库，随包分发）
 data/                  用户数据（开发态即仓库 data/），不入库
@@ -64,6 +65,7 @@ models/                本地模型（不入库）：faster-whisper-<短名>/（
 4. 数据文件格式保持与旧版一致（`settings.json`、`records/`、`llm_v2.json`、`clipboard/`、`transcribe_file_cache.json`），
    旧数据必须能直接读；模型要有缺字段兜底。
 5. 前端访问外部能力只走两个包装层：HTTP → `src/api/client.js`，桌面 → `src/composables/useElectron.js`。
+   两个启动兜底例外：`src/floating.js` 的 `window.floatingAPI` 垫片，以及 `src/api/client.js` 获取后端端口 / 令牌时的 `invoke`。
 6. 录音编排的纯逻辑放 `src/composables/recorder/*.mjs` 并在 `tests/test_recorder_*.mjs` 补用例；
    Rust 侧录音状态机只在 `src-tauri/src/recording.rs` 的 Actor 内推进。
 7. 前端文案改动先查 `tests/test_recorder_*.mjs` 是否被锁死。

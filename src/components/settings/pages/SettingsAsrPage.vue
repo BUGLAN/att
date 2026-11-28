@@ -153,7 +153,7 @@
           <BaseInput v-model.number="form.doubao_ime_timeout_seconds" type="number" min="10" max="300" step="10" aria-label="豆包输入法语音请求超时" />
         </div>
         <div class="settings-note">
-          <span>无需密钥：首次使用时自动注册匿名虚拟设备。识别时音频会发往豆包；不支持流式录音，语种由音频自动判定。</span>
+          <span>无需密钥：首次使用时自动注册匿名虚拟设备。识别时音频会发往豆包，支持单段、多段与流式录音，语种由音频自动判定。</span>
         </div>
       </div>
     </section>
@@ -684,7 +684,7 @@ const whisperOptions = computed(() => WHISPER_VALUES.map((value) => ({
   value,
   label: whisperOptionLabel(value, settingsStore.modelCatalog.models)
 })))
-// 运行设备：faster-whisper 在 macOS 只到 CPU；Qwen3-ASR / SenseVoice 在 macOS 走 CoreML、其它平台 CUDA。见 deviceOptions.mjs
+// 运行设备：faster-whisper 在 macOS 只到 CPU；Qwen3-ASR / SenseVoice 可显式选择 CoreML / CUDA，auto 走 CPU。见 deviceOptions.mjs
 const whisperDeviceOptions = computed(() => deviceOptionsFor('whisper', platform))
 const whisperDeviceHint = computed(() => deviceHintFor('whisper', platform))
 const qwenDeviceOptions = computed(() => deviceOptionsFor('qwen_asr', platform))
@@ -955,7 +955,7 @@ onMounted(async () => {
 
 function selectRecordingMode(mode) {
   if (mode.disabled) {
-    appStore.showToast(`${mode.hint}，请先切换到豆包语音`)
+    appStore.showToast(`${mode.hint}，请改用单段、多段，或切换到其他支持流式的引擎`)
     return
   }
   form.value.recording_mode = mode.value
@@ -1051,7 +1051,7 @@ const engines = computed(() => [
     value: 'doubao_ime_asr',
     label: '豆包输入法语音',
     ...onlineChip('doubao_ime_asr'),
-    desc: '单段 / 多段 · 无需密钥'
+    desc: '单段 / 多段 / 流式 · 无需密钥'
   },
   {
     value: 'chatgpt_asr',
