@@ -9,8 +9,9 @@
 //! 清理状态不确定时进程内暂停后续调用，要求用户重启输入法；不把半截文字当成成功结果。
 
 use super::wetype_stream::{
-    build_request, opus_packets, parse_response, stream_packet, validate_stream_frames, StreamTransport, StreamUpdate,
-    FRAME_BYTES, FRAME_SAMPLES,
+    batch_reply_needs_reattach, build_request, join_segment_texts, opus_packets, parse_response, plan_batch_segments,
+    stream_packet, validate_stream_frames, HostFailure, StreamTransport, StreamUpdate, BATCH_MIN_TAIL_SAMPLES,
+    BATCH_SEGMENT_SAMPLES, CLEANUP_PAUSE, FRAME_BYTES, FRAME_SAMPLES,
 };
 #[cfg(test)]
 use super::wetype_stream::{bytes_value, field_blob, field_int, int_value, parse_fields, OPUS_HEADER};
@@ -84,13 +85,58 @@ pub fn probe(config: &WetypeConfig) -> Result<(), String> {
     ensure_host(pid).map(|_| ())
 }
 
-/// 输入必须是 16k/mono/PCM16；内部补足到 20ms 帧边界后交给输入法。
+/// 批量识别的一段：起止时间是这段音频在整段里的位置（秒）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct WetypeSegment {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
+/// 批量识别结果：`text` 是各段文字按顺序拼接。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WetypeTranscript {
+    pub text: String,
+    pub segments: Vec<WetypeSegment>,
+}
+
+/// 输入必须是 16k/mono/PCM16；内部按 60 秒分段、补足到 20ms 帧边界后交给输入法。
 pub async fn transcribe_pcm(config: &WetypeConfig, samples: &[i16]) -> Result<String, String> {
-    let samples = samples.to_vec();
-    let config = config.clone();
-    tokio::task::spawn_blocking(move || transcribe_blocking(&config, &samples))
-        .await
-        .map_err(|error| format!("微信输入法语音任务失败：{error}"))?
+    transcribe_pcm_with_progress(config, samples, &mut |_, _| true).await.map(|transcript| transcript.text)
+}
+
+/// 按 60 秒切段，每段一个 `voice_id` 依次识别再拼接（输入法协议只给最终文字，段边界就是时间戳）。
+/// 每段开始前回调 `on_segment(已识别采样数, 总采样数)`，返回 false 时停在段边界、按取消返回；全部完成后再回调一次。
+pub async fn transcribe_pcm_with_progress(
+    config: &WetypeConfig,
+    samples: &[i16],
+    on_segment: &mut (dyn FnMut(usize, usize) -> bool + Send),
+) -> Result<WetypeTranscript, String> {
+    if samples.is_empty() {
+        return Err("没有可识别的音频".into());
+    }
+    let ranges = plan_batch_segments(samples.len(), BATCH_SEGMENT_SAMPLES, BATCH_MIN_TAIL_SAMPLES);
+    let total = ranges.len();
+    let mut segments = Vec::with_capacity(total);
+    for (index, range) in ranges.into_iter().enumerate() {
+        if !on_segment(range.start, samples.len()) {
+            return Err(super::TRANSCRIBE_CANCELLED.to_string());
+        }
+        let chunk = samples[range.clone()].to_vec();
+        let segment_config = config.clone();
+        let text = tokio::task::spawn_blocking(move || transcribe_blocking(&segment_config, &chunk))
+            .await
+            .map_err(|error| format!("微信输入法语音任务失败：{error}"))?
+            .map_err(|error| if total > 1 { format!("第 {}/{total} 段识别失败：{error}", index + 1) } else { error })?;
+        segments.push(WetypeSegment {
+            start: range.start as f64 / 16_000.0,
+            end: range.end as f64 / 16_000.0,
+            text: text.trim().to_string(),
+        });
+    }
+    on_segment(samples.len(), samples.len());
+    let text = join_segment_texts(segments.iter().map(|segment| segment.text.as_str()));
+    Ok(WetypeTranscript { text, segments })
 }
 
 fn transcribe_blocking(config: &WetypeConfig, samples: &[i16]) -> Result<String, String> {
@@ -107,20 +153,16 @@ fn transcribe_blocking(config: &WetypeConfig, samples: &[i16]) -> Result<String,
         return Err("微信输入法连接已断开，请重试".into());
     }
     let wait = deadline.saturating_duration_since(Instant::now()) + Duration::from_secs(20);
-    match reply_rx.recv_timeout(wait) {
+    let reply = reply_rx.recv_timeout(wait);
+    // 只有连接类错误才丢弃缓存的注入线程；输入法业务错误之后下一次识别继续用现有连接。
+    if batch_reply_needs_reattach(&reply) {
+        invalidate_host(pid);
+    }
+    match reply {
         Ok(Ok(text)) => Ok(text),
-        Ok(Err(error)) => {
-            invalidate_host(pid);
-            Err(error)
-        }
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            invalidate_host(pid);
-            Err("微信输入法未在时限内完成识别。".into())
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            invalidate_host(pid);
-            Err("微信输入法连接意外断开，请退出输入法后重新启动。".into())
-        }
+        Ok(Err(failure)) => Err(failure.message),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err("微信输入法未在时限内完成识别。".into()),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err("微信输入法连接意外断开，请退出输入法后重新启动。".into()),
     }
 }
 
@@ -164,7 +206,7 @@ fn enumerate_wetype_pids() -> Result<Vec<u32>, String> {
 }
 
 enum HostCommand {
-    Recognize { samples: Vec<i16>, deadline: Instant, reply: Sender<Result<String, String>> },
+    Recognize { samples: Vec<i16>, deadline: Instant, reply: Sender<Result<String, HostFailure>> },
     StreamStart { voice_id: String, deadline: Instant, reply: Sender<Result<(), String>> },
     StreamChunk { voice_id: String, samples: Vec<i16>, deadline: Instant, reply: Sender<Result<StreamUpdate, String>> },
     StreamEnd { voice_id: String, deadline: Instant, reply: Sender<Result<StreamUpdate, String>> },
@@ -233,24 +275,28 @@ fn host_main(pid: u32, ready: Sender<Result<(), String>>, commands: mpsc::Receiv
 
     while let Ok(command) = commands.recv() {
         let pause = match command {
-            HostCommand::Recognize { samples, deadline, reply } => match session.recognize(&samples, deadline) {
-                Ok(text) => {
-                    let _ = reply.send(Ok(text));
-                    false
+            HostCommand::Recognize { samples, deadline, reply } => {
+                // 只看这一次识别里有没有 RPC 超时：之前流式命令留下的超时标记不算
+                session.take_rpc_timeout();
+                match session.recognize(&samples, deadline) {
+                    Ok(text) => {
+                        let _ = reply.send(Ok(text));
+                        false
+                    }
+                    Err(error) => {
+                        let pause = error.starts_with(CLEANUP_PAUSE);
+                        let _ = reply.send(Err(HostFailure::classify(error, session.take_rpc_timeout())));
+                        pause
+                    }
                 }
-                Err(error) => {
-                    let pause = error.starts_with("CLEANUP_PAUSE:");
-                    let _ = reply.send(Err(error_without_pause(error)));
-                    pause
-                }
-            },
+            }
             HostCommand::StreamStart { voice_id, deadline, reply } => match session.start_stream(&voice_id, deadline) {
                 Ok(()) => {
                     let _ = reply.send(Ok(()));
                     false
                 }
                 Err(error) => {
-                    let pause = error.starts_with("CLEANUP_PAUSE:");
+                    let pause = error.starts_with(CLEANUP_PAUSE);
                     let _ = reply.send(Err(error_without_pause(error)));
                     pause
                 }
@@ -262,7 +308,7 @@ fn host_main(pid: u32, ready: Sender<Result<(), String>>, commands: mpsc::Receiv
                         false
                     }
                     Err(error) => {
-                        let pause = error.starts_with("CLEANUP_PAUSE:");
+                        let pause = error.starts_with(CLEANUP_PAUSE);
                         let _ = reply.send(Err(error_without_pause(error)));
                         pause
                     }
@@ -274,7 +320,7 @@ fn host_main(pid: u32, ready: Sender<Result<(), String>>, commands: mpsc::Receiv
                     false
                 }
                 Err(error) => {
-                    let pause = error.starts_with("CLEANUP_PAUSE:");
+                    let pause = error.starts_with(CLEANUP_PAUSE);
                     let _ = reply.send(Err(error_without_pause(error)));
                     pause
                 }
@@ -285,7 +331,7 @@ fn host_main(pid: u32, ready: Sender<Result<(), String>>, commands: mpsc::Receiv
                     false
                 }
                 Err(error) => {
-                    let pause = error.starts_with("CLEANUP_PAUSE:");
+                    let pause = error.starts_with(CLEANUP_PAUSE);
                     let _ = reply.send(Err(error_without_pause(error)));
                     pause
                 }
@@ -296,7 +342,7 @@ fn host_main(pid: u32, ready: Sender<Result<(), String>>, commands: mpsc::Receiv
                     false
                 }
                 Err(error) => {
-                    let pause = error.starts_with("CLEANUP_PAUSE:");
+                    let pause = error.starts_with(CLEANUP_PAUSE);
                     let _ = reply.send(Err(error_without_pause(error)));
                     pause
                 }
@@ -311,7 +357,7 @@ fn host_main(pid: u32, ready: Sender<Result<(), String>>, commands: mpsc::Receiv
 }
 
 fn error_without_pause(error: String) -> String {
-    error.trim_start_matches("CLEANUP_PAUSE:").to_string()
+    error.trim_start_matches(CLEANUP_PAUSE).to_string()
 }
 
 struct HostTransport {
@@ -382,8 +428,12 @@ impl WetypeSession {
         _language: &str,
         on_partial: Option<PartialCallback>,
     ) -> Result<Self, String> {
-        let pid = resolve_pid(config.pid)?;
-        let commands = ensure_host(pid)?;
+        // 首次连接要完成整套 attach（枚举模块、读模块算哈希、扫描 PE、加载 agent），最长等 30 秒；
+        // 放到阻塞线程里做，不占运行时工作线程，用户点 ✕ / Esc 时会话任务能立即被丢弃。
+        let configured_pid = config.pid;
+        let commands = tokio::task::spawn_blocking(move || ensure_host(resolve_pid(configured_pid)?))
+            .await
+            .map_err(|error| format!("连接微信输入法任务失败：{error}"))??;
         let voice_id = format!("wt-att-{}", uuid::Uuid::new_v4().simple());
         let transport = Arc::new(HostTransport { commands });
         Self::from_transport(transport, voice_id, config.timeout, on_partial).await
@@ -480,11 +530,17 @@ fn cstring(value: &str) -> Result<CString, String> {
 struct RpcRouter {
     next_id: std::sync::atomic::AtomicU64,
     pending: Mutex<HashMap<u64, Sender<Result<Value, String>>>>,
+    /// 有 RPC 等应答超时：agent 可能已经卡死或连接已断，批量识别据此决定是否重新 attach。
+    timed_out: std::sync::atomic::AtomicBool,
 }
 
 impl RpcRouter {
     fn new() -> Self {
-        Self { next_id: std::sync::atomic::AtomicU64::new(0), pending: Mutex::new(HashMap::new()) }
+        Self {
+            next_id: std::sync::atomic::AtomicU64::new(0),
+            pending: Mutex::new(HashMap::new()),
+            timed_out: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 }
 
@@ -556,6 +612,7 @@ fn rpc_call(
         Ok(result) => result,
         Err(_) => {
             router_ref.pending.lock().unwrap_or_else(|error| error.into_inner()).remove(&id);
+            router_ref.timed_out.store(true, std::sync::atomic::Ordering::Relaxed);
             Err(format!("agent RPC {name} 超时"))
         }
     }
@@ -580,78 +637,99 @@ struct AttachedSession {
     stream: Option<StreamState>,
 }
 
+/// 建连途中已经拿到的 Frida 对象：任何一步失败都由 Drop 按「脚本 → 会话 → 设备 → 管理器」逆序释放，
+/// 全部成功后 [`Self::into_parts`] 交给 [`AttachedSession`]。
+struct PendingAttach {
+    manager: *mut c_void,
+    device: *mut c_void,
+    session: *mut c_void,
+    script: *mut c_void,
+}
+
+impl PendingAttach {
+    fn new(manager: *mut c_void) -> Self {
+        Self { manager, device: std::ptr::null_mut(), session: std::ptr::null_mut(), script: std::ptr::null_mut() }
+    }
+
+    fn into_parts(mut self) -> (*mut c_void, *mut c_void, *mut c_void, *mut c_void) {
+        let parts = (self.manager, self.device, self.session, self.script);
+        self.manager = std::ptr::null_mut();
+        self.device = std::ptr::null_mut();
+        self.session = std::ptr::null_mut();
+        self.script = std::ptr::null_mut();
+        parts
+    }
+}
+
+impl Drop for PendingAttach {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.script.is_null() {
+                frida_unref(self.script);
+            }
+            if !self.session.is_null() {
+                frida_session_detach_sync(self.session, std::ptr::null_mut(), std::ptr::null_mut());
+                frida_unref(self.session);
+            }
+            if !self.device.is_null() {
+                frida_unref(self.device);
+            }
+            if !self.manager.is_null() {
+                frida_unref(self.manager);
+            }
+        }
+    }
+}
+
 impl AttachedSession {
     fn new(pid: u32) -> Result<Self, String> {
         frida_init_once();
+        let signal = cstring("message")?;
         let manager = unsafe { frida_device_manager_new() };
         if manager.is_null() {
             return Err("初始化 Frida 失败".into());
         }
+        // 之后任何一步失败（含 `?` 提前返回），guard 都会释放已经拿到的 Frida 对象
+        let mut pending = PendingAttach::new(manager);
         let mut error = std::ptr::null_mut();
-        let device =
+        pending.device =
             unsafe { frida_device_manager_get_device_by_type_sync(manager, 0, 5000, std::ptr::null_mut(), &mut error) };
-        if device.is_null() {
-            unsafe { frida_unref(manager) };
+        if pending.device.is_null() {
             return Err(format!("获取本机 Frida 设备失败：{}", take_error(error)));
         }
-        let process_name = enumerate_process_name(device, pid)?;
+        let process_name = enumerate_process_name(pending.device, pid)?;
         if !process_name.eq_ignore_ascii_case(PROCESS_NAME) {
-            unsafe {
-                frida_unref(device);
-                frida_unref(manager);
-            }
             return Err(format!("PID {pid} 不是微信输入法进程（{process_name}）"));
         }
         let mut error = std::ptr::null_mut();
-        let session =
-            unsafe { frida_device_attach_sync(device, pid, std::ptr::null_mut(), std::ptr::null_mut(), &mut error) };
-        if session.is_null() {
-            unsafe {
-                frida_unref(device);
-                frida_unref(manager);
-            }
+        pending.session = unsafe {
+            frida_device_attach_sync(pending.device, pid, std::ptr::null_mut(), std::ptr::null_mut(), &mut error)
+        };
+        if pending.session.is_null() {
             return Err(format!("连接微信输入法失败：{}", take_error(error)));
         }
 
-        let addresses = match discover_encoder_addresses(session) {
-            Ok(addresses) => addresses,
-            Err(error) => {
-                unsafe {
-                    frida_session_detach_sync(session, std::ptr::null_mut(), std::ptr::null_mut());
-                    frida_unref(session);
-                    frida_unref(device);
-                    frida_unref(manager);
-                }
-                return Err(error);
-            }
-        };
+        let addresses = discover_encoder_addresses(pending.session)?;
         let source =
             AGENT_JS.replace("__WETYPE_ENCODERS__", &serde_json::to_string(&addresses).unwrap_or_else(|_| "{}".into()));
         let source = cstring(&source)?;
         let mut error = std::ptr::null_mut();
-        let script = unsafe {
+        pending.script = unsafe {
             frida_session_create_script_sync(
-                session,
+                pending.session,
                 source.as_ptr(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 &mut error,
             )
         };
-        if script.is_null() {
-            unsafe {
-                frida_session_detach_sync(session, std::ptr::null_mut(), std::ptr::null_mut());
-                frida_unref(session);
-                frida_unref(device);
-                frida_unref(manager);
-            }
+        if pending.script.is_null() {
             return Err(format!("创建微信输入法 agent 失败：{}", take_error(error)));
         }
         let router = Box::into_raw(Box::new(RpcRouter::new()));
-        let signal = cstring("message")?;
         unsafe {
             g_signal_connect_data(
-                script,
+                pending.script,
                 signal.as_ptr(),
                 Some(std::mem::transmute::<*const (), unsafe extern "C" fn()>(on_script_message as *const ())),
                 router as *mut c_void,
@@ -661,21 +739,22 @@ impl AttachedSession {
         }
         let mut error = std::ptr::null_mut();
         unsafe {
-            frida_script_load_sync(script, std::ptr::null_mut(), &mut error);
+            frida_script_load_sync(pending.script, std::ptr::null_mut(), &mut error);
         }
         if !error.is_null() {
-            let message = take_error(error);
-            unsafe {
-                frida_unref(script);
-                frida_session_detach_sync(session, std::ptr::null_mut(), std::ptr::null_mut());
-                frida_unref(session);
-                frida_unref(device);
-                frida_unref(manager);
-            }
-            return Err(format!("加载微信输入法 agent 失败：{message}"));
+            return Err(format!("加载微信输入法 agent 失败：{}", take_error(error)));
         }
+        let (manager, device, session, script) = pending.into_parts();
         tracing::info!("微信输入法 agent 已连接（PID {pid}，Frida {FRIDA_CORE_VERSION}）");
         Ok(Self { pid, manager, device, session, script, router, keep_agent: false, stream: None })
+    }
+
+    /// 取出并清掉「有 RPC 等应答超时」的标记。
+    fn take_rpc_timeout(&self) -> bool {
+        if self.router.is_null() {
+            return false;
+        }
+        unsafe { &*self.router }.timed_out.swap(false, std::sync::atomic::Ordering::Relaxed)
     }
 
     fn recognize(&mut self, samples: &[i16], deadline: Instant) -> Result<String, String> {
@@ -866,7 +945,7 @@ impl AttachedSession {
     }
 
     fn stream_failure(&mut self, voice_id: &str, error: String) -> String {
-        if error.starts_with("CLEANUP_PAUSE:") {
+        if error.starts_with(CLEANUP_PAUSE) {
             self.keep_agent = true;
             return error;
         }
@@ -1014,6 +1093,7 @@ fn enumerate_process_name(device: *mut c_void, pid: u32) -> Result<String, Strin
 fn discover_encoder_addresses(session: *mut c_void) -> Result<EncoderAddresses, String> {
     let source =
         cstring("rpc.exports.modules = () => Process.enumerateModules().map(m => ({name:m.name,path:m.path}));")?;
+    let signal = cstring("message")?;
     let mut error = std::ptr::null_mut();
     let script = unsafe {
         frida_session_create_script_sync(
@@ -1028,7 +1108,6 @@ fn discover_encoder_addresses(session: *mut c_void) -> Result<EncoderAddresses, 
         return Err(format!("读取微信输入法模块失败：{}", take_error(error)));
     }
     let router = Box::into_raw(Box::new(RpcRouter::new()));
-    let signal = cstring("message")?;
     unsafe {
         g_signal_connect_data(
             script,

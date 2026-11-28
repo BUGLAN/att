@@ -514,6 +514,67 @@ pub(super) fn opus_packets(encoded: &[u8], frames_per_packet: usize) -> Result<O
     Ok(OpusPackets { packets, frames })
 }
 
+/// 批量识别每段的采样数（60 秒）：整段 PCM 会被序列化成 JSON 数字数组交给 agent，
+/// 长文件不切段会生成几百 MB 的 JSON、撞上 RPC 超时，还会在输入法进程里一次申请整段内存。
+pub(super) const BATCH_SEGMENT_SAMPLES: usize = 60 * 16_000;
+/// 末尾不足这个长度时并进上一段，避免切出只有零点几秒、容易识别成空白的碎段。
+pub(super) const BATCH_MIN_TAIL_SAMPLES: usize = 5 * 16_000;
+
+/// 把 `len` 个采样切成依次识别的段：段边界都落在 20ms 帧边界上，末尾过短的部分并进上一段。
+pub(super) fn plan_batch_segments(len: usize, segment: usize, min_tail: usize) -> Vec<std::ops::Range<usize>> {
+    let segment = (segment / FRAME_SAMPLES).max(1) * FRAME_SAMPLES;
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut start = 0;
+    while start < len {
+        let end = (start + segment).min(len);
+        match ranges.last_mut() {
+            Some(last) if end - start < min_tail => last.end = end,
+            _ => ranges.push(start..end),
+        }
+        start = end;
+    }
+    ranges
+}
+
+/// 各段文字按顺序拼接：去掉首尾空白，空段跳过，段与段之间用一个空格（与豆包分段拼接一致）。
+pub(super) fn join_segment_texts<'a>(texts: impl IntoIterator<Item = &'a str>) -> String {
+    texts.into_iter().map(str::trim).filter(|text| !text.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// 注入线程里清理状态不确定时错误文案带的前缀：注入线程随之暂停这个输入法进程的后续调用。
+pub(super) const CLEANUP_PAUSE: &str = "CLEANUP_PAUSE:";
+
+/// 注入线程返回的批量识别失败。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HostFailure {
+    /// 给用户看的错误文案（已去掉 [`CLEANUP_PAUSE`] 前缀）。
+    pub message: String,
+    /// 缓存的注入线程是否已经不可用、下次要重新 attach。
+    pub reattach: bool,
+}
+
+impl HostFailure {
+    /// 只有连接类错误需要重新 attach：清理状态不确定（[`CLEANUP_PAUSE`]，含连接意外断开）与 agent RPC 超时。
+    /// 输入法业务返回错误、「正在流式识别」这类错误不动连接：重新 attach 要多等几秒，
+    /// 还可能在流式会话仍持有旧通道时往同一个输入法进程里再加载一个 agent。
+    pub(super) fn classify(error: String, rpc_timed_out: bool) -> Self {
+        let paused = error.starts_with(CLEANUP_PAUSE);
+        let message = error.trim_start_matches(CLEANUP_PAUSE).to_string();
+        Self { message, reattach: paused || rpc_timed_out }
+    }
+}
+
+/// 批量识别等到的应答是否要丢弃缓存的注入线程：等不到应答（超时、线程已退出）也按连接类错误处理。
+pub(super) fn batch_reply_needs_reattach<T>(
+    reply: &Result<Result<T, HostFailure>, std::sync::mpsc::RecvTimeoutError>,
+) -> bool {
+    match reply {
+        Ok(Ok(_)) => false,
+        Ok(Err(failure)) => failure.reattach,
+        Err(_) => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -724,5 +785,61 @@ mod tests {
         assert!(error.contains("未确认识别结束"), "{error}");
         let calls = stub.calls.lock().unwrap().clone();
         assert_eq!(calls, ["start:voice-test", "end:voice-test", "poll:voice-test", "cancel:voice-test"]);
+    }
+
+    #[test]
+    fn 批量识别按六十秒切段且末尾碎段并进上一段() {
+        let minute = BATCH_SEGMENT_SAMPLES;
+        let plan = |len| plan_batch_segments(len, BATCH_SEGMENT_SAMPLES, BATCH_MIN_TAIL_SAMPLES);
+        assert!(plan(0).is_empty());
+        assert_eq!(plan(16_000), vec![0..16_000]);
+        assert_eq!(plan(minute), vec![0..minute]);
+        // 2 分 3 秒：末尾 3 秒并进第二段
+        assert_eq!(plan(minute * 2 + 48_000), vec![0..minute, minute..minute * 2 + 48_000]);
+        // 2 分 10 秒：末尾 10 秒单独成段
+        assert_eq!(plan(minute * 2 + 160_000), vec![0..minute, minute..minute * 2, minute * 2..minute * 2 + 160_000]);
+        // 不足一段的短音频即使短于最短尾段也照常识别
+        assert_eq!(plan(3_200), vec![0..3_200]);
+        // 一小时文件切成 60 段，段边界都在 20ms 帧边界上
+        let hour = plan(minute * 60);
+        assert_eq!(hour.len(), 60);
+        assert!(hour.iter().all(|range| range.start % FRAME_SAMPLES == 0));
+        assert_eq!(hour.last().unwrap().end, minute * 60);
+        // 段长不是帧长整数倍时向下取整到帧边界
+        assert_eq!(plan_batch_segments(1_000, 500, 0), vec![0..320, 320..640, 640..960, 960..1_000]);
+    }
+
+    #[test]
+    fn 分段文字按顺序拼接并跳过空段() {
+        assert_eq!(join_segment_texts(["第一段。", "  ", " 第二段。 ", ""]), "第一段。 第二段。");
+        assert_eq!(join_segment_texts(Vec::<&str>::new()), "");
+    }
+
+    #[test]
+    fn 业务错误不触发重新_attach() {
+        for error in [
+            "输入法语音网络请求失败：原生错误码 3，任务 ID 7",
+            "微信输入法正在流式识别，请先结束当前录音",
+            "Opus 帧数与输入音频不一致：期望 3，实际 2",
+            "输入法未在时限内完成识别",
+        ] {
+            let failure = HostFailure::classify(error.to_string(), false);
+            assert!(!failure.reattach, "{error}");
+            assert_eq!(failure.message, error);
+            assert!(!batch_reply_needs_reattach::<String>(&Ok(Err(failure))));
+        }
+        assert!(!batch_reply_needs_reattach(&Ok(Ok("文字".to_string()))));
+    }
+
+    #[test]
+    fn 连接类错误才重新_attach() {
+        let paused = HostFailure::classify(format!("{CLEANUP_PAUSE}微信输入法连接意外断开，请重启输入法"), false);
+        assert!(paused.reattach);
+        assert_eq!(paused.message, "微信输入法连接意外断开，请重启输入法");
+        let timeout = HostFailure::classify("agent RPC encode 超时".into(), true);
+        assert!(timeout.reattach);
+        assert!(batch_reply_needs_reattach::<String>(&Ok(Err(paused))));
+        assert!(batch_reply_needs_reattach::<String>(&Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+        assert!(batch_reply_needs_reattach::<String>(&Err(std::sync::mpsc::RecvTimeoutError::Disconnected)));
     }
 }

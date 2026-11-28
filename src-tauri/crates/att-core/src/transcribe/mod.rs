@@ -977,7 +977,8 @@ fn doubao_ime_payload(text: String, duration: f64, samples: usize) -> Value {
     })
 }
 
-/// 微信输入法语音：整段发送，协议层只返回最终文字，不伪造时间戳。
+/// 微信输入法语音：引擎按 60 秒分段依次识别，每段之后上报进度、检查取消；
+/// 协议层只返回最终文字，segments 的起止就是分段边界，不伪造段内时间戳。
 async fn run_wetype(
     core: &CoreState,
     samples: &[i16],
@@ -986,21 +987,24 @@ async fn run_wetype(
 ) -> Result<Value, TranscribeError> {
     #[cfg(windows)]
     {
-        hook.tick(0.0);
         let config = crate::stt::wetype_config(core);
-        let text = crate::stt::wetype::transcribe_pcm(&config, samples).await.map_err(|error| {
-            if hook.token.is_cancelled() {
-                TranscribeError::cancelled()
-            } else {
-                TranscribeError::new(500, format!("转写失败：{error}"))
-            }
-        })?;
-        hook.tick(duration);
-        let segments = if text.trim().is_empty() {
-            Vec::new()
-        } else {
-            vec![json!({ "start": 0.0, "end": duration, "text": text })]
-        };
+        let mut on_segment = |done: usize, _total: usize| hook.tick(done as f64 / SAMPLE_RATE as f64);
+        let transcript = crate::stt::wetype::transcribe_pcm_with_progress(&config, samples, &mut on_segment)
+            .await
+            .map_err(|error| {
+                if hook.token.is_cancelled() {
+                    TranscribeError::cancelled()
+                } else {
+                    TranscribeError::new(500, format!("转写失败：{error}"))
+                }
+            })?;
+        let segments = transcript
+            .segments
+            .iter()
+            .filter(|segment| !segment.text.is_empty())
+            .map(|segment| json!({ "start": segment.start, "end": segment.end, "text": segment.text }))
+            .collect::<Vec<_>>();
+        let text = transcript.text;
         Ok(json!({
             "text": text,
             "duration_seconds": if duration > 0.0 { duration } else { samples.len() as f64 / SAMPLE_RATE as f64 },
