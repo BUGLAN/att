@@ -4,12 +4,12 @@
 //! （`<audio>` / `<img>` / 下载等带不了请求头的 GET 用 `?token=`）。来源按协议 + 主机名
 //! 精确匹配本地页面与 Tauri 自定义来源，Host 只允许 `127.0.0.1` / `localhost`（挡住 DNS rebinding）；
 //! `/api/health` 虽不强制令牌，也必须通过回环 Host 校验；不带令牌时只返回探活字段，
-//! 带有效会话令牌或持久令牌时才返回完整运行态。
-//! 用户在「设置 → 诊断 → 外部 API」开启持久令牌后，外部进程也可用它代替本次启动的 token；
-//! 持久令牌只存 Fernet 密文，`GET /api/settings` 只返回是否已生成。
+//! 带有效会话令牌时才返回完整运行态。
+//! 用户在「设置 → 诊断 → 外部 API」开启持久令牌后，外部进程可只用它调用转写与任务查询接口；
+//! 持久令牌只存 Fernet 密文，`GET /api/settings` 只返回是否已生成，可显式轮换。
 //!
 //! 端点一览：
-//! - GET /api/health（无令牌仅探活；带令牌返回前端 runtimeStatus：model_service_* 与 streaming_*）
+//! - GET /api/health（无会话令牌仅探活；带会话令牌返回完整 runtimeStatus）
 //! - GET/PUT /api/settings（白名单与脱敏）
 //! - GET /api/settings/api-token（诊断页显式显示 / 复制持久令牌，禁止缓存）
 //! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出、重新识别）；
@@ -80,8 +80,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .allow_headers(tower_http::cors::Any);
 
     // 令牌校验在 CORS 内侧：预检由 CORS 层直接应答，不会要求 X-ATT-Token。
-    // 除 /api/health 外所有端点都必须带本次启动的令牌或已开启的持久令牌；health 仍校验回环 Host，
-    // 无有效令牌时只返回探活字段。
+    // 除 /api/health 外所有端点都必须带本次启动的令牌；持久令牌仅可进入转写路由。
+    // health 仍校验回环 Host，无有效会话令牌时只返回探活字段。
     let guard_state = state.clone();
     let maintenance_core = state.core.clone();
     Router::new()
@@ -160,11 +160,31 @@ fn token_from_query(query: &str) -> Option<&str> {
     })
 }
 
+/// 持久令牌的最小权限：只允许提交转写、查询任务与取消任务。
+fn persistent_token_allows(method: &Method, path: &str) -> bool {
+    if method == Method::POST && path == "/api/transcribe" {
+        return true;
+    }
+    if method == Method::GET {
+        return path
+            .strip_prefix("/api/transcribe/jobs/")
+            .is_some_and(|job_id| !job_id.is_empty() && !job_id.contains('/'));
+    }
+    if method == Method::POST {
+        return path.strip_prefix("/api/transcribe/jobs/").is_some_and(|rest| {
+            rest.strip_suffix("/cancel").is_some_and(|job_id| !job_id.is_empty() && !job_id.contains('/'))
+        });
+    }
+    false
+}
+
 /// 数据面统一鉴权 / Host 校验。
 ///
 /// - `/api/health` 不强制令牌，但仍须回环 Host；令牌校验结果写入请求扩展，处理函数据此裁剪字段；
 ///   CORS 预检直接放行（浏览器预检不带令牌）；
-/// - 其余请求必须带 `X-ATT-Token`；GET/HEAD（录音回放、图片、导出）也接受 `?token=`；
+/// - `/api/health` 不强制令牌，但只有会话令牌能读取完整运行态；
+/// - 其余请求必须带 `X-ATT-Token`；持久令牌只能访问转写提交 / 任务查询 / 任务取消；
+/// - GET/HEAD（录音回放、图片、导出）也接受 `?token=`；
 /// - 除预检外的请求 Host 只能是 `127.0.0.1[:端口]` / `localhost[:端口]`，挡住 DNS rebinding。
 async fn data_plane_guard(
     state: Arc<ServerState>,
@@ -192,18 +212,20 @@ async fn data_plane_guard(
     // 两个令牌都完整比较，不在命中第一个时提前返回（保持常量时间语义）
     let session_ok = token_matches(&state.token, actual);
     let persistent_ok = state.core.api_token().is_some_and(|token| token_matches(&token, actual));
-    let token_ok = session_ok | persistent_ok;
-
     if req.uri().path() == "/api/health" {
         if !host_ok {
             return (StatusCode::FORBIDDEN, Json(json!({ "detail": "Host 不被允许" }))).into_response();
         }
-        req.extensions_mut().insert(HealthAuth { valid: token_ok });
+        req.extensions_mut().insert(HealthAuth { valid: session_ok });
         return next.run(req).await;
     }
 
-    if !token_ok {
+    if !session_ok && !persistent_ok {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "detail": "缺少或错误的 X-ATT-Token" }))).into_response();
+    }
+
+    if !session_ok && !persistent_token_allows(req.method(), req.uri().path()) {
+        return (StatusCode::FORBIDDEN, Json(json!({ "detail": "持久令牌无权访问该接口" }))).into_response();
     }
 
     if !host_ok {
@@ -1492,14 +1514,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 持久令牌_开启后可替代会话令牌_关闭后失效_仍限回环() {
+    async fn 持久令牌_仅限转写接口_可重新生成_且仍限回环() {
         let state = test_state("persistent-token").await;
-        let request = |token: &str, host: &str| {
+        let request = |method: &str, uri: &str, token: &str, host: &str, body: &str| {
             axum::http::Request::builder()
-                .uri("/api/settings")
+                .method(method)
+                .uri(uri)
                 .header("x-att-token", token.to_string())
                 .header("host", host.to_string())
-                .body(Body::empty())
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
                 .unwrap()
         };
 
@@ -1507,36 +1531,111 @@ mod tests {
         let token = state.core.api_token().expect("开启后应能读到持久令牌");
         assert!(token.starts_with("att_"), "持久令牌应带可识别前缀: {token}");
 
-        // 持久令牌 + 回环 Host → 200；错误令牌仍 401
+        // 持久令牌可进入三条转写路由，但不能读取设置、记录或修改 LLM 档案。
         assert_eq!(
-            router(state.clone()).oneshot(request(&token, "127.0.0.1:17890")).await.unwrap().status(),
-            StatusCode::OK
+            router(state.clone())
+                .oneshot(request(
+                    "POST",
+                    "/api/transcribe",
+                    &token,
+                    "127.0.0.1:17890",
+                    r#"{"path":"/tmp/persistent-token-missing.mp3"}"#
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
         );
-        // GET / HEAD 也接受 ?token=（媒体元素带不了请求头）
-        let query = axum::http::Request::builder()
-            .uri(format!("/api/settings?token={token}"))
-            .header("host", "127.0.0.1:17890")
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(router(state.clone()).oneshot(query).await.unwrap().status(), StatusCode::OK);
         assert_eq!(
-            router(state.clone()).oneshot(request("wrong-token", "127.0.0.1:17890")).await.unwrap().status(),
+            router(state.clone())
+                .oneshot(request("GET", "/api/transcribe/jobs/nope", &token, "127.0.0.1:17890", ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            router(state.clone())
+                .oneshot(request("POST", "/api/transcribe/jobs/nope/cancel", &token, "127.0.0.1:17890", ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        for (method, path) in [("GET", "/api/settings"), ("GET", "/api/records"), ("PUT", "/api/llm/profiles/nope")] {
+            assert_eq!(
+                router(state.clone())
+                    .oneshot(request(method, path, &token, "127.0.0.1:17890", "{}"))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::FORBIDDEN,
+                "{method} {path} 不应接受持久令牌"
+            );
+        }
+        assert_eq!(
+            router(state.clone())
+                .oneshot(request("GET", "/api/settings", "wrong-token", "127.0.0.1:17890", ""))
+                .await
+                .unwrap()
+                .status(),
             StatusCode::UNAUTHORIZED
         );
         // 令牌正确但 Host 非回环 → 403
         assert_eq!(
-            router(state.clone()).oneshot(request(&token, "evil.com")).await.unwrap().status(),
+            router(state.clone())
+                .oneshot(request("GET", "/api/settings", &token, "evil.com", ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // 重新生成后旧令牌立即失效；新令牌仍只可用于转写。
+        state.core.apply_settings_update(&json!({ "api_token_regenerate": true })).unwrap();
+        let regenerated = state.core.api_token().expect("重新生成后应能读到新令牌");
+        assert_ne!(regenerated, token);
+        assert_eq!(
+            router(state.clone())
+                .oneshot(request("GET", "/api/transcribe/jobs/nope", &token, "127.0.0.1:17890", ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            router(state.clone())
+                .oneshot(request("GET", "/api/transcribe/jobs/nope", &regenerated, "127.0.0.1:17890", ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            router(state.clone())
+                .oneshot(request("GET", "/api/settings", &regenerated, "127.0.0.1:17890", ""))
+                .await
+                .unwrap()
+                .status(),
             StatusCode::FORBIDDEN
         );
 
         // 关闭后同一持久令牌立即失效；本次会话令牌仍可用
         state.core.apply_settings_update(&json!({ "api_token_enabled": false })).unwrap();
         assert_eq!(
-            router(state.clone()).oneshot(request(&token, "127.0.0.1:17890")).await.unwrap().status(),
+            router(state.clone())
+                .oneshot(request("GET", "/api/transcribe/jobs/nope", &regenerated, "127.0.0.1:17890", ""))
+                .await
+                .unwrap()
+                .status(),
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(
-            router(state.clone()).oneshot(request("test-token", "127.0.0.1:17890")).await.unwrap().status(),
+            router(state.clone())
+                .oneshot(request("GET", "/api/settings", "test-token", "127.0.0.1:17890", ""))
+                .await
+                .unwrap()
+                .status(),
             StatusCode::OK
         );
     }
@@ -1565,11 +1664,11 @@ mod tests {
         let persistent = state.core.api_token().expect("开启后应能读到持久令牌");
         let (status, body) = health_json(&state, "/api/health", Some(&persistent)).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.get("model_service_ready").is_some());
+        assert_probe_only(&body);
         let uri = format!("/api/health?token={persistent}");
         let (status, body) = health_json(&state, &uri, None).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.get("model_service_error").is_some());
+        assert_probe_only(&body);
 
         state.core.apply_settings_update(&json!({ "api_token_enabled": false })).unwrap();
         let (status, body) = health_json(&state, "/api/health", Some(&persistent)).await;

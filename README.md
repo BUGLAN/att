@@ -125,7 +125,10 @@ CPU + int8；macOS 固定走 Accelerate，不支持 CUDA。
 
 外部进程（例如 SourceFlow）可以在「设置 → 诊断 → 外部 API」开启**持久访问令牌**：首次开启时生成
 一个随机令牌并加密保存在数据目录，应用重启后保持不变；界面默认脱敏，点「显示 / 复制」才会读取明文，
-令牌不会写进日志或 `GET /api/settings`。该能力只对回环地址开放，非回环请求仍返回 403。外部调用流程：
+令牌不会写进日志或 `GET /api/settings`。持久令牌仅可调用 `POST /api/transcribe`、
+`GET /api/transcribe/jobs/{id}` 和 `POST /api/transcribe/jobs/{id}/cancel`，访问记录、设置或 LLM
+配置等其他接口会返回 403。诊断页可用「重新生成」立即吊销旧令牌并生成新令牌。该能力只对回环地址开放，
+非回环请求仍返回 403。外部调用流程：
 `POST /api/transcribe`（`X-ATT-Token` 用持久令牌，`path` 为任意可读的本地文件，`want_segments: true`
 时每个 segment 带秒为单位的 `start` / `end`）拿到 `job_id` 后轮询 `GET /api/transcribe/jobs/{id}`。
 

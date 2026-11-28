@@ -24,14 +24,14 @@
       </div>
     </section>
 
-    <!-- 外部 API：给 SourceFlow 等外部进程一个稳定的回环令牌；令牌即授权，默认全关 -->
+    <!-- 外部 API：给 SourceFlow 等外部进程一个稳定的回环令牌；最小权限到转写任务，默认全关 -->
     <section class="settings-section">
       <div class="settings-group">
         <h3 class="settings-group-title">外部 API</h3>
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-label">持久访问令牌</span>
-            <span class="setting-desc">开启后，外部进程可用固定的 X-ATT-Token 调用本机数据面（仅回环），应用重启后令牌不变。</span>
+            <span class="setting-desc">开启后，外部进程可用固定的 X-ATT-Token 提交转写、查询或取消任务（仅回环），应用重启后令牌不变。</span>
           </div>
           <label class="toggle-switch">
             <input v-model="form.api_token_enabled" type="checkbox" aria-label="开启持久访问令牌">
@@ -62,6 +62,15 @@
             >
               复制
             </BaseButton>
+            <BaseButton
+              variant="outline"
+              size="sm"
+              :disabled="!form.api_token_enabled || !hasApiToken"
+              :loading="regeneratingToken"
+              @click="isTokenRegenerateVisible = true"
+            >
+              重新生成
+            </BaseButton>
           </div>
         </div>
         <div class="settings-note">
@@ -73,7 +82,7 @@
           </span>
         </div>
         <div class="settings-note">
-          <span>令牌只存本机加密数据；界面默认脱敏，仅在点「显示 / 复制」时读取明文，且不写进日志。仅接受回环地址，非回环请求一律 403。</span>
+          <span>令牌只存本机加密数据；界面默认脱敏，仅在点「显示 / 复制」时读取明文，且不写进日志。持久令牌不能访问记录、设置或 LLM 配置，仅接受回环地址。</span>
         </div>
       </div>
     </section>
@@ -222,6 +231,17 @@
     />
 
     <ConfirmDialog
+      v-model="isTokenRegenerateVisible"
+      title="重新生成持久令牌？"
+      description="旧令牌会立即失效。请更新所有仍在使用旧令牌的外部工具，新令牌将在生成后显示。"
+      confirm-text="重新生成"
+      cancel-text="取消"
+      tone="default"
+      :loading="regeneratingToken"
+      @confirm="regenerateToken"
+    />
+
+    <ConfirmDialog
       v-model="isOrphanConfirmVisible"
       title="清理孤儿音频？"
       description="这些是升级迁移时没有记录认领、被隔离到 audio/orphans/ 的旧录音，删除后无法恢复。"
@@ -357,6 +377,8 @@ const importSummary = computed(() => {
 const revealedToken = ref('')
 const tokenRevealed = ref(false)
 const revealingToken = ref(false)
+const regeneratingToken = ref(false)
+const isTokenRegenerateVisible = ref(false)
 const hasApiToken = computed(() => Boolean(form.value.api_token_set))
 const tokenDisplay = computed(() => apiTokenDisplay({
   enabled: form.value.api_token_enabled === true,
@@ -408,6 +430,28 @@ async function copyToken() {
     appStore.showToast('持久访问令牌已复制', { tone: 'success' })
   } catch (error) {
     appStore.showToast(String(error?.message || error), { tone: 'error' })
+  }
+}
+
+async function regenerateToken() {
+  if (!form.value.api_token_enabled || !hasApiToken.value) {
+    return
+  }
+  regeneratingToken.value = true
+  tokenRevealed.value = false
+  revealedToken.value = ''
+  try {
+    const result = await api.saveSettings({ api_token_regenerate: true })
+    form.value.api_token_enabled = result.api_token_enabled === true
+    form.value.api_token_set = result.api_token_set === true
+    await settingsStore.loadSettings()
+    await loadRevealedToken()
+    tokenRevealed.value = true
+    appStore.showToast('持久访问令牌已重新生成，旧令牌已失效', { tone: 'success' })
+  } catch (error) {
+    appStore.showToast(String(error?.message || error), { tone: 'error' })
+  } finally {
+    regeneratingToken.value = false
   }
 }
 

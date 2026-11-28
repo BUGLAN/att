@@ -599,6 +599,11 @@ pub fn apply_settings_update(
                     settings.api_token_encrypted = Some(crypto.encrypt(&new_api_token()));
                 }
             }
+            "api_token_regenerate" => {
+                if value.as_bool().ok_or_else(|| type_error("布尔值"))? {
+                    settings.api_token_encrypted = Some(crypto.encrypt(&new_api_token()));
+                }
+            }
             "api_transcribe_allowed_dirs" => {
                 let items = value.as_array().ok_or_else(|| type_error("字符串数组"))?;
                 let mut dirs: Vec<String> = Vec::new();
@@ -1345,6 +1350,14 @@ mod tests {
         // 前端整份设置回存（开关仍是 true）不能换令牌
         apply_settings_update(&mut settings, &json!({ "api_token_enabled": true }), Platform::Macos, &crypto).unwrap();
         assert_eq!(crypto.decrypt(settings.api_token_encrypted.as_deref().unwrap()).unwrap(), token);
+
+        // 显式重新生成会替换密文；开关状态不变，旧明文立即不再存在
+        apply_settings_update(&mut settings, &json!({ "api_token_regenerate": true }), Platform::Macos, &crypto)
+            .unwrap();
+        let regenerated = crypto.decrypt(settings.api_token_encrypted.as_deref().unwrap()).unwrap();
+        assert!(settings.api_token_enabled, "重新生成不应改变开关状态");
+        assert_ne!(regenerated, token);
+        assert!(regenerated.starts_with("att_") && regenerated.len() > 40);
 
         let view = settings.public_view(Platform::Macos);
         assert_eq!(view["api_token_enabled"], true);
