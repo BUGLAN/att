@@ -16,6 +16,7 @@ use std::time::Duration;
 /// 只在启动监听时确定：macOS 运行中补授权不会让已装的只读监听变成可拦截，要重启应用。
 static SUPPRESSES_KEYS: AtomicBool = AtomicBool::new(false);
 
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) fn set_suppresses_keys(value: bool) {
     SUPPRESSES_KEYS.store(value, Ordering::SeqCst);
 }
@@ -172,29 +173,32 @@ pub fn physical_modifiers() -> Option<ModSet> {
 
 /// 启动全局键盘监听。失败（无权限/平台不支持）返回可直接展示的中文原因。
 pub fn start(bindings: BindingSource, sink: EventSink) -> Result<(), String> {
-    let shared = Arc::new(Shared { matchers: Mutex::new(BTreeMap::new()), bindings, sink });
-
-    #[cfg(target_os = "macos")]
-    crate::macos::spawn(shared.clone())?;
-    #[cfg(windows)]
-    crate::windows::spawn(shared.clone())?;
     #[cfg(not(any(target_os = "macos", windows)))]
     return Err("当前平台暂不支持全局快捷键（Linux 将在后续版本接入）".into());
 
-    // 防粘滞轮询：只在锁存期间做真实键态比对
-    #[allow(unreachable_code)]
-    std::thread::Builder::new()
-        .name("att-hotkey-resync".into())
-        .spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(250));
-            if shared.is_latched() {
-                if let Some(physical) = physical_modifiers() {
-                    shared.resync(physical);
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        let shared = Arc::new(Shared { matchers: Mutex::new(BTreeMap::new()), bindings, sink });
+
+        #[cfg(target_os = "macos")]
+        crate::macos::spawn(shared.clone())?;
+        #[cfg(windows)]
+        crate::windows::spawn(shared.clone())?;
+
+        // 防粘滞轮询：只在锁存期间做真实键态比对
+        std::thread::Builder::new()
+            .name("att-hotkey-resync".into())
+            .spawn(move || loop {
+                std::thread::sleep(Duration::from_millis(250));
+                if shared.is_latched() {
+                    if let Some(physical) = physical_modifiers() {
+                        shared.resync(physical);
+                    }
                 }
-            }
-        })
-        .map_err(|e| format!("无法启动热键重同步线程: {e}"))?;
-    Ok(())
+            })
+            .map_err(|e| format!("无法启动热键重同步线程: {e}"))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
