@@ -26,7 +26,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::OwnedMutexGuard;
 
-const MAX_DURATION_SECONDS: f64 = 7200.0;
 const ASYNC_THRESHOLD_SECONDS: f64 = 1800.0;
 const BUSY_RETRY_AFTER_SECONDS: u64 = 30;
 const CACHE_SIZE: usize = 200;
@@ -108,11 +107,16 @@ impl CancelToken {
 struct AsrHook {
     token: CancelToken,
     report: Arc<dyn Fn(f64) + Send + Sync>,
+    total_seconds: Arc<Mutex<f64>>,
 }
 
 impl AsrHook {
     fn none() -> Self {
-        Self { token: CancelToken::default(), report: Arc::new(|_| {}) }
+        Self { token: CancelToken::default(), report: Arc::new(|_| {}), total_seconds: Arc::new(Mutex::new(0.0)) }
+    }
+
+    fn set_total_seconds(&self, duration: f64) {
+        *self.total_seconds.lock().unwrap_or_else(|error| error.into_inner()) = duration.max(0.0);
     }
 
     /// 上报进度并返回是否继续（分块回调用）。
@@ -142,6 +146,17 @@ pub struct TranscribeRequest {
     pub proofread_options: Option<Value>,
     /// 要求一律走后台任务（缓存命中仍秒回）：前端需要进度与取消时打开
     pub async_job: bool,
+}
+
+fn requires_async_job(request: &TranscribeRequest, duration: Option<f64>) -> bool {
+    request.async_job
+        || request.proofread
+        || duration.is_none()
+        || duration.is_some_and(|duration| duration > ASYNC_THRESHOLD_SECONDS)
+}
+
+fn decoded_duration_seconds(samples: usize) -> f64 {
+    samples as f64 / SAMPLE_RATE as f64
 }
 
 pub enum Outcome {
@@ -585,16 +600,21 @@ pub async fn handle(core: Arc<CoreState>, request: TranscribeRequest) -> Result<
     }
 
     let duration = media::probe_duration(&path).await?;
-    if duration > MAX_DURATION_SECONDS {
+    if duration.is_some_and(|duration| duration > media::MAX_DURATION_SECONDS as f64) {
+        let duration = duration.unwrap_or_default();
         return Err(TranscribeError::new(
             413,
-            format!("音频时长约 {:.0} 分钟，超过上限 {:.0} 分钟", duration / 60.0, MAX_DURATION_SECONDS / 60.0),
+            format!(
+                "音频时长约 {:.0} 分钟，超过上限 {:.0} 分钟",
+                duration / 60.0,
+                media::MAX_DURATION_SECONDS as f64 / 60.0
+            ),
         ));
     }
-    if request.async_job || request.proofread || duration > ASYNC_THRESHOLD_SECONDS {
-        return start_job(core.clone(), request, path, hash, duration, engine).map(Outcome::Job);
+    if requires_async_job(&request, duration) {
+        return start_job(core.clone(), request, path, hash, duration.unwrap_or_default(), engine).map(Outcome::Job);
     }
-    let payload = run_transcription(&core, &path, &request.language, duration, &hash, engine).await?;
+    let payload = run_transcription(&core, &path, &request.language, &hash, engine).await?;
     let payload = shape_payload(&payload, request.want_segments, false, None);
     Ok(Outcome::Result(save_record(&core, &request, &path, &hash, engine, payload)))
 }
@@ -604,7 +624,6 @@ async fn run_transcription(
     core: &Arc<CoreState>,
     path: &Path,
     language: &str,
-    duration: f64,
     hash: &str,
     engine: &str,
 ) -> Result<Value, TranscribeError> {
@@ -619,7 +638,7 @@ async fn run_transcription(
         None
     };
     let _permit = core.transcriber.try_acquire_busy()?;
-    run_transcription_locked(core, path, language, duration, hash, engine, &AsrHook::none()).await
+    run_transcription_locked(core, path, language, hash, engine, &AsrHook::none()).await
 }
 
 /// 在调用方已持有执行许可时跑一次转写并写缓存；许可必须覆盖完整任务生命周期。
@@ -630,7 +649,6 @@ async fn run_transcription_locked(
     core: &Arc<CoreState>,
     path: &Path,
     language: &str,
-    duration: f64,
     hash: &str,
     engine: &str,
     hook: &AsrHook,
@@ -639,6 +657,11 @@ async fn run_transcription_locked(
     if samples.is_empty() {
         return Err(TranscribeError::new(415, "无法解码：没有音频数据"));
     }
+    // ffprobe 的 duration 可能来自容器估算。解码后的样本数才是实际交给识别引擎的音频长度，
+    // 记录、校对时间窗和前端进度都必须以它为准。
+    let duration = decoded_duration_seconds(samples.len());
+    hook.set_total_seconds(duration);
+    hook.tick(0.0);
     let payload = match crate::stt::local_kind(engine) {
         // 本地引擎（Whisper / Qwen3-ASR）：分段时间戳原样进入 payload，供校对窗口与前端使用
         Some(kind) => {
@@ -945,10 +968,16 @@ fn start_job(
 /// 识别进度写进任务表：`{stage: "asr", done_seconds, total_seconds}`（秒，保留一位小数）。
 ///
 /// 豆包逐帧推流时每 200ms 音频回调一次，这里只在前进满 1 秒或到达末尾时才写，避免反复改任务表。
-fn asr_progress_reporter(core: Arc<CoreState>, job_id: String, duration: f64) -> Arc<dyn Fn(f64) + Send + Sync> {
-    let total_seconds = (duration.max(0.0) * 10.0).round() / 10.0;
+fn asr_progress_reporter(
+    core: Arc<CoreState>,
+    job_id: String,
+    duration: f64,
+) -> (Arc<dyn Fn(f64) + Send + Sync>, Arc<Mutex<f64>>) {
+    let total_seconds = Arc::new(Mutex::new((duration.max(0.0) * 10.0).round() / 10.0));
+    let report_total = total_seconds.clone();
     let last = Mutex::new(f64::NEG_INFINITY);
-    Arc::new(move |done_seconds: f64| {
+    let report = Arc::new(move |done_seconds: f64| {
+        let total_seconds = *report_total.lock().unwrap_or_else(|error| error.into_inner());
         let mut done = (done_seconds.max(0.0) * 10.0).round() / 10.0;
         if total_seconds > 0.0 {
             done = done.min(total_seconds);
@@ -964,7 +993,8 @@ fn asr_progress_reporter(core: Arc<CoreState>, job_id: String, duration: f64) ->
         core.transcriber.update_job(&job_id, |job| {
             job.progress = Some(json!({ "stage": "asr", "done_seconds": done, "total_seconds": total_seconds }))
         });
-    })
+    });
+    (report, total_seconds)
 }
 
 /// 后台任务体：ASR（缓存命中可跳过）→（可选）校对；校对整体降级不算失败。
@@ -985,10 +1015,10 @@ async fn execute_job(
     let mut payload = match core.transcriber.cache_lookup(core, hash, engine) {
         Some(bucket) => bucket,
         None => {
-            let report = asr_progress_reporter(core.clone(), job_id.to_string(), duration);
+            let (report, total_seconds) = asr_progress_reporter(core.clone(), job_id.to_string(), duration);
             report(0.0);
-            let hook = AsrHook { token: cancel.clone(), report };
-            run_transcription_locked(core, path, &request.language, duration, hash, engine, &hook).await?
+            let hook = AsrHook { token: cancel.clone(), report, total_seconds };
+            run_transcription_locked(core, path, &request.language, hash, engine, &hook).await?
         }
     };
     if cancel.is_cancelled() {
@@ -1132,6 +1162,54 @@ mod tests {
     }
 
     #[test]
+    fn 时长未知强制走后台任务_解码样本数换算权威时长() {
+        let request = TranscribeRequest {
+            path: "a.webm".into(),
+            language: "zh".into(),
+            want_segments: false,
+            engine: "doubao_asr".into(),
+            proofread: false,
+            proofread_model_id: None,
+            proofread_options: None,
+            async_job: false,
+        };
+        assert!(requires_async_job(&request, None), "没有 Duration 时必须后台解码并汇报真实进度");
+        assert!(requires_async_job(&request, Some(ASYNC_THRESHOLD_SECONDS + 0.1)));
+        assert!(!requires_async_job(&request, Some(30.0)));
+        assert_eq!(decoded_duration_seconds(SAMPLE_RATE * 42), 42.0);
+    }
+
+    #[tokio::test]
+    async fn 伪装成_mp3_的播放列表在探测阶段返回415() {
+        let dir = std::env::temp_dir().join(format!("att-ft-playlist-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let core = Arc::new(CoreState::init(&dir, crate::Platform::Macos).unwrap());
+        for (name, body) in
+            [("a.mp3", "#EXTM3U\n#EXTINF:1,\nother.wav\n"), ("b.mp3", "ffconcat version 1.0\nfile other.wav\n")]
+        {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            let request = TranscribeRequest {
+                path: path.to_string_lossy().into_owned(),
+                language: "zh".into(),
+                want_segments: false,
+                engine: "doubao_web_asr".into(),
+                proofread: false,
+                proofread_model_id: None,
+                proofread_options: None,
+                async_job: false,
+            };
+            let error = match handle(core.clone(), request).await {
+                Err(error) => error,
+                Ok(_) => panic!("播放列表输入必须被拒绝"),
+            };
+            assert_eq!(error.status, 415);
+            assert!(error.message.contains("播放列表"), "{}", error.message);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn 豆包网页响应_为校对提供覆盖整段的_segment() {
         let payload = doubao_web_payload("你好世界".into(), 3.5, 56_000);
         assert_eq!(payload["text"], "你好世界");
@@ -1168,7 +1246,7 @@ mod tests {
         assert_eq!(busy_job.retry_after, Some(BUSY_RETRY_AFTER_SECONDS));
 
         // 同步请求在受理之后也必须被拒绝，不能抢走已返回 202 任务的执行权。
-        let busy_sync = run_transcription(&core, &path, "zh", 1.0, "sync-hash", "deepseek_asr").await.unwrap_err();
+        let busy_sync = run_transcription(&core, &path, "zh", "sync-hash", "deepseek_asr").await.unwrap_err();
         assert_eq!(busy_sync.status, 503);
 
         // 让已受理任务真正执行：它应因文件不存在而失败，而不是因「引擎忙」失败。
@@ -1272,7 +1350,7 @@ mod tests {
             },
         );
         let progress = || core.transcriber.get_job("job").unwrap()["progress"].clone();
-        let report = asr_progress_reporter(core.clone(), "job".into(), 600.04);
+        let (report, total_seconds) = asr_progress_reporter(core.clone(), "job".into(), 600.04);
         report(0.0);
         assert_eq!(progress(), json!({ "stage": "asr", "done_seconds": 0.0, "total_seconds": 600.0 }));
         report(0.6);
@@ -1281,6 +1359,10 @@ mod tests {
         assert_eq!(progress()["done_seconds"], 12.3);
         report(700.0);
         assert_eq!(progress()["done_seconds"], 600.0, "不超过总时长");
+        *total_seconds.lock().unwrap() = 7200.0;
+        report(7100.0);
+        assert_eq!(progress()["done_seconds"], 7100.0, "解码后可用样本时长覆盖估算值");
+        assert_eq!(progress()["total_seconds"], 7200.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
