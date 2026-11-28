@@ -145,8 +145,7 @@ fn enumerate_wetype_pids() -> Result<Vec<u32>, String> {
     if snapshot == INVALID_HANDLE_VALUE {
         return Err(format!("枚举微信输入法进程失败：{}", std::io::Error::last_os_error()));
     }
-    let mut entry = PROCESSENTRY32W::default();
-    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
     let mut pids = Vec::new();
     let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) };
     while ok != 0 {
@@ -782,7 +781,7 @@ impl AttachedSession {
     ) -> Result<StreamUpdate, String> {
         ensure_before(deadline, "微信输入法流式请求超时")?;
         self.ensure_attached()?;
-        if samples.is_empty() || samples.len() % FRAME_SAMPLES != 0 {
+        if samples.is_empty() || !samples.len().is_multiple_of(FRAME_SAMPLES) {
             return Err("流式音频没有按 20ms 帧对齐".into());
         }
         let (sequence, total_bytes) = match self.stream.as_ref() {

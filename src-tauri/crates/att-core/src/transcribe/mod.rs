@@ -996,9 +996,11 @@ async fn run_wetype(
             }
         })?;
         hook.tick(duration);
-        let segments = (!text.trim().is_empty())
-            .then(|| vec![json!({ "start": 0.0, "end": duration, "text": text })])
-            .unwrap_or_default();
+        let segments = if text.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![json!({ "start": 0.0, "end": duration, "text": text })]
+        };
         Ok(json!({
             "text": text,
             "duration_seconds": if duration > 0.0 { duration } else { samples.len() as f64 / SAMPLE_RATE as f64 },
