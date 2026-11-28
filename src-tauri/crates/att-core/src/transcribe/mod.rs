@@ -9,8 +9,8 @@
 //! - 转写完成存进记录集：无音频的文本记录，`source_file` 是原文件名；记录 id 记在缓存引擎桶的 `record_id`，
 //!   同一文件同一引擎只建一条（记录还在就只更新校对稿，被删了才重建），响应里带 `record_id`；
 //! - 缓存 `data/transcribe_file_cache.json`（与 Python 同格式：sha256 → engines → 引擎桶 → 校对变体）；
-//! - 引擎：豆包（在线，ffmpeg 解码为 16k PCM 后按会话上限分段推流）；本地 Whisper（faster-whisper）
-//!   与本地 Qwen3-ASR（sherpa-onnx ONNX）走 [`crate::stt::transcribe_local`]，分段时间戳原样返回。
+//! - 引擎：豆包（官方流式、网页匿名、输入法虚拟设备）、DeepSeek、微信输入法；本地 Whisper、
+//!   Qwen3-ASR、SenseVoice（sherpa-onnx ONNX）走 [`crate::stt::transcribe_local`]，分段时间戳原样返回。
 
 pub mod media;
 pub mod proofread;
@@ -2015,7 +2015,6 @@ mod tests {
         let path = std::env::var("ATT_TEST_WAV").expect("请设置 ATT_TEST_WAV");
         let dir = std::env::temp_dir().join(format!("att-ft-wetype-{}", uuid::Uuid::new_v4()));
         let core = Arc::new(CoreState::init(&dir, crate::Platform::Windows).unwrap());
-        core.allow_transcribe_file(std::path::Path::new(&path)).unwrap();
         let request = TranscribeRequest {
             path,
             language: "zh".into(),

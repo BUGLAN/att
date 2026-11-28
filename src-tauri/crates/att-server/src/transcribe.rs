@@ -1,7 +1,8 @@
 //! 本地文件转写路由（契约同 Python `app/api/routers/transcribe_file.py`）。
 //!
 //! 默认鉴权：请求头 `X-ATT-Token` 必须匹配本次启动生成的数据面 token
-//! （壳层经 `__ATT_BACKEND_TOKEN__` 注入给前端，由 `api/client.js` 统一带上）。
+//! （壳层经 `__ATT_BACKEND_TOKEN__` 注入给前端，由 `api/client.js` 统一带上）；开启持久令牌后
+//! 也接受设置页生成并加密保存的令牌。
 
 // 处理函数以 `Result<_, Response>` 提前返回错误响应是 axum 惯用写法
 #![allow(clippy::result_large_err)]

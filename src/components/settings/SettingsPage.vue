@@ -387,11 +387,7 @@ function normalizeSettings(value = {}) {
     whisper_device: value.whisper_device || 'auto',
     qwen_asr_model: value.qwen_asr_model || 'Qwen/Qwen3-ASR-1.7B',
     qwen_asr_device: value.qwen_asr_device || 'auto',
-    qwen_asr_dtype: value.qwen_asr_dtype || 'auto',
     qwen_asr_max_new_tokens: value.qwen_asr_max_new_tokens ?? 256,
-    qwen_asr_return_timestamps: value.qwen_asr_return_timestamps ?? false,
-    qwen_asr_use_forced_aligner: value.qwen_asr_use_forced_aligner ?? false,
-    qwen_asr_forced_aligner_model: value.qwen_asr_forced_aligner_model || 'Qwen/Qwen3-ForcedAligner-0.6B',
     qwen_asr_max_audio_seconds: value.qwen_asr_max_audio_seconds ?? 30,
     sense_voice_model: value.sense_voice_model || 'sense-voice-zh-en-ja-ko-yue-int8',
     sense_voice_use_itn: value.sense_voice_use_itn ?? true,
@@ -463,7 +459,6 @@ function normalizeSettings(value = {}) {
 }
 
 function buildSettingsPayload() {
-  const enableQwenTimestamps = !!form.value.qwen_asr_return_timestamps
   const senseThreads = Number(form.value.sense_voice_num_threads)
   const payload = {
     asr_provider: form.value.asr_provider,
@@ -474,11 +469,7 @@ function buildSettingsPayload() {
     whisper_device: form.value.whisper_device,
     qwen_asr_model: form.value.qwen_asr_model,
     qwen_asr_device: form.value.qwen_asr_device,
-    qwen_asr_dtype: form.value.qwen_asr_dtype,
     qwen_asr_max_new_tokens: form.value.qwen_asr_max_new_tokens,
-    qwen_asr_return_timestamps: enableQwenTimestamps,
-    qwen_asr_use_forced_aligner: enableQwenTimestamps && form.value.qwen_asr_use_forced_aligner,
-    qwen_asr_forced_aligner_model: form.value.qwen_asr_forced_aligner_model,
     qwen_asr_max_audio_seconds: form.value.qwen_asr_max_audio_seconds,
     sense_voice_model: form.value.sense_voice_model,
     sense_voice_device: form.value.sense_voice_device,

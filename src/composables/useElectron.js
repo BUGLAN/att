@@ -203,14 +203,6 @@ export function useElectron() {
     void addChannelListener('clipboard:changed', callback)
   }
 
-  function onDesktopPermissionRequired(callback) {
-    void addChannelListener('desktop:permission-required', callback)
-  }
-
-  function onDesktopAgentError(callback) {
-    void addChannelListener('desktop:agent-error', callback)
-  }
-
   /** 应用内更新包已在后台下好（多为自动下载）：payload { version } */
   function onUpdateReady(callback) {
     void addChannelListener('update:ready', callback)
@@ -377,8 +369,6 @@ export function useElectron() {
     onDefaultPresetChanged,
     onClipboardChanged,
     onFileDrop,
-    onDesktopPermissionRequired,
-    onDesktopAgentError,
     debugLog,
     removeAllListeners,
     syncInputSettings,

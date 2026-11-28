@@ -434,10 +434,9 @@ pub async fn open_models_directory(app: AppHandle) -> Option<String> {
     picked.into_path().ok().map(|path| path.to_string_lossy().into_owned())
 }
 
-/// 允许转写一个本机文件：用户在界面里选择 / 拖入 / 手动确认路径后由前端调用。
+/// 校验并规范化一个本机文件路径：用户在界面里选择 / 拖入 / 手动确认后由前端调用。
 ///
-/// 数据面已改为只认 `X-ATT-Token`，这里登记的白名单只用于界面内防误操作，
-/// 不再作为 `/api/transcribe` 的门槛。
+/// 数据面只认 `X-ATT-Token`；这里只确认路径存在，并把规范化结果返回给界面。
 #[tauri::command]
 pub fn allow_transcribe_path(state: State<'_, AppState>, path: String) -> Result<String, String> {
     let resolved = state.core.allow_transcribe_file(std::path::Path::new(&path))?;

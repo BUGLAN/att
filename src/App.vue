@@ -90,13 +90,10 @@ const {
   onPasteText,
   onNavigateSettings,
   onDefaultPresetChanged,
-  onDesktopPermissionRequired,
-  onDesktopAgentError,
   onUpdateReady,
   removeAllListeners,
   syncDesktopSettings,
-  getHotkeyStatus,
-  debugLog
+  getHotkeyStatus
 } = useElectron()
 
 // 托盘图标：录音 / 转写由 useRecorder 直接切，这里补上"后端断连"那条边
@@ -124,16 +121,6 @@ onMounted(async () => {
   // 快捷键 / 托盘切换了默认优化预设（后端已写入设置）：设置页与首页同步显示
   onDefaultPresetChanged((payload) => {
     settingsStore.applyDefaultPreset(payload?.default_preset_id)
-  })
-
-  onDesktopPermissionRequired((payload) => {
-    debugLog('renderer.app', 'Desktop permission required', payload)
-    appStore.showToast(payload?.message || '桌面权限不足，请在系统设置中授权')
-  })
-
-  onDesktopAgentError((payload) => {
-    debugLog('renderer.app', 'Desktop agent error', payload)
-    appStore.showToast(payload?.error || '本地桌面代理发生错误')
   })
 
   // 新版本已在后台下好：提示去「关于」页重启更新（不自动重启，免得打断正在进行的录音）
@@ -181,8 +168,6 @@ onUnmounted(() => {
   removeAllListeners('paste-text')
   removeAllListeners('navigate:settings')
   removeAllListeners('settings:default-preset')
-  removeAllListeners('desktop:permission-required')
-  removeAllListeners('desktop:agent-error')
   removeAllListeners('update:ready')
 })
 </script>

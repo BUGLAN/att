@@ -444,11 +444,6 @@ impl ClipboardRepo {
         Ok(item)
     }
 
-    /// 置顶在前，其余按更新时间倒序。
-    pub fn list(&self, query: &ListQuery) -> Vec<ClipboardItem> {
-        self.list_page(query).0
-    }
-
     /// 分段加载：按 offset / limit 取一页，同时返回筛选后的总条数。
     pub fn list_page(&self, query: &ListQuery) -> (Vec<ClipboardItem>, usize) {
         let types: Vec<&str> = query
@@ -650,6 +645,10 @@ mod tests {
         (ClipboardRepo::new(&dir), dir)
     }
 
+    fn list(repo: &ClipboardRepo, query: &ListQuery) -> Vec<ClipboardItem> {
+        repo.list_page(query).0
+    }
+
     #[test]
     fn 类型识别与标题摘要() {
         assert_eq!(detect_type("https://a.com/x"), "link");
@@ -681,10 +680,13 @@ mod tests {
             repo.capture(CaptureRequest { content: "https://example.com".into(), ..Default::default() }).unwrap();
         assert_eq!(link.item_type, "link");
         repo.update(&first.id, UpdateRequest { is_pinned: Some(true), ..Default::default() }).unwrap();
-        let items = repo.list(&ListQuery { limit: 100, ..Default::default() });
+        let items = list(&repo, &ListQuery { limit: 100, ..Default::default() });
         assert_eq!(items[0].id, first.id, "置顶在前");
-        assert_eq!(repo.list(&ListQuery { item_type: Some("link".into()), limit: 10, ..Default::default() }).len(), 1);
-        assert_eq!(repo.list(&ListQuery { query: Some("EXAMPLE".into()), limit: 10, ..Default::default() }).len(), 1);
+        assert_eq!(
+            list(&repo, &ListQuery { item_type: Some("link".into()), limit: 10, ..Default::default() }).len(),
+            1
+        );
+        assert_eq!(list(&repo, &ListQuery { query: Some("EXAMPLE".into()), limit: 10, ..Default::default() }).len(), 1);
 
         // 分段加载：offset 跳过、total 是筛选后的总数；逗号分隔的类型取并集
         let (first, total) = repo.list_page(&ListQuery { limit: 1, ..Default::default() });
@@ -698,7 +700,7 @@ mod tests {
             repo.list_page(&ListQuery { item_type: Some("link, text".into()), limit: 10, ..Default::default() });
         let singles = ["link", "text"]
             .iter()
-            .map(|t| repo.list(&ListQuery { item_type: Some((*t).into()), limit: 100, ..Default::default() }).len())
+            .map(|t| list(&repo, &ListQuery { item_type: Some((*t).into()), limit: 100, ..Default::default() }).len())
             .sum::<usize>();
         assert_eq!(link_or_text, singles);
         let stats = repo.stats();
@@ -824,7 +826,7 @@ mod tests {
 
     fn ids(repo: &ClipboardRepo) -> Vec<String> {
         let mut ids: Vec<String> =
-            repo.list(&ListQuery { limit: 1000, ..Default::default() }).into_iter().map(|item| item.id).collect();
+            list(repo, &ListQuery { limit: 1000, ..Default::default() }).into_iter().map(|item| item.id).collect();
         ids.sort();
         ids
     }

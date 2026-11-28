@@ -28,6 +28,11 @@ pub const RETIRED_SETTINGS_KEYS: &[&str] = &[
     "clipboard_overlay_enter_behavior",
     "clipboard_overlay_auto_focus_search",
     "clipboard_overlay_close_on_click_copy",
+    "api_transcribe_allowed_dirs",
+    "qwen_asr_dtype",
+    "qwen_asr_return_timestamps",
+    "qwen_asr_use_forced_aligner",
+    "qwen_asr_forced_aligner_model",
 ];
 
 /// 识别引擎相关的设置键（语义沿用 Python MODEL_RUNTIME_KEYS）：变更时数据面释放不再使用的本地模型、
@@ -39,11 +44,7 @@ pub const MODEL_RUNTIME_KEYS: &[&str] = &[
     "whisper_device",
     "qwen_asr_model",
     "qwen_asr_device",
-    "qwen_asr_dtype",
     "qwen_asr_max_new_tokens",
-    "qwen_asr_return_timestamps",
-    "qwen_asr_use_forced_aligner",
-    "qwen_asr_forced_aligner_model",
     "qwen_asr_max_audio_seconds",
     "sense_voice_model",
     "sense_voice_device",
@@ -102,12 +103,8 @@ pub struct UserSettings {
     // ---- Qwen3-ASR ----
     pub qwen_asr_model: String,
     pub qwen_asr_device: String,
-    pub qwen_asr_dtype: String,
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub qwen_asr_max_new_tokens: i64,
-    pub qwen_asr_return_timestamps: bool,
-    pub qwen_asr_use_forced_aligner: bool,
-    pub qwen_asr_forced_aligner_model: String,
     #[serde(default, deserialize_with = "deserialize_i64_lenient")]
     pub qwen_asr_max_audio_seconds: i64,
     // ---- SenseVoice ----
@@ -195,9 +192,6 @@ pub struct UserSettings {
     pub api_token_enabled: bool,
     /// 持久令牌密文（Fernet）：首次开启时生成，关闭后保留；绝不出现在 GET /api/settings。
     pub api_token_encrypted: Option<String>,
-    /// 旧版「外部 API 允许转写的目录」：数据面改为只认令牌后不再参与转写校验，
-    /// 仅保留字段以便读旧 settings.json / 兼容旧客户端的 PUT。
-    pub api_transcribe_allowed_dirs: Vec<String>,
     /// 透明透传键：仅存在于 PUT 白名单（与 Python 行为一致），UI 选择后原样保存。
     pub audio_input_device: Option<String>,
     // ---- 录音 ----
@@ -239,11 +233,7 @@ impl UserSettings {
             whisper_device: "auto".into(),
             qwen_asr_model: "Qwen/Qwen3-ASR-1.7B".into(),
             qwen_asr_device: "auto".into(),
-            qwen_asr_dtype: "auto".into(),
             qwen_asr_max_new_tokens: 256,
-            qwen_asr_return_timestamps: false,
-            qwen_asr_use_forced_aligner: false,
-            qwen_asr_forced_aligner_model: "Qwen/Qwen3-ForcedAligner-0.6B".into(),
             qwen_asr_max_audio_seconds: 30,
             sense_voice_model: "sense-voice-zh-en-ja-ko-yue-int8".into(),
             sense_voice_device: "auto".into(),
@@ -281,7 +271,6 @@ impl UserSettings {
             audio_retention_days: 0,
             api_token_enabled: false,
             api_token_encrypted: None,
-            api_transcribe_allowed_dirs: Vec::new(),
             audio_input_device: None,
             recording_mode: "single".into(),
             silence_threshold: 1.5,
@@ -432,11 +421,6 @@ impl UserSettings {
         let defaults = Self::default();
         self.clipboard_panel_height = defaults.clipboard_panel_height;
         self.clipboard_panel_max_width = defaults.clipboard_panel_max_width;
-    }
-
-    /// 剪贴板悬浮框是否启用（ClipboardPanel 绑定的 enabled）。
-    pub fn clipboard_panel_enabled(&self) -> bool {
-        self.binding_of(HotkeyAction::ClipboardPanel).is_some_and(|b| b.enabled)
     }
 
     /// 指定动作的绑定；还没有时给平台默认值。
@@ -604,31 +588,6 @@ pub fn apply_settings_update(
                     settings.api_token_encrypted = Some(crypto.encrypt(&new_api_token()));
                 }
             }
-            "api_transcribe_allowed_dirs" => {
-                let items = value.as_array().ok_or_else(|| type_error("字符串数组"))?;
-                let mut dirs: Vec<String> = Vec::new();
-                for item in items {
-                    let raw = item.as_str().ok_or_else(|| type_error("字符串数组"))?.trim().trim_matches('"');
-                    if raw.is_empty() {
-                        continue;
-                    }
-                    let path = std::path::Path::new(raw);
-                    if !path.is_absolute() {
-                        return Err(format!("字段 api_transcribe_allowed_dirs 里的路径必须是绝对路径：{raw}"));
-                    }
-                    // 目录存在时按 canonicalize 后的形态保存（消掉 `..` / 尾部分隔符）；
-                    // 不存在时保留原样，之后目录出现仍能匹配
-                    let normalized = std::fs::canonicalize(path)
-                        .map(crate::state::tidy)
-                        .unwrap_or_else(|_| path.to_path_buf())
-                        .to_string_lossy()
-                        .into_owned();
-                    if !dirs.iter().any(|existing| same_path_text(existing, &normalized)) {
-                        dirs.push(normalized);
-                    }
-                }
-                settings.api_transcribe_allowed_dirs = dirs;
-            }
             // 已在循环前处理
             "hotkeys" => {}
             "clipboard_panel_enter_action" => {
@@ -693,12 +652,8 @@ pub fn apply_settings_update(
             "whisper_device" => set_string(&mut settings.whisper_device, value, &type_error)?,
             "qwen_asr_model" => set_string(&mut settings.qwen_asr_model, value, &type_error)?,
             "qwen_asr_device" => set_string(&mut settings.qwen_asr_device, value, &type_error)?,
-            "qwen_asr_dtype" => set_string(&mut settings.qwen_asr_dtype, value, &type_error)?,
             "sense_voice_model" => set_string(&mut settings.sense_voice_model, value, &type_error)?,
             "sense_voice_device" => set_string(&mut settings.sense_voice_device, value, &type_error)?,
-            "qwen_asr_forced_aligner_model" => {
-                set_string(&mut settings.qwen_asr_forced_aligner_model, value, &type_error)?
-            }
             "doubao_asr_resource_id" => set_string(&mut settings.doubao_asr_resource_id, value, &type_error)?,
             "doubao_asr_endpoint" => set_string(&mut settings.doubao_asr_endpoint, value, &type_error)?,
             "chatgpt_asr_endpoint" => set_string(&mut settings.chatgpt_asr_endpoint, value, &type_error)?,
@@ -722,11 +677,7 @@ pub fn apply_settings_update(
                 settings.audio_input_device = value.as_str().map(str::to_string);
             }
             "default_preset_id" | "last_used_preset_id" => {
-                let v = match value.as_str() {
-                    Some(s) => Some(s.to_string()),
-                    None if value.is_null() => None,
-                    _ => return Err(type_error("字符串或 null")),
-                };
+                let v = Some(value.as_str().ok_or_else(|| type_error("字符串"))?.to_string());
                 if key == "default_preset_id" {
                     settings.default_preset_id = v;
                 } else {
@@ -735,7 +686,7 @@ pub fn apply_settings_update(
             }
             // 空串 = 跟随默认预设（设置页下拉框的「跟随默认」选项）
             "rewrite_preset_id" => {
-                let id = value.as_str().ok_or_else(|| type_error("字符串或 null"))?.trim();
+                let id = value.as_str().ok_or_else(|| type_error("字符串"))?.trim();
                 settings.rewrite_preset_id = (!id.is_empty()).then(|| id.to_string());
             }
 
@@ -811,8 +762,6 @@ pub fn apply_settings_update(
             }
 
             // ---- 布尔键 ----
-            "qwen_asr_return_timestamps" => set_bool(&mut settings.qwen_asr_return_timestamps, value, &type_error)?,
-            "qwen_asr_use_forced_aligner" => set_bool(&mut settings.qwen_asr_use_forced_aligner, value, &type_error)?,
             "sense_voice_use_itn" => set_bool(&mut settings.sense_voice_use_itn, value, &type_error)?,
             "pause_audio_on_recording" => set_bool(&mut settings.pause_audio_on_recording, value, &type_error)?,
             "auto_optimize" => set_bool(&mut settings.auto_optimize, value, &type_error)?,
@@ -877,18 +826,6 @@ fn set_bool(slot: &mut bool, value: &Value, type_error: &dyn Fn(&str) -> String)
 /// 生成持久 API 令牌：两段 UUID v4 拼成 64 位十六进制（约 244 位随机熵）。
 fn new_api_token() -> String {
     format!("att_{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
-}
-
-/// 路径文本是否同一条：Windows 盘符 / 大小写不敏感，其它平台按原样比较。
-fn same_path_text(left: &str, right: &str) -> bool {
-    #[cfg(windows)]
-    {
-        left.eq_ignore_ascii_case(right)
-    }
-    #[cfg(not(windows))]
-    {
-        left == right
-    }
 }
 
 /// 宽容整数反序列化：Python / 前端可能把整数语义字段写成浮点数
@@ -1371,44 +1308,43 @@ mod tests {
     }
 
     #[test]
-    fn 旧版允许目录字段_默认空_绝对路径去重_相对路径拒绝() {
-        let dir = temp_dir("api-dirs");
+    fn 加载_退役数据面与qwen设置_旧文件仍可读取() {
+        let dir = temp_dir("retired-fields");
         let path = dir.join("settings.json");
-        std::fs::write(&path, r#"{"asr_provider":"doubao_asr"}"#).unwrap();
-        let mut settings = UserSettings::load(&path, Platform::Macos);
-        assert!(settings.api_transcribe_allowed_dirs.is_empty(), "旧数据缺字段 = 空列表");
-        let crypto = Crypto::load_or_create(&dir).unwrap();
-
-        let root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
-        let root_text = root.to_string_lossy().into_owned();
-        apply_settings_update(
-            &mut settings,
-            &json!({ "api_transcribe_allowed_dirs": [root_text.clone(), root_text.clone()] }),
-            Platform::Macos,
-            &crypto,
+        let retired = [
+            "api_transcribe_allowed_dirs",
+            "qwen_asr_dtype",
+            "qwen_asr_return_timestamps",
+            "qwen_asr_use_forced_aligner",
+            "qwen_asr_forced_aligner_model",
+        ];
+        for key in retired {
+            assert!(RETIRED_SETTINGS_KEYS.contains(&key), "{key} 应列入退役键");
+        }
+        std::fs::write(
+            &path,
+            json!({
+                "asr_provider": "deepseek_asr",
+                "auto_optimize": true,
+                "api_transcribe_allowed_dirs": "旧版异常类型也不能拖垮设置",
+                "qwen_asr_dtype": {"legacy": true},
+                "qwen_asr_return_timestamps": "legacy",
+                "qwen_asr_use_forced_aligner": [],
+                "qwen_asr_forced_aligner_model": 42
+            })
+            .to_string(),
         )
         .unwrap();
-        assert_eq!(settings.api_transcribe_allowed_dirs.len(), 1, "重复目录只保留一条");
 
-        let err = apply_settings_update(
-            &mut settings,
-            &json!({ "api_transcribe_allowed_dirs": ["relative/dir"] }),
-            Platform::Macos,
-            &crypto,
-        )
-        .unwrap_err();
-        assert!(err.contains("必须是绝对路径"), "{err}");
-        assert_eq!(settings.api_transcribe_allowed_dirs.len(), 1, "校验失败不能留下半份目录");
-        assert!(apply_settings_update(
-            &mut settings,
-            &json!({ "api_transcribe_allowed_dirs": "not-an-array" }),
-            Platform::Macos,
-            &crypto,
-        )
-        .is_err());
+        let settings = UserSettings::load(&path, Platform::Macos);
+        assert_eq!(settings.asr_provider, "deepseek_asr");
+        assert!(settings.auto_optimize);
 
         settings.save(&path).unwrap();
-        assert_eq!(UserSettings::load(&path, Platform::Macos).api_transcribe_allowed_dirs.len(), 1);
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for key in retired {
+            assert!(saved.get(key).is_none(), "保存后不应继续写入退役键 {key}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1610,7 +1546,7 @@ mod tests {
         }).to_string()).unwrap();
 
         let settings = UserSettings::load(&path, Platform::Macos);
-        assert!(settings.clipboard_panel_enabled());
+        assert!(settings.binding_of(HotkeyAction::ClipboardPanel).is_some_and(|binding| binding.enabled));
         assert_eq!(settings.clipboard_panel_enter_action, "paste");
         assert_eq!(
             (settings.clipboard_panel_height, settings.clipboard_panel_max_width),
@@ -1688,7 +1624,7 @@ mod tests {
         let binding = settings.binding_of(HotkeyAction::ClipboardPanel).unwrap();
         assert_eq!(binding.display(Platform::Macos), "⌘⇧B");
         assert_eq!(binding.trigger, TriggerMode::Toggle, "改键不改触发模式");
-        assert!(!settings.clipboard_panel_enabled());
+        assert!(!settings.binding_of(HotkeyAction::ClipboardPanel).unwrap().enabled);
         assert_eq!(settings.clipboard_panel_enter_action, "copy");
 
         // 尺寸只由悬浮框拖动写入：设置页 PUT 带回的旧值被忽略

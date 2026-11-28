@@ -100,7 +100,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/api/records/{id}/retranscribe", post(records_retranscribe))
         // 用量统计（记录集顶部）
         .route("/api/stats", get(usage_stats))
-        // 模型服务（骨架）
+        // 模型服务：本地常驻池状态与显式加载 / 释放
         .route("/api/model-service", get(model_service_status))
         .route("/api/model-service/start", post(model_service_start))
         .route("/api/model-service/stop", post(model_service_stop))

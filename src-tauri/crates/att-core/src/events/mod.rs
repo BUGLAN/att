@@ -11,30 +11,17 @@ use tokio::sync::broadcast;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AppEvent {
-    /// 记录状态变化（→ 前端重放 transcription_*/optimization_* 旧事件名）
-    RecordChanged {
-        record_id: String,
-        status: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        text: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-    },
     /// 剪贴板捕获（→ clipboard:changed）
     ClipboardCaptured { item_id: String },
     /// 剪贴板条目被删（自动清理 / 批量删除 / 清空；→ clipboard:changed，列表据此刷新）
     ClipboardRemoved { count: usize },
-    /// 桌面权限缺失提示（→ desktop:permission-required）
-    DesktopPermission { message: String },
 }
 
 impl AppEvent {
     /// 前端 Tauri 事件名（与旧 WS/IPC 事件名对齐）。
     pub fn frontend_event_name(&self) -> &'static str {
         match self {
-            AppEvent::RecordChanged { .. } => "record:changed",
             AppEvent::ClipboardCaptured { .. } | AppEvent::ClipboardRemoved { .. } => "clipboard:changed",
-            AppEvent::DesktopPermission { .. } => "desktop:permission-required",
         }
     }
 }

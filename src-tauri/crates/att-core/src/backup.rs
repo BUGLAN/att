@@ -440,7 +440,7 @@ fn import_backup_inner(
     fs::create_dir_all(data_dir)?;
     let stage = data_dir.join(format!(".backup-import-{}", uuid::Uuid::new_v4().simple()));
     fs::create_dir(&stage)?;
-    if let Err(error) = extract_archive(&mut archive, &stage, &manifest) {
+    if let Err(error) = extract_archive(&mut archive, &stage) {
         let _ = remove_path(&stage);
         return Err(error);
     }
@@ -669,11 +669,7 @@ fn validate_archive_entry_shape(relative: &str, top: &str, is_dir: bool) -> Resu
     Ok(())
 }
 
-fn extract_archive(
-    archive: &mut ZipArchive<File>,
-    stage: &Path,
-    _manifest: &BackupManifest,
-) -> Result<(), BackupError> {
+fn extract_archive(archive: &mut ZipArchive<File>, stage: &Path) -> Result<(), BackupError> {
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
         let raw_name = entry.name().to_string();
@@ -1300,7 +1296,7 @@ mod tests {
         write(&target.join("records/old.json"), b"old");
         write(&target.join("settings.json"), br#"{"asr_provider":"qwen_asr"}"#);
         let original_key = Crypto::load_or_create(&target).unwrap();
-        let original_key_text = fs::read_to_string(original_key.key_path()).unwrap();
+        let original_key_text = fs::read_to_string(target.join(KEY_ROOT)).unwrap();
 
         let result = import_backup(&target, &zip, Some(&original_key)).unwrap();
         assert_eq!(result.credentials_reset, 0);
@@ -1308,7 +1304,7 @@ mod tests {
         assert!(!target.join("records/old.json").exists());
         assert_eq!(fs::read(target.join("records/r1.json")).unwrap(), r#"{"id":"r1","raw_text":"你好"}"#.as_bytes());
         assert_eq!(fs::read(target.join("audio/records/r1.flac")).unwrap(), b"flac-bytes");
-        assert_eq!(fs::read_to_string(original_key.key_path()).unwrap(), original_key_text);
+        assert_eq!(fs::read_to_string(target.join(KEY_ROOT)).unwrap(), original_key_text);
         assert!(result.pre_import_backup.is_empty());
         assert!(import_artifacts(&target).is_empty(), "成功后不能留下导入现场：{:?}", import_artifacts(&target));
 
@@ -1390,7 +1386,7 @@ mod tests {
 
         let target = temp_dir("key-target");
         let target_crypto = Crypto::load_or_create(&target).unwrap();
-        assert_ne!(fs::read_to_string(target_crypto.key_path()).unwrap(), source_key);
+        assert_ne!(fs::read_to_string(target.join(KEY_ROOT)).unwrap(), source_key);
         import_backup(&target, &zip, Some(&target_crypto)).unwrap();
         assert_eq!(fs::read_to_string(target.join(KEY_ROOT)).unwrap(), source_key);
         let reloaded = Crypto::load_or_create(&target).unwrap();
@@ -1467,7 +1463,7 @@ mod tests {
         let target = temp_dir("bad-key-target");
         write(&target.join("records/keep.json"), b"keep");
         let original_key = Crypto::load_or_create(&target).unwrap();
-        let original_key_text = fs::read_to_string(original_key.key_path()).unwrap();
+        let original_key_text = fs::read_to_string(target.join(KEY_ROOT)).unwrap();
 
         let error = import_backup(&target, &zip, Some(&original_key)).unwrap_err();
         assert!(error.to_string().contains("Fernet"));
@@ -1605,7 +1601,7 @@ mod tests {
             write(&target.join(path), b"old");
         }
         let key = Crypto::load_or_create(&target).unwrap();
-        let key_text = fs::read_to_string(key.key_path()).unwrap();
+        let key_text = fs::read_to_string(target.join(KEY_ROOT)).unwrap();
 
         import_backup(&target, &zip, Some(&key)).unwrap();
         for path in [
@@ -1622,7 +1618,7 @@ mod tests {
         for dir in DIRECTORY_ROOTS {
             assert!(target.join(dir).is_dir(), "{dir} 应在恢复后存在为空目录");
         }
-        assert_eq!(fs::read_to_string(key.key_path()).unwrap(), key_text);
+        assert_eq!(fs::read_to_string(target.join(KEY_ROOT)).unwrap(), key_text);
         let _ = fs::remove_dir_all(&source);
         let _ = fs::remove_dir_all(&target);
     }
@@ -1704,7 +1700,7 @@ mod tests {
         let manifest = read_manifest(&mut archive).unwrap();
         let stage = target.join(format!(".backup-import-{}", uuid::Uuid::new_v4().simple()));
         fs::create_dir(&stage).unwrap();
-        extract_archive(&mut archive, &stage, &manifest).unwrap();
+        extract_archive(&mut archive, &stage).unwrap();
         let snapshot = create_snapshot(&target).unwrap();
         write_import_journal(&target, &snapshot, &stage).unwrap();
         let restore_audio = manifest.sections.contains_key("audio");

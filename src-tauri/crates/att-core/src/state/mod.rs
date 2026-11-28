@@ -8,7 +8,6 @@ use crate::records::RecordRepo;
 use crate::settings::{self, HotkeyAction, HotkeySpec, UserSettings};
 use crate::storage::crypto::Crypto;
 use crate::Platform;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -47,9 +46,6 @@ pub struct CoreState {
     pub storage_usage: crate::storage::usage::UsageCache,
     /// 本地文件转写（任务表 / 单并发闸门 / 结果缓存）
     pub transcriber: crate::transcribe::FileTranscriber,
-    /// 本机用户确认过的精确路径白名单（只在内存里）：界面防误操作用，
-    /// 数据面只认令牌，不再用它判断是否允许转写
-    pub transcribe_allowed: Mutex<HashSet<PathBuf>>,
     /// 用户通过系统对话框确认过、供下一次导出 / 恢复使用的一次性路径白名单
     pub backup_paths: crate::backup::BackupPathGrants,
     /// 备份 / 恢复期间暂停录音与剪贴板等后台写入；恢复成功后保持到进程重启。
@@ -72,11 +68,6 @@ pub struct CoreState {
     /// 检查更新与安装包下载
     pub updater: Arc<crate::update::Updater>,
     pub events: EventBus,
-}
-
-/// 环境变量是否锁定了模型目录；设置页据此禁用目录选择。
-pub fn models_dir_env_override() -> bool {
-    std::env::var("ATT_MODELS_DIR").is_ok_and(|dir| !dir.trim().is_empty())
 }
 
 /// 按环境变量、用户设置、现有默认目录的顺序选择本地模型根目录。
@@ -119,9 +110,7 @@ impl CoreState {
         crate::backup::recover_interrupted_import(data_dir)?;
         let records = RecordRepo::new(data_dir);
         records.ensure_dirs()?;
-        for dir in ["audio/temp", "audio/permanent", "clipboard/images", "sessions"] {
-            std::fs::create_dir_all(data_dir.join(dir))?;
-        }
+        std::fs::create_dir_all(data_dir.join("clipboard/images"))?;
         let crypto =
             Crypto::load_or_create(data_dir).map_err(|e| CoreError::Io(std::io::Error::other(e.to_string())))?;
         let crypto = Arc::new(crypto);
@@ -146,7 +135,6 @@ impl CoreState {
             retranscribe: Default::default(),
             storage_usage: Default::default(),
             transcriber: Default::default(),
-            transcribe_allowed: Mutex::new(HashSet::new()),
             backup_paths: Default::default(),
             backup_maintenance: AtomicBool::new(false),
             local_models: Default::default(),
@@ -293,10 +281,10 @@ impl CoreState {
         view
     }
 
-    /// 登记一个允许转写的文件（精确白名单）。
+    /// 校验并规范化本机用户在界面里选择 / 拖入 / 手动确认过的文件路径。
     ///
-    /// 只接受本机用户在界面里选择 / 拖入 / 手动确认过的路径。返回 canonicalize 后的路径，
-    /// 与转写校验使用同一形态（Windows 去掉 `\\?\` 前缀）。
+    /// 数据面转写只校验令牌；这里返回 canonicalize 后的路径，供界面层统一路径形态
+    /// （Windows 去掉 `\\?\` 前缀）。
     pub fn allow_transcribe_file(&self, path: &Path) -> Result<PathBuf, String> {
         // 与 HTTP 侧一致：容忍首尾空白与「复制为路径」带的引号
         let raw = path.to_string_lossy();
@@ -305,14 +293,7 @@ impl CoreState {
         if !resolved.is_file() {
             return Err(format!("不是文件：{raw}"));
         }
-        let resolved = tidy(resolved);
-        self.transcribe_allowed.lock().unwrap_or_else(|e| e.into_inner()).insert(resolved.clone());
-        Ok(resolved)
-    }
-
-    /// 该路径是否已经由本机用户登记为可转写。
-    pub fn is_transcribe_allowed(&self, path: &Path) -> bool {
-        self.transcribe_allowed.lock().unwrap_or_else(|e| e.into_inner()).contains(path)
+        Ok(tidy(resolved))
     }
 
     /// 当前启用的持久 API 令牌明文（未开启 / 未配置 / 密文损坏时 None）。
@@ -453,7 +434,9 @@ mod tests {
         let core = CoreState::init(&dir, Platform::Windows).unwrap();
         assert!(dir.join(".encryption_key").is_file());
         assert!(dir.join("records").is_dir());
-        assert!(dir.join("audio").join("temp").is_dir());
+        assert!(!dir.join("audio/temp").exists(), "不再创建 Python 时代的 audio/temp 目录");
+        assert!(!dir.join("audio/permanent").exists(), "不再创建 Python 时代的 audio/permanent 目录");
+        assert!(!dir.join("sessions").exists(), "不再创建 Python 时代的 sessions/ 目录");
         assert_eq!(core.settings().asr_provider, "doubao_asr");
 
         // 更新设置 → 落盘 → 重载可见

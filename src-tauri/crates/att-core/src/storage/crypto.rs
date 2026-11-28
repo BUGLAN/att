@@ -7,7 +7,7 @@
 
 use super::fernet::Fernet;
 use super::json_store;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
@@ -20,7 +20,6 @@ pub enum CryptoError {
 /// Fernet 加密器：持有从 `data/.encryption_key` 加载（或首次创建）的密钥。
 pub struct Crypto {
     fernet: Fernet,
-    key_path: PathBuf,
 }
 
 impl Crypto {
@@ -39,11 +38,7 @@ impl Crypto {
         })?;
 
         let fernet = Fernet::new(&key).ok_or_else(|| CryptoError::InvalidKey(key_path.display().to_string()))?;
-        Ok(Self { fernet, key_path })
-    }
-
-    pub fn key_path(&self) -> &Path {
-        &self.key_path
+        Ok(Self { fernet })
     }
 
     /// 加密明文 → Fernet token（带版本头 0x80，Python 可解）。
@@ -66,7 +61,7 @@ fn write_new_key_locked(path: &Path, key: &str) -> std::io::Result<()> {
 #[cfg(test)]
 impl Crypto {
     fn from_key(key: &str) -> Self {
-        Self { fernet: Fernet::new(key).expect("测试密钥必须合法"), key_path: PathBuf::from(".encryption_key") }
+        Self { fernet: Fernet::new(key).expect("测试密钥必须合法") }
     }
 }
 
@@ -102,7 +97,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(crypto.key_path()).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(dir.join(".encryption_key")).unwrap().permissions().mode() & 0o777, 0o600);
         }
 
         // 密钥文件持久化后重载仍可解
@@ -145,7 +140,6 @@ mod tests {
         assert_eq!(crypto.decrypt(&token).as_deref(), Some("回程"));
     }
 
-    /// FernetError 需要被引用一次以保证 Debug 派生不产生死代码告警。
     #[test]
     fn 错误类型可打印() {
         let error = FernetError::InvalidToken;

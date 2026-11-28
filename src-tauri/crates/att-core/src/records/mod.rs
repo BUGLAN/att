@@ -359,24 +359,6 @@ impl RecordRepo {
         (items, total)
     }
 
-    /// GET /api/records/search：文本 + 收藏搜索。
-    pub fn search(
-        &self,
-        query: &str,
-        search_type: &str,
-        favorite_only: bool,
-        page: usize,
-        page_size: usize,
-    ) -> (Vec<Record>, usize) {
-        let filter = RecordFilter {
-            query: query.to_string(),
-            search_type: search_type.to_string(),
-            favorite_only,
-            ..Default::default()
-        };
-        self.search_filtered(&filter, page, page_size)
-    }
-
     /// GET /api/records/search（带状态 / 日期筛选）：按 created_at 倒序分页，第二项是筛选后的总数。
     pub fn search_filtered(&self, filter: &RecordFilter, page: usize, page_size: usize) -> (Vec<Record>, usize) {
         let q = filter.query.to_lowercase();
@@ -604,6 +586,14 @@ mod tests {
 
     fn sample(id: &str, text: &str) -> Record {
         Record { id: id.into(), raw_text: Some(text.into()), ..Record::default() }
+    }
+
+    fn search(repo: &RecordRepo, query: &str, search_type: &str, favorite_only: bool) -> (Vec<Record>, usize) {
+        repo.search_filtered(
+            &RecordFilter { query: query.into(), search_type: search_type.into(), favorite_only, ..Default::default() },
+            1,
+            100,
+        )
     }
 
     #[test]
@@ -868,11 +858,11 @@ mod tests {
         repo.insert(a).unwrap();
         repo.insert(b).unwrap();
 
-        let (items, total) = repo.search("会议", "all", false, 1, 100);
+        let (items, total) = search(&repo, "会议", "all", false);
         assert_eq!(total, 1);
         assert_eq!(items[0].id, "rec-a");
 
-        let (_, fav_total) = repo.search("", "all", true, 1, 100);
+        let (_, fav_total) = search(&repo, "", "all", true);
         assert_eq!(fav_total, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -928,13 +918,13 @@ mod tests {
         assert_eq!(ids, ["rec-1", "rec-2"], "新增记录同步进索引");
 
         repo.update("rec-1", RecordUpdate { is_favorite: Some(true), ..Default::default() }).unwrap();
-        let (favorites, total) = repo.search("", "all", true, 1, 10);
+        let (favorites, total) = search(&repo, "", "all", true);
         assert_eq!(total, 1);
         assert_eq!(favorites[0].id, "rec-1", "更新后的字段同步进索引");
         assert_eq!(favorites[0].revision, 1);
 
         repo.patch("rec-2", |r| r.optimized_text = Some("整理后".into())).unwrap();
-        assert_eq!(repo.search("整理", "optimized", false, 1, 10).1, 1, "patch 同步进索引");
+        assert_eq!(search(&repo, "整理", "optimized", false).1, 1, "patch 同步进索引");
 
         repo.delete("rec-2").unwrap();
         let ids: Vec<String> = repo.list(None, 10, 0).into_iter().map(|r| r.id).collect();
@@ -943,7 +933,7 @@ mod tests {
         // 另一个仓库实例（如启动迁移）写入：目录变化后本实例重扫可见
         let other = RecordRepo::new(&dir);
         other.insert(sample("rec-3", "另一实例写入")).unwrap();
-        assert_eq!(repo.search("另一实例", "all", false, 1, 10).1, 1);
+        assert_eq!(search(&repo, "另一实例", "all", false).1, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
