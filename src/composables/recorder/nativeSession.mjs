@@ -16,26 +16,36 @@ import { deriveCompletionToast } from './statusCopy.mjs'
 
 const NO_VOICE_TOAST = '没有听到声音，检查麦克风'
 
-const STREAMING_PROVIDER_TEXT = Object.freeze({
-  doubao_asr: { connecting: '正在连接豆包语音服务', recording: '豆包语音转写中' },
-  doubao_ime_asr: { connecting: '正在连接豆包输入法服务', recording: '豆包输入法转写中' },
-  wetype_asr: { connecting: '正在连接微信输入法语音', recording: '微信输入法转写中' }
-})
-
-/** 流式 provider 的连接 / 转写状态文案；未知 provider 用通用文案。 */
-export function streamingProviderText(provider, phase = 'recording') {
-  const text = STREAMING_PROVIDER_TEXT[provider]
-  if (text) {
-    return text[phase] || text.recording
+/** 录音面板主状态文案（与实时文本、优化面板并列展示）。 */
+export function deriveRecorderPanelStatus({
+  isRecording = false,
+  isTranscribing = false,
+  isStreaming = false,
+  isMulti = false,
+  livePhase = 'idle'
+} = {}) {
+  if (isRecording && isStreaming) {
+    if (livePhase === 'connecting') return '正在连接流式转写服务'
+    if (livePhase === 'finalizing') return '正在生成最终转写结果'
+    return '正在连续流式转写'
   }
-  return phase === 'connecting' ? '正在连接流式转写服务' : '流式转写中'
+
+  if (isRecording && isMulti) {
+    if (livePhase === 'finalizing') return '正在合并整场录音结果'
+    return '静音切段监听中'
+  }
+
+  if (isRecording) return '正在录制整段音频'
+  if (isTranscribing) return '正在处理录音结果'
+  if (livePhase === 'optimizing') return '正在后台优化文本'
+  return '等待开始录音'
 }
 
 /**
  * 计算一次状态事件对界面的影响。返回 null 表示忽略（未知相位）。
  *
  * 字段：
- * - livePhase / statusText：实时转写区相位与文案
+ * - livePhase：录音面板与实时转写区相位
  * - recording / transcribing：appStore 两个互斥标志
  * - clock：'start' | 'stop' | null（录音计时器）
  * - resetTranscript：是否清空上一轮实时文本
@@ -49,13 +59,10 @@ export function deriveNativeSessionPatch(payload = {}) {
   const phase = payload.phase
   const streaming = payload.mode === 'streaming'
   const message = payload.message || ''
-  const provider = payload.provider || ''
-
   switch (phase) {
     case 'connecting':
       return {
         livePhase: 'connecting',
-        statusText: message || streamingProviderText(provider, 'connecting'),
         recording: true,
         transcribing: false,
         clock: 'start',
@@ -65,7 +72,6 @@ export function deriveNativeSessionPatch(payload = {}) {
     case 'recording':
       return {
         livePhase: streaming ? 'streaming' : 'recording',
-        statusText: message || (streaming ? streamingProviderText(provider) : '正在录音'),
         recording: true,
         transcribing: false,
         // 流式在 connecting 时已起表；单段直接进 recording 时起表
@@ -76,7 +82,6 @@ export function deriveNativeSessionPatch(payload = {}) {
     case 'finalizing':
       return {
         livePhase: 'finalizing',
-        statusText: message || '正在完成转写',
         recording: false,
         transcribing: true,
         clock: 'stop',
@@ -85,7 +90,6 @@ export function deriveNativeSessionPatch(payload = {}) {
     case 'optimizing':
       return {
         livePhase: 'optimizing',
-        statusText: message || '转写完成，正在优化',
         recording: false,
         // 单段模式优化期间保持「处理中」（新录音会被吞掉）；流式允许直接开始下一段
         transcribing: !streaming,
@@ -135,7 +139,6 @@ export function deriveNativeSessionPatch(payload = {}) {
       }
       return {
         livePhase: 'completed',
-        statusText: text ? (message || '录音已完成') : toast,
         recording: false,
         transcribing: false,
         clock: 'stop',
@@ -153,7 +156,6 @@ export function deriveNativeSessionPatch(payload = {}) {
     case 'error':
       return {
         livePhase: 'error',
-        statusText: message || '录音失败',
         recording: false,
         transcribing: false,
         clock: 'stop',
@@ -164,7 +166,6 @@ export function deriveNativeSessionPatch(payload = {}) {
     case 'cancelled':
       return {
         livePhase: 'idle',
-        statusText: message || '已取消本次录音',
         recording: false,
         transcribing: false,
         clock: 'stop',
@@ -174,7 +175,6 @@ export function deriveNativeSessionPatch(payload = {}) {
     case 'idle':
       return {
         livePhase: 'idle',
-        statusText: '',
         recording: false,
         transcribing: false,
         clock: 'stop',

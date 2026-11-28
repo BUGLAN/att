@@ -327,8 +327,6 @@ async function confirmDeleteModel() {
   await deleteModel(id)
 }
 
-// deleteProfile 供「供应商编辑弹窗」使用（该弹窗自己确认）；这里暴露只是保持依赖面最小
-defineExpose({ deleteProfile })
 </script>
 
 <style scoped>

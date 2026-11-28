@@ -47,7 +47,7 @@ export function useAsrCredentialCheck() {
         setCheck(provider, null)
       } finally {
         inflight.delete(provider)
-        settingsStore.loadRuntimeStatus(false).catch(() => {})
+        settingsStore.loadRuntimeStatus().catch(() => {})
       }
       return checks[provider] || null
     })()

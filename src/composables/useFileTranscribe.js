@@ -38,7 +38,7 @@ const CANCEL_POLL_DELAY_MS = 400
 const UNSUPPORTED_MESSAGE = '暂不支持该文件类型：请选择音视频文件（mp4 / flv / webm / wav / mp3 / m4a 等）'
 
 export function useFileTranscribe() {
-  const { openMediaFiles, allowTranscribePath, isDesktop, filePathForFile, clipboard } = useElectron()
+  const { openMediaFiles, allowTranscribePath, isDesktop, clipboard } = useElectron()
   const settingsStore = useSettingsStore()
 
   const filePath = ref('')
@@ -56,8 +56,6 @@ export function useFileTranscribe() {
   const llmModels = shallowRef([])        // [{id, label}]：LLM v2 模型条目（校对面板下拉）
   const isBusy = ref(false)
   const statusText = ref('')
-  const stage = ref('')                   // asr | proofreading（202 阶段展示）
-  const progress = shallowRef(null)       // asr: {stage, done_seconds, total_seconds}；校对: {window_done, window_total}
   const progressInfo = shallowRef({ percent: null, label: '' }) // 进度条与文案
   const cancelRequested = ref(false)
   const queue = shallowRef([])            // [{id, path, fileName, status, error}]
@@ -83,10 +81,7 @@ export function useFileTranscribe() {
     return llmModels.value
   }
 
-  // 每个文件开始时自增；轮询循环发现 runId 变化即自行退出（reset 时让进行中的轮询失效）
-  let runSeq = 0
   let queueRunning = false
-  let queueGen = 0 // reset 时自增：旧的队列循环退出时不再改动新一轮的状态
   let currentJobId = ''
   // 轮询等待可被「取消」提前唤醒
   let wakePoll = null
@@ -171,18 +166,6 @@ export function useFileTranscribe() {
     return enqueue(picked).added.map((item) => item.path)
   }
 
-  /**
-   * 拖拽入口（浏览器 File 对象）：取本地路径后排队。
-   * 拿不到路径（浏览器环境）或类型不支持时只置 error，不发起请求。
-   */
-  async function ingestDroppedFiles(files) {
-    const list = Array.from(files || [])
-    if (!list.length) {
-      return false
-    }
-    return ingestDroppedPaths(list.map((file) => filePathForFile(file)))
-  }
-
   /** 桌面端原生拖放直接给出本地路径：按拖入顺序排队，立即开始。 */
   async function ingestDroppedPaths(paths) {
     const list = (paths || []).filter(Boolean)
@@ -236,14 +219,12 @@ export function useFileTranscribe() {
   void loadHistory()
 
   function applyJobState(job) {
-    stage.value = String(job?.stage || '')
-    progress.value = job?.progress || null
     progressInfo.value = describeJobProgress(job, { cancelRequested: cancelRequested.value })
     statusText.value = progressInfo.value.label
   }
 
-  /** 轮询到任务结束：{ status: 'done', result } | { status: 'cancelled' }；失败抛错；被 reset 接管返回 null。 */
-  async function pollJobResult(jobId, currentRun, path) {
+  /** 轮询到任务结束：{ status: 'done', result } | { status: 'cancelled' }；失败抛错。 */
+  async function pollJobResult(jobId, path) {
     let lastSignature = ''
     let lastAdvanceAt = Date.now()
     let attempt = 0
@@ -251,10 +232,6 @@ export function useFileTranscribe() {
     while (true) {
       attempt += 1
       await pollDelay(cancelRequested.value ? CANCEL_POLL_DELAY_MS : nextJobPollDelay(attempt))
-      if (currentRun !== runSeq) {
-        return null // 已被 reset 接管
-      }
-
       const job = await api.getTranscribeJob(jobId)
       applyJobState(job)
 
@@ -316,7 +293,6 @@ export function useFileTranscribe() {
       return
     }
     queueRunning = true
-    const gen = queueGen
     isBusy.value = true
     try {
       let item = nextQueuedItem(queue.value)
@@ -324,24 +300,16 @@ export function useFileTranscribe() {
         const { id, path } = item
         queue.value = updateQueueItem(queue.value, id, { status: 'running', error: '' })
         const outcome = await transcribeOne(path)
-        if (outcome == null) {
-          return // 被 reset 接管
-        }
         queue.value = updateQueueItem(queue.value, id, outcome)
         item = nextQueuedItem(queue.value)
       }
     } finally {
-      // 被 reset 接管时新一轮的状态由 reset / 新循环负责
-      if (gen === queueGen) {
-        queueRunning = false
-        isBusy.value = false
-        statusText.value = ''
-        stage.value = ''
-        progress.value = null
-        progressInfo.value = { percent: null, label: '' }
-        cancelRequested.value = false
-        currentJobId = ''
-      }
+      queueRunning = false
+      isBusy.value = false
+      statusText.value = ''
+      progressInfo.value = { percent: null, label: '' }
+      cancelRequested.value = false
+      currentJobId = ''
     }
   }
 
@@ -360,15 +328,11 @@ export function useFileTranscribe() {
   }
 
   /**
-   * 转写一个文件（队列逐个调用）：返回 { status: 'done' | 'failed' | 'cancelled', error }；
-   * 被 reset 接管时返回 null。
+   * 转写一个文件（队列逐个调用）：返回 { status: 'done' | 'failed' | 'cancelled', error }。
    */
   async function transcribeOne(path) {
-    const currentRun = ++runSeq
     filePath.value = path
     error.value = ''
-    stage.value = ''
-    progress.value = null
     cancelRequested.value = false
     currentJobId = ''
     progressInfo.value = { percent: null, label: '正在提交转写…' }
@@ -402,20 +366,13 @@ export function useFileTranscribe() {
 
     try {
       const payload = await api.transcribeFile(request)
-      if (currentRun !== runSeq) {
-        return null
-      }
-
       if (isAsyncJobAccepted(payload)) {
         currentJobId = payload.job_id
         // 提交期间（算哈希、探测时长）已经点了取消：拿到任务号立刻取消
         if (cancelRequested.value) {
           await sendCancel(currentJobId)
         }
-        const polled = await pollJobResult(payload.job_id, currentRun, request.path)
-        if (polled == null) {
-          return null
-        }
+        const polled = await pollJobResult(payload.job_id, request.path)
         if (polled.status === 'cancelled') {
           return { status: 'cancelled', error: '' }
         }
@@ -433,9 +390,6 @@ export function useFileTranscribe() {
       pushHistory(normalized)
       return { status: 'done', error: '' }
     } catch (err) {
-      if (currentRun !== runSeq) {
-        return null
-      }
       return fail(err?.message || '转写失败，请稍后重试')
     } finally {
       currentJobId = ''
@@ -449,24 +403,6 @@ export function useFileTranscribe() {
     }
     await clipboard.writeText(text)
     return true
-  }
-
-  function reset() {
-    if (currentJobId) {
-      void sendCancel(currentJobId)
-    }
-    runSeq += 1 // 使进行中的轮询失效
-    queueGen += 1
-    queueRunning = false
-    cancelRequested.value = false
-    currentJobId = ''
-    wakePoll?.()
-    queue.value = []
-    filePath.value = ''
-    isBusy.value = false
-    statusText.value = ''
-    error.value = ''
-    result.value = null
   }
 
   return {
@@ -483,8 +419,6 @@ export function useFileTranscribe() {
     loadLlmModels,
     isBusy,
     statusText,
-    stage,
-    progress,
     progressInfo,
     cancelRequested,
     queue,
@@ -493,7 +427,6 @@ export function useFileTranscribe() {
     history,
     chooseFile,
     enqueue,
-    ingestDroppedFiles,
     ingestDroppedPaths,
     startTranscribe,
     cancelCurrent,
@@ -507,7 +440,6 @@ export function useFileTranscribe() {
       if (result.value.path) {
         filePath.value = result.value.path
       }
-    },
-    reset
+    }
   }
 }

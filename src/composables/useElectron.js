@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { api as httpApi, getBackendPort } from '@/api/client'
+import { api as httpApi } from '@/api/client'
 
 /**
  * 桌面能力包装层（Tauri 2）。
@@ -9,7 +9,6 @@ import { api as httpApi, getBackendPort } from '@/api/client'
  * - `isElectron` 名称保留（语义 = 「桌面环境」），新增 `isDesktop` 别名
  * - 事件通道名沿用旧名（paste-text / clipboard:changed …），Rust 侧事件桥按同名发射
  * - 录音走 `recording.*`（Rust 录音 Actor），全局快捷键在 Rust 侧直达 Actor，悬浮窗也由 Actor 驱动
- * - 待接入项：openMediaFiles / filePathForFile 返回降级值
  */
 
 const isElectron = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
@@ -20,7 +19,7 @@ function toPlainObject(value) {
 }
 
 // 同步平台推断（旧版读 window.electronAPI.platform 是同步的；Tauri invoke 是异步，
-// 这里用 UA 做同步推断供默认值场景，精确值走 getPlatform()）
+// 这里用 UA 做同步推断供默认值场景）
 function detectPlatformSync() {
   if (typeof navigator === 'undefined') return 'web'
   const ua = navigator.userAgent
@@ -87,7 +86,7 @@ export function useElectron() {
     exportRecord: (id, format) => httpApi.exportRecord(id, format),
     getRecordsExportUrl: (options) => httpApi.getRecordsExportUrl(options),
     getRecordAudio: (id) => httpApi.getRecordAudio(id),
-    getHealth: (probeRuntime = false) => httpApi.getHealth(probeRuntime),
+    getHealth: () => httpApi.getHealth(),
     getAsrCredentialCheck: (provider) => httpApi.getAsrCredentialCheck(provider),
     checkAsrCredential: (provider) => httpApi.checkAsrCredential(provider),
     getAsrEngines: () => httpApi.getAsrEngines(),
@@ -98,7 +97,6 @@ export function useElectron() {
     stopStreamingService: () => httpApi.stopStreamingService(),
     getClipboardItems: (params) => httpApi.getClipboardItems(params),
     getClipboardStats: () => httpApi.getClipboardStats(),
-    createClipboardItem: (payload) => httpApi.createClipboardItem(payload),
     updateClipboardItem: (id, data) => httpApi.updateClipboardItem(id, data),
     deleteClipboardItem: (id) => httpApi.deleteClipboardItem(id),
     deleteClipboardItems: (ids) => httpApi.deleteClipboardItems(ids),
@@ -124,7 +122,6 @@ export function useElectron() {
     deleteLLMModel: (id) => httpApi.deleteLLMModel(id),
     verifyLLMModel: (id) => httpApi.verifyLLMModel(id),
     activateLLMModel: (id) => httpApi.activateLLMModel(id),
-    updateLLMSettings: (payload) => httpApi.updateLLMSettings(payload),
     getPresets: () => httpApi.getPresets(),
     setDefaultPreset: (id) => httpApi.setDefaultPreset(id),
     createPreset: (payload) => httpApi.createPreset(payload),
@@ -144,21 +141,6 @@ export function useElectron() {
   }
 
   const clipboard = {
-    readText: async () => {
-      if (isDesktop) {
-        try {
-          return await invoke('read_clipboard_text')
-        } catch (error) {
-          console.error('[Clipboard] Tauri clipboard read failed:', error)
-        }
-      }
-
-      if (globalThis.navigator?.clipboard?.readText) {
-        return globalThis.navigator.clipboard.readText()
-      }
-
-      throw new Error('Clipboard read API unavailable')
-    },
     writeText: async (text) => {
       if (isDesktop) {
         try {
@@ -363,11 +345,6 @@ export function useElectron() {
     return invoke('allow_transcribe_path', { path })
   }
 
-  // WebView 拿不到拖入 File 的本地路径：桌面端改由 onFileDrop（原生拖放事件）直接给路径
-  function filePathForFile() {
-    return ''
-  }
-
   // 原生拖放：callback({ type: 'enter' | 'over' | 'leave' | 'drop', paths })；返回注销函数
   async function onFileDrop(callback) {
     if (!isDesktop) return () => {}
@@ -375,14 +352,6 @@ export function useElectron() {
     return getCurrentWebview().onDragDropEvent((event) => {
       callback({ type: event.payload.type, paths: event.payload.paths || [] })
     })
-  }
-
-  // 精确平台值（异步）：settings 默认值用同步 detectPlatformSync 即可
-  async function getPlatform() {
-    if (!isDesktop) {
-      return detectPlatformSync()
-    }
-    return invoke('get_platform')
   }
 
   return {
@@ -422,9 +391,6 @@ export function useElectron() {
     openModelsDirectory,
     restartApp,
     allowTranscribePath,
-    filePathForFile,
-    getPlatform,
-    platform: detectPlatformSync(),
-    getBackendPort
+    platform: detectPlatformSync()
   }
 }

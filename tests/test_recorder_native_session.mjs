@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { deriveNativeSessionPatch, streamingProviderText } from '../src/composables/recorder/nativeSession.mjs'
+import { deriveNativeSessionPatch, deriveRecorderPanelStatus } from '../src/composables/recorder/nativeSession.mjs'
 
 const NATIVE_PHASES = [
   'idle',
@@ -31,14 +31,16 @@ test('录音相位：connecting 起表并清空上一轮文本，流式 recordin
   assert.equal(single.clock, 'start')
 })
 
-test('流式文案按 provider 区分：微信输入法不再显示豆包', () => {
-  assert.equal(streamingProviderText('wetype_asr'), '微信输入法转写中')
-  assert.equal(streamingProviderText('wetype_asr', 'connecting'), '正在连接微信输入法语音')
-  assert.equal(streamingProviderText('doubao_asr'), '豆包语音转写中')
-  const patch = deriveNativeSessionPatch({ phase: 'recording', mode: 'streaming', provider: 'wetype_asr' })
-  assert.equal(patch.statusText, '微信输入法转写中')
-  const connecting = deriveNativeSessionPatch({ phase: 'connecting', mode: 'streaming', provider: 'wetype_asr' })
-  assert.equal(connecting.statusText, '正在连接微信输入法语音')
+test('录音面板主状态：保留各模式既有文案', () => {
+  assert.equal(deriveRecorderPanelStatus({ isRecording: true, isStreaming: true, livePhase: 'connecting' }), '正在连接流式转写服务')
+  assert.equal(deriveRecorderPanelStatus({ isRecording: true, isStreaming: true, livePhase: 'finalizing' }), '正在生成最终转写结果')
+  assert.equal(deriveRecorderPanelStatus({ isRecording: true, isStreaming: true, livePhase: 'streaming' }), '正在连续流式转写')
+  assert.equal(deriveRecorderPanelStatus({ isRecording: true, isMulti: true, livePhase: 'finalizing' }), '正在合并整场录音结果')
+  assert.equal(deriveRecorderPanelStatus({ isRecording: true, isMulti: true, livePhase: 'recording' }), '静音切段监听中')
+  assert.equal(deriveRecorderPanelStatus({ isRecording: true }), '正在录制整段音频')
+  assert.equal(deriveRecorderPanelStatus({ isTranscribing: true }), '正在处理录音结果')
+  assert.equal(deriveRecorderPanelStatus({ livePhase: 'optimizing' }), '正在后台优化文本')
+  assert.equal(deriveRecorderPanelStatus(), '等待开始录音')
 })
 
 test('收尾相位：录音与转写标志互斥', () => {
@@ -89,7 +91,6 @@ test('完成态：没听到人声时清空实时区并给出检查麦克风提�
   })
   assert.equal(noVoice.resetTranscript, true)
   assert.equal(noVoice.transcript, '')
-  assert.equal(noVoice.statusText, '没有听到声音，检查麦克风')
   assert.equal(noVoice.toast, '没有听到声音，检查麦克风')
 
   const fallback = deriveNativeSessionPatch({ phase: 'completed', mode: 'single', text: '', no_voice: true })

@@ -778,7 +778,7 @@ async function pollModelJob(token) {
   stopModelPolling()
   await settingsStore.loadModelCatalog().catch(() => {})
   applyInstalledModelSelection(settingsStore.modelCatalog.job)
-  await settingsStore.loadRuntimeStatus(false).catch(() => {})
+  await settingsStore.loadRuntimeStatus().catch(() => {})
 }
 
 function applyInstalledModelSelection(job) {
@@ -854,7 +854,7 @@ async function confirmDeleteModel() {
   isDeleting.value = true
   try {
     await settingsStore.deleteModel(pendingDelete.value.id)
-    await settingsStore.loadRuntimeStatus(false).catch(() => {})
+    await settingsStore.loadRuntimeStatus().catch(() => {})
     isDeleteVisible.value = false
     pendingDelete.value = null
   } catch (error) {
@@ -980,7 +980,7 @@ watch(() => localView.value.state === 'loading', (loading) => {
     return
   }
   pollTimer = window.setInterval(() => {
-    settingsStore.loadRuntimeStatus(false).catch(() => {
+    settingsStore.loadRuntimeStatus().catch(() => {
       // 单次探测失败不打断轮询：下一拍再试
     })
   }, LOCAL_STATUS_POLL_MS)
@@ -995,10 +995,10 @@ async function loadLocalModel() {
   isLoadingModel.value = true
   try {
     await settingsStore.startStreamingService(true)
-    await settingsStore.loadRuntimeStatus(false)
+    await settingsStore.loadRuntimeStatus()
   } catch (error) {
     appStore.showToast(error.message || '模型加载失败')
-    await settingsStore.loadRuntimeStatus(false).catch(() => {})
+    await settingsStore.loadRuntimeStatus().catch(() => {})
   } finally {
     isLoadingModel.value = false
   }
@@ -1014,7 +1014,7 @@ async function releaseLocalModel() {
     appStore.showToast('本地模型内存已释放')
   } catch (error) {
     appStore.showToast(error.message || '释放本地模型失败')
-    await settingsStore.loadRuntimeStatus(false).catch(() => {})
+    await settingsStore.loadRuntimeStatus().catch(() => {})
   } finally {
     isReleasingModel.value = false
   }

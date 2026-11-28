@@ -1,11 +1,5 @@
 <template>
-  <section
-    class="ui-page transcribe-page"
-    @dragenter.prevent="onDragEnter"
-    @dragover.prevent
-    @dragleave="onDragLeave"
-    @drop.prevent="onDrop"
-  >
+  <section class="ui-page transcribe-page">
     <PageHeader crumb="首页 / 转文字" title="转文字" />
 
     <!-- 文件：投放区 + 路径输入；转写中印章换成「轉」，底边流动靛蓝细线 -->
@@ -358,7 +352,6 @@ const {
   result,
   history,
   chooseFile,
-  ingestDroppedFiles,
   ingestDroppedPaths,
   startTranscribe,
   cancelCurrent,
@@ -512,24 +505,6 @@ function formatSegmentTime(seconds) {
 // ---------- 拖拽投放 ----------
 const dragDepth = ref(0)
 const isDragging = computed(() => dragDepth.value > 0)
-
-function onDragEnter() {
-  dragDepth.value += 1
-}
-
-function onDragLeave() {
-  dragDepth.value = Math.max(0, dragDepth.value - 1)
-}
-
-async function onDrop(event) {
-  dragDepth.value = 0
-  const files = Array.from(event.dataTransfer?.files || [])
-
-  if (!files.length) {
-    return // 拖进来的不是文件（比如一段文本），安静忽略
-  }
-  await ingestDroppedFiles(files)
-}
 
 // 桌面端：WebView 拿不到拖入文件的路径，改订阅原生拖放事件（页面常驻挂载，只在本页可见时响应）
 let unlistenFileDrop = null

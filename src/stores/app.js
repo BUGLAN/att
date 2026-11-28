@@ -81,8 +81,6 @@ export const useAppStore = defineStore('app', () => {
   const isTranscribing = ref(false)
   const currentRecordId = ref(null)
   const currentRecord = ref(null)
-  const recordStatus = ref(null)
-  const recordingDuration = ref(0)
   const isConnected = ref(false)
   const connectedClients = ref(0)
 
@@ -100,9 +98,6 @@ export const useAppStore = defineStore('app', () => {
   const toasts = ref([])
   const toastTimers = new Map()
   let toastSeq = 0
-
-  const selectMode = ref(false)
-  const selectedRecords = ref(new Set())
 
   function persistSidebarLayout() {
     if (typeof window === 'undefined') {
@@ -156,9 +151,6 @@ export const useAppStore = defineStore('app', () => {
 
   function setRecording(value) {
     isRecording.value = value
-    if (value) {
-      recordingDuration.value = 0
-    }
   }
 
   function setTranscribing(value) {
@@ -171,14 +163,6 @@ export const useAppStore = defineStore('app', () => {
 
   function setCurrentRecord(record) {
     currentRecord.value = record
-  }
-
-  function setRecordStatus(status) {
-    recordStatus.value = status
-  }
-
-  function incrementDuration() {
-    recordingDuration.value += 1
   }
 
   function setConnected(value) {
@@ -238,30 +222,6 @@ export const useAppStore = defineStore('app', () => {
     return id
   }
 
-  function toggleSelectMode() {
-    selectMode.value = !selectMode.value
-    if (!selectMode.value) {
-      selectedRecords.value.clear()
-    }
-  }
-
-  function toggleRecordSelection(recordId) {
-    if (selectedRecords.value.has(recordId)) {
-      selectedRecords.value.delete(recordId)
-      return
-    }
-
-    selectedRecords.value.add(recordId)
-  }
-
-  function selectAllRecords(recordIds) {
-    selectedRecords.value = new Set(recordIds)
-  }
-
-  function clearSelection() {
-    selectedRecords.value.clear()
-  }
-
   return {
     currentPage,
     settingsSection,
@@ -272,21 +232,16 @@ export const useAppStore = defineStore('app', () => {
     currentSidebarWidth,
     isSidebarResizing,
     sidebarCollapseThreshold: SIDEBAR_COLLAPSE_THRESHOLD,
-    sidebarCollapsedWidth: SIDEBAR_COLLAPSED_WIDTH,
     sidebarMinWidth: SIDEBAR_MIN_WIDTH,
     sidebarMaxWidth: SIDEBAR_MAX_WIDTH,
     isRecording,
     isTranscribing,
     currentRecordId,
     currentRecord,
-    recordStatus,
-    recordingDuration,
     isConnected,
     connectedClients,
     modals,
     toasts,
-    selectMode,
-    selectedRecords,
     setCurrentPage,
     setSidebarWidth,
     startSidebarResize,
@@ -295,16 +250,10 @@ export const useAppStore = defineStore('app', () => {
     setTranscribing,
     setCurrentRecordId,
     setCurrentRecord,
-    setRecordStatus,
-    incrementDuration,
     setConnected,
     setConnectedClients,
     openModal,
     closeModal,
-    showToast,
-    toggleSelectMode,
-    toggleRecordSelection,
-    selectAllRecords,
-    clearSelection
+    showToast
   }
 })

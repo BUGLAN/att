@@ -4,7 +4,6 @@ import { useRecordsStore } from '@/stores/records'
 import { useSettingsStore } from '@/stores/settings'
 import { useOptimizationStreamStore } from '@/stores/optimizationStream'
 import { useElectron } from './useElectron'
-import * as statusCopy from './recorder/statusCopy.mjs'
 import * as nativeSession from './recorder/nativeSession.mjs'
 import { supportsStreaming } from '@/components/settings/asrEngineStatus.mjs'
 
@@ -18,7 +17,6 @@ const duration = ref(0)
 const audioLevel = ref(0)
 const liveTranscript = ref('')
 const livePhase = ref('idle')
-const sessionStatusText = ref(statusCopy.IDLE_SESSION_STATUS_TEXT)
 
 let durationTimer = null
 let mountedInstances = 0
@@ -33,13 +31,10 @@ function clearDurationTimer() {
 }
 
 function startDurationClock() {
-  const appStore = useAppStore()
-
   duration.value = 0
   clearDurationTimer()
   durationTimer = setInterval(() => {
     duration.value += 1
-    appStore.incrementDuration()
   }, 1000)
 }
 
@@ -98,7 +93,6 @@ function applyNativeSessionState(payload) {
   }
 
   livePhase.value = patch.livePhase
-  sessionStatusText.value = patch.statusText || statusCopy.IDLE_SESSION_STATUS_TEXT
   appStore.setRecording(patch.recording)
   appStore.setTranscribing(patch.transcribing)
 
@@ -110,7 +104,6 @@ function applyNativeSessionState(payload) {
     syncRecordIntoStore(patch.record)
     appStore.setCurrentRecordId(patch.record.id)
     appStore.setCurrentRecord(patch.record)
-    appStore.setRecordStatus({ record_id: patch.record.id, status: patch.record.status })
   }
 
   applyNativeOptimization(patch, payload)
@@ -166,7 +159,6 @@ function applyNativeOptimizationDelta(payload) {
   optimizationStream.append(chunk)
   if (livePhase.value === 'optimizing') {
     liveTranscript.value = optimizationStream.text
-    sessionStatusText.value = '正在优化'
   }
 }
 
@@ -280,7 +272,6 @@ export function useRecorder() {
     audioLevel,
     liveTranscript,
     livePhase,
-    sessionStatusText,
     isMultiModeEnabled: computed(() => settingsStore.settings.recording_mode === 'multi'),
     isStreamingModeEnabled: computed(() => (
       settingsStore.settings.recording_mode === 'streaming' &&

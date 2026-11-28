@@ -6,7 +6,7 @@ const STREAMING_SERVICE_POLL_INTERVAL_MS = 1000
 const STREAMING_SERVICE_POLL_TIMEOUT_MS = 5 * 60 * 1000
 
 function getPlatform() {
-  // Tauri 下 invoke 是异步的，而默认热键需要同步值：UA 推断足够（精确值走 useElectron.getPlatform()）
+  // Tauri 下 invoke 是异步的，而默认热键需要同步值：UA 推断足够
   if (typeof navigator === 'undefined') {
     return 'win32'
   }
@@ -190,7 +190,6 @@ export const useSettingsStore = defineStore('settings', () => {
   })
 
   const isLoading = ref(false)
-  const error = ref(null)
   const runtimeStatus = ref({
     status: 'unknown',
     runtime_environment: 'unknown',
@@ -242,7 +241,6 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function loadSettings() {
     isLoading.value = true
-    error.value = null
 
     try {
       const result = await api.getSettings()
@@ -263,7 +261,6 @@ export const useSettingsStore = defineStore('settings', () => {
       defaultPresetId.value = settings.value.default_preset_id || defaultPresetId.value || null
       return settings.value
     } catch (e) {
-      error.value = e.message
       console.error('Failed to load settings:', e)
       throw e
     } finally {
@@ -300,25 +297,23 @@ export const useSettingsStore = defineStore('settings', () => {
         main_window_close_action: desktopSettings?.main_window_close_action ?? result.main_window_close_action ?? payload.main_window_close_action
       }
       defaultPresetId.value = settings.value.default_preset_id || defaultPresetId.value || null
-      await loadRuntimeStatus(true)
+      await loadRuntimeStatus()
       return result
     } catch (e) {
-      error.value = e.message
       console.error('Failed to save settings:', e)
       throw e
     }
   }
 
-  async function loadRuntimeStatus(probeRuntime = true) {
+  async function loadRuntimeStatus() {
     try {
-      const result = await api.getHealth(probeRuntime)
+      const result = await api.getHealth()
       runtimeStatus.value = {
         ...runtimeStatus.value,
         ...result
       }
       return runtimeStatus.value
     } catch (e) {
-      error.value = e.message
       console.error('Failed to load runtime status:', e)
       throw e
     }
@@ -416,7 +411,7 @@ export const useSettingsStore = defineStore('settings', () => {
           applyStreamingServiceStatus(result)
 
           if (result.ready) {
-            await loadRuntimeStatus(true)
+            await loadRuntimeStatus()
             runtimeStatus.value = {
               ...runtimeStatus.value,
               model_service_loading: false,
@@ -464,14 +459,14 @@ export const useSettingsStore = defineStore('settings', () => {
       applyStreamingServiceStatus(result)
 
       if (waitUntilReady) {
-        await loadRuntimeStatus(true)
+        await loadRuntimeStatus()
         runtimeStatus.value = {
           ...runtimeStatus.value,
           model_service_loading: false,
           model_service_error: result.error ?? null
         }
       } else if (result.ready) {
-        await loadRuntimeStatus(true)
+        await loadRuntimeStatus()
         runtimeStatus.value = {
           ...runtimeStatus.value,
           model_service_loading: false,
@@ -490,7 +485,6 @@ export const useSettingsStore = defineStore('settings', () => {
         model_service_loading: false,
         model_service_error: e.message
       }
-      error.value = e.message
       console.error('Failed to start streaming service:', e)
       throw e
     }
@@ -499,7 +493,7 @@ export const useSettingsStore = defineStore('settings', () => {
   async function stopStreamingService() {
     try {
       const result = await api.stopStreamingService()
-      await loadRuntimeStatus(false)
+      await loadRuntimeStatus()
       runtimeStatus.value = {
         ...runtimeStatus.value,
         model_service_running: result.running ?? false,
@@ -515,7 +509,6 @@ export const useSettingsStore = defineStore('settings', () => {
       }
       return runtimeStatus.value
     } catch (e) {
-      error.value = e.message
       console.error('Failed to stop streaming service:', e)
       throw e
     }
@@ -604,11 +597,6 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  // 以下动作完成后统一重拉 state：后端会在验证时回写状态字段，本地不自己拼
-  async function refreshLLMState() {
-    return loadLLMState()
-  }
-
   async function createLLMProfile(payload) {
     const result = await api.createLLMProfile(payload)
     await loadLLMState()
@@ -670,16 +658,9 @@ export const useSettingsStore = defineStore('settings', () => {
     llmDefaultModelId.value = id
   }
 
-  async function updateLLMSettings(payload) {
-    await api.updateLLMSettings(payload)
-    llmDefaultModelId.value = payload.default_model_id ?? llmDefaultModelId.value
-    llmFallbackModelId.value = payload.fallback_model_id ?? null
-  }
-
   return {
     settings,
     isLoading,
-    error,
     runtimeStatus,
     modelCatalog,
     presets,
@@ -713,7 +694,6 @@ export const useSettingsStore = defineStore('settings', () => {
     deletePreset,
     loadLLMState,
     loadLLMProviders,
-    refreshLLMState,
     createLLMProfile,
     updateLLMProfile,
     deleteLLMProfile,
@@ -724,7 +704,6 @@ export const useSettingsStore = defineStore('settings', () => {
     updateLLMModel,
     deleteLLMModel,
     verifyLLMModel,
-    activateLLMModel,
-    updateLLMSettings
+    activateLLMModel
   }
 })

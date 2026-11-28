@@ -4,15 +4,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  IDLE_SESSION_STATUS_TEXT,
   deriveCompletionToast
 } from '../src/composables/recorder/statusCopy.mjs'
 // 注：deriveOptimizationDegradedToast 已随 LLM v2（移除 .env 内置 key 兜底）删除，
 // 后端不再广播 optimization_degraded（降级改由 done 事件的 degraded 字段表达）。
-
-test('IDLE_SESSION_STATUS_TEXT：空闲态文案', () => {
-  assert.equal(IDLE_SESSION_STATUS_TEXT, '按快捷键开始录音')
-})
 
 test('deriveCompletionToast：转写阶段三态文案', () => {
   assert.equal(

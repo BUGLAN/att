@@ -23,12 +23,6 @@ pub fn get_backend_token(state: State<'_, AppState>) -> String {
     state.backend_token.clone()
 }
 
-/// 平台字符串沿用 Electron 命名（win32/darwin/linux），前端零改动。
-#[tauri::command]
-pub fn get_platform() -> String {
-    att_core::Platform::current().as_str().to_string()
-}
-
 // ---------------- 窗口 ----------------
 
 #[tauri::command]
@@ -135,12 +129,6 @@ pub fn sync_desktop_settings(state: State<'_, AppState>, payload: Value) -> Resu
 }
 
 // ---------------- 剪贴板 ----------------
-
-#[tauri::command]
-pub fn read_clipboard_text() -> Result<String, String> {
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| err(e.to_string()))?;
-    clipboard.get_text().map_err(|e| err(e.to_string()))
-}
 
 #[tauri::command]
 pub async fn write_clipboard_text(text: String) -> Result<bool, String> {

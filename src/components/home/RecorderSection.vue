@@ -108,6 +108,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRecorder } from '@/composables/useRecorder'
+import { deriveRecorderPanelStatus } from '@/composables/recorder/nativeSession.mjs'
 import { deriveStreamingProviderLabel } from '@/composables/recorder/streamingProvider.mjs'
 import { deriveRecorderEngineStatus } from '@/composables/recorder/engineStatus.mjs'
 import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
@@ -184,25 +185,13 @@ const formattedDuration = computed(() => {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 })
 
-const panelStatus = computed(() => {
-  if (isRecording.value && isStreamingModeEnabled.value) {
-    if (livePhase.value === 'connecting') return '正在连接流式转写服务'
-    if (livePhase.value === 'finalizing') return '正在生成最终转写结果'
-    return '正在连续流式转写'
-  }
-
-  if (isRecording.value && isMultiModeEnabled.value) {
-    if (livePhase.value === 'speaking') return '正在捕获当前语音片段'
-    if (livePhase.value === 'segment-processing') return '上一段已送去转写'
-    if (livePhase.value === 'finalizing') return '正在合并整场录音结果'
-    return '静音切段监听中'
-  }
-
-  if (isRecording.value) return '正在录制整段音频'
-  if (isTranscribing.value) return '正在处理录音结果'
-  if (livePhase.value === 'optimizing') return '正在后台优化文本'
-  return '等待开始录音'
-})
+const panelStatus = computed(() => deriveRecorderPanelStatus({
+  isRecording: isRecording.value,
+  isTranscribing: isTranscribing.value,
+  isStreaming: isStreamingModeEnabled.value,
+  isMulti: isMultiModeEnabled.value,
+  livePhase: livePhase.value
+}))
 
 // 声纹：36 根细条，空闲时收成一条 3px 的静线；录音时按音量起伏（单段模式没有实时电平，用固定幅度）
 const WAVE_SHAPE = [0.35, 0.6, 0.45, 0.8, 0.55, 0.3, 0.7, 0.95, 0.5, 0.4, 0.75, 0.6,
@@ -408,9 +397,9 @@ watch(
   { flush: 'post' }
 )
 
-async function refreshModelServiceStatus(probeRuntime = true) {
+async function refreshModelServiceStatus() {
   try {
-    await settingsStore.loadRuntimeStatus(probeRuntime)
+    await settingsStore.loadRuntimeStatus()
   } catch (error) {
     console.error('[RecorderSection] Failed to refresh model service status:', error)
   }
@@ -430,13 +419,13 @@ function toggleRecording() {
 }
 
 onMounted(() => {
-  void refreshModelServiceStatus(true)
+  void refreshModelServiceStatus()
 })
 
 watch(
   () => [settingsStore.settings.asr_provider, settingsStore.settings.recording_mode],
   () => {
-    void refreshModelServiceStatus(true)
+    void refreshModelServiceStatus()
   },
   { immediate: false }
 )

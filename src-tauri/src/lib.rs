@@ -301,7 +301,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_backend_port,
             commands::get_backend_token,
-            commands::get_platform,
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_close,
@@ -309,7 +308,6 @@ pub fn run() {
             commands::save_desktop_settings,
             commands::sync_input_settings,
             commands::sync_desktop_settings,
-            commands::read_clipboard_text,
             commands::write_clipboard_text,
             commands::write_clipboard_image,
             commands::get_clipboard_panel_context,

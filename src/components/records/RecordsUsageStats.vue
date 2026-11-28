@@ -172,7 +172,6 @@ onBeforeUnmount(() => {
   clearTimeout(refreshTimer)
 })
 
-defineExpose({ refresh })
 </script>
 
 <style scoped>

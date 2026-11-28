@@ -8,12 +8,8 @@ export const useOptimizationStreamStore = defineStore('optimizationStream', () =
   const phase = ref('idle') // idle | waiting | streaming | done | error | cancelled
   const error = ref('')
   const source = ref('auto') // auto | manual
-  const startedAt = ref(0)
-  const firstTokenAt = ref(0)
 
   const isActive = computed(() => phase.value === 'waiting' || phase.value === 'streaming')
-  const isWaitingForFirstToken = computed(() => phase.value === 'waiting')
-  const hasText = computed(() => Boolean(text.value))
 
   function begin(id, options = {}) {
     recordId.value = id || ''
@@ -21,8 +17,6 @@ export const useOptimizationStreamStore = defineStore('optimizationStream', () =
     phase.value = 'waiting'
     error.value = ''
     source.value = options.source || 'auto'
-    startedAt.value = Date.now()
-    firstTokenAt.value = 0
   }
 
   function append(chunk) {
@@ -31,9 +25,6 @@ export const useOptimizationStreamStore = defineStore('optimizationStream', () =
     }
 
     if (phase.value === 'waiting' || phase.value === 'streaming') {
-      if (!firstTokenAt.value) {
-        firstTokenAt.value = Date.now()
-      }
       text.value += chunk
       phase.value = 'streaming'
     }
@@ -59,32 +50,17 @@ export const useOptimizationStreamStore = defineStore('optimizationStream', () =
     phase.value = 'cancelled'
   }
 
-  function reset() {
-    recordId.value = ''
-    text.value = ''
-    phase.value = 'idle'
-    error.value = ''
-    source.value = 'auto'
-    startedAt.value = 0
-    firstTokenAt.value = 0
-  }
-
   return {
     recordId,
     text,
     phase,
     error,
     source,
-    startedAt,
-    firstTokenAt,
     isActive,
-    isWaitingForFirstToken,
-    hasText,
     begin,
     append,
     finish,
     fail,
-    cancel,
-    reset
+    cancel
   }
 })

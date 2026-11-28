@@ -1,6 +1,6 @@
 /**
  * HTTP API client
- * 直接访问 Python FastAPI 后端，不经过 IPC 中转。
+ * 访问内嵌 axum 数据面，不经过 IPC 中转。
  */
 import { createNdjsonParser } from '@/utils/ndjson.mjs'
 import { buildRecordsExportQuery } from '@/utils/exportDownload.mjs'
@@ -16,7 +16,6 @@ let injectedTokenCache = null
 // Rust 数据面的首选固定端口（app 侧同值）；被占用时 Rust 会回退随机端口，
 // 此时以注入值为准。这里保留探测兜底，避免「注入失败 + invoke 失败」时整站瘫痪。
 const PREFERRED_BACKEND_PORT = 17890
-const LEGACY_PYTHON_PORT = 8000
 
 async function probeHealth(port, timeoutMs = 900) {
   try {
@@ -32,7 +31,7 @@ async function probeHealth(port, timeoutMs = 900) {
   }
 }
 
-export async function getBackendPort() {
+async function getBackendPort() {
   if (backendPort) {
     return backendPort
   }
@@ -65,18 +64,14 @@ export async function getBackendPort() {
     }
   }
 
-  // ③ 探测兜底：固定端口 → 旧 Python 端口
-  for (const candidate of [PREFERRED_BACKEND_PORT, LEGACY_PYTHON_PORT]) {
-    if (await probeHealth(candidate)) {
-      backendPort = candidate
-      console.info('[API] 后端端口:', backendPort, '（健康探测命中）')
-      return backendPort
-    }
+  // ③ 探测兜底：只认当前 Rust 数据面的固定端口
+  if (await probeHealth(PREFERRED_BACKEND_PORT)) {
+    backendPort = PREFERRED_BACKEND_PORT
+    console.info('[API] 后端端口:', backendPort, '（健康探测命中）')
+    return backendPort
   }
 
-  backendPort = typeof window !== 'undefined' && window.__TAURI_INTERNALS__
-    ? PREFERRED_BACKEND_PORT
-    : LEGACY_PYTHON_PORT
+  backendPort = PREFERRED_BACKEND_PORT
   console.warn('[API] 后端端口探测失败，使用默认值:', backendPort)
   return backendPort
 }
@@ -431,7 +426,6 @@ export const api = {
     return request('GET', `/clipboard/items${query ? `?${query}` : ''}`)
   },
   getClipboardStats: () => request('GET', '/clipboard/stats'),
-  createClipboardItem: (data) => request('POST', '/clipboard/items', { body: data }),
   async getClipboardItemImageUrl(id, version = '') {
     const baseUrl = await getBaseUrl()
     const token = await getBackendToken()
@@ -483,7 +477,7 @@ export const api = {
   saveSettings: (settings) => request('PUT', '/settings', { body: settings }),
   // 设置 → 诊断 →「外部 API」显式显示 / 复制持久令牌时读取明文；响应不缓存、不进普通设置
   revealApiToken: () => request('GET', '/settings/api-token'),
-  getHealth: (probeRuntime = false) => request('GET', `/health${probeRuntime ? '?probe_runtime=true' : ''}`),
+  getHealth: () => request('GET', '/health'),
   // 本地模型：清单 / 后台下载 / 进度 / 取消 / 删除（模型体积大，下载在数据面后台进行）
   getModels: () => request('GET', '/models'),
   downloadModel: (id, source) => request(
@@ -528,8 +522,6 @@ export const api = {
   deleteLLMModel: (id) => request('DELETE', `/llm/models/${id}`),
   verifyLLMModel: (id) => request('POST', `/llm/models/${id}/verify`, { timeout: SLOW_TIMEOUT_MS }),
   activateLLMModel: (id) => request('POST', `/llm/models/${id}/activate`),
-  updateLLMSettings: (payload) => request('PUT', '/llm/settings', { body: payload }),
-
   // 检查更新（设置页「关于」）：检查失败也是 200，原因在 check.error；下载在后台进行，轮询 getUpdateStatus 看进度
   getUpdateStatus: () => request('GET', '/update'),
   checkForUpdates: () => request('POST', '/update/check'),

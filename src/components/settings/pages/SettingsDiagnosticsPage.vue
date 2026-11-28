@@ -580,7 +580,7 @@ async function restartNow() {
 }
 
 onMounted(async () => {
-  settingsStore.loadRuntimeStatus(false).catch(() => {})
+  settingsStore.loadRuntimeStatus().catch(() => {})
   void loadStorage()
   try {
     appInfo.value = await getAppInfo()

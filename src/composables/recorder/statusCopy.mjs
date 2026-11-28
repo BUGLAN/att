@@ -4,9 +4,6 @@
 // 已复制但自动粘贴失败时用独立文案，避免用户误以为剪贴板里没有内容。
 // 本模块不依赖 Vue / 浏览器全局对象，可被 Node 直接单测。
 
-// 空闲态兜底文案
-export const IDLE_SESSION_STATUS_TEXT = '按快捷键开始录音'
-
 // 完成态三态文案：copied = 已复制并粘贴；failed = 尝试过但失败；plain = 未开启自动复制
 const COMPLETION_TOAST_COPY = Object.freeze({
   transcription: Object.freeze({

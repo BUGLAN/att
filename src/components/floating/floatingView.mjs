@@ -9,8 +9,7 @@
 // 优化稿不回填悬浮窗（它停留很短，一闪而过反而突兀），优化结果直接打进输入框；
 // 流式录音中，末尾还没被服务端确认的那截（正在说的这句）带 pending，界面显示成淡白色；
 // 结果态（成 / 敗）只剩印章，停留片刻后隐藏；失败原因放在 title 里悬停可见。
-// 切换优化预设（notice）：空闲时弹出「潤」+ 预设名，停留片刻后收起；录音中不打断，
-// 只在胶囊上方用小字显示当前预设（自动优化开启时后端随录音状态带 preset）。
+// 切换优化预设（notice）：空闲时弹出「潤」+ 预设名，停留片刻后收起；录音中不打断。
 
 export const SEALS = Object.freeze({
   idle: '錄',
@@ -75,32 +74,31 @@ export function tailWithPending(text, pendingChars = 0, max = TAIL_CHARS) {
 }
 
 function result(seal, hideAfterMs, detail = '', notice = '') {
-  return { seal, glyph: SEALS[seal], active: false, text: '', pending: '', busy: false, cancellable: false, hideAfterMs, detail, notice, preset: '' }
+  return { seal, glyph: SEALS[seal], active: false, text: '', pending: '', busy: false, cancellable: false, hideAfterMs, detail, notice }
 }
 
-function working(seal, { text = '', pending = '', busy = false }, preset = '') {
-  return { seal, glyph: SEALS[seal], active: true, text, pending, busy, cancellable: true, hideAfterMs: null, detail: '', notice: '', preset: String(preset || '') }
+function working(seal, { text = '', pending = '', busy = false }) {
+  return { seal, glyph: SEALS[seal], active: true, text, pending, busy, cancellable: true, hideAfterMs: null, detail: '', notice: '' }
 }
 
 /**
- * @param {{ phase?: string, mode?: string, text?: string, pending?: number, draft?: string, ok?: boolean, preset?: string }} state
+ * @param {{ phase?: string, mode?: string, text?: string, pending?: number, draft?: string, ok?: boolean }} state
  *   pending：录音中 text 末尾未确认的字数（只有流式有，多段的分段结果都是定稿）
  *   draft：进入优化时的转写原文，照常显示；优化阶段的 text 一律不显示
- *   preset：自动优化要用的预设名（录音 / 识别 / 优化中显示在胶囊上方）；notice 相位时 text 是新预设名
  * @param {{ previousText?: string }} session 本次会话上一次显示的文字：
  *   松开后进入「轉」时后端不再带文字，沿用它撑住胶囊直到结束。
  */
-export function deriveFloatingView({ phase, mode, text, pending, draft, ok, preset } = {}, { previousText = '' } = {}) {
+export function deriveFloatingView({ phase, mode, text, pending, draft, ok } = {}, { previousText = '' } = {}) {
   switch (phase) {
     case 'recording':
       // 单段模式录完才识别：录音中只有印章
       return mode === 'streaming' || mode === 'multi'
-        ? working('listening', tailWithPending(text, pending), preset)
-        : working('listening', {}, preset)
+        ? working('listening', tailWithPending(text, pending))
+        : working('listening', {})
     case 'transcribing':
     case 'optimizing': {
       const pending = tailText(draft) || previousText
-      return working('converting', { text: pending, busy: true }, preset)
+      return working('converting', { text: pending, busy: true })
     }
     case 'notice':
       return result('preset', NOTICE_HOLD_MS, '', String(text || ''))

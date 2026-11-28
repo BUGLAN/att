@@ -104,37 +104,6 @@ body::before {
    Header
    ============================================ */
 
-/* ============================================
-   Recorder Section
-   ============================================ */
-/* Record Button */
-
-/* Recording State */
-
-/* Processing State */
-
-.duration {
-    font-family: var(--font-mono);
-    font-size: var(--fs-base);
-    font-weight: 700;
-    color: var(--text-primary);
-    min-width: 50px;
-    opacity: 0;
-    max-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    transition: opacity 0.3s ease, max-width 0.3s ease, margin 0.3s ease;
-    margin-left: 0;
-}
-
-.duration.visible {
-    opacity: 1;
-    max-width: 60px;
-    margin-left: var(--space-sm);
-}
-
-/* Buttons */
-
 /* ------------------------------------------------------------
    按下反馈（:active）：全仓此前只有 1 处 :active，按钮普遍"按不下去"。
    这里补齐按钮族的按下态：轻微下沉 + 压暗，配合 --t-fast 形成触感。

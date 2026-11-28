@@ -97,14 +97,6 @@ test('切换优化预设：空闲时「潤」+ 预设名，停留片刻收起；
   assert.ok(startsNewSession({ wasActive: notice.active, prevSeal: notice.seal, next: deriveFloatingView({ phase: 'recording', mode: 'streaming' }) }))
 })
 
-test('录音 / 识别 / 优化中带上预设名（胶囊上方小字）；结果态与没开自动优化时不带', () => {
-  assert.equal(deriveFloatingView({ phase: 'recording', mode: 'single', preset: '会议记录' }).preset, '会议记录')
-  assert.equal(deriveFloatingView({ phase: 'recording', mode: 'streaming', text: '你好', preset: '会议记录' }).preset, '会议记录')
-  assert.equal(deriveFloatingView({ phase: 'optimizing', draft: '原文', preset: '程序员模式' }).preset, '程序员模式')
-  assert.equal(deriveFloatingView({ phase: 'recording', mode: 'streaming' }).preset, '')
-  assert.equal(deriveFloatingView({ phase: 'complete', ok: true, preset: '会议记录' }).preset, '')
-})
-
 test('未知相位回到待命：錄、不自动隐藏', () => {
   const idle = deriveFloatingView({})
   assert.equal(idle.glyph, '錄')

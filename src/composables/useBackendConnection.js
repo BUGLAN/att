@@ -1,4 +1,3 @@
-import { ref } from 'vue'
 import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 
@@ -8,21 +7,15 @@ import { useAppStore } from '@/stores/app'
 
 const HEALTH_POLL_INTERVAL_MS = 5000
 
-const isConnected = ref(false)
-const error = ref(null)
 let healthPollTimer = null
 
 async function probeBackendHealth() {
   const appStore = useAppStore()
   try {
-    await api.getHealth(false)
-    isConnected.value = true
-    error.value = null
+    await api.getHealth()
     appStore.setConnected(true)
     appStore.setConnectedClients(1)
   } catch (caught) {
-    isConnected.value = false
-    error.value = caught?.message || 'backend unreachable'
     appStore.setConnected(false)
     appStore.setConnectedClients(0)
   }
@@ -38,14 +31,6 @@ function connect() {
   }, HEALTH_POLL_INTERVAL_MS)
 }
 
-function disconnect() {
-  if (healthPollTimer) {
-    clearInterval(healthPollTimer)
-    healthPollTimer = null
-  }
-  isConnected.value = false
-}
-
 export function useBackendConnection() {
-  return { isConnected, error, connect, disconnect }
+  return { connect }
 }

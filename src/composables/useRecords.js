@@ -33,9 +33,6 @@ export function useRecords() {
   const { api, clipboard } = useElectron()
 
   const records = computed(() => recordsStore.sortedRecords)
-  const isLoading = computed(() => recordsStore.isLoading)
-  const selectMode = computed(() => appStore.selectMode)
-  const selectedRecords = computed(() => appStore.selectedRecords)
 
   async function loadRecords() {
     await recordsStore.loadRecords()
@@ -51,27 +48,8 @@ export function useRecords() {
     }
   }
 
-  async function deleteSelected() {
-    const ids = Array.from(appStore.selectedRecords)
-    if (ids.length === 0) {
-      return
-    }
-
-    try {
-      await recordsStore.deleteRecords(ids)
-      appStore.clearSelection()
-      appStore.showToast(`已删除 ${ids.length} 条记录`)
-    } catch (error) {
-      appStore.showToast('批量删除失败')
-      throw error
-    }
-  }
-
   function patchOptimizationResult(id, patch) {
     recordsStore.updateRecordStatus(id, patch)
-    if (!appStore.currentRecordId || appStore.currentRecordId === id) {
-      appStore.setRecordStatus({ record_id: id, ...patch })
-    }
     if (appStore.currentRecord?.id === id) {
       appStore.setCurrentRecord({ ...appStore.currentRecord, ...patch })
     }
@@ -311,22 +289,6 @@ export function useRecords() {
     }
   }
 
-  function toggleSelectMode() {
-    appStore.toggleSelectMode()
-  }
-
-  function toggleSelection(recordId) {
-    appStore.toggleRecordSelection(recordId)
-  }
-
-  function selectAll() {
-    appStore.selectAllRecords(records.value.map((record) => record.id))
-  }
-
-  function clearSelection() {
-    appStore.clearSelection()
-  }
-
   /**
    * 切换音频播放/暂停
    * 播放新音频时自动停止上一条
@@ -386,12 +348,8 @@ export function useRecords() {
 
   return {
     records,
-    isLoading,
-    selectMode,
-    selectedRecords,
     loadRecords,
     deleteRecord,
-    deleteSelected,
     optimizeRecord,
     cancelOptimize,
     asrEngines,
@@ -400,10 +358,6 @@ export function useRecords() {
     copyText,
     toggleFavorite,
     exportRecord,
-    toggleSelectMode,
-    toggleSelection,
-    selectAll,
-    clearSelection,
     toggleAudio,
     isPlaying
   }

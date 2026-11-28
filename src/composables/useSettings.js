@@ -4,39 +4,11 @@ import { useAppStore } from '@/stores/app'
 
 export function useSettings() {
   const settingsStore = useSettingsStore()
-  const appStore = useAppStore()
 
   const settings = computed(() => settingsStore.settings)
-  const isLoading = computed(() => settingsStore.isLoading)
-
-  async function loadSettings() {
-    await settingsStore.loadSettings()
-  }
-
-  async function saveSettings(newSettings, options = {}) {
-    const { silent = false } = options
-    try {
-      const settingsToSave = newSettings || settingsStore.settings
-      await settingsStore.saveSettings(settingsToSave)
-      if (!silent) {
-        appStore.showToast('设置已保存')
-      }
-    } catch (error) {
-      appStore.showToast('保存设置失败')
-      throw error
-    }
-  }
-
-  async function updateSetting(key, value) {
-    await saveSettings({ [key]: value })
-  }
 
   return {
-    settings,
-    isLoading,
-    loadSettings,
-    saveSettings,
-    updateSetting
+    settings
   }
 }
 

@@ -898,7 +898,7 @@ onMounted(async () => {
   // 让下面的 isInitialized 停在 false —— 那会让此后所有设置保存被守卫静默跳过
   const initResults = await Promise.allSettled([
     settingsStore.loadSettings(),
-    settingsStore.loadRuntimeStatus(true),
+    settingsStore.loadRuntimeStatus(),
     loadPresets(),
     loadAudioInputDevices()
   ])

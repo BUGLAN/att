@@ -6,9 +6,7 @@ export const useRecordsStore = defineStore('records', () => {
   const { api, tray } = useElectron()
 
   const records = ref([])
-  const currentRecord = ref(null)
   const isLoading = ref(false)
-  const error = ref(null)
 
   // 记录集页面走 /records/search 服务端分页；store 只保留最近这么多条，供托盘菜单和首页「最近」使用。
   const RECENT_LIMIT = 200
@@ -17,15 +15,12 @@ export const useRecordsStore = defineStore('records', () => {
     return [...records.value].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
   })
 
-  const recordCount = computed(() => records.value.length)
-
   function syncTrayMenu() {
     tray.updateMenu()
   }
 
   async function loadRecords() {
     isLoading.value = true
-    error.value = null
 
     try {
       const result = await api.getRecords({ limit: RECENT_LIMIT })
@@ -33,23 +28,10 @@ export const useRecordsStore = defineStore('records', () => {
       syncTrayMenu()
       return records.value
     } catch (e) {
-      error.value = e.message
       console.error('Failed to load records:', e)
       throw e
     } finally {
       isLoading.value = false
-    }
-  }
-
-  async function getRecord(id) {
-    try {
-      const record = await api.getRecord(id)
-      currentRecord.value = record
-      return record
-    } catch (e) {
-      error.value = e.message
-      console.error('Failed to get record:', e)
-      throw e
     }
   }
 
@@ -65,7 +47,6 @@ export const useRecordsStore = defineStore('records', () => {
       syncTrayMenu()
       return updated
     } catch (e) {
-      error.value = e.message
       console.error('Failed to update record:', e)
       throw e
     }
@@ -77,7 +58,6 @@ export const useRecordsStore = defineStore('records', () => {
       records.value = records.value.filter((record) => record.id !== id)
       syncTrayMenu()
     } catch (e) {
-      error.value = e.message
       console.error('Failed to delete record:', e)
       throw e
     }
@@ -89,7 +69,6 @@ export const useRecordsStore = defineStore('records', () => {
       records.value = records.value.filter((record) => !ids.includes(record.id))
       syncTrayMenu()
     } catch (e) {
-      error.value = e.message
       console.error('Failed to delete records:', e)
       throw e
     }
@@ -112,7 +91,6 @@ export const useRecordsStore = defineStore('records', () => {
       }
       return result
     } catch (e) {
-      error.value = e.message
       console.error('Failed to optimize record:', e)
       throw e
     }
@@ -122,7 +100,6 @@ export const useRecordsStore = defineStore('records', () => {
     try {
       return await api.exportRecord(id, format)
     } catch (e) {
-      error.value = e.message
       console.error('Failed to export record:', e)
       throw e
     }
@@ -143,13 +120,9 @@ export const useRecordsStore = defineStore('records', () => {
 
   return {
     records,
-    currentRecord,
     isLoading,
-    error,
     sortedRecords,
-    recordCount,
     loadRecords,
-    getRecord,
     updateRecord,
     deleteRecord,
     deleteRecords,

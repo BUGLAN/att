@@ -160,7 +160,6 @@
 
   /* ---------- 11. 统一滚动条 ---------- */
   --scroll-size: 10px;
-  --scroll-size-thin: 6px;
   --scroll-track: rgba(17, 17, 19, 0.72);
   --scroll-thumb: rgba(161, 161, 170, 0.34);
   --scroll-thumb-hover: rgba(201, 162, 39, 0.72);

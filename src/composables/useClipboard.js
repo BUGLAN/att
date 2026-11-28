@@ -15,7 +15,6 @@ export function useClipboard() {
     pinned: 0
   })
   const isLoading = ref(false)
-  const isImporting = ref(false)
   const itemsRequest = createLatestRequestGuard()
   const statsRequest = createLatestRequestGuard()
 
@@ -53,31 +52,6 @@ export function useClipboard() {
       loadItems(filters),
       loadStats()
     ])
-  }
-
-  async function importCurrentClipboard() {
-    isImporting.value = true
-
-    try {
-      const content = await clipboard.readText()
-      if (!content || !content.trim()) {
-        appStore.showToast('当前系统剪切板没有可导入的文本')
-        return null
-      }
-
-      const created = await api.createClipboardItem({
-        content,
-        source: 'manual_import'
-      })
-      appStore.showToast('已导入当前剪切板')
-      return created
-    } catch (error) {
-      console.error('[Clipboard] Failed to import current clipboard:', error)
-      appStore.showToast('导入当前剪切板失败')
-      return null
-    } finally {
-      isImporting.value = false
-    }
   }
 
   async function toggleFavorite(item) {
@@ -132,10 +106,8 @@ export function useClipboard() {
     items,
     stats,
     isLoading,
-    isImporting,
     refresh,
     refreshStats: loadStats,
-    importCurrentClipboard,
     toggleFavorite,
     togglePin,
     removeItem,
