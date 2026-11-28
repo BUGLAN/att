@@ -96,7 +96,10 @@ pub fn start(core: Arc<CoreState>) {
         let mut clipboard: Option<arboard::Clipboard> = None;
         // 基线：启动时剪贴板里已有的内容不入库
         let mut last_change = crate::desktop::clipboard_change_count();
-        let mut last_observed = observe(&mut clipboard).map(|o| o.key).unwrap_or_default();
+        let mut last_observed = match observe(&mut clipboard) {
+            ObserveResult::Content(observation) => Some(observation.key),
+            ObserveResult::NoContent | ObserveResult::Failed => None,
+        };
         tracing::info!("剪贴板监控已启动（{}ms 轮询）", POLL_INTERVAL.as_millis());
         loop {
             std::thread::sleep(POLL_INTERVAL);
@@ -116,13 +119,12 @@ pub fn start(core: Arc<CoreState>) {
                 last_change = change;
                 continue;
             }
-            // 读失败（如 Windows 上剪贴板正被别的程序占用）时不推进计数，下一轮重试
-            let Some(observation) = observe(&mut clipboard) else { continue };
-            last_change = change;
-            if observation.key == last_observed {
+            // 读失败（如 Windows 上剪贴板正被别的程序占用）时不推进计数，下一轮重试；
+            // 剪贴板为空或只有文件等其他格式时没有可入库内容，但仍要推进计数，避免每轮重复打开。
+            let result = observe(&mut clipboard);
+            let Some(observation) = accept_observation(change, result, &mut last_change, &mut last_observed) else {
                 continue;
-            }
-            last_observed = observation.key.clone();
+            };
             if consume_mark(&observation.key) {
                 tracing::debug!("跳过本应用写入的剪贴板内容");
                 continue;
@@ -161,35 +163,80 @@ struct Observation {
     content: Content,
 }
 
+enum ObserveResult {
+    Content(Observation),
+    /// 剪贴板里没有可识别的文本或图片（例如只有 CF_HDROP，或已被清空）。
+    NoContent,
+    /// 剪贴板正被占用，或访问句柄失效；下一轮重建/重试。
+    Failed,
+}
+
+/// 更新监控基线。只有读取成功时才推进换代计数；没有内容时还要忘掉上一份内容，
+/// 这样清空后再复制同一段文字仍能正常入库。
+fn accept_observation(
+    change: Option<i64>,
+    result: ObserveResult,
+    last_change: &mut Option<i64>,
+    last_observed: &mut Option<String>,
+) -> Option<Observation> {
+    match result {
+        ObserveResult::Failed => None,
+        ObserveResult::NoContent => {
+            *last_change = change;
+            *last_observed = None;
+            None
+        }
+        ObserveResult::Content(observation) => {
+            *last_change = change;
+            if last_observed.as_deref() == Some(observation.key.as_str()) {
+                return None;
+            }
+            *last_observed = Some(observation.key.clone());
+            Some(observation)
+        }
+    }
+}
+
 /// 读一次剪贴板：有文本就取文本，没有文本才读图片；剪贴板句柄失效时下次重建。
 ///
 /// 文本优先：Excel / Word / 浏览器复制文字时常同时附带一份「延迟渲染」的位图，
 /// 读图片会逼源程序当场把位图画出来（Windows 上源程序会跟着卡一下），还要整图解码、哈希、编码 PNG，
 /// 而且把一段表格存成了截图。截图、复制图片这类只有图片没有文本的内容照常按图片入库。
-fn observe(clipboard: &mut Option<arboard::Clipboard>) -> Option<Observation> {
+fn observe(clipboard: &mut Option<arboard::Clipboard>) -> ObserveResult {
     if clipboard.is_none() {
         *clipboard = arboard::Clipboard::new().ok();
     }
-    let board = clipboard.as_mut()?;
+    let Some(board) = clipboard.as_mut() else { return ObserveResult::Failed };
     match board.get_text() {
         Ok(text) => {
             let normalized = normalize_text(&text);
             if !normalized.is_empty() {
-                return Some(Observation { key: normalized.clone(), content: Content::Text(normalized) });
+                return ObserveResult::Content(Observation {
+                    key: normalized.clone(),
+                    content: Content::Text(normalized),
+                });
             }
         }
         Err(arboard::Error::ContentNotAvailable) => {}
         Err(_) => {
             *clipboard = None;
-            return None;
+            return ObserveResult::Failed;
         }
     }
-    let image = board.get_image().ok().filter(|image| image.width > 0 && image.height > 0)?;
-    let rgba = image.bytes.into_owned();
-    Some(Observation {
-        key: format!("image:{}", hex(&Sha256::digest(&rgba))),
-        content: Content::Image { width: image.width, height: image.height, rgba },
-    })
+    match board.get_image() {
+        Ok(image) if image.width > 0 && image.height > 0 => {
+            let rgba = image.bytes.into_owned();
+            ObserveResult::Content(Observation {
+                key: format!("image:{}", hex(&Sha256::digest(&rgba))),
+                content: Content::Image { width: image.width, height: image.height, rgba },
+            })
+        }
+        Ok(_) | Err(arboard::Error::ContentNotAvailable) => ObserveResult::NoContent,
+        Err(_) => {
+            *clipboard = None;
+            ObserveResult::Failed
+        }
+    }
 }
 
 /// 编码 PNG → 按 PNG 字节哈希落盘 → 入库（元数据形状与旧版一致，剪贴板页据此显示尺寸与预览）。
@@ -257,5 +304,29 @@ mod tests {
         }
         assert!(!consume_change(-120), "太早的已被挤掉");
         assert!(consume_change(-101));
+    }
+
+    #[test]
+    fn 无可识别内容会推进换代计数并清掉上次内容() {
+        let mut last_change = Some(10);
+        let mut last_observed = Some("old text".to_string());
+
+        let accepted = accept_observation(Some(11), ObserveResult::NoContent, &mut last_change, &mut last_observed);
+
+        assert!(accepted.is_none());
+        assert_eq!(last_change, Some(11));
+        assert_eq!(last_observed, None, "清空后再复制相同内容仍应入库");
+    }
+
+    #[test]
+    fn 读取失败不推进换代计数() {
+        let mut last_change = Some(10);
+        let mut last_observed = Some("old text".to_string());
+
+        let accepted = accept_observation(Some(11), ObserveResult::Failed, &mut last_change, &mut last_observed);
+
+        assert!(accepted.is_none());
+        assert_eq!(last_change, Some(10));
+        assert_eq!(last_observed.as_deref(), Some("old text"));
     }
 }

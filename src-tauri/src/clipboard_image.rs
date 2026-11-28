@@ -289,10 +289,10 @@ mod platform {
         write_with_owner(owner(app), rgba, width, height, png)
     }
 
-    /// 标准剪贴板里内容确实是 HGLOBAL 的格式。`HBITMAP`、元文件、私有格式不是，
-    /// `GlobalSize` 拿不到大小，快照跳过——恢复是尽力而为。
-    fn is_global_format(format: u32) -> bool {
-        matches!(format, 1 | 7 | 8 | 13 | 15 | 16 | 17) || format >= 0xC000
+    /// 失败恢复只保留体积小的标准文本格式。其他标准格式和所有注册格式跳过，
+    /// 避免 Office / Explorer 的延迟渲染来源为了快照被迫当场生成大对象。
+    fn is_snapshot_format(format: u32) -> bool {
+        matches!(format, 1 | 7 | 13 | 16)
     }
 
     /// 读回某个全局内存格式的字节（调用方负责先打开剪贴板）。
@@ -329,7 +329,7 @@ mod platform {
             if format == 0 {
                 break;
             }
-            if is_global_format(format) {
+            if is_snapshot_format(format) {
                 if let Some(bytes) = read_block(format) {
                     out.push((format, bytes));
                 }
@@ -531,6 +531,16 @@ mod platform {
 
         fn prepared(format: u32, bytes: &[u8]) -> Prepared {
             Prepared::new(format, bytes).expect("分配全局内存失败")
+        }
+
+        #[test]
+        fn 快照只读取标准文本格式() {
+            for format in [1, 7, 13, 16] {
+                assert!(is_snapshot_format(format), "格式 {format} 应当进入失败恢复快照");
+            }
+            for format in [2, 8, 14, 15, 17, 0xC000] {
+                assert!(!is_snapshot_format(format), "格式 {format} 不应逼来源渲染或复制大对象");
+            }
         }
 
         #[test]
