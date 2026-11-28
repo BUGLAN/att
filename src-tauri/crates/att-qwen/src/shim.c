@@ -31,6 +31,18 @@
 
 #define ATT_ERR_LEN 1024
 
+/*
+ * 拼接推理库目录与文件名的分隔符。Windows 安装版的 resource_dir 带 `\\?\` 前缀（tauri 对 current_exe 做了
+ * canonicalize），这种路径不做 `/` 到 `\` 的规范化，`\\?\C:\...\sherpa-onnx/xxx.dll` 交给 LoadLibraryExW 打不开；
+ * `\\?\` 加 `\` 是合法路径。拼接一律用 ATT_PATH_FMT，不要手写斜杠。
+ */
+#if defined(_WIN32)
+#define ATT_PATH_SEP "\\"
+#else
+#define ATT_PATH_SEP "/"
+#endif
+#define ATT_PATH_FMT "%s" ATT_PATH_SEP "%s"
+
 /* ---- 动态库加载 ---- */
 
 #if defined(_WIN32)
@@ -151,13 +163,41 @@ static void att_preload_dependencies(const char *lib_dir) {
     if (!path) {
       return;
     }
-    snprintf(path, len, "%s/%s", lib_dir, names[i]);
+    snprintf(path, len, ATT_PATH_FMT, lib_dir, names[i]);
     att_dlopen(path); /* 失败无所谓：依赖可能存在、也可能不需要（如 DirectML） */
     free(path);
   }
 #else
   (void)lib_dir;
 #endif
+}
+
+/* 推理库目录下某个文件的完整路径（malloc，调用方用 att_qwen_free_text 释放；内存不足返回 NULL）。 */
+char *att_join_lib_path(const char *lib_dir, const char *name) {
+  if (!lib_dir || !name) {
+    return NULL;
+  }
+  size_t len = strlen(lib_dir) + strlen(name) + 2;
+  char *path = (char *)malloc(len);
+  if (path) {
+    snprintf(path, len, ATT_PATH_FMT, lib_dir, name);
+  }
+  return path;
+}
+
+/* 按与加载推理库相同的拼接与加载方式试开 lib_dir 下的 name：能打开返回 1，否则 0（测试与诊断用）。 */
+int32_t att_probe_library(const char *lib_dir, const char *name) {
+  char *path = att_join_lib_path(lib_dir, name);
+  if (!path) {
+    return 0;
+  }
+  void *handle = att_dlopen(path);
+  free(path);
+  if (!handle) {
+    return 0;
+  }
+  att_dlclose(handle);
+  return 1;
 }
 
 static char *att_strdup(const char *value) {
@@ -192,7 +232,7 @@ AttQwen *att_qwen_create(const char *lib_dir, const char *conv_frontend, const c
     att_set_error(err, err_len, "内存分配失败");
     return NULL;
   }
-  snprintf(lib_path, path_len, "%s/%s", lib_dir, ATT_LIB_NAME);
+  snprintf(lib_path, path_len, ATT_PATH_FMT, lib_dir, ATT_LIB_NAME);
   AttQwen *handle = (AttQwen *)calloc(1, sizeof(AttQwen));
   if (!handle) {
     free(lib_path);
@@ -371,7 +411,7 @@ AttSenseVoice *att_sensevoice_create(const char *lib_dir, const char *model, con
     att_set_error(err, err_len, "内存分配失败");
     return NULL;
   }
-  snprintf(lib_path, path_len, "%s/%s", lib_dir, ATT_LIB_NAME);
+  snprintf(lib_path, path_len, ATT_PATH_FMT, lib_dir, ATT_LIB_NAME);
   AttSenseVoice *handle = (AttSenseVoice *)calloc(1, sizeof(AttSenseVoice));
   if (!handle) {
     free(lib_path);
@@ -555,7 +595,7 @@ AttVad *att_vad_create(const char *lib_dir, const char *model, float threshold,
     att_set_error(err, err_len, "内存分配失败");
     return NULL;
   }
-  snprintf(lib_path, path_len, "%s/%s", lib_dir, ATT_LIB_NAME);
+  snprintf(lib_path, path_len, ATT_PATH_FMT, lib_dir, ATT_LIB_NAME);
   att_preload_dependencies(lib_dir);
   handle->lib = att_dlopen(lib_path);
   if (!handle->lib) {

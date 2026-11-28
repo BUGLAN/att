@@ -1200,3 +1200,71 @@ mod tests {
         assert!((1.3..1.7).contains(&cut), "切点应在中间静音段内：{cut}");
     }
 }
+
+/// C 桥拼推理库路径的回归测试：Windows 安装版的资源目录带 `\\?\` 前缀，拼接必须用 `\`（见 shim.c 的 ATT_PATH_FMT）。
+#[cfg(test)]
+mod lib_path_tests {
+    use std::ffi::{CStr, CString};
+    use std::os::raw::c_char;
+
+    extern "C" {
+        fn att_join_lib_path(lib_dir: *const c_char, name: *const c_char) -> *mut c_char;
+        fn att_probe_library(lib_dir: *const c_char, name: *const c_char) -> i32;
+        fn att_qwen_free_text(text: *mut c_char);
+    }
+
+    fn join(dir: &str, name: &str) -> String {
+        let (dir, name) = (CString::new(dir).unwrap(), CString::new(name).unwrap());
+        // SAFETY: 两个参数都是有效的 C 字符串；返回值由 att_qwen_free_text 释放
+        unsafe {
+            let joined = att_join_lib_path(dir.as_ptr(), name.as_ptr());
+            assert!(!joined.is_null());
+            let text = CStr::from_ptr(joined).to_string_lossy().into_owned();
+            att_qwen_free_text(joined);
+            text
+        }
+    }
+
+    #[test]
+    fn 推理库路径按平台分隔符拼接() {
+        if cfg!(windows) {
+            assert_eq!(
+                join(r"\\?\C:\Program Files\att\sherpa-onnx", "x.dll"),
+                r"\\?\C:\Program Files\att\sherpa-onnx\x.dll"
+            );
+        } else {
+            assert_eq!(join("/opt/att/sherpa-onnx", "libx.so"), "/opt/att/sherpa-onnx/libx.so");
+        }
+    }
+
+    #[test]
+    fn 目录不存在时试开失败() {
+        let dir = CString::new(std::env::temp_dir().join("att-qwen-missing-lib-dir").display().to_string()).unwrap();
+        let name = CString::new("nope.dll").unwrap();
+        // SAFETY: 参数都是有效的 C 字符串
+        assert_eq!(unsafe { att_probe_library(dir.as_ptr(), name.as_ptr()) }, 0);
+    }
+
+    /// 复现安装版：canonicalize 得到 `\\?\` 前缀的目录，放一个真实 DLL，按 C 桥的拼接方式加载。
+    /// 修复前拼出 `\\?\…\dir/xxx.dll`，LoadLibraryExW 打不开。
+    #[cfg(windows)]
+    #[test]
+    fn 带长路径前缀的目录可以加载推理库() {
+        let dir = std::env::temp_dir().join(format!("att-qwen-verbatim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let dir_text = dir.display().to_string();
+        assert!(dir_text.starts_with(r"\\?\"), "canonicalize 应带长路径前缀: {dir_text}");
+        let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        std::fs::copy(
+            std::path::Path::new(&system).join("System32").join("version.dll"),
+            dir.join("sherpa-onnx-c-api.dll"),
+        )
+        .unwrap();
+        let (c_dir, name) = (CString::new(dir_text.clone()).unwrap(), CString::new("sherpa-onnx-c-api.dll").unwrap());
+        // SAFETY: 参数都是有效的 C 字符串
+        let loaded = unsafe { att_probe_library(c_dir.as_ptr(), name.as_ptr()) };
+        assert_eq!(loaded, 1, "带 \\\\?\\ 前缀的目录拼出的路径应能加载: {}", join(&dir_text, "sherpa-onnx-c-api.dll"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
