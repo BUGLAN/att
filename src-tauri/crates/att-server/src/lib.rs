@@ -3,12 +3,13 @@
 //! 鉴权：每次启动生成随机 token；除 `/api/health` 外所有端点要求 `X-ATT-Token`
 //! （`<audio>` / `<img>` / 下载等带不了请求头的 GET 用 `?token=`）。来源按协议 + 主机名
 //! 精确匹配本地页面与 Tauri 自定义来源，Host 只允许 `127.0.0.1` / `localhost`（挡住 DNS rebinding）；
-//! `/api/health` 虽不要求令牌，也必须通过回环 Host 校验。
+//! `/api/health` 虽不强制令牌，也必须通过回环 Host 校验；不带令牌时只返回探活字段，
+//! 带有效会话令牌或持久令牌时才返回完整运行态。
 //! 用户在「设置 → 诊断 → 外部 API」开启持久令牌后，外部进程也可用它代替本次启动的 token；
 //! 持久令牌只存 Fernet 密文，`GET /api/settings` 只返回是否已生成。
 //!
 //! 端点一览：
-//! - GET /api/health（前端 runtimeStatus：model_service_* 与 streaming_*）
+//! - GET /api/health（无令牌仅探活；带令牌返回前端 runtimeStatus：model_service_* 与 streaming_*）
 //! - GET/PUT /api/settings（白名单与脱敏）
 //! - GET /api/settings/api-token（诊断页显式显示 / 复制持久令牌，禁止缓存）
 //! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出、重新识别）；
@@ -40,7 +41,7 @@ mod update;
 use att_core::records::export::{self as record_export, ExportFormat};
 use att_core::records::{RecordError, RecordFilter, RecordUpdate};
 use att_core::state::CoreState;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Extension, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
@@ -54,6 +55,12 @@ pub struct ServerState {
     pub core: Arc<CoreState>,
     /// 本次启动生成的数据面令牌：敏感端点（文件转写等）要求请求头 `X-ATT-Token` 匹配。
     pub token: String,
+}
+
+/// health 守卫的令牌校验结果：无效令牌仍返回 200，但处理函数只给探活字段。
+#[derive(Clone, Copy)]
+struct HealthAuth {
+    valid: bool,
 }
 
 // ---------------- 路由 ----------------
@@ -73,7 +80,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .allow_headers(tower_http::cors::Any);
 
     // 令牌校验在 CORS 内侧：预检由 CORS 层直接应答，不会要求 X-ATT-Token。
-    // 除 /api/health 外所有端点都必须带本次启动的令牌或已开启的持久令牌；health 仍校验回环 Host。
+    // 除 /api/health 外所有端点都必须带本次启动的令牌或已开启的持久令牌；health 仍校验回环 Host，
+    // 无有效令牌时只返回探活字段。
     let guard_state = state.clone();
     let maintenance_core = state.core.clone();
     Router::new()
@@ -154,12 +162,13 @@ fn token_from_query(query: &str) -> Option<&str> {
 
 /// 数据面统一鉴权 / Host 校验。
 ///
-/// - `/api/health` 不需要令牌，但仍须回环 Host；CORS 预检直接放行（浏览器预检不带令牌）；
+/// - `/api/health` 不强制令牌，但仍须回环 Host；令牌校验结果写入请求扩展，处理函数据此裁剪字段；
+///   CORS 预检直接放行（浏览器预检不带令牌）；
 /// - 其余请求必须带 `X-ATT-Token`；GET/HEAD（录音回放、图片、导出）也接受 `?token=`；
 /// - 除预检外的请求 Host 只能是 `127.0.0.1[:端口]` / `localhost[:端口]`，挡住 DNS rebinding。
 async fn data_plane_guard(
     state: Arc<ServerState>,
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
     next: Next,
 ) -> axum::response::Response {
     if req.method() == Method::OPTIONS {
@@ -175,13 +184,6 @@ async fn data_plane_guard(
             .unwrap_or("");
         is_allowed_host(host)
     };
-    if req.uri().path() == "/api/health" {
-        if !host_ok {
-            return (StatusCode::FORBIDDEN, Json(json!({ "detail": "Host 不被允许" }))).into_response();
-        }
-        return next.run(req).await;
-    }
-
     let header_token = req.headers().get("x-att-token").and_then(|value| value.to_str().ok());
     let query_token = (req.method() == Method::GET || req.method() == Method::HEAD)
         .then(|| req.uri().query().and_then(token_from_query))
@@ -190,7 +192,17 @@ async fn data_plane_guard(
     // 两个令牌都完整比较，不在命中第一个时提前返回（保持常量时间语义）
     let session_ok = token_matches(&state.token, actual);
     let persistent_ok = state.core.api_token().is_some_and(|token| token_matches(&token, actual));
-    if !(session_ok | persistent_ok) {
+    let token_ok = session_ok | persistent_ok;
+
+    if req.uri().path() == "/api/health" {
+        if !host_ok {
+            return (StatusCode::FORBIDDEN, Json(json!({ "detail": "Host 不被允许" }))).into_response();
+        }
+        req.extensions_mut().insert(HealthAuth { valid: token_ok });
+        return next.run(req).await;
+    }
+
+    if !token_ok {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "detail": "缺少或错误的 X-ATT-Token" }))).into_response();
     }
 
@@ -542,8 +554,14 @@ fn wetype_engine_payload(core: &CoreState) -> Value {
     })
 }
 
-/// GET /api/health：前端 runtimeStatus 的全部字段（新旧双命名同源）。
-async fn health(State(state): State<Arc<ServerState>>) -> Json<Value> {
+/// GET /api/health：无有效令牌只返回探活字段；带令牌返回前端 runtimeStatus 的全部字段。
+async fn health(State(state): State<Arc<ServerState>>, Extension(auth): Extension<HealthAuth>) -> Json<Value> {
+    if !auth.valid {
+        return Json(json!({
+            "status": "ok",
+            "runtime_environment": "tauri-rust",
+        }));
+    }
     let settings = state.core.settings();
     let engine = engine_status(&state.core);
     Json(json!({
@@ -1259,6 +1277,26 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
+    async fn health_json(state: &Arc<ServerState>, uri: &str, token_header: Option<&str>) -> (StatusCode, Value) {
+        let mut builder = axum::http::Request::builder().uri(uri).header("host", "127.0.0.1");
+        if let Some(token) = token_header {
+            builder = builder.header("x-att-token", token);
+        }
+        let response = router(state.clone()).oneshot(builder.body(Body::empty()).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    fn assert_probe_only(body: &Value) {
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["runtime_environment"], "tauri-rust");
+        assert_eq!(body.as_object().unwrap().len(), 2, "探活响应只能有两个字段：{body}");
+        for hidden in ["local_engine", "wetype_engine", "model_service_ready", "model_service_error"] {
+            assert!(body.get(hidden).is_none(), "无令牌响应不能泄露 {hidden}：{body}");
+        }
+    }
+
     #[tokio::test]
     async fn 用量统计_默认近七天_含优化token_非法范围422() {
         let state = test_state("usage-stats").await;
@@ -1501,6 +1539,42 @@ mod tests {
             router(state.clone()).oneshot(request("test-token", "127.0.0.1:17890")).await.unwrap().status(),
             StatusCode::OK
         );
+    }
+
+    #[tokio::test]
+    async fn health_无有效令牌只探活_有效令牌返回完整运行态() {
+        let state = test_state("health-auth").await;
+
+        let (status, body) = health_json(&state, "/api/health", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_probe_only(&body);
+
+        let (status, body) = health_json(&state, "/api/health", Some("wrong-token")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_probe_only(&body);
+
+        for (uri, token) in [("/api/health", Some("test-token")), ("/api/health?token=test-token", None)] {
+            let (status, body) = health_json(&state, uri, token).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["asr_provider"], state.core.settings().asr_provider);
+            assert!(body.get("local_engine").is_some());
+            assert!(body.get("wetype_engine").is_some());
+        }
+
+        state.core.apply_settings_update(&json!({ "api_token_enabled": true })).unwrap();
+        let persistent = state.core.api_token().expect("开启后应能读到持久令牌");
+        let (status, body) = health_json(&state, "/api/health", Some(&persistent)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.get("model_service_ready").is_some());
+        let uri = format!("/api/health?token={persistent}");
+        let (status, body) = health_json(&state, &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.get("model_service_error").is_some());
+
+        state.core.apply_settings_update(&json!({ "api_token_enabled": false })).unwrap();
+        let (status, body) = health_json(&state, "/api/health", Some(&persistent)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_probe_only(&body);
     }
 
     #[tokio::test]

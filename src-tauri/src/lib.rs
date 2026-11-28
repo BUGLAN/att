@@ -233,7 +233,7 @@ pub fn run() {
                 Err(error) => tracing::error!("数据面自检失败（前端将连不上）: {error}"),
             }
 
-            // 诊断信息：端口落盘，排障时可直接打开 http://127.0.0.1:<port>/api/health
+            // 诊断信息：端口落盘；不带令牌只能看到探活字段，带 ?token=<持久令牌> 看完整运行态
             let _ = std::fs::write(data_dir.join(".backend-port"), port.to_string());
 
             // 事件桥：核心事件 → 前端（Tauri event）
