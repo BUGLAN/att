@@ -134,6 +134,21 @@ fn cancel_binding_modifiers(phase: Phase, held_modifiers: ModSet) -> Option<ModS
     }
 }
 
+/// 录音启动失败后回到的相位：已有优化仍在进行时不能吞掉它的后续输出。
+fn start_failure_phase(has_optimization: bool) -> Phase {
+    if has_optimization {
+        Phase::Optimizing
+    } else {
+        Phase::Idle
+    }
+}
+
+/// 从独立计数器分配下一个非零会话号。
+fn next_session_id(counter: &mut u64) -> u64 {
+    *counter += 1;
+    *counter
+}
+
 /// 批量识别的请求形态：决定收尾预算怎么算。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BatchPlan {
@@ -486,6 +501,7 @@ impl RecordingController {
             active: None,
             optimizing: None,
             next_id: 0,
+            next_optimization_id: 0,
             next_release: 0,
             warm: None,
             next_warm: 0,
@@ -555,6 +571,8 @@ struct Actor {
     active: Option<Active>,
     optimizing: Option<PendingOptimization>,
     next_id: u64,
+    /// 优化会话独立编号：优化选中文本不启动录音，不能借用录音会话号。
+    next_optimization_id: u64,
     /// 松开缓冲序号：晚到的旧缓冲（已被重新按下作废）据此识别
     next_release: u64,
     /// 豆包流式预热连接（见模块说明）
@@ -914,7 +932,10 @@ impl Actor {
 
     fn fail_start(&mut self, message: String) {
         tracing::warn!("录音无法开始: {message}");
-        self.set_phase(Phase::Idle);
+        // 流式优化中尝试开始新录音时，只有新录音真正打开麦克风后才让它转入后台。
+        // 前置检查或打开麦克风失败时，上一段优化仍应继续正常输出。
+        let phase = start_failure_phase(self.optimizing.is_some());
+        self.set_phase(phase);
         self.active = None;
         self.emit_state("error", json!({ "message": message }));
     }
@@ -927,14 +948,11 @@ impl Actor {
     /// 录音统一入口；`voice_rewrite_selection` 有值时强制单段识别，并在转写后走语音改写模板。
     async fn start_with(&mut self, held: bool, voice_rewrite_selection: Option<String>) {
         if self.phase == Phase::Optimizing {
-            // 流式：上一段优化转入后台继续跑，直接开始新录音；单段：优化期间保持「处理中」，吞掉
+            // 流式：允许开始新录音；单段：优化期间保持「处理中」，吞掉。
+            // 此时先不接管上一段优化，等新录音确认打开麦克风后再切到 Idle。
             match self.optimizing.as_ref() {
                 Some(pending) if pending.mode == Mode::Streaming => {
-                    tracing::info!("流式优化中开始新录音：上一段优化转入后台，停止往输入框输出");
-                    pending.detached.store(true, Ordering::SeqCst);
-                    // 新录音的文字要进新的输入框：上一段别再往里打
-                    pending.typing_halt.store(true, Ordering::SeqCst);
-                    self.set_phase(Phase::Idle);
+                    tracing::info!("流式优化中准备开始新录音：先检查新录音能否启动");
                 }
                 _ => {
                     tracing::info!("单段优化中按下录音键，忽略");
@@ -996,8 +1014,7 @@ impl Actor {
             provider: engine.provider(),
             language: att_core::stt::effective_language(engine.provider(), &language),
         };
-        self.next_id += 1;
-        let id = self.next_id;
+        let id = next_session_id(&mut self.next_id);
         // 输出目标：录音开始时的前台窗口。多段收尾 / 优化可能持续数秒，期间用户切走焦点，
         // 结果不能跟着打进新窗口（尤其别打进设置页或别的输入框）。
         let focus_target = crate::desktop::foreground_target();
@@ -1038,6 +1055,14 @@ impl Actor {
             Ok(Err(message)) => return self.fail_start(message),
             Err(error) => return self.fail_start(format!("打开麦克风失败: {error}")),
         };
+
+        if let Some(pending) = self.optimizing.as_ref().filter(|pending| pending.mode == Mode::Streaming) {
+            tracing::info!("新录音麦克风已打开：上一段流式优化转入后台，停止往输入框输出");
+            pending.detached.store(true, Ordering::SeqCst);
+            // 新录音的文字要进新的输入框：上一段别再往里打
+            pending.typing_halt.store(true, Ordering::SeqCst);
+            self.set_phase(Phase::Idle);
+        }
 
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let live = Arc::new(AtomicBool::new(true));
@@ -1452,7 +1477,7 @@ impl Actor {
         source: OptimizeSource,
         focus_target: Option<FocusTarget>,
     ) {
-        let session_id = self.next_id;
+        let session_id = next_session_id(&mut self.next_optimization_id);
         let detached = Arc::new(AtomicBool::new(false));
         let typing_halt = Arc::new(AtomicBool::new(false));
         let settings = self.core.settings();
@@ -2598,12 +2623,12 @@ mod tests {
     use super::recording_state_uses_asr;
     use super::{
         abort_multi_segments, batch_plan, cancel_binding_modifiers, compose_voice_rewrite_raw_text, counts_as_timeout,
-        finalize_budget, finalize_budget_for_provider, join_multi_texts, missing_voice, no_voice_state,
-        parse_multi_drain_fallback, processing_seconds, quiet_end_message, quiet_end_reason, record_hotkey_step,
-        recorded_until, spawn_multi_segment, start_cancel_modifiers, streaming_config_for,
-        withhold_partial_stream_output, BatchPlan, Mode, MultiDrainPolicy, Phase, RecordHotkeyStep, StreamingConfig,
-        HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, MULTI_DRAIN_DEFAULT_FALLBACK, MULTI_DRAIN_SCHEDULING_SLACK,
-        MULTI_TRANSCRIBE_CONCURRENCY, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
+        finalize_budget, finalize_budget_for_provider, join_multi_texts, missing_voice, next_session_id,
+        no_voice_state, parse_multi_drain_fallback, processing_seconds, quiet_end_message, quiet_end_reason,
+        record_hotkey_step, recorded_until, spawn_multi_segment, start_cancel_modifiers, start_failure_phase,
+        streaming_config_for, withhold_partial_stream_output, BatchPlan, Mode, MultiDrainPolicy, Phase,
+        RecordHotkeyStep, StreamingConfig, HOLD_RELEASE_GRACE, MIN_DURATION_SECONDS, MULTI_DRAIN_DEFAULT_FALLBACK,
+        MULTI_DRAIN_SCHEDULING_SLACK, MULTI_TRANSCRIBE_CONCURRENCY, NO_VOICE_MESSAGE, WATCHDOG_SLACK,
     };
     use super::{
         keep_warm, streaming_session, warm_backoff, Cmd, SessionOutcome, StreamingCallback, StreamingPartial,
@@ -2875,6 +2900,25 @@ mod tests {
             Some(ModSet::default()),
             "优化阶段不再按着录音快捷键，Esc 保持无修饰键"
         );
+    }
+
+    #[test]
+    fn 新录音启动失败_保留正在进行的优化() {
+        assert_eq!(start_failure_phase(true), Phase::Optimizing);
+        assert_eq!(start_failure_phase(false), Phase::Idle);
+    }
+
+    #[test]
+    fn 录音与优化会话号独立自增_连续选区优化不会撞号() {
+        let mut recording = 0;
+        let mut optimization = 0;
+
+        assert_eq!(next_session_id(&mut recording), 1);
+        assert_eq!(next_session_id(&mut optimization), 1, "两类会话各自从 1 开始");
+        assert_eq!(next_session_id(&mut recording), 2);
+        assert_eq!(next_session_id(&mut optimization), 2, "优化选中文本不推进录音会话号");
+        assert_eq!(next_session_id(&mut optimization), 3);
+        assert_eq!(next_session_id(&mut optimization), 4);
     }
 
     #[test]
