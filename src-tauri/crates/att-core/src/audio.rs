@@ -2,6 +2,7 @@
 //!
 //! 录音落盘用 FLAC（无损，语音约为 WAV 体积的一半）；旧版本留下的 WAV 照常可读可播。
 
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 pub const TARGET_RATE: u32 = 16_000;
@@ -53,24 +54,133 @@ pub const RECORDING_EXTENSION: &str = "flac";
 
 /// 录音落盘：16k 单声道 PCM16 无损压缩为 FLAC（先写 .tmp 再 rename，异常退出不留半截文件）。
 pub fn write_recording_16k(path: &Path, samples: &[i16]) -> std::io::Result<()> {
-    write_bytes_atomic(path, &flac_bytes_16k(samples)?)
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    let result = (|| {
+        let file = std::fs::File::create(&tmp)?;
+        let mut writer = std::io::BufWriter::new(file);
+        encode_flac_16k(samples, &mut writer)?;
+        writer.flush()?;
+        drop(writer);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// 编码 16k 单声道 PCM16 FLAC 到内存。
 pub fn flac_bytes_16k(samples: &[i16]) -> std::io::Result<Vec<u8>> {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    encode_flac_16k(samples, &mut cursor)?;
+    Ok(cursor.into_inner())
+}
+
+type SeekPoint = (u64, u64, u16);
+
+/// 逐块编码 FLAC：每次只保留一个 PCM 块、一个编码帧和该帧的字节，最终写到同一临时文件。
+///
+/// STREAMINFO 和 SEEKTABLE 在文件开头，但总样本数、帧大小与 seek 偏移要编码完才知道。
+/// 这里先按确定长度占位，再顺序写音频帧，最后 seek 回文件开头补写元数据。
+fn encode_flac_16k<W: Write + Seek>(samples: &[i16], writer: &mut W) -> std::io::Result<()> {
     use flacenc::component::BitRepr;
     use flacenc::error::Verify;
+    use flacenc::source::{Context, Fill, FrameBuf};
+
     let config = flacenc::config::Encoder::default()
         .into_verified()
         .map_err(|(_, error)| std::io::Error::other(format!("FLAC 编码参数无效: {error:?}")))?;
-    let wide: Vec<i32> = samples.iter().map(|&s| i32::from(s)).collect();
-    let source = flacenc::source::MemSource::from_samples(&wide, 1, 16, TARGET_RATE as usize);
-    let mut stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
-        .map_err(|error| std::io::Error::other(format!("FLAC 编码失败: {error:?}")))?;
-    add_seektable(&mut stream, TARGET_RATE as usize)?;
-    let mut sink = flacenc::bitsink::ByteSink::new();
-    stream.write(&mut sink).map_err(|error| std::io::Error::other(format!("FLAC 写出失败: {error:?}")))?;
-    Ok(sink.into_inner())
+    let block_size = config.block_size;
+    let sample_rate = TARGET_RATE as usize;
+    let seek_windows = seek_point_windows(samples.len(), block_size, sample_rate);
+    let header_len = flac_header_len(seek_windows.len());
+    writer.write_all(&vec![0u8; header_len])?;
+
+    let mut header_stream = flacenc::component::Stream::new(sample_rate, 1, 16)
+        .map_err(|error| std::io::Error::other(format!("FLAC 流初始化失败: {error:?}")))?;
+    header_stream
+        .stream_info_mut()
+        .set_block_sizes(block_size, block_size)
+        .map_err(|error| std::io::Error::other(format!("FLAC 块大小无效: {error:?}")))?;
+
+    let mut frame_buf = FrameBuf::with_size(1, block_size)
+        .map_err(|error| std::io::Error::other(format!("FLAC 帧缓冲无效: {error:?}")))?;
+    let mut context = Context::new(16, 1);
+    let mut wide = Vec::with_capacity(block_size);
+    let interval = sample_rate.saturating_mul(FLAC_SEEKPOINT_INTERVAL_SECONDS).max(1) as u64;
+    let mut seek_points = Vec::with_capacity(seek_windows.len());
+    let mut sample = 0u64;
+    let mut stream_offset = 0u64;
+    let mut next_target = 0u64;
+
+    for (frame_number, chunk) in samples.chunks(block_size).enumerate() {
+        wide.clear();
+        wide.extend(chunk.iter().map(|&value| i32::from(value)));
+        frame_buf
+            .fill_interleaved(&wide)
+            .map_err(|error| std::io::Error::other(format!("FLAC 填充帧失败: {error:?}")))?;
+        context
+            .fill_interleaved(&wide)
+            .map_err(|error| std::io::Error::other(format!("FLAC 计算校验失败: {error:?}")))?;
+        let mut frame =
+            flacenc::encode_fixed_size_frame(&config, &frame_buf, frame_number, header_stream.stream_info())
+                .map_err(|error| std::io::Error::other(format!("FLAC 编码帧失败: {error:?}")))?;
+        frame.precompute_bitstream();
+        if sample >= next_target {
+            seek_points.push((sample, stream_offset, frame.block_size().min(usize::from(u16::MAX)) as u16));
+            next_target = (sample / interval + 1).saturating_mul(interval);
+        }
+
+        let bits = frame.count_bits();
+        if bits % 8 != 0 {
+            return Err(std::io::Error::other(format!("FLAC 帧不是整字节: {bits} bit")));
+        }
+        let mut sink = flacenc::bitsink::ByteSink::with_capacity(bits);
+        frame.write(&mut sink).map_err(|error| std::io::Error::other(format!("FLAC 写帧失败: {error:?}")))?;
+        writer.write_all(sink.as_slice())?;
+        stream_offset = stream_offset.saturating_add((bits / 8) as u64);
+        sample = sample.saturating_add(frame.block_size() as u64);
+        header_stream.stream_info_mut().update_frame_info(&frame);
+    }
+
+    debug_assert_eq!(seek_points.len(), seek_windows.len());
+    debug_assert_eq!(sample, samples.len() as u64);
+    let stream_info = header_stream.stream_info_mut();
+    stream_info.set_md5_digest(&context.md5_digest());
+    stream_info.set_total_samples(context.total_samples());
+    let header = stream_header(&header_stream, &seek_points)?;
+    if header.len() != header_len {
+        return Err(std::io::Error::other(format!("FLAC 元数据长度不一致：预留 {header_len}，实际 {}", header.len())));
+    }
+    writer.seek(SeekFrom::Start(0))?;
+    writer.write_all(&header)?;
+    writer.flush()
+}
+
+fn seek_point_windows(total_samples: usize, block_size: usize, sample_rate: usize) -> Vec<(u64, u16)> {
+    let interval = sample_rate.saturating_mul(FLAC_SEEKPOINT_INTERVAL_SECONDS).max(1) as u64;
+    let mut windows = Vec::new();
+    let mut sample = 0u64;
+    let mut next_target = 0u64;
+    while sample < total_samples as u64 {
+        let block_samples = (total_samples as u64 - sample).min(block_size as u64) as u16;
+        if sample >= next_target {
+            windows.push((sample, block_samples));
+            next_target = (sample / interval + 1).saturating_mul(interval);
+        }
+        sample += u64::from(block_samples);
+    }
+    windows
+}
+
+fn flac_header_len(seek_point_count: usize) -> usize {
+    // fLaC + STREAMINFO 元数据头与 34 字节数据 + 可选的 SEEKTABLE 元数据头与数据。
+    4 + 4 + 34 + if seek_point_count == 0 { 0 } else { 4 + seek_point_count * 18 }
 }
 
 /// SEEKTABLE 的 seek point 间隔：10 秒一个，首点固定在 0。
@@ -82,57 +192,24 @@ const FLAC_SEEKPOINT_INTERVAL_SECONDS: usize = 10;
 /// 6 秒录音 seek 到 5.4 秒报 `FFmpegDemuxer: demuxer seek failed`，补上只含 0 点的
 /// SEEKTABLE 后同一位置可正常 seek。seek point 的 `stream_offset` 相对第一个音频帧，
 /// 因此追加元数据块不会改变已算好的偏移。
-fn add_seektable(stream: &mut flacenc::component::Stream, sample_rate: usize) -> std::io::Result<()> {
+fn stream_header(stream: &flacenc::component::Stream, seek_points: &[SeekPoint]) -> std::io::Result<Vec<u8>> {
     use flacenc::component::{BitRepr, MetadataBlockData};
-
-    let interval = sample_rate.saturating_mul(FLAC_SEEKPOINT_INTERVAL_SECONDS).max(1);
-    let mut points = Vec::new();
-    let mut sample = 0u64;
-    let mut stream_offset = 0u64;
-    let mut next_target = 0u64;
-    for index in 0..stream.frame_count() {
-        let Some(frame) = stream.frame(index) else {
-            break;
-        };
-        let block_samples = frame.block_size() as u64;
-        if sample >= next_target {
-            points.push((sample, stream_offset, block_samples.min(u64::from(u16::MAX)) as u16));
-            next_target = (sample / interval as u64 + 1).saturating_mul(interval as u64);
+    let mut stream = flacenc::component::Stream::with_stream_info(stream.stream_info().clone());
+    if !seek_points.is_empty() {
+        let mut data = Vec::with_capacity(seek_points.len() * 18);
+        for &(sample_number, stream_offset, frame_samples) in seek_points {
+            data.extend_from_slice(&sample_number.to_be_bytes());
+            data.extend_from_slice(&stream_offset.to_be_bytes());
+            data.extend_from_slice(&frame_samples.to_be_bytes());
         }
-        stream_offset = stream_offset.saturating_add((frame.count_bits() / 8) as u64);
-        sample = sample.saturating_add(block_samples);
+        let metadata = MetadataBlockData::new_unknown(3, &data)
+            .map_err(|error| std::io::Error::other(format!("SEEKTABLE 构造失败: {error:?}")))?;
+        stream.add_metadata_block(metadata);
     }
-    if points.is_empty() {
-        return Ok(());
-    }
-
-    let mut data = Vec::with_capacity(points.len() * 18);
-    for (sample_number, stream_offset, frame_samples) in points {
-        data.extend_from_slice(&sample_number.to_be_bytes());
-        data.extend_from_slice(&stream_offset.to_be_bytes());
-        data.extend_from_slice(&frame_samples.to_be_bytes());
-    }
-    let metadata = MetadataBlockData::new_unknown(3, &data)
-        .map_err(|error| std::io::Error::other(format!("SEEKTABLE 构造失败: {error:?}")))?;
-    stream.add_metadata_block(metadata);
-    Ok(())
+    let mut sink = flacenc::bitsink::ByteSink::new();
+    stream.write(&mut sink).map_err(|error| std::io::Error::other(format!("FLAC 元数据写出失败: {error:?}")))?;
+    Ok(sink.into_inner())
 }
-
-/// 同目录临时文件 + rename 落盘（失败时清理临时文件）。
-fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
-    tmp_name.push(".tmp");
-    let tmp = path.with_file_name(tmp_name);
-    let result = std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
-}
-
 /// 按扩展名取音频的 MIME 类型（录音回放端点用；未知按 WAV 处理，与旧版一致）。
 pub fn audio_content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
@@ -539,6 +616,44 @@ mod tests {
         }
     }
 
+    /// 修改前把整段 PCM 和完整编码流都留在内存的算法，用于锁定兼容输出。
+    fn flac_bytes_16k_reference(samples: &[i16]) -> Vec<u8> {
+        use flacenc::component::{BitRepr, MetadataBlockData};
+        use flacenc::error::Verify;
+
+        let config = flacenc::config::Encoder::default().into_verified().unwrap();
+        let wide: Vec<i32> = samples.iter().map(|&sample| i32::from(sample)).collect();
+        let source = flacenc::source::MemSource::from_samples(&wide, 1, 16, TARGET_RATE as usize);
+        let mut stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size).unwrap();
+        let interval = TARGET_RATE as usize * FLAC_SEEKPOINT_INTERVAL_SECONDS;
+        let mut points = Vec::new();
+        let mut sample = 0u64;
+        let mut stream_offset = 0u64;
+        let mut next_target = 0u64;
+        for index in 0..stream.frame_count() {
+            let frame = stream.frame(index).unwrap();
+            let block_samples = frame.block_size() as u64;
+            if sample >= next_target {
+                points.push((sample, stream_offset, block_samples.min(u64::from(u16::MAX)) as u16));
+                next_target = (sample / interval as u64 + 1) * interval as u64;
+            }
+            stream_offset += (frame.count_bits() / 8) as u64;
+            sample += block_samples;
+        }
+        if !points.is_empty() {
+            let mut data = Vec::with_capacity(points.len() * 18);
+            for (sample_number, stream_offset, frame_samples) in points {
+                data.extend_from_slice(&sample_number.to_be_bytes());
+                data.extend_from_slice(&stream_offset.to_be_bytes());
+                data.extend_from_slice(&frame_samples.to_be_bytes());
+            }
+            stream.add_metadata_block(MetadataBlockData::new_unknown(3, &data).unwrap());
+        }
+        let mut sink = flacenc::bitsink::ByteSink::new();
+        stream.write(&mut sink).unwrap();
+        sink.into_inner()
+    }
+
     #[test]
     fn 重采样_48k到16k_样本数与分块无关() {
         let input: Vec<f32> = (0..48_000).map(|i| (i as f32 * 0.001).sin() + 0.25 * (i as f32 * 0.73).sin()).collect();
@@ -610,6 +725,24 @@ mod tests {
         write_recording_16k(&dir.join("empty.flac"), &[]).unwrap();
         assert!(read_audio_16k_mono(&dir.join("empty.flac")).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flac_分块编码与修改前逐字节一致() {
+        for sample_count in [0, 1, 4095, 4096, 4097, 48_000, 200_123] {
+            let samples: Vec<i16> = (0..sample_count)
+                .map(|index| {
+                    let wave = (index as f32 * 0.037).sin() * 12_000.0;
+                    let noise = ((index * 7919) % 701) as f32 - 350.0;
+                    (wave + noise) as i16
+                })
+                .collect();
+            assert_eq!(
+                flac_bytes_16k(&samples).unwrap(),
+                flac_bytes_16k_reference(&samples),
+                "{sample_count} 个样本的 FLAC 输出必须与修改前一致"
+            );
+        }
     }
 
     #[test]

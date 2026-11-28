@@ -520,6 +520,9 @@ typedef struct AttVad {
   const SherpaOnnxVoiceActivityDetector *vad;
   char *model;
   int32_t window_size;
+  int64_t *ranges;
+  size_t range_count;
+  size_t range_capacity;
 } AttVad;
 
 static void att_vad_release(AttVad *handle) {
@@ -530,6 +533,7 @@ static void att_vad_release(AttVad *handle) {
     handle->destroy(handle->vad);
   }
   free(handle->model);
+  free(handle->ranges);
   att_dlclose(handle->lib);
   free(handle);
 }
@@ -604,70 +608,134 @@ AttVad *att_vad_create(const char *lib_dir, const char *model, float threshold,
   return handle;
 }
 
-/* 计算语音区间：返回 JSON `[[start_sample,end_sample], ...]`（左闭右开，单位=采样点）。 */
-char *att_vad_speech_ranges(AttVad *handle, const float *samples, int32_t n, char *err,
-                            int32_t err_len) {
+/* 取走 VAD 当前已闭合的段，只保存左右边界，立即释放段内的样本拷贝。 */
+static int32_t att_vad_drain_segments(AttVad *handle, char *err, int32_t err_len) {
+  while (!handle->is_empty(handle->vad)) {
+    const SherpaOnnxSpeechSegment *segment = handle->front(handle->vad);
+    if (segment) {
+      if (handle->range_count == handle->range_capacity) {
+        size_t capacity = handle->range_capacity ? handle->range_capacity * 2 : 32;
+        int64_t *grown =
+            (int64_t *)realloc(handle->ranges, capacity * 2 * sizeof(int64_t));
+        if (!grown) {
+          handle->destroy_segment(segment);
+          handle->pop(handle->vad);
+          att_set_error(err, err_len, "内存分配失败");
+          return 0;
+        }
+        handle->ranges = grown;
+        handle->range_capacity = capacity;
+      }
+      handle->ranges[handle->range_count * 2] = segment->start;
+      handle->ranges[handle->range_count * 2 + 1] = segment->start + segment->n;
+      handle->range_count++;
+      handle->destroy_segment(segment);
+    }
+    handle->pop(handle->vad);
+  }
+  return 1;
+}
+
+/* 开始一次流式 VAD。每次独立音频都必须调用，避免绝对采样位置跨调用累加。 */
+int32_t att_vad_start(AttVad *handle, char *err, int32_t err_len) {
   if (!handle || !handle->vad) {
     att_set_error(err, err_len, "VAD 未初始化");
-    return NULL;
+    return 0;
+  }
+  handle->reset(handle->vad);
+  handle->range_count = 0;
+  return 1;
+}
+
+/* 接受一段连续音频；每喂一个窗口就弹走已闭合段，避免段内 f32 样本积压。 */
+int32_t att_vad_accept(AttVad *handle, const float *samples, int32_t n, char *err,
+                       int32_t err_len) {
+  if (!handle || !handle->vad) {
+    att_set_error(err, err_len, "VAD 未初始化");
+    return 0;
   }
   if (!samples || n <= 0) {
     att_set_error(err, err_len, "没有音频数据");
-    return NULL;
+    return 0;
   }
-  /*
-   * 每次调用都当作一段独立音频处理：先复位内部环形缓冲、next_window_start_ 与已排队区间。
-   * 否则 SpeechSegment.start 是「探测器生命周期内的绝对采样位置」，会跨调用持续累加，
-   * 第二次调用的区间起点已超过本次音频长度，被上层过滤成空表 —— 表现为「第二次提示没有语音内容」。
-   */
-  handle->reset(handle->vad);
   for (int32_t offset = 0; offset < n; offset += handle->window_size) {
     int32_t count = handle->window_size;
     if (offset + count > n) {
       count = n - offset;
     }
     handle->accept(handle->vad, samples + offset, count);
+    if (!att_vad_drain_segments(handle, err, err_len)) {
+      return 0;
+    }
   }
-  /* 收尾：把最后一段未闭合的语音吐出来 */
-  handle->flush(handle->vad);
+  return 1;
+}
 
-  size_t capacity = 256;
-  size_t used = 0;
+/* 收到最后一段未闭合语音并返回区间 JSON（左闭右开，单位=采样点）。 */
+char *att_vad_finish(AttVad *handle, char *err, int32_t err_len) {
+  if (!handle || !handle->vad) {
+    att_set_error(err, err_len, "VAD 未初始化");
+    return NULL;
+  }
+  handle->flush(handle->vad);
+  if (!att_vad_drain_segments(handle, err, err_len)) {
+    return NULL;
+  }
+
+  size_t capacity = handle->range_count * 48 + 3;
   char *json = (char *)malloc(capacity);
   if (!json) {
     att_set_error(err, err_len, "内存分配失败");
     return NULL;
   }
+  size_t used = 0;
   json[used++] = '[';
-  int first = 1;
+  for (size_t i = 0; i < handle->range_count; i++) {
+    char item[64];
+    int written = snprintf(item, sizeof(item), "%s[%lld,%lld]", i ? "," : "",
+                           (long long)handle->ranges[i * 2],
+                           (long long)handle->ranges[i * 2 + 1]);
+    if (written <= 0 || used + (size_t)written + 2 > capacity) {
+      free(json);
+      att_set_error(err, err_len, "VAD 区间结果异常");
+      return NULL;
+    }
+    memcpy(json + used, item, (size_t)written);
+    used += (size_t)written;
+  }
+  json[used++] = ']';
+  json[used] = '\0';
+  return json;
+}
+
+/* 出错时释放 C 侧尚未导出的段，下一轮 start 会重新复位探测器。 */
+void att_vad_abort(AttVad *handle) {
+  if (!handle || !handle->vad) {
+    return;
+  }
   while (!handle->is_empty(handle->vad)) {
     const SherpaOnnxSpeechSegment *segment = handle->front(handle->vad);
     if (segment) {
-      char item[64];
-      int written = snprintf(item, sizeof(item), "%s[%lld,%lld]", first ? "" : ",",
-                             (long long)segment->start, (long long)(segment->start + segment->n));
-      if (written > 0 && used + (size_t)written + 2 > capacity) {
-        capacity = (capacity + (size_t)written) * 2;
-        char *grown = (char *)realloc(json, capacity);
-        if (!grown) {
-          free(json);
-          handle->destroy_segment(segment);
-          att_set_error(err, err_len, "内存分配失败");
-          return NULL;
-        }
-        json = grown;
-      }
-      if (written > 0) {
-        memcpy(json + used, item, (size_t)written);
-        used += (size_t)written;
-        first = 0;
-      }
       handle->destroy_segment(segment);
     }
     handle->pop(handle->vad);
   }
-  json[used++] = ']';
-  json[used] = '\0';
+  handle->reset(handle->vad);
+  handle->range_count = 0;
+}
+
+/* 兼容一次性调用；Rust 侧现在使用 start/accept/finish 分块喂入。 */
+char *att_vad_speech_ranges(AttVad *handle, const float *samples, int32_t n, char *err,
+                            int32_t err_len) {
+  if (!att_vad_start(handle, err, err_len) ||
+      !att_vad_accept(handle, samples, n, err, err_len)) {
+    att_vad_abort(handle);
+    return NULL;
+  }
+  char *json = att_vad_finish(handle, err, err_len);
+  if (!json) {
+    att_vad_abort(handle);
+  }
   return json;
 }
 

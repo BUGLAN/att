@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 const ERR_LEN: usize = 1024;
+/// 每次从 i16 转 f32 的采样点数：只影响临时缓冲，不改变 512 点 VAD 窗口。
+const VAD_CONVERT_CHUNK_SAMPLES: usize = 16 * 1024;
 /// VAD 模型默认文件名。
 pub const VAD_MODEL_FILE: &str = "silero_vad.onnx";
 
@@ -35,13 +37,10 @@ extern "C" {
         err: *mut c_char,
         err_len: i32,
     ) -> *mut AttVad;
-    fn att_vad_speech_ranges(
-        handle: *mut AttVad,
-        samples: *const f32,
-        n: i32,
-        err: *mut c_char,
-        err_len: i32,
-    ) -> *mut c_char;
+    fn att_vad_start(handle: *mut AttVad, err: *mut c_char, err_len: i32) -> i32;
+    fn att_vad_accept(handle: *mut AttVad, samples: *const f32, n: i32, err: *mut c_char, err_len: i32) -> i32;
+    fn att_vad_finish(handle: *mut AttVad, err: *mut c_char, err_len: i32) -> *mut c_char;
+    fn att_vad_abort(handle: *mut AttVad);
     fn att_vad_destroy(handle: *mut AttVad);
 }
 
@@ -128,14 +127,28 @@ impl SileroVad {
         if samples.is_empty() {
             return Ok(Vec::new());
         }
-        let mono: Vec<f32> = samples.iter().map(|&s| s as f32 / 32768.0).collect();
         let mut err = [0 as c_char; ERR_LEN];
-        let json_ptr = unsafe {
-            att_vad_speech_ranges(self.handle, mono.as_ptr(), mono.len() as i32, err.as_mut_ptr(), ERR_LEN as i32)
-        };
+        if unsafe { att_vad_start(self.handle, err.as_mut_ptr(), ERR_LEN as i32) } == 0 {
+            return Err(vad_error(&err));
+        }
+
+        let mut mono = Vec::with_capacity(VAD_CONVERT_CHUNK_SAMPLES.min(samples.len()));
+        for chunk in samples.chunks(VAD_CONVERT_CHUNK_SAMPLES) {
+            mono.clear();
+            mono.extend(chunk.iter().map(|&sample| sample as f32 / 32768.0));
+            if unsafe {
+                att_vad_accept(self.handle, mono.as_ptr(), mono.len() as i32, err.as_mut_ptr(), ERR_LEN as i32)
+            } == 0
+            {
+                unsafe { att_vad_abort(self.handle) };
+                return Err(vad_error(&err));
+            }
+        }
+
+        let json_ptr = unsafe { att_vad_finish(self.handle, err.as_mut_ptr(), ERR_LEN as i32) };
         if json_ptr.is_null() {
-            let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
-            return Err(if reason.trim().is_empty() { "VAD 推理失败（未知原因）".into() } else { reason });
+            unsafe { att_vad_abort(self.handle) };
+            return Err(vad_error(&err));
         }
         let json = unsafe { CStr::from_ptr(json_ptr) }.to_string_lossy().to_string();
         unsafe { crate::att_qwen_free_text(json_ptr) };
@@ -148,6 +161,15 @@ impl SileroVad {
             .filter(|(start, end)| end > start)
             .collect();
         Ok(ranges)
+    }
+}
+
+fn vad_error(err: &[c_char; ERR_LEN]) -> String {
+    let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
+    if reason.trim().is_empty() {
+        "VAD 推理失败（未知原因）".into()
+    } else {
+        reason
     }
 }
 
