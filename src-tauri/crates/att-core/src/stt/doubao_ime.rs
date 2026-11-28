@@ -15,7 +15,11 @@ use futures_util::stream::{SplitSink, SplitStream, StreamExt};
 use futures_util::FutureExt;
 use futures_util::SinkExt;
 use serde_json::{json, Value};
+#[cfg(test)]
+use std::future::Future;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
@@ -67,7 +71,12 @@ pub struct DoubaoImeConfig {
     pub(crate) crypto: Option<Arc<Crypto>>,
     /// 测试或显式注入时直接使用，跳过注册。
     pub(crate) credentials: Option<Credentials>,
+    #[cfg(test)]
+    credential_refresher: Option<Arc<dyn Fn() -> RefreshFuture + Send + Sync>>,
 }
+
+#[cfg(test)]
+type RefreshFuture = Pin<Box<dyn Future<Output = Result<Credentials, DoubaoImeError>> + Send>>;
 
 impl std::fmt::Debug for DoubaoImeConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -88,6 +97,8 @@ impl Default for DoubaoImeConfig {
             credential_path: None,
             crypto: None,
             credentials: None,
+            #[cfg(test)]
+            credential_refresher: None,
         }
     }
 }
@@ -145,11 +156,12 @@ impl std::fmt::Debug for Credentials {
 pub struct DoubaoImeError {
     pub kind: ErrorKind,
     pub message: String,
+    fresh_device_retry: bool,
 }
 
 impl DoubaoImeError {
     fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into() }
+        Self { kind, message: message.into(), fresh_device_retry: false }
     }
     fn protocol(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Protocol, message)
@@ -173,9 +185,14 @@ impl std::fmt::Display for DoubaoImeError {
 impl std::error::Error for DoubaoImeError {}
 
 impl DoubaoImeError {
-    /// 服务端偶发的「service discovery failure」多为虚拟设备会话异常：换一台新注册设备重试一次通常可恢复。
+    fn retry_with_fresh_device(mut self) -> Self {
+        self.fresh_device_retry = true;
+        self
+    }
+
+    /// 只有启动任务 / 会话阶段收到服务端失败时，才允许换一台新注册设备重试。
     fn needs_fresh_device(&self) -> bool {
-        matches!(self.kind, ErrorKind::Server) && self.message.contains("service discovery failure")
+        self.fresh_device_retry
     }
 
     fn user_facing(mut self) -> Self {
@@ -314,7 +331,26 @@ enum Parsed {
     Final(String),
     Heartbeat,
     Other(String),
+    /// 只保留失败事件名；上游其它字段只进脱敏后的 debug 日志。
     Failed(String),
+}
+
+/// 去掉 URL / 文本里设备标识的参数值，日志只保留失败事件和其余可诊断信息。
+fn redact_device_identifiers(input: &str) -> String {
+    let mut redacted = input.to_string();
+    for key in ["device_id=", "cdid="] {
+        let mut offset = 0;
+        while let Some(relative) = redacted[offset..].find(key) {
+            let start = offset + relative;
+            let value_end = redacted[start..]
+                .find(|ch: char| ch == '&' || ch.is_whitespace() || ch == '"' || ch == '\'')
+                .map(|end| start + end)
+                .unwrap_or(redacted.len());
+            redacted.replace_range(start..value_end, "[已隐藏]");
+            offset = start + "[已隐藏]".len();
+        }
+    }
+    redacted
 }
 
 fn parse_response(data: &[u8]) -> Result<Parsed, DoubaoImeError> {
@@ -324,9 +360,14 @@ fn parse_response(data: &[u8]) -> Result<Parsed, DoubaoImeError> {
         "SessionStarted" => Ok(Parsed::SessionStarted),
         "SessionFinished" => Ok(Parsed::SessionFinished),
         "TaskFailed" | "SessionFailed" => {
-            let detail =
-                if msg.status_message.is_empty() { msg.message_type.clone() } else { msg.status_message.clone() };
-            Ok(Parsed::Failed(detail))
+            if !msg.status_message.is_empty() {
+                tracing::debug!(
+                    event = %msg.message_type,
+                    detail = %redact_device_identifiers(&msg.status_message),
+                    "豆包输入法语音服务返回失败"
+                );
+            }
+            Ok(Parsed::Failed(msg.message_type))
         }
         other => {
             if msg.result_json.is_empty() {
@@ -526,7 +567,7 @@ async fn register_device(client: &reqwest::Client) -> Result<Credentials, Doubao
         &device_register_query(&cdid),
     );
     let response = client.post(url).header("User-Agent", USER_AGENT).json(&body).send().await.map_err(|error| {
-        tracing::debug!("豆包输入法设备注册失败: {error}");
+        tracing::debug!("豆包输入法设备注册失败: {}", error.without_url());
         DoubaoImeError::network("注册豆包输入法虚拟设备失败，请检查网络后重试")
     })?;
     if !response.status().is_success() {
@@ -588,7 +629,7 @@ async fn fetch_token(client: &reqwest::Client, device_id: &str, cdid: &str) -> R
         .send()
         .await
         .map_err(|error| {
-            tracing::debug!("豆包输入法 token 请求失败: {error}");
+            tracing::debug!("豆包输入法 token 请求失败: {}", error.without_url());
             DoubaoImeError::network("获取豆包输入法语音 token 失败，请检查网络后重试")
         })?;
     if !response.status().is_success() {
@@ -646,6 +687,11 @@ fn save_credentials(config: &DoubaoImeConfig, path: &Path, credentials: &Credent
 
 /// 忽略缓存，强制重新注册一台虚拟设备并取新 token（用于服务端偶发 device 会话失败后的重试）。
 async fn refresh_credentials(config: &DoubaoImeConfig) -> Result<Credentials, DoubaoImeError> {
+    remove_cached_credentials(config);
+    #[cfg(test)]
+    if let Some(refresher) = &config.credential_refresher {
+        return refresher().await;
+    }
     let client = http_client(config.timeout)?;
     let mut credentials = register_device(&client).await?;
     credentials.token = fetch_token(&client, &credentials.device_id, &credentials.cdid).await?;
@@ -653,6 +699,15 @@ async fn refresh_credentials(config: &DoubaoImeConfig) -> Result<Credentials, Do
         save_credentials(config, path, &credentials);
     }
     Ok(credentials)
+}
+
+fn remove_cached_credentials(config: &DoubaoImeConfig) {
+    let Some(path) = &config.credential_path else { return };
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!("删除失效的豆包输入法设备凭据失败：{error}"),
+    }
 }
 
 static CREDENTIAL_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
@@ -836,14 +891,25 @@ impl SessionClient {
                 Ok(None)
             }
             Parsed::Heartbeat | Parsed::Other(_) => Ok(None),
-            Parsed::Failed(detail) => Err(DoubaoImeError::server(format!("豆包输入法语音服务返回失败：{detail}"))),
+            Parsed::Failed(_) => Err(DoubaoImeError::server("豆包输入法语音服务返回失败，请稍后重试")),
         }
     }
 
-    async fn wait_for(&mut self, expected: &str, deadline: Instant) -> Result<(), DoubaoImeError> {
+    async fn wait_for(
+        &mut self,
+        expected: &str,
+        deadline: Instant,
+        can_refresh_device: bool,
+    ) -> Result<(), DoubaoImeError> {
         loop {
             let parsed = self.next_parsed(deadline).await?;
-            if let Some(tag) = self.process(parsed)? {
+            let processed = self.process(parsed);
+            let tag = match processed {
+                Ok(tag) => tag,
+                Err(error) if can_refresh_device => return Err(error.retry_with_fresh_device()),
+                Err(error) => return Err(error),
+            };
+            if let Some(tag) = tag {
                 if tag == expected {
                     return Ok(());
                 }
@@ -860,11 +926,11 @@ impl SessionClient {
         let deadline = Instant::now() + self.timeout + audio;
 
         self.send("StartTask", None, None, None, true).await?;
-        self.wait_for("TaskStarted", deadline).await?;
+        self.wait_for("TaskStarted", deadline, true).await?;
 
         let payload = session_payload(&self.device_id);
         self.send("StartSession", Some(&payload), None, None, true).await?;
-        self.wait_for("SessionStarted", deadline).await?;
+        self.wait_for("SessionStarted", deadline, true).await?;
 
         let total = samples.len().div_ceil(FRAME_SAMPLES).max(1);
         let started = now_ms();
@@ -895,7 +961,7 @@ impl SessionClient {
         }
 
         self.send("FinishSession", None, None, None, true).await?;
-        self.wait_for("SessionFinished", deadline).await?;
+        self.wait_for("SessionFinished", deadline, false).await?;
 
         let text = self.accumulator.finish();
         if text.is_empty() {
@@ -1134,9 +1200,9 @@ impl DoubaoImeSession {
                 self.acked = true;
                 Ok(None)
             }
-            Parsed::Failed(detail) => {
+            Parsed::Failed(_) => {
                 self.acked = true;
-                Err(DoubaoImeError::server(format!("豆包输入法语音服务返回失败：{detail}")))
+                Err(DoubaoImeError::server("豆包输入法语音服务返回失败，请稍后重试"))
             }
         }
     }
@@ -1167,7 +1233,12 @@ impl DoubaoImeSession {
         let deadline = Instant::now() + self.timeout + Duration::from_secs(5);
         loop {
             let parsed = self.next_parsed(deadline).await?;
-            if let Some(tag) = self.handle(parsed)? {
+            let processed = self.handle(parsed);
+            let tag = match processed {
+                Ok(tag) => tag,
+                Err(error) => return Err(error.retry_with_fresh_device()),
+            };
+            if let Some(tag) = tag {
                 if tag == expected {
                     return Ok(());
                 }
@@ -1222,10 +1293,10 @@ impl DoubaoImeSession {
             let bytes = pcm16le_bytes(chunk);
             self.send("TaskRequest", Some(&metadata), Some(&bytes), Some(frame_state), false)
                 .await
-                .map_err(|error| error.message)?;
+                .map_err(|error| error.user_facing().message)?;
             self.frame_index += 1;
         }
-        self.drain_ready().map_err(|error| error.message)
+        self.drain_ready().map_err(|error| error.user_facing().message)
     }
 
     /// 结束会话：补一个 LAST 帧 → FinishSession → 读到底，返回整段文本。
@@ -1236,10 +1307,10 @@ impl DoubaoImeSession {
         let metadata =
             json!({ "extra": {}, "timestamp_ms": self.started_at + (self.frame_index as i64) * 20 }).to_string();
         let _ = self.send("TaskRequest", Some(&metadata), Some(&bytes), Some(FRAME_LAST), false).await;
-        self.send("FinishSession", None, None, None, true).await.map_err(|error| error.message)?;
+        self.send("FinishSession", None, None, None, true).await.map_err(|error| error.user_facing().message)?;
         loop {
-            let parsed = self.next_parsed(deadline).await.map_err(|error| error.message)?;
-            if let Some(tag) = self.handle(parsed).map_err(|error| error.message)? {
+            let parsed = self.next_parsed(deadline).await.map_err(|error| error.user_facing().message)?;
+            if let Some(tag) = self.handle(parsed).map_err(|error| error.user_facing().message)? {
                 if tag == "SessionFinished" {
                     break;
                 }
@@ -1334,7 +1405,7 @@ mod tests {
         );
         assert_eq!(parse_response(&final_frame).unwrap(), Parsed::Final("你好世界。".into()));
         let failed = text_response("SessionFailed", "鉴权失败", None);
-        assert_eq!(parse_response(&failed).unwrap(), Parsed::Failed("鉴权失败".into()));
+        assert_eq!(parse_response(&failed).unwrap(), Parsed::Failed("SessionFailed".into()));
         let heartbeat = text_response("ASRResponse", "", Some(r#"{"extra":{"packet_number":1}}"#));
         assert_eq!(parse_response(&heartbeat).unwrap(), Parsed::Heartbeat);
     }
@@ -1372,8 +1443,8 @@ mod tests {
 
     #[derive(Default, Clone, Copy)]
     struct StubBehavior {
-        fail_task: bool,
         final_extends: bool,
+        fail_midstream: bool,
         silent: bool,
     }
 
@@ -1397,10 +1468,6 @@ mod tests {
                 let method = String::from_utf8(fields.get(&5).cloned().unwrap_or_default()).unwrap_or_default();
                 methods.push(method.clone());
                 match method.as_str() {
-                    "StartTask" if behavior.fail_task => {
-                        let _ = ws.send(Message::binary(text_response("SessionFailed", "鉴权失败", None))).await;
-                        break;
-                    }
                     "StartTask" => {
                         let _ = ws.send(Message::binary(text_response("TaskStarted", "", None))).await;
                     }
@@ -1408,6 +1475,16 @@ mod tests {
                         let _ = ws.send(Message::binary(text_response("SessionStarted", "", None))).await;
                     }
                     "TaskRequest" => {
+                        if behavior.fail_midstream {
+                            let _ = ws
+                                .send(Message::binary(text_response(
+                                    "SessionFailed",
+                                    "upstream-secret device_id=fake&cdid=also-fake",
+                                    None,
+                                )))
+                                .await;
+                            break;
+                        }
                         frames += 1;
                         let text = if frames == 1 { "你好" } else { "你好世界" };
                         let _ = ws.send(Message::binary(response_with_interim(text))).await;
@@ -1430,6 +1507,81 @@ mod tests {
         (format!("ws://{address}"), rx)
     }
 
+    /// 前一场在 StartTask / StartSession 失败，第二场正常结束；用于验证启动阶段自动换设备。
+    async fn startup_failure_stub(
+        fail_event: &'static str,
+        succeed_after_retry: bool,
+    ) -> (String, oneshot::Receiver<Vec<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let mut methods = Vec::new();
+            for attempt in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(Message::Binary(data))) = ws.next().await {
+                    let fields = decode_fields(&data);
+                    let method = String::from_utf8(fields.get(&5).cloned().unwrap_or_default()).unwrap_or_default();
+                    methods.push(method.clone());
+                    match method.as_str() {
+                        "StartTask" if (attempt == 0 || !succeed_after_retry) && fail_event == "TaskFailed" => {
+                            let _ = ws
+                                .send(Message::binary(text_response(
+                                    "TaskFailed",
+                                    "upstream-secret device_id=fake&cdid=also-fake",
+                                    None,
+                                )))
+                                .await;
+                            break;
+                        }
+                        "StartTask" => {
+                            let _ = ws.send(Message::binary(text_response("TaskStarted", "", None))).await;
+                        }
+                        "StartSession" if attempt == 0 || !succeed_after_retry => {
+                            let _ = ws
+                                .send(Message::binary(text_response(
+                                    "SessionFailed",
+                                    "upstream-secret device_id=fake&cdid=also-fake",
+                                    None,
+                                )))
+                                .await;
+                            break;
+                        }
+                        "StartSession" => {
+                            let _ = ws.send(Message::binary(text_response("SessionStarted", "", None))).await;
+                        }
+                        "TaskRequest" => {
+                            let _ = ws.send(Message::binary(response_with_interim("你好世界"))).await;
+                        }
+                        "FinishSession" => {
+                            let _ = ws.send(Message::binary(response_with_final("你好世界。"))).await;
+                            let _ = ws.send(Message::binary(text_response("SessionFinished", "", None))).await;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let _ = tx.send(methods);
+        });
+        (format!("ws://{address}"), rx)
+    }
+
+    fn test_refresher(calls: Arc<std::sync::atomic::AtomicUsize>) -> Arc<dyn Fn() -> RefreshFuture + Send + Sync> {
+        Arc::new(move || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(Credentials {
+                    device_id: "fresh-device".into(),
+                    install_id: "fresh-install".into(),
+                    cdid: "fresh-cdid".into(),
+                    token: "fresh-token".into(),
+                })
+            })
+        })
+    }
+
     fn test_config(endpoint: String) -> DoubaoImeConfig {
         DoubaoImeConfig {
             timeout: Duration::from_secs(5),
@@ -1442,6 +1594,7 @@ mod tests {
                 cdid: "c".into(),
                 token: "tk".into(),
             }),
+            credential_refresher: None,
         }
     }
 
@@ -1468,11 +1621,73 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 会话_任务失败_返回中文错误() {
-        let (endpoint, _methods_rx) = stub_server(StubBehavior { fail_task: true, ..StubBehavior::default() }).await;
-        let config = test_config(endpoint);
+    async fn 启动会话失败_删除旧凭据并换设备重试一次() {
+        let (endpoint, methods_rx) = startup_failure_stub("SessionFailed", true).await;
+        let mut config = test_config(endpoint);
+        let dir = std::env::temp_dir().join(format!("att-doubao-ime-refresh-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let credential_path = dir.join("credentials.json");
+        std::fs::write(&credential_path, "{}").unwrap();
+        config.credential_path = Some(credential_path.clone());
+        let refreshes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        config.credential_refresher = Some(test_refresher(refreshes.clone()));
+
+        let text = transcribe_pcm(&config, &vec![0i16; FRAME_SAMPLES]).await.unwrap();
+        assert_eq!(text, "你好世界。");
+        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!credential_path.exists(), "换设备前必须先删掉失效缓存");
+        let methods = timeout(Duration::from_secs(2), methods_rx).await.unwrap().unwrap();
+        assert_eq!(methods.iter().filter(|method| *method == "StartTask").count(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn 启动任务失败_同样换设备并重试一次() {
+        let (endpoint, _methods_rx) = startup_failure_stub("TaskFailed", true).await;
+        let mut config = test_config(endpoint);
+        let refreshes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        config.credential_refresher = Some(test_refresher(refreshes.clone()));
+        let text = transcribe_pcm(&config, &vec![0i16; FRAME_SAMPLES]).await.unwrap();
+        assert_eq!(text, "你好世界。");
+        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn 换设备后仍失败_只重试一次且返回脱敏错误() {
+        let (endpoint, methods_rx) = startup_failure_stub("SessionFailed", false).await;
+        let mut config = test_config(endpoint);
+        let refreshes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        config.credential_refresher = Some(test_refresher(refreshes.clone()));
         let error = transcribe_pcm(&config, &vec![0i16; FRAME_SAMPLES]).await.unwrap_err();
         assert!(error.contains("豆包输入法语音服务返回失败"), "{error}");
+        assert!(!error.contains("upstream-secret"), "{error}");
+        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let methods = timeout(Duration::from_secs(2), methods_rx).await.unwrap().unwrap();
+        assert_eq!(methods.iter().filter(|method| *method == "StartTask").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn 流式中途失败_返回文案不含上游原文() {
+        let (endpoint, _methods_rx) =
+            stub_server(StubBehavior { fail_midstream: true, ..StubBehavior::default() }).await;
+        let config = test_config(endpoint);
+        let mut session = DoubaoImeSession::connect(&config, "zh", None).await.unwrap();
+        session.push(&vec![0i16; FRAME_SAMPLES]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let error = session.drain_ready().unwrap_err().user_facing().message;
+        assert!(error.contains("豆包输入法语音服务返回失败"), "{error}");
+        assert!(!error.contains("upstream-secret"), "{error}");
+        assert!(!error.contains("device_id"), "{error}");
+    }
+
+    #[test]
+    fn 日志脱敏_移除设备参数值() {
+        let redacted = redact_device_identifiers("request failed: ws://host/ws?device_id=secret-1&cdid=secret-2 other");
+        assert!(!redacted.contains("device_id="), "{redacted}");
+        assert!(!redacted.contains("cdid="), "{redacted}");
+        assert!(!redacted.contains("secret-1"), "{redacted}");
+        assert!(!redacted.contains("secret-2"), "{redacted}");
     }
 
     #[tokio::test]
@@ -1488,7 +1703,8 @@ mod tests {
     fn 服务发现失败_判定为可换设备重试并给友好文案() {
         let error = DoubaoImeError::server(
             "豆包输入法语音服务返回失败：read backend response: rpc error: code = 2 desc = service discovery failure",
-        );
+        )
+        .retry_with_fresh_device();
         assert!(error.needs_fresh_device());
         assert!(error.user_facing().message.contains("暂时不可用"));
     }
