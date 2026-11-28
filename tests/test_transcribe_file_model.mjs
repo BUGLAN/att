@@ -4,7 +4,9 @@ import assert from 'node:assert/strict'
 import {
   JOB_POLL_MAX_DELAY_MS,
   JOB_POLL_MAX_WAIT_MS,
+  JOB_CANCEL_POLL_DELAY_MS,
   buildTranscribeRequest,
+  busyRetryDelay,
   fileNameOf,
   formatDuration,
   isAsyncJobAccepted,
@@ -25,8 +27,10 @@ import {
   formatClock,
   jobProgressSignature,
   nextQueuedItem,
+  pollTranscribeJob,
   queueSummary,
   removeQueueItem,
+  submitTranscribeRequest,
   updateQueueItem
 } from '../src/composables/transcribe/fileTranscribeModel.mjs'
 
@@ -213,6 +217,81 @@ test('isJobPollExpired：未到期 false，到期 true，非法按 0 处理', ()
   assert.equal(isJobPollExpired(-1), false)
 })
 
+test('busyRetryDelay：优先使用 Retry-After，缺省回落轮询上限', () => {
+  assert.equal(busyRetryDelay({ retryAfter: 7 }), 7000)
+  assert.equal(busyRetryDelay({ retryAfter: '2' }), 2000)
+  assert.equal(busyRetryDelay({ retryAfter: -1 }), JOB_POLL_MAX_DELAY_MS)
+  assert.equal(busyRetryDelay({}), JOB_POLL_MAX_DELAY_MS)
+  assert.equal(busyRetryDelay({ retryAfter: 9999 }, { maxMs: 30000 }), 30000)
+})
+
+test('pollTranscribeJob：单次读取失败继续，进度停滞时取消并等到终态', async () => {
+  let clock = 0
+  let gets = 0
+  let errors = 0
+  let cancels = 0
+  const job = { status: 'running', stage: 'asr', progress: { done_seconds: 1, heartbeat_at: 1 } }
+  const settled = await pollTranscribeJob({
+    jobId: 'job-1',
+    now: () => clock,
+    maxStallMs: 2000,
+    delay: async (ms) => { clock += ms },
+    getJob: async () => {
+      gets += 1
+      if (gets === 1) throw new Error('一次网络抖动')
+      if (cancels > 0 && gets >= 4) return { ...job, status: 'cancelled' }
+      return job
+    },
+    cancelJob: async () => { cancels += 1 },
+    onPollError: () => { errors += 1 }
+  })
+  assert.equal(settled.status, 'cancelled')
+  assert.equal(errors, 1)
+  assert.equal(cancels, 1)
+  assert.equal(JOB_CANCEL_POLL_DELAY_MS, 400)
+})
+
+test('三文件排队轮询：提交遇到 503、读取单次失败都不影响后续文件', async () => {
+  let seq = 0
+  let { queue } = enqueuePaths([], ['/a/1.mp3', '/a/2.mp3', '/a/3.mp3'], { makeId: () => `id${++seq}` })
+  let item = nextQueuedItem(queue)
+  let submitCalls = 0
+  let readFailures = new Set()
+  while (item) {
+    queue = updateQueueItem(queue, item.id, { status: 'running' })
+    const submitted = await submitTranscribeRequest({
+      now: () => 0,
+      delay: async () => {},
+      submit: async () => {
+        submitCalls += 1
+        if (submitCalls % 2 === 1) {
+          const busy = new Error('引擎忙')
+          busy.status = 503
+          busy.retryAfter = 0
+          throw busy
+        }
+        return { job_id: `job-${item.id}` }
+      }
+    })
+    const job = await pollTranscribeJob({
+      jobId: submitted.job_id,
+      delay: async () => {},
+      now: () => 0,
+      getJob: async () => {
+        if (!readFailures.has(item.id)) {
+          readFailures.add(item.id)
+          throw new Error('读取失败一次')
+        }
+        return { status: 'done', result: { text: item.fileName } }
+      }
+    })
+    queue = updateQueueItem(queue, item.id, { status: job.status })
+    item = nextQueuedItem(queue)
+  }
+  assert.equal(submitCalls, 6)
+  assert.deepEqual(queue.map((entry) => entry.status), ['done', 'done', 'done'])
+})
+
 test('轮询仿真：9 次内累计等待达到 15 秒封顶节奏', () => {
   let elapsed = 0
   for (let attempt = 1; attempt <= 9; attempt += 1) {
@@ -309,8 +388,10 @@ test('jobProgressSignature：进度一变签名就变', () => {
   const a = jobProgressSignature({ stage: 'asr', progress: { done_seconds: 1 } })
   const b = jobProgressSignature({ stage: 'asr', progress: { done_seconds: 2 } })
   const c = jobProgressSignature({ stage: 'proofreading', progress: { window_done: 0 } })
+  const d = jobProgressSignature({ stage: 'asr', progress: { done_seconds: 1, heartbeat_at: 2 } })
   assert.notEqual(a, b)
   assert.notEqual(b, c)
+  assert.notEqual(a, d, '进度值不变但后台心跳推进时仍应视为有进展')
   assert.equal(a, jobProgressSignature({ stage: 'asr', progress: { done_seconds: 1 } }))
 })
 

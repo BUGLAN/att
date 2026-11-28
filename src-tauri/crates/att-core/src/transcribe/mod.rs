@@ -1,6 +1,6 @@
 //! 本地文件转写（移植自 Python `app/services/file_transcription_service.py`）。
 //!
-//! - POST /api/transcribe：缓存命中秒回；短文件同步 200；长文件、开启 LLM 校对或请求 `async_job` → 202 任务号；
+//! - POST /api/transcribe：缓存命中秒回；短请求等待后台任务完成并返回 200，长文件、开启 LLM 校对或请求 `async_job` → 202 任务号；
 //! - 后台任务可取消（`cancel_job`）：解码、分块识别、校对窗口之间检查取消令牌，取消后状态为 `cancelled`、
 //!   不再写缓存并释放单并发闸门；识别阶段的 `progress` 为 `{stage: "asr", done_seconds, total_seconds}`，
 //!   校对阶段为 `{window_done, window_total}`；
@@ -17,6 +17,7 @@ pub mod proofread;
 
 use crate::state::CoreState;
 use crate::storage::json_store;
+use futures_util::FutureExt;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -115,6 +116,7 @@ struct AsrHook {
 }
 
 impl AsrHook {
+    #[cfg(test)]
     fn none() -> Self {
         Self { token: CancelToken::default(), report: Arc::new(|_| {}), total_seconds: Arc::new(Mutex::new(0.0)) }
     }
@@ -176,8 +178,11 @@ struct Job {
     progress: Option<Value>,
     result: Option<Value>,
     error: String,
+    error_status: u16,
     created_at: f64,
+    heartbeat_at: f64,
     cancel: CancelToken,
+    completion: Arc<tokio::sync::Notify>,
 }
 
 impl Job {
@@ -188,6 +193,7 @@ impl Job {
             "progress": self.progress,
             "result": self.result,
             "error": self.error,
+            "heartbeat_at": self.heartbeat_at,
             "cancel_requested": self.status == "running" && self.cancel.is_cancelled(),
         })
     }
@@ -550,9 +556,75 @@ impl FileTranscriber {
         }
     }
 
+    fn heartbeat_job(&self, job_id: &str) {
+        let heartbeat_at = now_secs();
+        self.update_job(job_id, |job| {
+            job.heartbeat_at = heartbeat_at;
+            if let Some(progress) = job.progress.as_mut().and_then(Value::as_object_mut) {
+                progress.insert("heartbeat_at".into(), json!(heartbeat_at));
+            }
+        });
+    }
+
+    fn set_job_progress(&self, job_id: &str, mut progress: Value) {
+        let heartbeat_at = now_secs();
+        if let Some(object) = progress.as_object_mut() {
+            object.insert("heartbeat_at".into(), json!(heartbeat_at));
+        }
+        self.update_job(job_id, |job| {
+            job.heartbeat_at = heartbeat_at;
+            job.progress = Some(progress);
+        });
+    }
+
+    fn finish_job(&self, job_id: &str, f: impl FnOnce(&mut Job)) {
+        let completion = {
+            let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(job) = jobs.get_mut(job_id) else { return };
+            job.heartbeat_at = now_secs();
+            f(job);
+            job.completion.clone()
+        };
+        completion.notify_waiters();
+    }
+
     /// 取得本次执行权；返回的 owned guard 必须存活到引擎工作结束。
     fn try_acquire_busy(&self) -> Result<OwnedMutexGuard<()>, TranscribeError> {
         self.busy.clone().try_lock_owned().map_err(|_| TranscribeError::busy("转写引擎忙，请稍后重试"))
+    }
+}
+
+/// 等待后台任务终态。调用方 future 被丢弃不会取消任务，执行许可仍由后台任务持有。
+async fn wait_for_job(core: &Arc<CoreState>, job_id: &str) -> Result<Value, TranscribeError> {
+    loop {
+        let (status, result, error, error_status, completion) = {
+            let mut jobs = core.transcriber.jobs.lock().unwrap_or_else(|e| e.into_inner());
+            prune(&mut jobs);
+            let Some(job) = jobs.get(job_id) else {
+                return Err(TranscribeError::new(404, "任务不存在或已过期"));
+            };
+            (job.status, job.result.clone(), job.error.clone(), job.error_status, job.completion.clone())
+        };
+        match status {
+            "done" => return result.ok_or_else(|| TranscribeError::new(500, "转写任务完成但没有结果")),
+            "failed" => return Err(TranscribeError::new(error_status, error)),
+            "cancelled" => return Err(TranscribeError::cancelled()),
+            _ => {}
+        }
+        let notified = completion.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        // `enable` 后再查一次，避免任务恰好在读取快照与登记等待之间结束。
+        let finished = core
+            .transcriber
+            .jobs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(job_id)
+            .is_none_or(|job| matches!(job.status, "done" | "failed" | "cancelled"));
+        if !finished {
+            notified.await;
+        }
     }
 }
 
@@ -617,34 +689,12 @@ pub async fn handle(core: Arc<CoreState>, request: TranscribeRequest) -> Result<
             ),
         ));
     }
-    if requires_async_job(&request, duration) {
-        return start_job(core.clone(), request, path, hash, duration.unwrap_or_default(), engine).map(Outcome::Job);
+    let return_job = requires_async_job(&request, duration);
+    let job_id = start_job(core.clone(), request, path, hash, duration.unwrap_or_default(), engine)?;
+    if return_job {
+        return Ok(Outcome::Job(job_id));
     }
-    let payload = run_transcription(&core, &path, &request.language, &hash, engine).await?;
-    let payload = shape_payload(&payload, request.want_segments, false, None);
-    Ok(Outcome::Result(save_record(&core, &request, &path, &hash, engine, payload)))
-}
-
-/// 单并发执行一次转写并写缓存；忙时 503。
-async fn run_transcription(
-    core: &Arc<CoreState>,
-    path: &Path,
-    language: &str,
-    hash: &str,
-    engine: &str,
-) -> Result<Value, TranscribeError> {
-    let _model_gate = if crate::stt::local_kind(engine).is_some() {
-        Some(
-            core.model_gate
-                .clone()
-                .try_read_owned()
-                .map_err(|_| TranscribeError::busy("本地模型正在维护，请稍后重试"))?,
-        )
-    } else {
-        None
-    };
-    let _permit = core.transcriber.try_acquire_busy()?;
-    run_transcription_locked(core, path, language, hash, engine, &AsrHook::none()).await
+    wait_for_job(&core, &job_id).await.map(Outcome::Result)
 }
 
 /// 在调用方已持有执行许可时跑一次转写并写缓存；许可必须覆盖完整任务生命周期。
@@ -948,6 +998,7 @@ fn start_job(
         if jobs.len() >= JOB_MAX_ENTRIES {
             return Err(TranscribeError::busy("转写任务表已满，请稍后重试"));
         }
+        let started_at = now_secs();
         jobs.insert(
             job_id.clone(),
             Job {
@@ -956,8 +1007,11 @@ fn start_job(
                 progress: None,
                 result: None,
                 error: String::new(),
-                created_at: now_secs(),
+                error_status: 500,
+                created_at: started_at,
+                heartbeat_at: started_at,
                 cancel: cancel.clone(),
+                completion: Arc::new(tokio::sync::Notify::new()),
             },
         );
     }
@@ -967,26 +1021,48 @@ fn start_job(
         // guard 随后台任务存活，覆盖 ASR 与校对；成功、失败或 panic 时才释放。
         let _model_gate = model_gate;
         let _permit = permit;
-        let outcome = execute_job(&core, &id, &request, &path, &hash, duration, engine, &cancel).await;
+        execute_and_finish_job(
+            core.clone(),
+            id.clone(),
+            cancel.clone(),
+            execute_job(&core, &id, &request, &path, &hash, duration, engine, &cancel),
+        )
+        .await;
         drop(_permit);
-        core.transcriber.update_job(&id, |job| match outcome {
-            Ok(result) => {
-                job.stage = "done";
-                job.status = "done";
-                job.result = Some(result);
-            }
-            Err(_) if cancel.is_cancelled() => {
-                tracing::info!("转写任务 {id} 已取消（阶段 {}）", job.stage);
-                job.status = "cancelled";
-                job.error = crate::stt::TRANSCRIBE_CANCELLED.to_string();
-            }
-            Err(error) => {
-                job.status = "failed";
-                job.error = error.message;
-            }
-        });
     });
     Ok(job_id)
+}
+
+/// 任务体统一收口：捕获 panic、落终态并唤醒等待同步结果的请求。
+async fn execute_and_finish_job(
+    core: Arc<CoreState>,
+    id: String,
+    cancel: CancelToken,
+    work: impl std::future::Future<Output = Result<Value, TranscribeError>>,
+) {
+    let outcome = std::panic::AssertUnwindSafe(work).catch_unwind().await;
+    core.transcriber.finish_job(&id, |job| match outcome {
+        Ok(Ok(result)) => {
+            job.stage = "done";
+            job.status = "done";
+            job.result = Some(result);
+        }
+        Ok(Err(_)) if cancel.is_cancelled() => {
+            tracing::info!("转写任务 {id} 已取消（阶段 {}）", job.stage);
+            job.status = "cancelled";
+            job.error = crate::stt::TRANSCRIBE_CANCELLED.to_string();
+        }
+        Ok(Err(error)) => {
+            job.status = "failed";
+            job.error_status = error.status;
+            job.error = error.message;
+        }
+        Err(_) => {
+            job.status = "failed";
+            job.error_status = 500;
+            job.error = "转写任务异常退出，请重试".into();
+        }
+    });
 }
 
 /// 识别进度写进任务表：`{stage: "asr", done_seconds, total_seconds}`（秒，保留一位小数）。
@@ -1010,9 +1086,8 @@ fn asr_progress_reporter(core: Arc<CoreState>, job_id: String, duration: f64) ->
             }
             *last = done;
         }
-        core.transcriber.update_job(&job_id, |job| {
-            job.progress = Some(json!({ "stage": "asr", "done_seconds": done, "total_seconds": total_seconds }))
-        });
+        core.transcriber
+            .set_job_progress(&job_id, json!({ "stage": "asr", "done_seconds": done, "total_seconds": total_seconds }));
     });
     (report, total_seconds)
 }
@@ -1035,10 +1110,14 @@ async fn execute_job(
     let mut payload = match core.transcriber.cache_lookup(core, hash, engine) {
         Some(bucket) => bucket,
         None => {
+            // 解码前先刷新一次心跳，避免长文件在拿到真实时长前被前端判成停滞。
+            core.transcriber.heartbeat_job(job_id);
             let (report, total_seconds) = asr_progress_reporter(core.clone(), job_id.to_string(), duration);
             report(0.0);
             let hook = AsrHook { token: cancel.clone(), report, total_seconds };
-            run_transcription_locked(core, path, &request.language, hash, engine, &hook).await?
+            let payload = run_transcription_locked(core, path, &request.language, hash, engine, &hook).await?;
+            core.transcriber.heartbeat_job(job_id);
+            payload
         }
     };
     if cancel.is_cancelled() {
@@ -1051,19 +1130,26 @@ async fn execute_job(
         });
         let segments = payload.get("segments").and_then(Value::as_array).cloned().unwrap_or_default();
         let options = proofread::ProofreadOptions::from_request(request.proofread_options.as_ref());
+        let texts: Vec<String> = segments
+            .iter()
+            .map(|segment| segment.get("text").and_then(Value::as_str).unwrap_or("").to_string())
+            .collect();
+        let window_total = proofread::split_windows(&texts, &options).len();
+        core.transcriber.set_job_progress(job_id, json!({ "window_done": 0, "window_total": window_total }));
         let progress_core = core.clone();
         let progress_id = job_id.to_string();
         let result = cancel
             .run(async {
                 proofread::run(core, request.proofread_model_id.as_deref(), options, segments, move |done, total| {
-                    progress_core.transcriber.update_job(&progress_id, |job| {
-                        job.progress = Some(json!({ "window_done": done, "window_total": total }))
-                    });
+                    progress_core
+                        .transcriber
+                        .set_job_progress(&progress_id, json!({ "window_done": done, "window_total": total }));
                 })
                 .await
                 .map_err(|e| TranscribeError::new(409, format!("LLM 校对不可用：{}", e.user_message)))
             })
             .await?;
+        core.transcriber.heartbeat_job(job_id);
         payload["raw_text"] = payload.get("text").cloned().unwrap_or_else(|| json!(""));
         if result.applied {
             payload["text"] = json!(result.text);
@@ -1340,10 +1426,6 @@ mod tests {
         assert_eq!(busy_job.status, 503);
         assert_eq!(busy_job.retry_after, Some(BUSY_RETRY_AFTER_SECONDS));
 
-        // 同步请求在受理之后也必须被拒绝，不能抢走已返回 202 任务的执行权。
-        let busy_sync = run_transcription(&core, &path, "zh", "sync-hash", "deepseek_asr").await.unwrap_err();
-        assert_eq!(busy_sync.status, 503);
-
         // 让已受理任务真正执行：它应因文件不存在而失败，而不是因「引擎忙」失败。
         let job = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
@@ -1363,6 +1445,94 @@ mod tests {
         // 任务结束后许可释放，下一批请求可以继续受理。
         let third = start_job(core.clone(), request(), path, "third-hash".into(), 3600.0, "deepseek_asr").unwrap();
         assert!(!third.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn 同步等待future被丢弃_后台任务仍持锁直到真正结束() {
+        let dir = std::env::temp_dir().join(format!("att-ft-drop-wait-{}", uuid::Uuid::new_v4()));
+        let core = Arc::new(CoreState::init(&dir, crate::Platform::Macos).unwrap());
+        let permit = core.transcriber.try_acquire_busy().unwrap();
+        let cancel = CancelToken::default();
+        core.transcriber.jobs.lock().unwrap().insert(
+            "drop-wait-job".into(),
+            Job {
+                status: "running",
+                stage: "asr",
+                progress: None,
+                result: None,
+                error: String::new(),
+                error_status: 500,
+                created_at: now_secs(),
+                heartbeat_at: now_secs(),
+                cancel: cancel.clone(),
+                completion: Arc::new(tokio::sync::Notify::new()),
+            },
+        );
+        let release = Arc::new(tokio::sync::Notify::new());
+        tokio::spawn({
+            let core = core.clone();
+            let release = release.clone();
+            async move {
+                let _permit = permit;
+                execute_and_finish_job(core, "drop-wait-job".into(), cancel, async move {
+                    release.notified().await;
+                    Err(TranscribeError::new(500, "测试任务结束"))
+                })
+                .await;
+            }
+        });
+        tokio::task::yield_now().await;
+        let dropped =
+            tokio::time::timeout(std::time::Duration::from_millis(10), wait_for_job(&core, "drop-wait-job")).await;
+        assert!(dropped.is_err());
+        assert!(core.transcriber.is_busy(), "请求 future 被丢弃后任务仍应持有执行权");
+        release.notify_one();
+
+        let job = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                tokio::task::yield_now().await;
+                let job = core.transcriber.get_job("drop-wait-job").unwrap();
+                if job["status"] != "running" {
+                    break job;
+                }
+            }
+        })
+        .await
+        .expect("后台任务应自行结束");
+        assert_eq!(job["status"], "failed");
+        assert!(!core.transcriber.is_busy());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn 任务体panic_状态落为failed() {
+        let dir = std::env::temp_dir().join(format!("att-ft-panic-{}", uuid::Uuid::new_v4()));
+        let core = Arc::new(CoreState::init(&dir, crate::Platform::Macos).unwrap());
+        let cancel = CancelToken::default();
+        core.transcriber.jobs.lock().unwrap().insert(
+            "panic-job".into(),
+            Job {
+                status: "running",
+                stage: "asr",
+                progress: None,
+                result: None,
+                error: String::new(),
+                error_status: 500,
+                created_at: now_secs(),
+                heartbeat_at: now_secs(),
+                cancel: cancel.clone(),
+                completion: Arc::new(tokio::sync::Notify::new()),
+            },
+        );
+
+        execute_and_finish_job(core.clone(), "panic-job".into(), cancel, async {
+            panic!("测试任务 panic");
+        })
+        .await;
+        let job = core.transcriber.get_job("panic-job").unwrap();
+        assert_eq!(job["status"], "failed");
+        assert_eq!(job["error"], "转写任务异常退出，请重试");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1440,14 +1610,21 @@ mod tests {
                 progress: None,
                 result: None,
                 error: String::new(),
+                error_status: 500,
                 created_at: now_secs(),
+                heartbeat_at: now_secs(),
                 cancel: CancelToken::default(),
+                completion: Arc::new(tokio::sync::Notify::new()),
             },
         );
         let progress = || core.transcriber.get_job("job").unwrap()["progress"].clone();
         let (report, total_seconds) = asr_progress_reporter(core.clone(), "job".into(), 600.04);
         report(0.0);
-        assert_eq!(progress(), json!({ "stage": "asr", "done_seconds": 0.0, "total_seconds": 600.0 }));
+        let initial = progress();
+        assert_eq!(initial["stage"], "asr");
+        assert_eq!(initial["done_seconds"], 0.0);
+        assert_eq!(initial["total_seconds"], 600.0);
+        assert!(initial["heartbeat_at"].as_f64().is_some());
         report(0.6);
         assert_eq!(progress()["done_seconds"], 0.0, "不满 1 秒不写");
         report(12.345);

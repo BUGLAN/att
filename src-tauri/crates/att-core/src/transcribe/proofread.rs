@@ -402,13 +402,16 @@ pub async fn run(
             let mut total_tokens = 0u64;
             let mut outcome: Result<Option<BTreeMap<usize, String>>, String> = Ok(None);
             for _ in 0..MAX_STEPS {
+                on_progress(done.load(Ordering::SeqCst), window_total);
                 let reply = match gateway::chat(endpoint, model, &messages, chat_options).await {
                     Ok(reply) => reply,
                     Err(error) => {
+                        on_progress(done.load(Ordering::SeqCst), window_total);
                         outcome = Err(error.user_message);
                         break;
                     }
                 };
+                on_progress(done.load(Ordering::SeqCst), window_total);
                 requests += 1;
                 total_tokens = total_tokens.saturating_add(reply.total_tokens.max(0) as u64);
                 if reply.truncated() {

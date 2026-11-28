@@ -220,7 +220,13 @@ export function useRecords() {
     const deadline = Date.now() + RETRANSCRIBE_MAX_WAIT_MS
     while (Date.now() < deadline) {
       await sleep(RETRANSCRIBE_POLL_INTERVAL_MS)
-      const record = await api.getRecord(id)
+      let record
+      try {
+        record = await api.getRecord(id)
+      } catch (error) {
+        // 单次网络抖动不改判识别任务失败，继续轮询到终态或总等待上限。
+        continue
+      }
       if (record?.status !== 'transcribing') {
         return record
       }

@@ -3,7 +3,7 @@
  *
  * 覆盖四块：
  * 1. 请求构造与响应归一 —— 与后端 POST /api/transcribe 契约一一对应；
- * 2. 202 异步任务的轮询策略 —— 1s 起步、逐次退避到 5s；进度停滞 15 分钟才放弃等待；
+ * 2. 202 异步任务的轮询策略 —— 1s 起步、逐次退避到 5s；进度停滞 15 分钟则取消并等待终态；
  * 3. 识别 / 校对进度的展示与多文件排队；
  * 4. 展示格式化 —— 时长、文件名、扩展名预检。
  */
@@ -18,6 +18,7 @@ export const SUPPORTED_MEDIA_EXTENSIONS = [
 export const JOB_POLL_INITIAL_DELAY_MS = 1000
 export const JOB_POLL_MAX_DELAY_MS = 5000
 export const JOB_POLL_MAX_WAIT_MS = 15 * 60 * 1000
+export const JOB_CANCEL_POLL_DELAY_MS = 400
 
 /**
  * 识别引擎下拉的元数据（与后端 engine 参数一一对应）。
@@ -245,6 +246,42 @@ export function isJobPollExpired(elapsedMs, { maxWaitMs = JOB_POLL_MAX_WAIT_MS }
   return safeElapsed >= maxWaitMs
 }
 
+/** 503 的 Retry-After（秒）转成等待毫秒；缺省或非法时使用普通轮询上限。 */
+export function busyRetryDelay(error, { fallbackMs = JOB_POLL_MAX_DELAY_MS, maxMs = JOB_POLL_MAX_WAIT_MS } = {}) {
+  const seconds = Number(error?.retryAfter)
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return Math.min(Math.max(fallbackMs, 0), maxMs)
+  }
+  return Math.min(seconds * 1000, maxMs)
+}
+
+/** 提交任务：遇到 503 按 Retry-After 有界重试；用户取消后返回 { cancelled: true }。 */
+export async function submitTranscribeRequest({
+  submit,
+  cancelRequested = () => false,
+  delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now = Date.now,
+  maxWaitMs = JOB_POLL_MAX_WAIT_MS
+}) {
+  const startedAt = now()
+  while (true) {
+    if (cancelRequested()) {
+      return { cancelled: true }
+    }
+    try {
+      return await submit()
+    } catch (error) {
+      if (error?.status !== 503) {
+        throw error
+      }
+      if (now() - startedAt >= maxWaitMs) {
+        throw error
+      }
+      await delay(busyRetryDelay(error, { maxMs: maxWaitMs }))
+    }
+  }
+}
+
 /**
  * 任务进度的签名：阶段或进度一变签名就变（用来判断「还在推进」，停滞才算超时）。
  */
@@ -253,8 +290,79 @@ export function jobProgressSignature(job) {
   return [
     job?.stage || '',
     progress.done_seconds ?? '',
-    progress.window_done ?? ''
+    progress.window_done ?? '',
+    progress.heartbeat_at ?? job?.heartbeat_at ?? ''
   ].join('|')
+}
+
+/**
+ * 轮询一个后台任务直到终态。
+ * 单次 GET 失败继续重试；进度停滞或用户取消时发送一次取消，再短间隔轮询到 cancelled/failed。
+ */
+export async function pollTranscribeJob({
+  jobId,
+  getJob,
+  onState = () => {},
+  onPollError = () => {},
+  onCancel = () => {},
+  cancelJob = async () => {},
+  cancelRequested = () => false,
+  delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now = Date.now,
+  maxStallMs = JOB_POLL_MAX_WAIT_MS
+}) {
+  let attempt = 0
+  let lastSignature = ''
+  let lastAdvanceAt = now()
+  let cancelSent = false
+
+  while (true) {
+    const requested = Boolean(cancelRequested())
+    if (requested && !cancelSent) {
+      await cancelJob(jobId)
+      cancelSent = true
+      onCancel('requested')
+    }
+    attempt += 1
+    await delay(cancelSent ? JOB_CANCEL_POLL_DELAY_MS : nextJobPollDelay(attempt))
+
+    let job
+    try {
+      job = await getJob(jobId)
+    } catch (error) {
+      if (error?.status === 404) {
+        throw error
+      }
+      onPollError(error)
+      if (!cancelSent && isJobPollExpired(now() - lastAdvanceAt, { maxWaitMs: maxStallMs })) {
+        await cancelJob(jobId)
+        cancelSent = true
+        onCancel('stalled')
+      }
+      continue
+    }
+
+    onState(job)
+    if (job?.status === 'done' || job?.status === 'cancelled' || job?.status === 'failed') {
+      return job
+    }
+
+    const signature = jobProgressSignature(job)
+    if (signature !== lastSignature) {
+      lastSignature = signature
+      lastAdvanceAt = now()
+    } else if (!cancelSent && isJobPollExpired(now() - lastAdvanceAt, { maxWaitMs: maxStallMs })) {
+      await cancelJob(jobId)
+      cancelSent = true
+      onCancel('stalled')
+    }
+
+    if (cancelRequested() && !cancelSent) {
+      await cancelJob(jobId)
+      cancelSent = true
+      onCancel('requested')
+    }
+  }
 }
 
 /** 秒 → "m:ss" 或 "h:mm:ss"（进度文案用）。 */

@@ -230,6 +230,10 @@ async function request(method, endpoint, options = {}) {
     // 保留原始状态码与 detail（409 冲突 / structured detail 的调用方需要自行分支）
     error.status = response.status
     error.detail = errorData?.detail
+    const retryAfter = Number(response.headers.get('Retry-After'))
+    if (Number.isFinite(retryAfter) && retryAfter >= 0) {
+      error.retryAfter = retryAfter
+    }
     throw error
   }
 

@@ -21,21 +21,18 @@ import {
   historyFromRecords,
   TRANSCRIBE_HISTORY_LIMIT,
   isAsyncJobAccepted,
-  isJobPollExpired,
   isSupportedMediaPath,
-  jobProgressSignature,
-  nextJobPollDelay,
   nextQueuedItem,
   normalizeTranscribeResult,
+  pollTranscribeJob,
   removeQueueItem,
+  submitTranscribeRequest,
   updateQueueItem
 } from '@/composables/transcribe/fileTranscribeModel.mjs'
 import { buildTranscribeExport } from '@/composables/transcribe/subtitleExport.mjs'
 import { normalizeLanguageForProvider } from '@/components/settings/asrLanguages.mjs'
 import { downloadText } from '@/utils/exportDownload.mjs'
 import { createLatestRequestGuard, runLatest } from '@/utils/latestRequest.mjs'
-// 取消之后轮询改成短间隔：尽快看到任务真正退出、开始下一个
-const CANCEL_POLL_DELAY_MS = 400
 const UNSUPPORTED_MESSAGE = '暂不支持该文件类型：请选择音视频文件（mp4 / flv / webm / wav / mp3 / m4a 等）'
 
 export function useFileTranscribe() {
@@ -231,34 +228,29 @@ export function useFileTranscribe() {
 
   /** 轮询到任务结束：{ status: 'done', result } | { status: 'cancelled' }；失败抛错。 */
   async function pollJobResult(jobId, path) {
-    let lastSignature = ''
-    let lastAdvanceAt = Date.now()
-    let attempt = 0
-
-    while (true) {
-      attempt += 1
-      await pollDelay(cancelRequested.value ? CANCEL_POLL_DELAY_MS : nextJobPollDelay(attempt))
-      const job = await api.getTranscribeJob(jobId)
-      applyJobState(job)
-
-      if (job.status === 'done') {
-        return { status: 'done', result: normalizeTranscribeResult(job.result, { path }) }
+    const job = await pollTranscribeJob({
+      jobId,
+      getJob: api.getTranscribeJob,
+      onState: applyJobState,
+      onPollError: () => {
+        statusText.value = '暂时无法读取转写进度，正在重试…'
+      },
+      cancelJob: sendCancel,
+      cancelRequested: () => cancelRequested.value,
+      delay: pollDelay,
+      onCancel: (reason) => {
+        cancelRequested.value = true
+        progressInfo.value = { ...progressInfo.value, label: '正在取消…' }
+        statusText.value = reason === 'stalled' ? '长时间没有进展，正在取消任务…' : '正在取消…'
       }
-      if (job.status === 'cancelled') {
-        return { status: 'cancelled' }
-      }
-      if (job.status === 'failed') {
-        throw new Error(job.error || '转写任务失败')
-      }
-      // 进度还在推进就一直等；停滞超过上限才放弃（任务仍在后台继续，可稍后重试同一文件命中缓存）
-      const signature = jobProgressSignature(job)
-      if (signature !== lastSignature) {
-        lastSignature = signature
-        lastAdvanceAt = Date.now()
-      } else if (isJobPollExpired(Date.now() - lastAdvanceAt)) {
-        throw new Error('转写任务 15 分钟没有进展，已停止等待；任务仍会在后台继续，可稍后重试同一文件（会命中缓存）')
-      }
+    })
+    if (job.status === 'done') {
+      return { status: 'done', result: normalizeTranscribeResult(job.result, { path }) }
     }
+    if (job.status === 'cancelled') {
+      return { status: 'cancelled' }
+    }
+    throw new Error(job.error || '转写任务失败')
   }
 
   async function sendCancel(jobId) {
@@ -371,7 +363,17 @@ export function useFileTranscribe() {
     }
 
     try {
-      const payload = await api.transcribeFile(request)
+      const payload = await submitTranscribeRequest({
+        submit: () => api.transcribeFile(request),
+        cancelRequested: () => cancelRequested.value,
+        delay: async (ms) => {
+          statusText.value = '转写引擎忙，正在等待重试…'
+          await pollDelay(ms)
+        }
+      })
+      if (payload?.cancelled) {
+        return { status: 'cancelled', error: '' }
+      }
       if (isAsyncJobAccepted(payload)) {
         currentJobId = payload.job_id
         // 提交期间（算哈希、探测时长）已经点了取消：拿到任务号立刻取消
