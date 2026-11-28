@@ -44,3 +44,10 @@ tmp/
 src-tauri/target/
 src-tauri/target-*/
 src-tauri/gen/
+
+
+docs/
+reports/
+pnpm-workspace.yaml
+tests/.tmp/
+volc_page.html
