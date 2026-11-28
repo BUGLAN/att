@@ -23,8 +23,6 @@ const submit = new NativeFunction(
 );
 
 const tasks = new Map();
-let closing = false;
-let callbacks = 0;
 let encoderObject = null;
 let encoderHeaderSeen = false;
 
@@ -61,11 +59,9 @@ function closeEncoder() {
 
 // 回调必须活到输入法进程退出：超时请求即使不再被 Promise 使用，也不能释放 user_data。
 const callback = new NativeCallback((user, taskId, code, response, length) => {
-  callbacks++;
   const key = user.toString();
   const task = tasks.get(key);
   if (!task) {
-    callbacks--;
     return;
   }
   let result;
@@ -85,14 +81,13 @@ const callback = new NativeCallback((user, taskId, code, response, length) => {
   // 先返回原生调用栈，再唤醒 Rust 的 RPC；避免在回调里重入 Frida。
   setTimeout(() => {
     tasks.delete(key);
-    callbacks--;
     task.resolve(result);
   }, 250);
 }, 'void', ['pointer', 'int', 'int', 'pointer', 'uint'], 'win64');
 
 rpc.exports = {
   encoderInit() {
-    if (closing || encoderObject) {
+    if (encoderObject) {
       throw Error('Invalid encoder state');
     }
     const object = Memory.alloc(0x28);
@@ -112,8 +107,8 @@ rpc.exports = {
   },
 
   encoderEncode(pcm) {
-    if (closing || pcm.length === 0 || pcm.length % 640 !== 0) {
-      throw Error('Invalid PCM or agent stopping');
+    if (pcm.length === 0 || pcm.length % 640 !== 0) {
+      throw Error('Invalid PCM');
     }
     const object = requireEncoderObject();
     const input = Memory.alloc(pcm.length);
@@ -144,8 +139,8 @@ rpc.exports = {
   },
 
   encode(pcm) {
-    if (closing || pcm.length === 0 || pcm.length % 640 !== 0) {
-      throw Error('Invalid PCM or agent stopping');
+    if (pcm.length === 0 || pcm.length % 640 !== 0) {
+      throw Error('Invalid PCM');
     }
     const object = Memory.alloc(0x28);
     const input = Memory.alloc(pcm.length);
@@ -173,9 +168,9 @@ rpc.exports = {
     }
   },
 
-  request(bytes, owner = '') {
-    if (closing || !bytes.length) {
-      throw Error('Invalid request or agent stopping');
+  request(bytes, owner) {
+    if (!bytes.length) {
+      throw Error('Invalid request');
     }
     return new Promise((resolve, reject) => {
       const data = Memory.alloc(bytes.length);
@@ -206,21 +201,9 @@ rpc.exports = {
     });
   },
 
-  stats() {
-    return { pending: tasks.size, callbacks, closing };
-  },
-
   finalize(owner) {
     return {
-      cleaned: owner === undefined
-        ? tasks.size === 0 && callbacks === 0
-        : !Array.from(tasks.values()).some((task) => task.owner === owner)
+      cleaned: !Array.from(tasks.values()).some((task) => task.owner === owner)
     };
-  },
-
-  dispose() {
-    closing = true;
-    closeEncoder();
-    return { cleaned: tasks.size === 0 && callbacks === 0 };
   }
 };

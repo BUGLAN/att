@@ -604,8 +604,6 @@ pub struct ModelStatus {
     /// `installed` / `partial` / `missing`
     pub state: &'static str,
     pub installed_bytes: u64,
-    /// 实际存在的路径（删除时逐个删）。
-    pub paths: Vec<PathBuf>,
     /// 优先展示/使用的路径。
     pub primary: Option<PathBuf>,
 }
@@ -621,7 +619,7 @@ pub fn status(spec: &ModelSpec, models_dir: &Path) -> ModelStatus {
     } else {
         "partial"
     };
-    ModelStatus { state, installed_bytes, primary: installed.or_else(|| paths.first().cloned()), paths }
+    ModelStatus { state, installed_bytes, primary: installed.or_else(|| paths.first().cloned()) }
 }
 
 /// 路径占用字节：目录递归累加普通文件。
@@ -743,7 +741,7 @@ mod tests {
         std::fs::write(legacy.join("tokenizer.json"), b"{}").unwrap();
         let large = find("whisper-large-v3").unwrap();
         assert_eq!(status(large, &dir).state, "installed");
-        assert!(status(large, &dir).paths.contains(&legacy));
+        assert!(existing_paths(large, &dir).contains(&legacy));
 
         // 旧 download_root 下的短名目录与 HF cache snapshot 也识别
         let nested = dir.join("faster_whisper").join("faster-whisper-base");
@@ -808,7 +806,7 @@ mod tests {
         let large = find("whisper-large-v3").unwrap();
         let large_status = status(large, &dir);
         assert_eq!(large_status.state, "missing");
-        assert!(large_status.paths.is_empty());
+        assert!(existing_paths(large, &dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -869,7 +867,7 @@ mod tests {
         let status = status(small, &root);
         assert_eq!(status.state, "partial");
         assert!(status.installed_bytes >= 32);
-        assert!(status.paths.contains(&root.join(".downloads").join(small.id)));
+        assert!(existing_paths(small, &root).contains(&root.join(".downloads").join(small.id)));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

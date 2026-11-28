@@ -489,7 +489,7 @@ pub fn speech_activity(samples: &[i16]) -> SpeechActivity {
     }
 }
 
-/// 多段录音的静音切段器（移植自前端 `recorder/segmentPolicy.mjs` 的 2.2s / 10s / 0.8s 策略）。
+/// 多段录音的静音切段器（移植自前端 `recorder/segmentPolicy.mjs` 的 2.2s / 10s 策略）。
 ///
 /// - 每块按 RMS 电平（dBFS）判定有无语音：高于 `silence_level_db` 即为语音；
 /// - 本段有语音、时长 ≥ 最短 2.2s、且连续静音 ≥ `silence_threshold` → 在静音处切段；
@@ -501,12 +501,10 @@ pub struct Segmenter {
     current: Vec<i16>,
     current_has_speech: bool,
     silence_run: usize,
-    any_speech: bool,
 }
 
 pub const MIN_SEGMENT_SECONDS: f64 = 2.2;
 pub const MAX_SEGMENT_SECONDS: f64 = 10.0;
-pub const FORCE_MIN_SEGMENT_SECONDS: f64 = 0.8;
 
 impl Segmenter {
     pub fn new(silence_level_db: f64, silence_threshold_seconds: f64) -> Self {
@@ -516,7 +514,6 @@ impl Segmenter {
             current: Vec::new(),
             current_has_speech: false,
             silence_run: 0,
-            any_speech: false,
         }
     }
 
@@ -531,7 +528,6 @@ impl Segmenter {
         }
         if chunk_db(chunk) > self.silence_level_db {
             self.current_has_speech = true;
-            self.any_speech = true;
             self.silence_run = 0;
         } else {
             self.silence_run += chunk.len();
@@ -541,25 +537,21 @@ impl Segmenter {
         let pause =
             self.current_has_speech && self.silence_run >= self.silence_samples && duration >= MIN_SEGMENT_SECONDS;
         if pause || duration >= MAX_SEGMENT_SECONDS {
-            return self.take(false);
+            return self.take();
         }
         None
     }
 
-    /// 收尾：交出最后一段（强制切分时 0.8s 以上即可；整场没说过话则丢弃）。
+    /// 收尾：交出最后一段；整场没说过话则丢弃。
     pub fn finish(&mut self) -> Option<Vec<i16>> {
-        self.take(true)
+        self.take()
     }
 
-    fn take(&mut self, force: bool) -> Option<Vec<i16>> {
+    fn take(&mut self) -> Option<Vec<i16>> {
         let segment = std::mem::take(&mut self.current);
         let has_speech = std::mem::replace(&mut self.current_has_speech, false);
         self.silence_run = 0;
-        let duration = Self::seconds(segment.len());
         if !has_speech {
-            return None;
-        }
-        if force && duration < FORCE_MIN_SEGMENT_SECONDS && !self.any_speech {
             return None;
         }
         Some(segment)

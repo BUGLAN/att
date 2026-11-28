@@ -611,9 +611,8 @@ fn spawn_local_model_idle_monitor(core: Arc<CoreState>, recorder: recording::Rec
             }
             let threshold = Duration::from_secs((minutes as u64).saturating_mul(60));
             let unload_core = core.clone();
-            let unloaded = tokio::task::spawn_blocking(move || unload_core.local_models.unload_idle(threshold, false))
-                .await
-                .unwrap_or(0);
+            let unloaded =
+                tokio::task::spawn_blocking(move || unload_core.local_models.unload_idle(threshold)).await.unwrap_or(0);
             if unloaded > 0 {
                 tracing::debug!("本地模型空闲回收完成：{unloaded} 个引擎");
             }

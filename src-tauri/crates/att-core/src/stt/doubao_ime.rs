@@ -829,7 +829,8 @@ async fn transcribe_session(
     session.finish_result(config.timeout).await
 }
 
-async fn transcribe_pcm_with_progress_impl(
+/// 同 [`transcribe_pcm`]，按已推送样本数回调进度；返回 false 时关闭当前会话并取消。
+pub async fn transcribe_pcm_with_progress(
     config: &DoubaoImeConfig,
     samples: &[i16],
     on_push: &mut (dyn FnMut(usize) -> bool + Send),
@@ -879,25 +880,6 @@ pub async fn transcribe_pcm(config: &DoubaoImeConfig, samples: &[i16]) -> Result
     transcribe_pcm_with_progress(config, samples, &mut |_| true).await.map_err(|error| error.to_string())
 }
 
-pub async fn transcribe_pcm_with_progress(
-    config: &DoubaoImeConfig,
-    samples: &[i16],
-    on_push: &mut (dyn FnMut(usize) -> bool + Send),
-) -> Result<String, DoubaoImeError> {
-    transcribe_pcm_with_progress_impl(config, samples, on_push).await
-}
-
-/// 轻量探活：注册/取 token（如果还没缓存）并完成 WebSocket 握手，不发送识别请求。
-pub async fn check_connection(config: &DoubaoImeConfig) -> Result<(), DoubaoImeError> {
-    config.ensure()?;
-    let credentials = ensure_credentials(config).await?;
-    let mut stream = connect(config, &credentials).await?;
-    let _ =
-        timeout(Duration::from_secs(1), stream.close(Some(CloseFrame { code: CloseCode::Normal, reason: "".into() })))
-            .await;
-    Ok(())
-}
-
 /// 流式中间结果回调：参数是当前的累计文本。
 pub type PartialCallback = Arc<dyn Fn(String) + Send + Sync>;
 
@@ -913,7 +895,6 @@ pub struct DoubaoImeSession {
     frame_index: u32,
     started_at: i64,
     session_finished: bool,
-    acked: bool,
     on_partial: Option<PartialCallback>,
 }
 
@@ -955,7 +936,6 @@ impl DoubaoImeSession {
             frame_index: 0,
             started_at: now_ms(),
             session_finished: false,
-            acked: false,
             on_partial,
         };
         session.send("StartTask", None, None, None, true).await?;
@@ -970,10 +950,6 @@ impl DoubaoImeSession {
         self.accumulator.snapshot()
     }
 
-    pub fn acked(&self) -> bool {
-        self.acked
-    }
-
     fn early_finish_error(&self) -> DoubaoImeError {
         tracing::warn!(
             pushed_frames = self.frame_index,
@@ -982,7 +958,6 @@ impl DoubaoImeSession {
         );
         DoubaoImeError::server("豆包输入法服务端提前结束了本次会话，已保存之前的识别内容")
     }
-
     async fn send(
         &mut self,
         method: &str,
@@ -1067,16 +1042,9 @@ impl DoubaoImeSession {
 
     fn handle(&mut self, parsed: Parsed) -> Result<Option<&'static str>, DoubaoImeError> {
         match parsed {
-            Parsed::TaskStarted => {
-                self.acked = true;
-                Ok(Some("TaskStarted"))
-            }
-            Parsed::SessionStarted => {
-                self.acked = true;
-                Ok(Some("SessionStarted"))
-            }
+            Parsed::TaskStarted => Ok(Some("TaskStarted")),
+            Parsed::SessionStarted => Ok(Some("SessionStarted")),
             Parsed::SessionFinished => {
-                self.acked = true;
                 self.session_finished = true;
                 Ok(Some("SessionFinished"))
             }
@@ -1086,25 +1054,17 @@ impl DoubaoImeSession {
                 Ok(None)
             }
             Parsed::Interim(text) => {
-                self.acked = true;
                 self.accumulator.interim(text);
                 self.emit();
                 Ok(None)
             }
             Parsed::Final(text) => {
-                self.acked = true;
                 self.accumulator.final_result(text);
                 self.emit();
                 Ok(None)
             }
-            Parsed::Heartbeat | Parsed::Other(_) => {
-                self.acked = true;
-                Ok(None)
-            }
-            Parsed::Failed(_) => {
-                self.acked = true;
-                Err(DoubaoImeError::server("豆包输入法语音服务返回失败，请稍后重试"))
-            }
+            Parsed::Heartbeat | Parsed::Other(_) => Ok(None),
+            Parsed::Failed(_) => Err(DoubaoImeError::server("豆包输入法语音服务返回失败，请稍后重试")),
         }
     }
 

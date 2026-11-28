@@ -117,10 +117,6 @@ impl SileroVad {
         Ok(Self { handle, model, gate: Mutex::new(()) })
     }
 
-    pub fn model(&self) -> &Path {
-        &self.model
-    }
-
     /// 语音区间（采样点，左闭右开）；无可识别语音时返回空表。
     pub fn speech_ranges(&self, samples: &[i16]) -> Result<Vec<(usize, usize)>, String> {
         let _guard = self.gate.lock().unwrap_or_else(|error| error.into_inner());

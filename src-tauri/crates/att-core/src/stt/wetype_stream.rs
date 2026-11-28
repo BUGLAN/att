@@ -408,7 +408,6 @@ pub(super) fn build_request(voice_id: &str, audio: &[u8], sequence: u64, total_b
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct VoiceResponse {
     pub text: String,
-    pub sequence: u64,
     pub end_flag: u64,
     pub interval_ms: u64,
 }
@@ -435,12 +434,7 @@ pub(super) fn parse_response(data: &[u8], expected_voice_id: &str) -> Result<Voi
     }
     let text =
         String::from_utf8(bytes_value(&inner, 4)?.unwrap_or_default().to_vec()).map_err(|_| "响应文字编码不正确")?;
-    Ok(VoiceResponse {
-        text,
-        sequence: int_value(&inner, 3, 0)?,
-        end_flag: int_value(&inner, 5, 0)?,
-        interval_ms: int_value(&inner, 6, 100)?,
-    })
+    Ok(VoiceResponse { text, end_flag: int_value(&inner, 5, 0)?, interval_ms: int_value(&inner, 6, 100)? })
 }
 
 #[derive(Debug)]
@@ -576,7 +570,6 @@ mod tests {
         let response = test_response("voice-1", "今天天气不错", 1);
         let parsed = parse_response(&response, "voice-1").unwrap();
         assert_eq!(parsed.text, "今天天气不错");
-        assert_eq!(parsed.sequence, 1);
         assert_eq!(parsed.end_flag, 1);
         assert!(parse_response(&response, "voice-2").unwrap_err().contains("会话标识不匹配"));
     }

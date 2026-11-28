@@ -251,10 +251,6 @@ impl ModelManager {
         }
     }
 
-    pub fn models_dir(&self) -> &Path {
-        &self.models_dir
-    }
-
     fn lock(&self) -> std::sync::MutexGuard<'_, ManagerInner> {
         self.inner.lock().unwrap_or_else(|error| error.into_inner())
     }

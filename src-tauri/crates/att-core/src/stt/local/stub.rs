@@ -56,7 +56,6 @@ pub struct LocalTranscript {
     pub segments: Vec<LocalSegment>,
     pub duration: f64,
     pub elapsed: f64,
-    pub device: String,
 }
 
 /// 转写分段（秒）。
@@ -74,16 +73,8 @@ pub struct LocalEngine {
 }
 
 impl LocalEngine {
-    pub fn kind(&self) -> LocalKind {
-        self.kind
-    }
-
     pub fn label(&self) -> &'static str {
         self.kind.label()
-    }
-
-    pub fn has_vad(&self) -> bool {
-        false
     }
 
     pub fn device(&self) -> String {
@@ -158,7 +149,7 @@ impl LocalModels {
 
     pub fn unload(&self, _kind: Option<LocalKind>) {}
 
-    pub fn unload_idle(&self, _threshold: Duration, _externally_busy: bool) -> usize {
+    pub fn unload_idle(&self, _threshold: Duration) -> usize {
         0
     }
 

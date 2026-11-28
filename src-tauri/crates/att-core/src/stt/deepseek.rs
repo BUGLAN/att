@@ -45,7 +45,7 @@ pub struct PcmTranscript {
     pub warnings: Vec<String>,
 }
 
-/// 按 16k 单声道样本数算需要几次串行上传，与 [`transcribe_pcm`] 的切块一致（空音频为 0 块）。
+/// 按 16k 单声道样本数算需要几次串行上传，与 [`transcribe_pcm_detailed`] 的切块一致（空音频为 0 块）。
 pub fn chunk_count(samples: usize) -> usize {
     chunk_ranges(samples).len()
 }
@@ -144,12 +144,7 @@ impl DeepSeekError {
     }
 }
 
-/// 上传一段 16k 单声道 WAV 并返回识别文本。
-pub async fn transcribe_wav(config: &DeepSeekConfig, wav: Vec<u8>) -> Result<String, String> {
-    transcribe_wav_detailed(config, wav).await.map_err(|error| error.message)
-}
-
-/// 同 [`transcribe_wav`]，失败时保留 HTTP 状态（凭据验证据此区分「Key 无效」与「暂时失败」）。
+/// 上传一段 16k 单声道 WAV 并返回识别文本，失败时保留 HTTP 状态（凭据验证据此区分「Key 无效」与「暂时失败」）。
 pub async fn transcribe_wav_detailed(config: &DeepSeekConfig, wav: Vec<u8>) -> Result<String, DeepSeekError> {
     config.ensure().map_err(DeepSeekError::local)?;
     let client = reqwest::Client::builder()
@@ -244,11 +239,7 @@ async fn transcribe_chunk_with_retry(
 }
 
 /// 录音整段 PCM：超过 120 秒自动切块，顺序识别后按行拼接；单段失败保留其他段文本。
-pub async fn transcribe_pcm(config: &DeepSeekConfig, samples: &[i16]) -> Result<String, String> {
-    transcribe_pcm_detailed(config, samples).await.map(|transcript| transcript.text)
-}
-
-/// 同 [`transcribe_pcm`]，返回分段位置与降级警告，供文件转写把缺段信息带回响应。
+/// 返回分段位置与降级警告，供文件转写把缺段信息带回响应。
 pub async fn transcribe_pcm_detailed(config: &DeepSeekConfig, samples: &[i16]) -> Result<PcmTranscript, String> {
     transcribe_pcm_with_limits(config, samples, MAX_CHUNK_SAMPLES, MIN_TAIL_SAMPLES, &mut |_, _| true).await
 }
@@ -436,7 +427,7 @@ mod tests {
             endpoint: format!("{base}/v1/tools/asr"),
             timeout: Duration::from_secs(5),
         };
-        assert_eq!(transcribe_wav(&config, b"RIFF".to_vec()).await.unwrap(), "你好");
+        assert_eq!(transcribe_wav_detailed(&config, b"RIFF".to_vec()).await.unwrap(), "你好");
         let request = requests.recv().await.unwrap().to_lowercase();
         assert!(request.contains("authorization: bearer sk-test-123456"));
         assert!(request.contains("name=\"file\""));
@@ -579,7 +570,7 @@ mod tests {
             assert!(!error.message.contains("Authorization"), "{status}: {}", error.message);
             assert!(!error.message.contains("bad audio"), "{status}: {}", error.message);
             // 记录与 HTTP 错误响应消费的是这条纯文案，同样不能带密钥。
-            let message = transcribe_wav(&config, b"RIFF".to_vec()).await.unwrap_err();
+            let message = transcribe_wav_detailed(&config, b"RIFF".to_vec()).await.unwrap_err().message;
             assert!(!message.contains(secret), "{status}: {message}");
         }
     }

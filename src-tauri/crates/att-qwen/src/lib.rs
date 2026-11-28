@@ -30,7 +30,7 @@ pub use vad::SileroVad;
 /// 16kHz：录音链路与模型输入采样率。
 pub const SAMPLE_RATE: usize = 16_000;
 /// 分块转写被进度回调叫停（文件转写取消）时的错误文案。
-pub const CANCELLED: &str = "转写已取消";
+const CANCELLED: &str = "转写已取消";
 /// 模型必需文件（sherpa-onnx Qwen3-ASR 导出目录的固定布局）。
 pub const MODEL_FILES: [&str; 3] = ["conv_frontend.onnx", "encoder.int8.onnx", "decoder.int8.onnx"];
 /// SenseVoice 模型目录的必需文件。

@@ -101,13 +101,12 @@ pub enum ErrorKind {
 pub struct ErrorInfo {
     pub kind: ErrorKind,
     pub message: String,
-    pub retryable: bool,
     pub next_action: String,
 }
 
 impl ErrorInfo {
-    pub fn new(kind: ErrorKind, message: impl Into<String>, retryable: bool, next_action: &str) -> Self {
-        Self { kind, message: message.into(), retryable, next_action: next_action.to_string() }
+    pub fn new(kind: ErrorKind, message: impl Into<String>, next_action: &str) -> Self {
+        Self { kind, message: message.into(), next_action: next_action.to_string() }
     }
 
     /// 拼成可直接展示给用户的一句话。
@@ -442,42 +441,33 @@ pub fn pending_from_cumulative_text(committed: &[String], text: &str) -> String 
 pub fn classify_sauc_error(code: u32, message: &str) -> ErrorInfo {
     let detail = if message.is_empty() { String::new() } else { format!("：{message}") };
     match code {
-        20_000_000 => ErrorInfo::new(ErrorKind::None, "成功", false, ""),
+        20_000_000 => ErrorInfo::new(ErrorKind::None, "成功", ""),
         45_000_001 => {
-            ErrorInfo::new(ErrorKind::Protocol, format!("请求参数无效{detail}"), false, "检查服务商参数后重新测试连接")
+            ErrorInfo::new(ErrorKind::Protocol, format!("请求参数无效{detail}"), "检查服务商参数后重新测试连接")
         }
-        45_000_002 => ErrorInfo::new(ErrorKind::Input, "音频为空", false, "检查音频格式（16kHz 单声道 16bit）"),
-        45_000_081 => ErrorInfo::new(ErrorKind::Network, "服务端等包超时", true, "立即重试"),
-        45_000_151 => ErrorInfo::new(ErrorKind::Input, "音频格式不正确", false, "检查音频格式（16kHz 单声道 16bit）"),
-        55_000_031 => ErrorInfo::new(ErrorKind::Quota, "服务端过载", true, "稍后重试，或检查并发配额"),
+        45_000_002 => ErrorInfo::new(ErrorKind::Input, "音频为空", "检查音频格式（16kHz 单声道 16bit）"),
+        45_000_081 => ErrorInfo::new(ErrorKind::Network, "服务端等包超时", "立即重试"),
+        45_000_151 => ErrorInfo::new(ErrorKind::Input, "音频格式不正确", "检查音频格式（16kHz 单声道 16bit）"),
+        55_000_031 => ErrorInfo::new(ErrorKind::Quota, "服务端过载", "稍后重试，或检查并发配额"),
         55_000_000..=55_999_999 => {
-            ErrorInfo::new(ErrorKind::Server, format!("服务端内部错误（{code}）{detail}"), true, "立即重试")
+            ErrorInfo::new(ErrorKind::Server, format!("服务端内部错误（{code}）{detail}"), "立即重试")
         }
-        _ => ErrorInfo::new(
-            ErrorKind::Protocol,
-            format!("服务端返回未知错误（{code}）{detail}"),
-            false,
-            "切换服务商或稍后重试",
-        ),
+        _ => {
+            ErrorInfo::new(ErrorKind::Protocol, format!("服务端返回未知错误（{code}）{detail}"), "切换服务商或稍后重试")
+        }
     }
 }
 
 /// WebSocket 关闭码 → 归一化错误（「请求被拒」不能当「网络抖动」反复重试）。
-pub fn classify_close_code(code: Option<u16>, reason: &str) -> ErrorInfo {
-    let Some(code) = code else {
-        return ErrorInfo::new(ErrorKind::Network, "连接已断开（无关闭码）", true, "立即重试");
-    };
-    if code == 1000 {
-        return ErrorInfo::new(ErrorKind::None, "连接正常关闭", false, "");
-    }
+pub fn classify_close_code(code: u16, reason: &str) -> ErrorInfo {
     let detail = if reason.is_empty() { String::new() } else { format!(" {reason}") };
     let message = format!("连接被服务端关闭（code {code}{detail}）");
     match code {
         1002 | 1003 | 1007 | 1008 | 4400..=4499 => {
-            ErrorInfo::new(ErrorKind::Protocol, message, false, "检查服务商参数后重新测试连接")
+            ErrorInfo::new(ErrorKind::Protocol, message, "检查服务商参数后重新测试连接")
         }
-        1011..=1013 => ErrorInfo::new(ErrorKind::Server, message, true, "立即重试"),
-        _ => ErrorInfo::new(ErrorKind::Network, message, true, "立即重试"),
+        1011..=1013 => ErrorInfo::new(ErrorKind::Server, message, "立即重试"),
+        _ => ErrorInfo::new(ErrorKind::Network, message, "立即重试"),
     }
 }
 
@@ -488,24 +478,17 @@ pub fn classify_handshake_status(status: u16, reason: &str) -> ErrorInfo {
         401 => ErrorInfo::new(
             ErrorKind::Auth,
             format!("鉴权失败：Access Token 无效或已过期（401{detail}）"),
-            false,
             "在设置中重新填写火山语音技术 Access Token",
         ),
         403 => ErrorInfo::new(
             ErrorKind::Auth,
             format!("鉴权失败：Resource ID 与账号开通的产品不匹配（403{detail}）"),
-            false,
             "ASR 1.0 用 volc.bigasr.sauc.*，ASR 2.0 用 volc.seedasr.sauc.*，逐个确认",
         ),
-        404 => ErrorInfo::new(
-            ErrorKind::Protocol,
-            format!("接入点不存在（404{detail}）"),
-            false,
-            "检查 WebSocket 接入点地址",
-        ),
-        429 => ErrorInfo::new(ErrorKind::Quota, format!("请求过于频繁（429{detail}）"), true, "稍后重试"),
-        500..=599 => ErrorInfo::new(ErrorKind::Server, format!("服务端异常（{status}{detail}）"), true, "立即重试"),
-        _ => ErrorInfo::new(ErrorKind::Network, format!("握手失败（{status}{detail}）"), true, "立即重试"),
+        404 => ErrorInfo::new(ErrorKind::Protocol, format!("接入点不存在（404{detail}）"), "检查 WebSocket 接入点地址"),
+        429 => ErrorInfo::new(ErrorKind::Quota, format!("请求过于频繁（429{detail}）"), "稍后重试"),
+        500..=599 => ErrorInfo::new(ErrorKind::Server, format!("服务端异常（{status}{detail}）"), "立即重试"),
+        _ => ErrorInfo::new(ErrorKind::Network, format!("握手失败（{status}{detail}）"), "立即重试"),
     }
 }
 
@@ -635,8 +618,8 @@ mod tests {
     fn 错误归一化() {
         assert_eq!(classify_handshake_status(401, "").kind, ErrorKind::Auth);
         assert!(classify_handshake_status(403, "").to_message().contains("Resource ID"));
-        assert!(!classify_close_code(Some(1008), "").retryable);
-        assert!(classify_close_code(Some(1011), "").retryable);
+        assert_eq!(classify_close_code(1008, "").kind, ErrorKind::Protocol);
+        assert_eq!(classify_close_code(1011, "").kind, ErrorKind::Server);
         assert_eq!(classify_sauc_error(55_000_031, "").kind, ErrorKind::Quota);
         assert_eq!(truncate_context_text("一二三四", 2), "三四");
     }

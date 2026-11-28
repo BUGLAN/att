@@ -1,7 +1,7 @@
 //! 本地 faster-whisper 引擎（移植自 Python `app/stt/providers/whisper_provider.py`）。
 //!
-//! 推理走 [CTranslate2] 的 Rust 绑定 `ct2rs`，**直接复用 Python 版下载好的 CTranslate2 模型目录**
-//! （`models/faster_whisper`，内含 `model.bin`），不需要重新下载 ggml/ONNX 权重。
+//! 推理走 [CTranslate2] 的 Rust 绑定 `ct2rs`，兼容应用内下载目录与旧版 CTranslate2 模型目录
+//! （目录内需要 `model.bin` 与 `tokenizer.json`），不需要转换或下载 ggml 权重。
 //!
 //! 与 Python 版的对应关系：
 //!
@@ -11,12 +11,11 @@
 //! | `_resolve_model_source()` 的本地目录 / HF snapshots 探测 | [`resolve_model_dir`] |
 //! | `beam_size=5, temperature=0, condition_on_previous_text=False` | `WhisperOptions::default()`（贪心/beam，不串提示词） |
 //! | `word_timestamps=True` | [`LocalWhisper::transcribe`] 走 `generate_segments`（含词级时间戳） |
-//! | `vad_filter=True, min_silence_duration_ms=500, speech_pad_ms=200` | [`trim_silence`] 能量法裁掉**首尾**长静音（CTranslate2 本身不含 Silero VAD） |
+//! | `vad_filter=True, min_silence_duration_ms=500, speech_pad_ms=200` | att-core 调用前用 Silero VAD 切段；本 crate 再用 [`trim_silence`] 裁掉每段首尾静音 |
 //! | `info.duration / language / language_probability` | 时长取原始采样数；语言按设置或模型自检；概率 CTranslate2 不返回，置 1.0 |
 //!
-//! CTranslate2 的 Whisper 解码器不提供 Python faster-whisper 的 `vad_filter`（那是 Python 侧用
-//! Silero ONNX 实现的），所以这里用能量阈值裁剪首尾静音来近似：录音开头/结尾的静音是 Whisper
-//! 幻觉（“字幕由…提供”）的主要来源，裁掉即可，不做句间切分。
+//! CTranslate2 的 Whisper 解码器不包含 Python faster-whisper 的 `vad_filter`。att-core 负责优先
+//! 使用 Silero VAD；这里保留能量阈值首尾裁剪，作为直接调用本 crate 或 VAD 不可用时的兜底。
 //!
 //! [CTranslate2]: https://github.com/OpenNMT/CTranslate2
 
@@ -183,7 +182,7 @@ pub fn looks_like_model_dir(path: &Path) -> bool {
 ///
 /// 顺序：显式目录 →（仅选择 large-v3 时）模型根目录本身 → 每个根目录下的
 /// 短名/`faster-whisper-<短名>`/`Systran--faster-whisper-<短名>`
-/// → HF 缓存 `models--Systran--faster-whisper-<短名>/snapshots/<hash>`。
+/// → HF 缓存 `models--Systran--faster-whisper-<短名>/snapshots/<hash>`（不把缓存根目录当模型目录）。
 ///
 /// Python 版曾把 `download_root` 直接指向 `faster_whisper` 等目录，因此这些目录本身只能是
 /// 旧版的 large-v3。选择其他模型时必须查根目录下的短名子目录，不能把根目录当成任意模型的安装位置。
@@ -201,12 +200,7 @@ pub fn model_candidates(model: &str, models_dir: &Path) -> Vec<PathBuf> {
         candidates.extend(roots.iter().cloned());
     }
     for root in &roots {
-        for name in [
-            short.to_string(),
-            format!("faster-whisper-{short}"),
-            format!("Systran--faster-whisper-{short}"),
-            format!("models--Systran--faster-whisper-{short}"),
-        ] {
+        for name in [short.to_string(), format!("faster-whisper-{short}"), format!("Systran--faster-whisper-{short}")] {
             candidates.push(root.join(name));
         }
         let snapshot_root = root.join(format!("models--Systran--faster-whisper-{short}")).join("snapshots");
@@ -641,8 +635,10 @@ mod tests {
         std::fs::create_dir_all(&snap_root).unwrap();
         let newest = make_model_dir(&snap_root, "bbb");
         let _older = make_model_dir(&snap_root, "aaa");
+        let cache_root = root.join("models--Systran--faster-whisper-large-v3");
         let config = WhisperConfig::new("large-v3", "cpu", &root);
         assert_eq!(resolve_model_dir(&config).unwrap(), newest);
+        assert!(!model_candidates(&config.model, &config.models_dir).contains(&cache_root));
         let _ = std::fs::remove_dir_all(&root);
 
         // 4) download_root 指向 models/whisper 时的 HF 缓存（macOS 开发机的实际布局）

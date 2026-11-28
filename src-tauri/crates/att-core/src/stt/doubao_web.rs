@@ -189,7 +189,6 @@ struct Envelope {
     event: Option<String>,
     status_code: Option<u64>,
     payload: Option<String>,
-    data: Option<Vec<u8>>,
 }
 
 pub(crate) fn encode_request(
@@ -300,7 +299,6 @@ fn decode_binary_response(data: &[u8]) -> Result<Envelope, DoubaoWebError> {
                     1 => envelope.task_id = Some(utf8_field(bytes)?),
                     4 => envelope.event = Some(utf8_field(bytes)?),
                     7 => envelope.payload = Some(utf8_field(bytes)?),
-                    8 => envelope.data = Some(bytes.to_vec()),
                     _ => {}
                 }
             }
@@ -338,7 +336,6 @@ fn decode_text_response(text: &str) -> Result<Envelope, DoubaoWebError> {
             Value::String(text) => text.clone(),
             other => other.to_string(),
         }),
-        ..Envelope::default()
     })
 }
 
@@ -684,7 +681,8 @@ async fn transcribe_session(
     outcome
 }
 
-async fn transcribe_pcm_with_progress_impl(
+/// 同 [`transcribe_pcm`]，按已推送样本数回调进度；返回 false 时关闭当前会话并取消。
+pub async fn transcribe_pcm_with_progress(
     config: &DoubaoWebConfig,
     samples: &[i16],
     on_push: &mut (dyn FnMut(usize) -> bool + Send),
@@ -712,15 +710,6 @@ async fn transcribe_pcm_with_progress_impl(
 /// 整段转写：输入已经是 16k 单声道 PCM16。超过参考实现单次上限时自动拆成多个游客会话。
 pub async fn transcribe_pcm(config: &DoubaoWebConfig, samples: &[i16]) -> Result<String, String> {
     transcribe_pcm_with_progress(config, samples, &mut |_| true).await.map_err(|error| error.to_string())
-}
-
-/// 同 [`transcribe_pcm`]，按已推送样本数回调进度；返回 false 时关闭当前会话并取消。
-pub async fn transcribe_pcm_with_progress(
-    config: &DoubaoWebConfig,
-    samples: &[i16],
-    on_push: &mut (dyn FnMut(usize) -> bool + Send),
-) -> Result<String, DoubaoWebError> {
-    transcribe_pcm_with_progress_impl(config, samples, on_push).await
 }
 
 #[cfg(test)]

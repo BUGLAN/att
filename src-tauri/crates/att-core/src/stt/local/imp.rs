@@ -82,7 +82,6 @@ pub struct LocalTranscript {
     pub segments: Vec<LocalSegment>,
     pub duration: f64,
     pub elapsed: f64,
-    pub device: String,
 }
 
 /// 转写分段（秒）。
@@ -150,17 +149,8 @@ impl LocalEngine {
         self
     }
 
-    pub fn kind(&self) -> LocalKind {
-        self.kind
-    }
-
     pub fn label(&self) -> &'static str {
         self.kind.label()
-    }
-
-    /// 是否挂了 VAD（设置页/日志展示用）。
-    pub fn has_vad(&self) -> bool {
-        self.vad.is_some()
     }
 
     /// 设备/精度描述（`cuda:float16` / `cpu:int8` / `cpu:onnx`）。
@@ -215,7 +205,6 @@ impl LocalEngine {
                         .collect(),
                     duration: outcome.duration,
                     elapsed: outcome.elapsed,
-                    device: format!("{}:onnx", qwen.provider()),
                 })
             }
             (_, _, Some(sense_voice)) => {
@@ -228,7 +217,6 @@ impl LocalEngine {
                         .collect(),
                     duration: outcome.duration,
                     elapsed: outcome.elapsed,
-                    device: format!("{}:onnx", sense_voice.provider()),
                 })
             }
             _ => Err("本地引擎未就绪".into()),
@@ -247,7 +235,6 @@ fn from_whisper(outcome: att_whisper::Transcript) -> LocalTranscript {
             .collect(),
         duration: outcome.duration,
         elapsed: outcome.elapsed,
-        device: outcome.device,
     }
 }
 
@@ -290,13 +277,7 @@ fn transcribe_whisper(
     };
     if ranges.is_empty() {
         tracing::info!("Silero VAD 未检测到语音，跳过推理");
-        return Ok(LocalTranscript {
-            text: String::new(),
-            segments: Vec::new(),
-            duration,
-            elapsed: 0.0,
-            device: whisper.device().to_string(),
-        });
+        return Ok(LocalTranscript { text: String::new(), segments: Vec::new(), duration, elapsed: 0.0 });
     }
     let pad = SAMPLE_RATE * VAD_PAD_MS / 1000;
     let merge_gap = SAMPLE_RATE * VAD_MERGE_GAP_MS / 1000;
@@ -338,7 +319,7 @@ fn transcribe_whisper_chunks(
     on_chunk(total, total);
     let text = segments.iter().map(|segment| segment.text.as_str()).collect::<Vec<_>>().join(" ");
     tracing::info!("本地 Whisper（{how}）完成：{} 段文本，音频 {duration:.1}s，推理 {elapsed:.2}s", segments.len());
-    Ok(LocalTranscript { text, segments, duration, elapsed, device: whisper.device().to_string() })
+    Ok(LocalTranscript { text, segments, duration, elapsed })
 }
 
 /// VAD 语音区间加余量后合并：间隔小于 `merge_gap` 的相邻区间合成一块，但合并后不超过 `max_len`
@@ -791,11 +772,11 @@ impl LocalModels {
         }
     }
 
-    /// 空闲回收：外部任务忙、正在加载或仍有活跃推理时都不卸载。
+    /// 空闲回收：正在加载或仍有活跃推理时都不卸载。
     ///
     /// 返回本次卸载的引擎数量；日志包含引擎与空闲时长，便于现场确认回收是否发生。
-    pub fn unload_idle(&self, threshold: Duration, externally_busy: bool) -> usize {
-        if externally_busy || threshold.is_zero() {
+    pub fn unload_idle(&self, threshold: Duration) -> usize {
+        if threshold.is_zero() {
             return 0;
         }
         let now = Instant::now();

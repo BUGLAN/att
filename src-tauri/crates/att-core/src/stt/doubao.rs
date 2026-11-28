@@ -62,8 +62,8 @@ pub struct SttError {
 }
 
 impl SttError {
-    pub fn new(kind: ErrorKind, message: impl Into<String>, retryable: bool, next_action: &str) -> Self {
-        Self { info: ErrorInfo::new(kind, message, retryable, next_action) }
+    pub fn new(kind: ErrorKind, message: impl Into<String>, next_action: &str) -> Self {
+        Self { info: ErrorInfo::new(kind, message, next_action) }
     }
 }
 
@@ -106,15 +106,14 @@ impl DoubaoConfig {
             return Err(SttError::new(
                 ErrorKind::Auth,
                 "未配置豆包语音 Access Token，请在「设置 → 识别引擎」中填写",
-                false,
                 "",
             ));
         }
         if self.endpoint.trim().is_empty() {
-            return Err(SttError::new(ErrorKind::Protocol, "未配置豆包语音 WebSocket 接入点地址", false, ""));
+            return Err(SttError::new(ErrorKind::Protocol, "未配置豆包语音 WebSocket 接入点地址", ""));
         }
         if self.resource_id.trim().is_empty() {
-            return Err(SttError::new(ErrorKind::Protocol, "未配置豆包语音 Resource ID", false, ""));
+            return Err(SttError::new(ErrorKind::Protocol, "未配置豆包语音 Resource ID", ""));
         }
         Ok(())
     }
@@ -169,24 +168,21 @@ impl TranscriptState {
         if let Some(error) = &self.error {
             return error.clone();
         }
-        if matches!(self.close_code, None | Some(1000)) {
-            // 1000 常见于服务端 VAD 判定长时间静音后关闭；但刚建连就断同样走到这里，
-            // 文案必须带上 code/reason，别把真实原因藏进一句「静音」里
-            let mut detail = format!("（code={:?}", self.close_code);
-            if !self.close_reason.is_empty() {
-                detail.push_str(&format!("，reason={}", self.close_reason));
-            }
-            detail.push('）');
-            return SttError::new(
-                ErrorKind::Network,
-                format!(
-                    "流式连接被服务端关闭{detail}；录音较久可能是静音超时，刚建连就断请检查「强制断句静音时长」等设置"
-                ),
-                true,
-                "重新开始录音",
-            );
+        if let Some(code) = self.close_code.filter(|code| *code != 1000) {
+            return SttError { info: sauc::classify_close_code(code, &self.close_reason) };
         }
-        SttError { info: sauc::classify_close_code(self.close_code, &self.close_reason) }
+        // 1000 常见于服务端 VAD 判定长时间静音后关闭；但刚建连就断同样走到这里，
+        // 文案必须带上 code/reason，别把真实原因藏进一句「静音」里
+        let mut detail = format!("（code={:?}", self.close_code);
+        if !self.close_reason.is_empty() {
+            detail.push_str(&format!("，reason={}", self.close_reason));
+        }
+        detail.push('）');
+        SttError::new(
+            ErrorKind::Network,
+            format!("流式连接被服务端关闭{detail}；录音较久可能是静音超时，刚建连就断请检查「强制断句静音时长」等设置"),
+            "重新开始录音",
+        )
     }
 
     fn apply_result(&mut self, result: sauc::ResultFrame) {
@@ -300,12 +296,12 @@ impl DoubaoSession {
         config.ensure()?;
         let connect_id = uuid::Uuid::new_v4().to_string();
         let mut request = config.endpoint.as_str().into_client_request().map_err(|e| {
-            SttError::new(ErrorKind::Protocol, format!("接入点地址无效（{e}）"), false, "检查 WebSocket 接入点地址")
+            SttError::new(ErrorKind::Protocol, format!("接入点地址无效（{e}）"), "检查 WebSocket 接入点地址")
         })?;
         let headers = request.headers_mut();
         let header = |value: &str| {
             HeaderValue::from_str(value.trim()).map_err(|_| {
-                SttError::new(ErrorKind::Auth, "Access Token / Resource ID 含非法字符", false, "在设置中重新填写")
+                SttError::new(ErrorKind::Auth, "Access Token / Resource ID 含非法字符", "在设置中重新填写")
             })
         };
         headers.insert("X-Api-Key", header(&config.api_key)?);
@@ -326,7 +322,7 @@ impl DoubaoSession {
                 .await;
         let (stream, response) = match connected {
             Err(_) => {
-                return Err(SttError::new(ErrorKind::Network, "连接豆包语音服务超时（10 秒）", true, "检查网络后重试"));
+                return Err(SttError::new(ErrorKind::Network, "连接豆包语音服务超时（10 秒）", "检查网络后重试"));
             }
             Ok(Err(WsError::Http(response))) => {
                 let status = response.status();
@@ -339,7 +335,6 @@ impl DoubaoSession {
                 return Err(SttError::new(
                     ErrorKind::Network,
                     format!("无法连接豆包语音服务（{error}）"),
-                    true,
                     "检查网络后重试",
                 ));
             }
@@ -347,7 +342,12 @@ impl DoubaoSession {
         };
         let log_id = response.headers().get("x-tt-logid").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
 
-        tracing::info!(connect_id = %connect_id, "豆包流式握手完成（{:?}）", handshake_started.elapsed());
+        tracing::info!(
+            connect_id = %connect_id,
+            log_id = %log_id,
+            "豆包流式握手完成（{:?}）",
+            handshake_started.elapsed()
+        );
         let (writer, mut read) = stream.split();
 
         let shared = Arc::new(Shared {
@@ -426,7 +426,7 @@ impl DoubaoSession {
         let uid = format!("att-desktop-{}", &self.connect_id[..8]);
         let payload = sauc::build_bigmodel_request(&uid, language, context, &config.hotwords, config.end_window_size);
         if let Err(error) = self.writer.send(Message::binary(sauc::build_full_client_request(&payload))).await {
-            return Err(SttError::new(ErrorKind::Network, format!("发送请求失败（{error}）"), true, "重新开始录音"));
+            return Err(SttError::new(ErrorKind::Network, format!("发送请求失败（{error}）"), "重新开始录音"));
         }
         self.begun = true;
         Ok(())
@@ -438,7 +438,7 @@ impl DoubaoSession {
         self.writer
             .send(Message::Ping(Vec::new().into()))
             .await
-            .map_err(|error| SttError::new(ErrorKind::Network, format!("心跳发送失败（{error}）"), true, ""))
+            .map_err(|error| SttError::new(ErrorKind::Network, format!("心跳发送失败（{error}）"), ""))
     }
 
     /// 距上次收到对端任何消息过了多久（墙上时钟：系统睡眠的时间也算，醒来后据此发现连接早断了）。
@@ -491,7 +491,7 @@ impl DoubaoSession {
     pub async fn push(&mut self, pcm: &[i16]) -> Result<(), SttError> {
         self.check_alive()?;
         if !self.begun {
-            return Err(SttError::new(ErrorKind::Protocol, "识别请求还没发出，不能推送音频", false, ""));
+            return Err(SttError::new(ErrorKind::Protocol, "识别请求还没发出，不能推送音频", ""));
         }
         self.buffer.extend_from_slice(pcm);
         while self.buffer.len() >= self.frame_samples {
@@ -507,7 +507,7 @@ impl DoubaoSession {
             if state.closed || state.error.is_some() {
                 return Err(state.closed_error());
             }
-            return Err(SttError::new(ErrorKind::Network, format!("发送音频失败（{error}）"), true, "重新开始录音"));
+            return Err(SttError::new(ErrorKind::Network, format!("发送音频失败（{error}）"), "重新开始录音"));
         }
         Ok(())
     }
@@ -634,14 +634,14 @@ pub async fn transcribe_pcm_with_progress(
     on_push: &mut (dyn FnMut(usize) -> bool + Send),
 ) -> Result<FinishOutcome, SttError> {
     if samples.is_empty() {
-        return Err(SttError::new(ErrorKind::Input, "音频为空，无法转写", false, ""));
+        return Err(SttError::new(ErrorKind::Input, "音频为空，无法转写", ""));
     }
     let mut session = DoubaoSession::connect(config, language, context, None).await?;
     session.frame_samples = sauc::CHUNK_SAMPLES;
     for (index, chunk) in samples.chunks(sauc::CHUNK_SAMPLES).enumerate() {
         if !on_push(index * sauc::CHUNK_SAMPLES) {
             session.close().await;
-            return Err(SttError::new(ErrorKind::Input, super::TRANSCRIBE_CANCELLED, false, ""));
+            return Err(SttError::new(ErrorKind::Input, super::TRANSCRIBE_CANCELLED, ""));
         }
         session.push(chunk).await?;
     }
@@ -961,6 +961,6 @@ mod tests {
         handle_frame(&shared, &frame, "t");
         let state = shared.lock();
         assert!(state.closed);
-        assert!(state.closed_error().info.retryable);
+        assert_eq!(state.closed_error().info.kind, ErrorKind::Network);
     }
 }
