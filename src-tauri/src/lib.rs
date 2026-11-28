@@ -80,9 +80,23 @@ pub fn run() {
             // - macOS：只隐藏，点 Dock 图标（RunEvent::Reopen）再显示；Cmd+Q 照常退出
             // - 其他平台：关闭即退出应用
             if window.label() == clipboard_panel::LABEL {
+                // 悬浮框可能成为键盘焦点窗口。Alt+F4 / Cmd+W 应只收起，销毁后快捷键将无法再唤起。
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    clipboard_panel::hide(window.app_handle(), false);
+                    return;
+                }
                 // 剪贴板悬浮框点到别处即收起（Spotlight 式）
                 if let tauri::WindowEvent::Focused(false) = event {
                     clipboard_panel::on_blur(window.app_handle());
+                }
+                return;
+            }
+            if window.label() == floating::LABEL {
+                // 录音悬浮窗同样要跨会话复用；系统关闭键只走已有的淡出隐藏流程。
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    floating::hide(window.app_handle());
                 }
                 return;
             }
