@@ -90,6 +90,12 @@ impl<T> DirIndex<T> {
         }
     }
 
+    /// 一批写入开始前调用一次。与 [`after_batch_write`](Self::after_batch_write) 配对，
+    /// 批量修改同一目录时避免每条记录都重新核对并读取目录条目。
+    pub fn before_batch_write(&mut self) {
+        self.before_write();
+    }
+
     /// 写入成功后调用：缓存有效时用 `apply` 同步这次改动，并记下写入后的目录时间。
     /// 缓存还没加载过就什么都不做（下次读取自然会扫到）。
     pub fn after_write(&mut self, apply: impl FnOnce(&mut Vec<T>)) {
@@ -99,6 +105,11 @@ impl<T> DirIndex<T> {
         apply(&mut self.items);
         self.stamp = self.dir_stamp();
         self.entries = self.dir_entries();
+    }
+
+    /// 一批写入全部成功后调用一次，用 `apply` 一次性同步整批改动。
+    pub fn after_batch_write(&mut self, apply: impl FnOnce(&mut Vec<T>)) {
+        self.after_write(apply);
     }
 
     pub fn invalidate(&mut self) {
@@ -181,6 +192,28 @@ mod tests {
         index.refresh(|d| scan_names(d, &scans));
         assert_eq!(scans.get(), 3, "目录时间未变时也必须发现外部删除");
         assert_eq!(index.items(), ["c.json"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 批量写入结束后一次同步全部条目() {
+        let dir = temp_dir("batch");
+        std::fs::write(dir.join("a.json"), "{}").unwrap();
+        let scans = Cell::new(0);
+        let mut index = DirIndex::new(dir.clone());
+        index.refresh(|d| scan_names(d, &scans));
+
+        index.before_batch_write();
+        std::fs::write(dir.join("b.json"), "{}").unwrap();
+        std::fs::write(dir.join("c.json"), "{}").unwrap();
+        index.after_batch_write(|items| {
+            items.push("b.json".into());
+            items.push("c.json".into());
+        });
+        index.refresh(|d| scan_names(d, &scans));
+
+        assert_eq!(scans.get(), 1, "批量写入同步缓存后不应重扫目录");
+        assert_eq!(index.items(), ["a.json", "b.json", "c.json"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

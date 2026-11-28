@@ -508,7 +508,12 @@ impl RecordRepo {
         let mut index = self.guard();
         index.refresh(scan_records);
         let ids: Vec<String> = index.items().iter().filter(|record| expired(record)).map(|r| r.id.clone()).collect();
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        index.before_batch_write();
         let mut removed = 0;
+        let mut changed = Vec::new();
         for id in ids {
             // 锁内按文件再核对一次（索引可能比文件旧）
             let Ok(mut record) = json_store::read_json_file::<Record>(&self.record_path(&id)) else { continue };
@@ -526,8 +531,22 @@ impl RecordRepo {
             record.audio_path = String::new();
             record.revision += 1;
             record.updated_at = now_rfc3339();
-            self.write_locked(&mut index, &record)?;
+            if let Err(error) = json_store::write_json_atomic(&self.record_path(&record.id), &record) {
+                // 中途失败时丢弃本批尚未同步的缓存；目录时间即使精度不足，下次读取也会强制重扫。
+                index.invalidate();
+                return Err(error.into());
+            }
+            changed.push(record);
         }
+        let mut changed_by_id: std::collections::HashMap<String, Record> =
+            changed.into_iter().map(|record| (record.id.clone(), record)).collect();
+        index.after_batch_write(move |records| {
+            for record in records {
+                if let Some(updated) = changed_by_id.remove(&record.id) {
+                    *record = updated;
+                }
+            }
+        });
         Ok(removed)
     }
 
@@ -749,6 +768,38 @@ mod tests {
         assert!(repo.audio_dir().join("rec-old-fav.flac").exists());
         assert_eq!(repo.get("rec-new").unwrap().audio_path, "rec-new.flac", "没过期的不删");
         assert_eq!(repo.prune_audio(1, now).unwrap(), 0, "再跑一次没有可删的");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore = "性能基准：手动运行 5000 条记录的音频保留期清理"]
+    fn 性能_音频保留期清理5000条记录() {
+        let (repo, dir) = repo("audio-retention-bench");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-28T00:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        let created_at = (now - chrono::Duration::days(2)).to_rfc3339();
+        for i in 0..5_000 {
+            let id = format!("rec-bench-{i:04}");
+            let audio_name = format!("{id}.flac");
+            std::fs::write(repo.audio_dir().join(&audio_name), b"fLaC").unwrap();
+            let record = Record {
+                id: id.clone(),
+                created_at: created_at.clone(),
+                audio_path: audio_name,
+                raw_text: Some(format!("bench {i}")),
+                ..Default::default()
+            };
+            std::fs::write(repo.records_dir().join(format!("{id}.json")), serde_json::to_vec(&record).unwrap())
+                .unwrap();
+        }
+
+        let started = std::time::Instant::now();
+        let removed = repo.prune_audio(1, now).unwrap();
+        println!("prune_audio 5000 records: {:?}", started.elapsed());
+        assert_eq!(removed, 5_000);
+        let (records, skipped) = repo.load_all();
+        assert_eq!(skipped, 0);
+        assert_eq!(records.len(), 5_000);
+        assert!(records.iter().all(|record| record.audio_path.is_empty()), "整批记录都应同步回内存索引");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
