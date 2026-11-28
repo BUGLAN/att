@@ -38,6 +38,16 @@ pub const SENSE_VOICE_MODEL_FILES: [&str; 2] = ["model.int8.onnx", "tokens.txt"]
 /// 错误缓冲区长度（与 shim.c 的 ATT_ERR_LEN 一致）。
 const ERR_LEN: usize = 1024;
 
+/// Qwen3-ASR 解码器 KV cache 的总序列长度（提示词、音频和生成 token 共用）。
+pub const QWEN3_ASR_MAX_TOTAL_LEN: i64 = 512;
+/// Qwen3-ASR 音频卷积前端每秒产生的 token 数。
+pub const QWEN3_ASR_AUDIO_TOKENS_PER_SECOND: i64 = 13;
+/// `max_new_tokens` 的允许范围。
+pub const QWEN3_ASR_MAX_NEW_TOKENS_RANGE: (i64, i64) = (32, QWEN3_ASR_MAX_TOTAL_LEN);
+/// `max_audio_seconds` 的允许范围。上限由 KV cache 总长度和每秒音频 token 数确定。
+pub const QWEN3_ASR_MAX_AUDIO_SECONDS_RANGE: (i64, i64) =
+    (5, QWEN3_ASR_MAX_TOTAL_LEN / QWEN3_ASR_AUDIO_TOKENS_PER_SECOND);
+
 // 静音切点参数：与 Python `QwenASRProvider` 的常量一致
 const SILENCE_WINDOW_MS: usize = 20;
 const SILENCE_MIN_MS: usize = 500;
@@ -162,6 +172,32 @@ pub fn library_file_name() -> &'static str {
     } else {
         "libsherpa-onnx-c-api.so"
     }
+}
+
+/// 指定 ONNX Runtime 执行设备对应的独立 provider 动态库文件名。
+pub fn provider_library_file_name(provider: &str) -> Option<&'static str> {
+    match provider {
+        "cuda" => Some(if cfg!(target_os = "windows") {
+            "onnxruntime_providers_cuda.dll"
+        } else if cfg!(target_os = "macos") {
+            "libonnxruntime_providers_cuda.dylib"
+        } else {
+            "libonnxruntime_providers_cuda.so"
+        }),
+        "coreml" => Some(if cfg!(target_os = "windows") {
+            "onnxruntime_providers_coreml.dll"
+        } else if cfg!(target_os = "macos") {
+            "libonnxruntime_providers_coreml.dylib"
+        } else {
+            "libonnxruntime_providers_coreml.so"
+        }),
+        _ => None,
+    }
+}
+
+/// 推理库目录是否实际带有指定执行设备需要的独立 provider 动态库。
+pub fn provider_available(lib_dir: &Path, provider: &str) -> bool {
+    provider == "cpu" || provider_library_file_name(provider).map(|name| lib_dir.join(name).is_file()).unwrap_or(false)
 }
 
 /// 列出模型目录候选（不判存在）。
@@ -450,6 +486,7 @@ extern "C" {
         tokenizer: *const c_char,
         num_threads: i32,
         provider: *const c_char,
+        max_total_len: i32,
         max_new_tokens: i32,
         err: *mut c_char,
         err_len: i32,
@@ -514,11 +551,24 @@ fn qwen_create_handle(
             tokenizer.as_ptr(),
             config.num_threads.clamp(0, 64) as i32,
             provider_c.as_ptr(),
-            config.max_new_tokens.clamp(16, 4096) as i32,
+            QWEN3_ASR_MAX_TOTAL_LEN as i32,
+            config.max_new_tokens as i32,
             err,
             ERR_LEN as i32,
         )
     }
+}
+
+fn validate_qwen_config(config: &QwenConfig) -> Result<(), String> {
+    let (new_min, new_max) = QWEN3_ASR_MAX_NEW_TOKENS_RANGE;
+    if !(new_min..=new_max).contains(&config.max_new_tokens) {
+        return Err(format!("Qwen3-ASR max_new_tokens 必须在 {new_min}~{new_max} 之间"));
+    }
+    let (audio_min, audio_max) = QWEN3_ASR_MAX_AUDIO_SECONDS_RANGE;
+    if !(audio_min..=audio_max).contains(&config.max_audio_seconds) {
+        return Err(format!("Qwen3-ASR max_audio_seconds 必须在 {audio_min}~{audio_max} 秒之间"));
+    }
+    Ok(())
 }
 
 /// 用指定 provider 建 SenseVoice 识别器。
@@ -555,6 +605,7 @@ impl LocalQwen {
 
     /// 加载识别器（同步、耗时 1~2s）。
     pub fn load(config: &QwenConfig) -> Result<Self, String> {
+        validate_qwen_config(config)?;
         let model_dir = resolve_model_dir(config)?;
         let lib_dir = resolve_lib_dir(config)?;
         let started = Instant::now();
@@ -566,7 +617,18 @@ impl LocalQwen {
         let tokenizer = to_c_path(&model_dir.join("tokenizer"))?;
 
         let requested = if config.provider.trim().is_empty() { "cpu" } else { config.provider.trim() };
-        let mut effective = requested.to_string();
+        let mut effective = if provider_available(&lib_dir, requested) {
+            requested.to_string()
+        } else {
+            let dependency = provider_library_file_name(requested)
+                .map(|name| format!("缺少 {name}"))
+                .unwrap_or_else(|| "执行设备未知".to_string());
+            tracing::warn!(
+                "本地 Qwen3-ASR 请求设备 {requested}，但推理库目录 {} {dependency}，回退 CPU",
+                lib_dir.display()
+            );
+            "cpu".into()
+        };
         let mut err = [0 as c_char; ERR_LEN];
         let mut handle = qwen_create_handle(
             &lib_dir_c,
@@ -575,7 +637,7 @@ impl LocalQwen {
             &decoder,
             &tokenizer,
             config,
-            requested,
+            &effective,
             err.as_mut_ptr(),
         );
         if handle.is_null() && effective != "cpu" {
@@ -613,7 +675,7 @@ impl LocalQwen {
             handle,
             model_dir,
             lib_dir,
-            max_audio_seconds: config.max_audio_seconds.clamp(5, 120),
+            max_audio_seconds: config.max_audio_seconds,
             provider: effective,
             gate: Mutex::new(()),
         })
@@ -790,10 +852,21 @@ impl LocalSenseVoice {
             .map_err(|_| "语言参数包含非法字符（NUL）".to_string())?;
 
         let requested = if config.provider.trim().is_empty() { "cpu" } else { config.provider.trim() };
-        let mut effective = requested.to_string();
+        let mut effective = if provider_available(&lib_dir, requested) {
+            requested.to_string()
+        } else {
+            let dependency = provider_library_file_name(requested)
+                .map(|name| format!("缺少 {name}"))
+                .unwrap_or_else(|| "执行设备未知".to_string());
+            tracing::warn!(
+                "本地 SenseVoice 请求设备 {requested}，但推理库目录 {} {dependency}，回退 CPU",
+                lib_dir.display()
+            );
+            "cpu".into()
+        };
         let mut err = [0 as c_char; ERR_LEN];
         let mut handle =
-            sense_voice_create_handle(&lib_dir_c, &model, &tokens, &language, config, requested, err.as_mut_ptr());
+            sense_voice_create_handle(&lib_dir_c, &model, &tokens, &language, config, &effective, err.as_mut_ptr());
         if handle.is_null() && effective != "cpu" {
             let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
             tracing::warn!("本地 SenseVoice 使用 {effective} 加载失败，回退 CPU：{}", reason.trim());
@@ -1060,6 +1133,32 @@ mod tests {
             vec![explicit, env, bundled, root.join("sherpa-onnx")],
             "显式配置 > 环境变量 > 安装包资源 > 开发态模型目录"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 执行设备_只在对应_provider_动态库存在时可用() {
+        let root = temp_dir("provider");
+        assert!(provider_available(&root, "cpu"));
+        assert!(!provider_available(&root, "cuda"));
+        let cuda = provider_library_file_name("cuda").unwrap();
+        std::fs::write(root.join(cuda), b"provider").unwrap();
+        assert!(provider_available(&root, "cuda"));
+        assert!(!provider_available(&root, "coreml"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn qwen_参数越界时拒绝而不是静默夹取() {
+        let root = temp_dir("limits");
+        let mut config = QwenConfig::new("m", &root);
+        config.max_new_tokens = QWEN3_ASR_MAX_NEW_TOKENS_RANGE.1 + 1;
+        assert!(validate_qwen_config(&config).unwrap_err().contains("max_new_tokens"));
+        config.max_new_tokens = QWEN3_ASR_MAX_NEW_TOKENS_RANGE.1;
+        config.max_audio_seconds = QWEN3_ASR_MAX_AUDIO_SECONDS_RANGE.1 + 1;
+        assert!(validate_qwen_config(&config).unwrap_err().contains("max_audio_seconds"));
+        config.max_audio_seconds = QWEN3_ASR_MAX_AUDIO_SECONDS_RANGE.1;
+        assert!(validate_qwen_config(&config).is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
 

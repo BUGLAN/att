@@ -37,8 +37,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # 数据备份 / 恢复：zip 打包（CTranslate2 的 ndarray-npy 已带同版本 zip，不会新增下载）
 zip = { version = "2.6", default-features = false, features = ["deflate"] }
 # 本地引擎：faster-whisper（CTranslate2/ct2rs）与 Qwen3-ASR / SenseVoice（sherpa-onnx ONNX）
+# att-qwen 的 C 桥只做运行期 dlopen，设置层始终依赖它以复用唯一的 Qwen 参数上限定义。
 att-whisper = { path = "../att-whisper", optional = true }
-att-qwen = { path = "../att-qwen", optional = true }
+att-qwen = { path = "../att-qwen" }
 # LLM 网关：native-tls 与 WebSocket 同一套系统 TLS；system-proxy 读系统代理（与 Python httpx 走代理的行为对齐）
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "http2", "charset", "system-proxy", "multipart", "cookies"] }
 # LLM 错误文案脱敏
@@ -61,7 +62,7 @@ frida-build = "0.17.2"
 [features]
 # 默认包含本地引擎；CI / 纯数据面构建可用 --no-default-features 跳过 CTranslate2 与 sherpa-onnx
 default = ["local-engines"]
-local-engines = ["dep:att-whisper", "dep:att-qwen"]
+local-engines = ["dep:att-whisper"]
 # CUDA 只影响本地 Whisper；显式带上 local-engines，避免 --no-default-features 时静默不生效
 cuda = ["local-engines", "att-whisper/cuda"]
 cuda-cudnn = ["local-engines", "att-whisper/cuda-cudnn"]

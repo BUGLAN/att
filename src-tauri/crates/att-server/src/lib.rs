@@ -2192,6 +2192,7 @@ mod tests {
         assert!(view.get("doubao_asr_api_key_encrypted").is_none());
         assert!(view["hotkey"].is_object());
         assert_eq!(view["recording_mode"], json!("single"));
+        assert!(view["qwen_asr_limits"]["max_audio_seconds"]["max"].as_i64().unwrap() < 600);
 
         // 未知键丢弃 + 类型错误 400 中文
         let (status, _) = request_with_body(&state, "PUT", "/api/settings", json!({"unknown": 1})).await;
@@ -2199,6 +2200,11 @@ mod tests {
         let (status, error) = request_with_body(&state, "PUT", "/api/settings", json!({"auto_optimize": "x"})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(error["detail"].as_str().unwrap().contains("auto_optimize"));
+
+        let (status, error) =
+            request_with_body(&state, "PUT", "/api/settings", json!({"qwen_asr_max_audio_seconds": 600})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(error["detail"].as_str().unwrap().contains("qwen_asr_max_audio_seconds"));
     }
 
     #[tokio::test]

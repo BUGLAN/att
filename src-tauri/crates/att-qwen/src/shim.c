@@ -179,7 +179,8 @@ static char *att_strdup(const char *value) {
  */
 AttQwen *att_qwen_create(const char *lib_dir, const char *conv_frontend, const char *encoder,
                          const char *decoder, const char *tokenizer, int32_t num_threads,
-                         const char *provider, int32_t max_new_tokens, char *err, int32_t err_len) {
+                         const char *provider, int32_t max_total_len, int32_t max_new_tokens,
+                         char *err, int32_t err_len) {
   if (!lib_dir || !conv_frontend || !encoder || !decoder || !tokenizer) {
     att_set_error(err, err_len, "参数缺失：推理库目录与模型文件路径都是必需的");
     return NULL;
@@ -258,7 +259,7 @@ AttQwen *att_qwen_create(const char *lib_dir, const char *conv_frontend, const c
   config.model_config.qwen3_asr.encoder = handle->encoder;
   config.model_config.qwen3_asr.decoder = handle->decoder;
   config.model_config.qwen3_asr.tokenizer = handle->tokenizer;
-  config.model_config.qwen3_asr.max_total_len = 512;
+  config.model_config.qwen3_asr.max_total_len = max_total_len > 0 ? max_total_len : 512;
   config.model_config.qwen3_asr.max_new_tokens = max_new_tokens > 0 ? max_new_tokens : 512;
   config.model_config.qwen3_asr.temperature = 1e-6f;
   config.model_config.qwen3_asr.top_p = 0.8f;

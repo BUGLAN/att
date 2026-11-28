@@ -455,6 +455,16 @@ impl UserSettings {
         view["chatgpt_asr_api_key_set"] = json!(self.chatgpt_asr_api_key_encrypted.is_some());
         view["deepseek_asr_api_key_set"] = json!(self.deepseek_asr_api_key_encrypted.is_some());
         view["api_token_set"] = json!(self.api_token_encrypted.is_some());
+        view["qwen_asr_limits"] = json!({
+            "max_new_tokens": {
+                "min": att_qwen::QWEN3_ASR_MAX_NEW_TOKENS_RANGE.0,
+                "max": att_qwen::QWEN3_ASR_MAX_NEW_TOKENS_RANGE.1,
+            },
+            "max_audio_seconds": {
+                "min": att_qwen::QWEN3_ASR_MAX_AUDIO_SECONDS_RANGE.0,
+                "max": att_qwen::QWEN3_ASR_MAX_AUDIO_SECONDS_RANGE.1,
+            },
+        });
         for &(action, hotkey_key, enabled_key) in EXTRA_HOTKEY_FIELDS {
             let binding = self.binding_or_default(action, platform);
             view[hotkey_key] = binding.to_legacy(platform);
@@ -713,8 +723,24 @@ pub fn apply_settings_update(
             }
 
             // ---- 整数键 ----
-            "qwen_asr_max_new_tokens" => set_i64(&mut settings.qwen_asr_max_new_tokens, value, &type_error)?,
-            "qwen_asr_max_audio_seconds" => set_i64(&mut settings.qwen_asr_max_audio_seconds, value, &type_error)?,
+            "qwen_asr_max_new_tokens" => {
+                let mut tokens = settings.qwen_asr_max_new_tokens;
+                set_i64(&mut tokens, value, &type_error)?;
+                let (min, max) = att_qwen::QWEN3_ASR_MAX_NEW_TOKENS_RANGE;
+                if !(min..=max).contains(&tokens) {
+                    return Err(format!("字段 qwen_asr_max_new_tokens 必须在 {min}~{max} 之间"));
+                }
+                settings.qwen_asr_max_new_tokens = tokens;
+            }
+            "qwen_asr_max_audio_seconds" => {
+                let mut seconds = settings.qwen_asr_max_audio_seconds;
+                set_i64(&mut seconds, value, &type_error)?;
+                let (min, max) = att_qwen::QWEN3_ASR_MAX_AUDIO_SECONDS_RANGE;
+                if !(min..=max).contains(&seconds) {
+                    return Err(format!("字段 qwen_asr_max_audio_seconds 必须在 {min}~{max} 秒之间"));
+                }
+                settings.qwen_asr_max_audio_seconds = seconds;
+            }
             "sense_voice_num_threads" => {
                 set_i64(&mut settings.sense_voice_num_threads, value, &type_error)?;
                 settings.sense_voice_num_threads = settings.sense_voice_num_threads.clamp(0, 16);
@@ -1873,6 +1899,38 @@ mod tests {
         let loaded = UserSettings::load(&path, Platform::Macos);
         assert_eq!(loaded.asr_provider, "doubao_asr");
         assert!(loaded.asr_hotwords.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn qwen_参数上限公开给界面且越界更新被拒绝() {
+        let dir = temp_dir("qwen-limits");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::with_platform(Platform::Macos);
+
+        let limits = settings.public_view(Platform::Macos)["qwen_asr_limits"].clone();
+        assert_eq!(limits["max_new_tokens"]["max"], att_qwen::QWEN3_ASR_MAX_NEW_TOKENS_RANGE.1);
+        assert_eq!(limits["max_audio_seconds"]["max"], att_qwen::QWEN3_ASR_MAX_AUDIO_SECONDS_RANGE.1);
+
+        let audio_error = apply_settings_update(
+            &mut settings,
+            &serde_json::json!({"qwen_asr_max_audio_seconds": 600}),
+            Platform::Macos,
+            &crypto,
+        )
+        .unwrap_err();
+        assert!(audio_error.contains("qwen_asr_max_audio_seconds"), "{audio_error}");
+        assert_eq!(settings.qwen_asr_max_audio_seconds, 30, "越界更新不得改动原值");
+
+        let token_error = apply_settings_update(
+            &mut settings,
+            &serde_json::json!({"qwen_asr_max_new_tokens": 2048}),
+            Platform::Macos,
+            &crypto,
+        )
+        .unwrap_err();
+        assert!(token_error.contains("qwen_asr_max_new_tokens"), "{token_error}");
+        assert_eq!(settings.qwen_asr_max_new_tokens, 256, "越界更新不得改动原值");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

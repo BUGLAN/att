@@ -397,14 +397,28 @@
             <div class="setting-info">
               <span class="setting-label">最大输出 token</span>
             </div>
-            <BaseInput v-model.number="form.qwen_asr_max_new_tokens" type="number" min="32" max="2048" step="32" aria-label="最大输出 token" />
+            <BaseInput
+              v-model.number="form.qwen_asr_max_new_tokens"
+              type="number"
+              :min="qwenMaxNewTokensRange.min"
+              :max="qwenMaxNewTokensRange.max"
+              step="32"
+              aria-label="最大输出 token"
+            />
           </div>
           <div class="setting-item">
             <div class="setting-info">
               <span class="setting-label">音频长度上限</span>
               <span class="setting-desc">秒。</span>
             </div>
-            <BaseInput v-model.number="form.qwen_asr_max_audio_seconds" type="number" min="5" max="600" step="5" aria-label="音频长度上限" />
+            <BaseInput
+              v-model.number="form.qwen_asr_max_audio_seconds"
+              type="number"
+              :min="qwenMaxAudioSecondsRange.min"
+              :max="qwenMaxAudioSecondsRange.max"
+              step="1"
+              aria-label="音频长度上限"
+            />
           </div>
         </details>
       </div>
@@ -675,6 +689,10 @@ const whisperDeviceOptions = computed(() => deviceOptionsFor('whisper', platform
 const whisperDeviceHint = computed(() => deviceHintFor('whisper', platform))
 const qwenDeviceOptions = computed(() => deviceOptionsFor('qwen_asr', platform))
 const qwenDeviceHint = computed(() => deviceHintFor('qwen_asr', platform))
+// 上下限由 Rust 的 att-qwen 常量经 GET /api/settings 下发，避免界面与运行时各写一套。
+const qwenLimits = computed(() => settingsStore.settings?.qwen_asr_limits || {})
+const qwenMaxNewTokensRange = computed(() => qwenLimits.value.max_new_tokens || {})
+const qwenMaxAudioSecondsRange = computed(() => qwenLimits.value.max_audio_seconds || {})
 const senseVoiceDeviceOptions = computed(() => deviceOptionsFor('sense_voice', platform))
 const senseVoiceDeviceHint = computed(() => deviceHintFor('sense_voice', platform))
 // 平台不支持的值（例如旧数据在 macOS 上存了 cuda）回落到自动，避免下拉无匹配项

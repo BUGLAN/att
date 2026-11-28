@@ -424,6 +424,10 @@ fn reset_usage(state: &mut ModelActivity, kind: LocalKind) {
     *usage_mut(state, kind) = ModelUsage::default();
 }
 
+fn should_attach_cached_whisper_vad(vad_loaded: bool, vad_installed: bool) -> bool {
+    !vad_loaded && vad_installed
+}
+
 fn idle_for(usage: &ModelUsage, now: Instant, threshold: Duration) -> Option<Duration> {
     if threshold.is_zero() || usage.active > 0 {
         return None;
@@ -610,12 +614,12 @@ impl LocalModels {
         let settings = core.settings();
         let expected = fingerprint(kind, &settings, &core.models_dir);
         // 快路径：已加载且设置未变
-        if let Some(engine) = self.acquire_cached(kind, &expected) {
+        if let Some(engine) = self.acquire_cached(core, kind, &expected) {
             return Ok(engine);
         }
         let _guard = self.load_gate.lock().unwrap_or_else(|error| error.into_inner());
         // 二次检查：等锁期间可能已被其它请求加载
-        if let Some(engine) = self.acquire_cached(kind, &expected) {
+        if let Some(engine) = self.acquire_cached(core, kind, &expected) {
             return Ok(engine);
         }
         self.invalidate(kind);
@@ -719,15 +723,22 @@ impl LocalModels {
     }
 
     /// 取缓存并在同一次槽位锁内登记活跃使用，避免回收线程在取用与登记之间清空句柄。
-    fn acquire_cached(&self, kind: LocalKind, expected: &str) -> Option<LocalEngine> {
+    fn acquire_cached(&self, core: &CoreState, kind: LocalKind, expected: &str) -> Option<LocalEngine> {
         match kind {
             LocalKind::Whisper => {
-                let guard = self.whisper.lock().unwrap_or_else(|error| error.into_inner());
-                let cached = guard.as_ref().filter(|cached| cached.fingerprint == expected)?;
+                let engine = {
+                    let guard = self.whisper.lock().unwrap_or_else(|error| error.into_inner());
+                    guard.as_ref().filter(|cached| cached.fingerprint == expected)?.engine.clone()
+                };
                 let mut activity = self.activity.lock().unwrap_or_else(|error| error.into_inner());
                 let use_guard = begin_use(&self.activity, &mut activity, kind);
-                let vad = self.vad.lock().unwrap_or_else(|error| error.into_inner()).clone();
-                Some(LocalEngine::whisper(cached.engine.clone(), vad).with_use_guard(use_guard))
+                drop(activity);
+                let mut vad = self.vad.lock().unwrap_or_else(|error| error.into_inner()).clone();
+                // Whisper 常驻期间可能刚下载好 VAD，且模型设置指纹没有变化；快路径也要补挂。
+                if should_attach_cached_whisper_vad(vad.is_some(), super::catalog::vad_installed(&core.models_dir)) {
+                    vad = self.vad(core);
+                }
+                Some(LocalEngine::whisper(engine, vad).with_use_guard(use_guard))
             }
             LocalKind::Qwen => {
                 let guard = self.qwen.lock().unwrap_or_else(|error| error.into_inner());
@@ -1102,6 +1113,13 @@ mod tests {
         assert!(models.vad(&core).is_none());
         assert!(!models.vad_loaded());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whisper_常驻快路径_只在新装_vad_时补挂() {
+        assert!(should_attach_cached_whisper_vad(false, true));
+        assert!(!should_attach_cached_whisper_vad(true, true), "已加载时不重复读取");
+        assert!(!should_attach_cached_whisper_vad(false, false), "文件缺失时不用尝试加载");
     }
 
     #[test]
