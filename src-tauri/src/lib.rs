@@ -363,10 +363,14 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("Tauri 应用启动失败")
-        .run(|_app, _event| {
+        .run(|_app, event| {
+            // 托盘「退出」、关闭主窗口时退出都走到这里：录音中被「暂停外放」静音的系统输出要先恢复
+            if let tauri::RunEvent::Exit = event {
+                recording::restore_output_before_exit();
+            }
             // macOS：主窗口被隐藏后点 Dock 图标重新显示（旧版 app.on('activate')）
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event {
+            if let tauri::RunEvent::Reopen { .. } = event {
                 show_main_window(_app);
             }
         });

@@ -232,7 +232,11 @@ fn record_text(record: &att_core::records::Record) -> Option<&str> {
 
 fn on_menu(app: &AppHandle, id: &str) {
     match id {
-        "quit" => app.exit(0),
+        "quit" => {
+            // RunEvent::Exit 里也会恢复；这里先做，免得退出流程被拖住时外放一直静音
+            crate::recording::restore_output_before_exit();
+            app.exit(0)
+        }
         "record-toggle" => {
             let Some(state) = app.try_state::<crate::AppState>() else { return };
             match recording_phase(app).as_str() {

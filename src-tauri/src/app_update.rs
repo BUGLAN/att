@@ -60,16 +60,22 @@ impl InAppUpdater for TauriUpdater {
                 return;
             };
             let version = update.version.clone();
-            let outcome = tauri::async_runtime::spawn_blocking(move || update.install(bytes))
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|r| r.map_err(|e| e.to_string()));
+            // Windows 上安装程序拉起后进程直接退出、不经过录音收尾：录音中被「暂停外放」静音的系统输出先恢复
+            let outcome = tauri::async_runtime::spawn_blocking(move || {
+                crate::recording::restore_output_before_exit();
+                update.install(bytes)
+            })
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.map_err(|e| e.to_string()));
             match outcome {
                 Ok(()) => {
                     tracing::info!("更新 v{version} 已安装，重启应用");
                     app.restart();
                 }
                 Err(error) => {
+                    // 没装上、进程继续运行：录音时照常暂停外放
+                    crate::recording::allow_output_mute_again();
                     if let Some(core) = core.upgrade() {
                         core.updater.in_app_finished(Err(format!("安装更新失败：{error}")));
                     }

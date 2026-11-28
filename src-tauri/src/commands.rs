@@ -415,6 +415,8 @@ fn ensure_zip_extension(mut path: std::path::PathBuf) -> std::path::PathBuf {
 pub fn restart_app(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // 重启不经过录音收尾：录音中被「暂停外放」静音的系统输出先恢复
+        let _ = tauri::async_runtime::spawn_blocking(crate::recording::restore_output_before_exit).await;
         app.restart();
     });
 }

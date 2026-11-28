@@ -1175,7 +1175,7 @@ impl Actor {
                 active.muted_by_us = muted;
             } else if muted {
                 // 极短录音：静音完成前会话已结束，立即恢复
-                tokio::task::spawn_blocking(|| crate::desktop::set_output_muted(false));
+                restore_output().await;
             }
         }
     }
@@ -1336,7 +1336,8 @@ impl Actor {
             std::thread::spawn(move || capture.stop());
         }
         if active.muted_by_us {
-            tokio::task::spawn_blocking(|| crate::desktop::set_output_muted(false));
+            // 等恢复做完再进 Idle：紧接着的下一段要先读到「未静音」才会再静音
+            restore_output().await;
         }
         self.set_phase(Phase::Idle);
         // 让 emit_state 仍能带上本次模式
@@ -1994,12 +1995,87 @@ async fn abort_typing(typing: Option<StreamTyping>) {
 
 /// 静音系统输出（已静音则不动）；返回是否由本次录音静音。
 async fn mute_output() -> bool {
-    tokio::task::spawn_blocking(|| match crate::desktop::output_muted() {
-        Some(false) => crate::desktop::set_output_muted(true),
-        _ => false,
+    tokio::task::spawn_blocking(|| {
+        OUTPUT_MUTE.mute_with(crate::desktop::output_muted, crate::desktop::set_output_muted)
     })
     .await
     .unwrap_or(false)
+}
+
+/// 恢复本应用静音的系统输出，等它做完。
+async fn restore_output() {
+    let _ = tokio::task::spawn_blocking(|| OUTPUT_MUTE.restore_with(false, crate::desktop::set_output_muted)).await;
+}
+
+/// 退出、重启、安装更新之前调用（同步）：本应用静音过系统输出就立即恢复，之后不再静音。
+///
+/// 这些路径不经过录音收尾（`finish`），不在这里恢复的话系统输出会一直静音。
+/// 正在进行的静音会先做完再恢复；可以重复调用。
+pub fn restore_output_before_exit() {
+    OUTPUT_MUTE.restore_with(true, crate::desktop::set_output_muted);
+}
+
+/// 安装更新失败、进程继续运行：重新允许录音时暂停外放。
+pub fn allow_output_mute_again() {
+    OUTPUT_MUTE.resume();
+}
+
+static OUTPUT_MUTE: OutputMute = OutputMute::new();
+
+/// 「系统输出由本应用静音、尚未恢复」的全局状态。
+///
+/// 静音与恢复都在锁内读改系统音量，退出时的恢复不会和录音开始时的静音交错（先恢复、后被静音）。
+struct OutputMute {
+    state: Mutex<OutputMuteState>,
+}
+
+struct OutputMuteState {
+    /// 本应用把系统输出静音了，还没恢复
+    muted_by_us: bool,
+    /// 正在退出 / 重启 / 安装更新：不再静音
+    exiting: bool,
+}
+
+impl OutputMute {
+    const fn new() -> Self {
+        Self { state: Mutex::new(OutputMuteState { muted_by_us: false, exiting: false }) }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, OutputMuteState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 系统输出当前未静音时静音它；返回是否由这次调用静音。
+    fn mute_with(&self, is_muted: impl FnOnce() -> Option<bool>, set_muted: impl FnOnce(bool) -> bool) -> bool {
+        let mut state = self.lock();
+        if state.exiting {
+            return false;
+        }
+        let muted = matches!(is_muted(), Some(false)) && set_muted(true);
+        if muted {
+            state.muted_by_us = true;
+        }
+        muted
+    }
+
+    /// 本应用静音过就恢复；`exiting` 为真时之后不再静音。返回是否执行了恢复。
+    fn restore_with(&self, exiting: bool, set_muted: impl FnOnce(bool) -> bool) -> bool {
+        let mut state = self.lock();
+        if exiting {
+            state.exiting = true;
+        }
+        if !std::mem::take(&mut state.muted_by_us) {
+            return false;
+        }
+        if !set_muted(false) {
+            tracing::warn!("恢复系统输出静音失败");
+        }
+        true
+    }
+
+    fn resume(&self) {
+        self.lock().exiting = false;
+    }
 }
 
 /// 按下时预热连接还在握手，最多等它这么久（正常 1~1.5 秒握好，它比现在新建起步早）；再久就当网络不好、
@@ -2686,6 +2762,7 @@ async fn multi_task(
 mod tests {
     use super::recording_state_uses_asr;
     use super::voice_rewrite_can_resume;
+    use super::OutputMute;
     use super::{
         abort_multi_segments, append_captured_samples, batch_plan, cancel_binding_modifiers,
         compose_voice_rewrite_raw_text, counts_as_timeout, finalize_budget, finalize_budget_for_provider,
@@ -2710,6 +2787,77 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use tokio::sync::{mpsc, oneshot};
+
+    /// 记录 set_muted 调用的桩，返回值固定为成功。
+    fn record(calls: &Mutex<Vec<bool>>) -> impl FnOnce(bool) -> bool + '_ {
+        move |muted| {
+            calls.lock().unwrap().push(muted);
+            true
+        }
+    }
+
+    #[test]
+    fn output_mute_restores_only_what_we_muted() {
+        let mute = OutputMute::new();
+        let calls = Mutex::new(Vec::new());
+        // 系统本来就静音：不动它，恢复时也不取消静音
+        assert!(!mute.mute_with(|| Some(true), record(&calls)));
+        assert!(!mute.restore_with(false, record(&calls)));
+        assert!(calls.lock().unwrap().is_empty());
+        // 由我们静音：恢复一次，再恢复不重复调用
+        assert!(mute.mute_with(|| Some(false), record(&calls)));
+        assert!(mute.restore_with(false, record(&calls)));
+        assert!(!mute.restore_with(false, record(&calls)));
+        assert_eq!(*calls.lock().unwrap(), vec![true, false]);
+        // 读不到状态或静音失败：不记为由我们静音
+        assert!(!mute.mute_with(|| None, |_| true));
+        assert!(!mute.mute_with(|| Some(false), |_| false));
+        assert!(!mute.restore_with(false, |_| panic!("不应恢复")));
+    }
+
+    #[test]
+    fn output_mute_exit_restores_and_blocks_further_mute() {
+        let mute = OutputMute::new();
+        assert!(mute.mute_with(|| Some(false), |_| true));
+        // 退出：录音中被静音的输出立即恢复，之后（例如退出前还在排队的下一段）不再静音
+        let calls = Mutex::new(Vec::new());
+        assert!(mute.restore_with(true, record(&calls)));
+        assert_eq!(*calls.lock().unwrap(), vec![false]);
+        assert!(!mute.mute_with(|| Some(false), |_| panic!("退出后不应静音")));
+        // 安装更新失败、进程继续：恢复静音能力
+        mute.resume();
+        assert!(mute.mute_with(|| Some(false), |_| true));
+    }
+
+    #[test]
+    fn output_mute_exit_waits_for_in_flight_mute() {
+        // 录音开始的静音正在进行（持锁读改系统音量）时触发退出：要等它做完再恢复，不能先恢复、后被静音
+        let mute = Arc::new(OutputMute::new());
+        let system_muted = Arc::new(Mutex::new(false));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let muter = {
+            let (mute, system_muted) = (mute.clone(), system_muted.clone());
+            std::thread::spawn(move || {
+                mute.mute_with(
+                    || Some(false),
+                    |muted| {
+                        entered_tx.send(()).unwrap();
+                        std::thread::sleep(Duration::from_millis(50));
+                        *system_muted.lock().unwrap() = muted;
+                        true
+                    },
+                )
+            })
+        };
+        entered_rx.recv().unwrap();
+        let restored = mute.restore_with(true, |muted| {
+            *system_muted.lock().unwrap() = muted;
+            true
+        });
+        assert!(muter.join().unwrap());
+        assert!(restored);
+        assert!(!*system_muted.lock().unwrap());
+    }
 
     /// 本地豆包桩里一条连接的行为。
     #[derive(Clone, Copy)]
