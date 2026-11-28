@@ -473,6 +473,14 @@ enum RecordHotkeyStep {
     Ignore,
 }
 
+/// 语音改写按住录音的再次按下：松开缓冲仍在有效期内时继续本段，不能重新复制选区或摇提示。
+fn voice_rewrite_can_resume(phase: Phase, held: bool, is_voice_rewrite: bool, released_at: Option<Instant>) -> bool {
+    matches!(phase, Phase::Connecting | Phase::Recording)
+        && held
+        && is_voice_rewrite
+        && released_at.is_some_and(|at| at.elapsed() <= HOLD_RELEASE_GRACE)
+}
+
 /// 两种录音快捷键的分派：
 /// - 按住录音：按下开始、松开收尾；但点按开始的录音进行中按下它 = 结束（按任一录音键都能停）；
 /// - 点按录音：空闲 / 优化中按下开始，录音中（不论哪种方式开始）按下结束，收尾中按下摇印章；
@@ -793,6 +801,18 @@ impl Actor {
         }
         if action == HotkeyAction::VoiceRewriteSelection {
             match key_phase {
+                KeyPhase::Pressed
+                    if self.active.as_ref().is_some_and(|active| {
+                        voice_rewrite_can_resume(
+                            self.phase,
+                            active.held,
+                            active.voice_rewrite_selection.is_some(),
+                            active.pending_release.map(|(_, released_at)| released_at),
+                        )
+                    }) =>
+                {
+                    self.resume_released();
+                }
                 KeyPhase::Pressed => self.begin_voice_rewrite().await,
                 KeyPhase::Released
                     if self
@@ -2665,6 +2685,7 @@ async fn multi_task(
 #[cfg(test)]
 mod tests {
     use super::recording_state_uses_asr;
+    use super::voice_rewrite_can_resume;
     use super::{
         abort_multi_segments, append_captured_samples, batch_plan, cancel_binding_modifiers,
         compose_voice_rewrite_raw_text, counts_as_timeout, finalize_budget, finalize_budget_for_provider,
@@ -3027,6 +3048,23 @@ mod tests {
         // 不经缓冲（UI 停止、识别失败）按当前时刻算
         let now = started + Duration::from_secs(2);
         assert_eq!(recorded_until(started, None, now), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn 语音改写_松开缓冲内重新按下时继续本段() {
+        let released = Instant::now() - Duration::from_millis(100);
+        assert!(voice_rewrite_can_resume(Phase::Recording, true, true, Some(released)));
+        assert!(
+            !voice_rewrite_can_resume(
+                Phase::Recording,
+                true,
+                true,
+                Some(Instant::now() - HOLD_RELEASE_GRACE - Duration::from_millis(1))
+            ),
+            "缓冲已经过期时不能继续，应交给到点收尾"
+        );
+        assert!(!voice_rewrite_can_resume(Phase::Recording, true, false, Some(released)));
+        assert!(!voice_rewrite_can_resume(Phase::Finalizing, true, true, Some(released)));
     }
 
     #[test]

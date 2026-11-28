@@ -65,7 +65,7 @@ fn hid_from_key(vk: u32) -> Option<u16> {
 
 /// 系统真实修饰键状态（防粘滞轮询用）。
 pub fn physical_modifiers() -> Option<ModSet> {
-    Some(modifiers_with(None))
+    crate::with_synthetic_window(|synthetic, _| (!synthetic).then(|| modifiers_with(None)))
 }
 
 /// 修饰键状态：以系统真实键态为准，`current` 为钩子正在处理的那个键（及其新状态）。
@@ -112,16 +112,33 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             if down || up {
                 let vk = info.vkCode;
                 if is_modifier(vk) {
-                    shared.on_modifiers(modifiers_with(Some((vk, down))), Source::Modifiers);
+                    let modifiers = crate::with_synthetic_window(|synthetic, releases| {
+                        if synthetic {
+                            if !down {
+                                releases.insert(canonical_modifier(vk));
+                            }
+                            None
+                        } else {
+                            Some(modifiers_with(Some((vk, down))))
+                        }
+                    });
+                    if let Some(modifiers) = modifiers {
+                        shared.on_modifiers(modifiers, Source::Modifiers);
+                    }
                 } else {
                     // 非修饰键事件也顺带校正一次修饰键（与 macOS 每个事件带完整 flags 对齐）
-                    shared.on_modifiers(modifiers_with(None), Source::Key);
+                    let sampled_modifiers =
+                        crate::with_synthetic_window(|synthetic, _| (!synthetic).then(|| modifiers_with(None)));
+                    if let Some(modifiers) = sampled_modifiers {
+                        shared.on_modifiers(modifiers, Source::Key);
+                    }
                     let hid = hid_from_key(vk);
                     if shared.on_key(vk, hid, down) {
                         if down {
-                            let mods = modifiers_with(None);
-                            if mods.alt || mods.meta {
-                                send_mask_key();
+                            if let Some(mods) = sampled_modifiers {
+                                if mods.alt || mods.meta {
+                                    send_mask_key();
+                                }
                             }
                         }
                         return 1;
@@ -179,11 +196,24 @@ pub fn spawn(shared: Arc<Shared>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::hid_from_key;
+    use super::{hid_from_key, physical_modifiers};
 
     #[test]
     fn esc_映射到_hid_供内部取消绑定使用() {
         assert_eq!(hid_from_key(super::VK_ESCAPE), Some(crate::HID_ESCAPE));
         assert_eq!(hid_from_key(b'R' as u32), att_core::settings::hotkey::hid_from_char('r'));
+    }
+
+    #[test]
+    fn 合成窗口跳过键态校正并记住物理松开() {
+        let vk = super::VK_LMENU;
+        crate::begin_synthetic();
+        assert_eq!(physical_modifiers(), None);
+        crate::with_synthetic_window(|_, releases| {
+            releases.insert(vk);
+        });
+        assert!(crate::synthetic_modifier_released(vk as u16));
+        crate::end_synthetic();
+        assert!(!crate::synthetic_modifier_released(vk as u16));
     }
 }

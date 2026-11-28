@@ -74,7 +74,8 @@ pub fn copy_selection() -> Result<Option<String>, String> {
 ///
 /// macOS 的模拟 ⌘C 只带 Command flag，可直接发；Windows 的 SendInput 会被用户仍按着的
 /// Alt / Shift / Win 污染，因此平台层会短暂送修饰键抬起、复制后再恢复按下。所有模拟事件都带
-/// [`att_hotkey::SYNTHETIC_EVENT_TAG`]，不会反过来打断本应用的热键状态机。
+/// [`att_hotkey::SYNTHETIC_EVENT_TAG`]；抬起到恢复期间还会暂停键态校正，并跳过用户在这段时间
+/// 真实松开的修饰键，避免打断本应用的热键状态机或留下粘滞按键。
 pub fn copy_selection_while_shortcut_held() -> Result<Option<String>, String> {
     copy_selection_inner(true)
 }
@@ -395,6 +396,7 @@ mod platform {
                 .filter(|vk| is_down(*vk))
                 .collect();
 
+        att_hotkey::begin_synthetic();
         let released = send_modifiers(&modifiers, true);
         if !modifiers.is_empty() {
             std::thread::sleep(std::time::Duration::from_millis(12));
@@ -403,11 +405,15 @@ mod platform {
         if !modifiers.is_empty() {
             std::thread::sleep(std::time::Duration::from_millis(12));
             // 物理键仍按着；恢复按键状态，避免录音结束后修饰键在系统中变成「已松开」
-            let restored = send_modifiers(&modifiers, false);
+            let restore: Vec<u16> =
+                modifiers.iter().copied().filter(|vk| !att_hotkey::synthetic_modifier_released(*vk)).collect();
+            let restored = send_modifiers(&restore, false);
+            att_hotkey::end_synthetic();
             released.map_err(|_| "暂时释放修饰键失败（SendInput 被拦截）".to_string())?;
             copied.map_err(|_| "模拟复制失败（SendInput 被拦截）".to_string())?;
             restored.map_err(|_| "恢复修饰键失败（SendInput 被拦截）".to_string())?;
         } else {
+            att_hotkey::end_synthetic();
             released.map_err(|_| "模拟复制失败（SendInput 被拦截）".to_string())?;
             copied.map_err(|_| "模拟复制失败（SendInput 被拦截）".to_string())?;
         }
