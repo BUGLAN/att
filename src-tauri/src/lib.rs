@@ -9,24 +9,23 @@
 #[cfg(not(any(target_os = "macos", windows)))]
 compile_error!("ATT 桌面应用只支持 macOS 与 Windows");
 
-// 注意：Tauri generate_handler 需要命令模块公开可见（__cmd__ 宏重导出）
-pub mod app_update;
-pub mod clipboard;
-pub mod clipboard_image;
-pub mod clipboard_panel;
-pub mod commands;
-pub mod desktop;
-pub mod floating;
-pub mod instance_lock;
-pub mod launch;
+mod app_update;
+mod clipboard;
+mod clipboard_image;
+mod clipboard_panel;
+mod commands;
+mod desktop;
+mod floating;
+mod instance_lock;
+mod launch;
 #[cfg(target_os = "macos")]
 mod menu;
-pub mod permissions;
-pub mod recording;
-pub mod tray;
-pub mod typing;
-pub mod window_icon;
-pub mod window_shape;
+mod permissions;
+mod recording;
+mod tray;
+mod typing;
+mod window_icon;
+mod window_shape;
 
 use att_core::{migration, state::CoreState, Platform};
 use std::path::PathBuf;
@@ -37,23 +36,23 @@ use tauri::Manager;
 const LOCAL_MODEL_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// 命令层共享状态。
-pub struct AppState {
-    pub core: Arc<CoreState>,
-    pub backend_port: u16,
+pub(crate) struct AppState {
+    pub(crate) core: Arc<CoreState>,
+    pub(crate) backend_port: u16,
     /// 本次启动生成的数据面令牌（前端经注入或命令获取，敏感 HTTP 端点要求带上）
-    pub backend_token: String,
+    pub(crate) backend_token: String,
     /// 数据面停机信号发送端。
     ///
     /// **必须随应用存活**（由 `app.manage` 持有）：watch 通道的全部发送端被 drop
     /// 会让接收端 `wait_for` 立刻返回，等于触发 axum 的优雅关闭——曾导致数据面
     /// 在 setup 结束后静默死亡（端口消失、无任何错误日志，界面全部请求失败）。
-    pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    pub(crate) _shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// 录音会话 Actor（UI 按钮与全局热键共用同一入口）
-    pub recorder: recording::RecordingController,
+    pub(crate) recorder: recording::RecordingController,
     /// 全局热键不可用的原因（权限缺失等），前端挂载后可查询
-    pub hotkey_error: std::sync::Mutex<Option<String>>,
+    pub(crate) hotkey_error: std::sync::Mutex<Option<String>>,
     /// 更新后首次启动时记下的更新前版本（没记过版本号的旧版本为空串）；不是更新后首次启动或引导关掉后为 None
-    pub update_notice: std::sync::Mutex<Option<String>>,
+    pub(crate) update_notice: std::sync::Mutex<Option<String>>,
 }
 
 pub fn run() {
@@ -204,7 +203,7 @@ pub fn run() {
             let backend_token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
             let server_state = Arc::new(att_server::ServerState { core: core.clone(), token: backend_token.clone() });
             // 注意：发送端必须存活到应用退出（否则 watch 通道关闭 → 优雅关闭数据面，
-            // 见 AppState::shutdown_tx 注释），这里先创建、随 AppState 交给 Tauri 托管。
+            // 见 AppState::_shutdown_tx 注释），这里先创建、随 AppState 交给 Tauri 托管。
             let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
             let preferred_ports: Vec<u16> = std::env::var("ATT_BACKEND_PORT")
                 .ok()
@@ -257,7 +256,7 @@ pub fn run() {
                 core,
                 backend_port: port,
                 backend_token: backend_token.clone(),
-                shutdown_tx,
+                _shutdown_tx: shutdown_tx,
                 recorder,
                 hotkey_error: std::sync::Mutex::new(hotkey_error),
                 update_notice: std::sync::Mutex::new(updated_from),
@@ -381,9 +380,8 @@ pub fn run() {
         });
 }
 
-/// 显示并聚焦主窗口（二次启动 / Dock 唤起 / 悬浮窗「设置」按钮共用）。
 /// 默认优化预设变了（快捷键切换 / 托盘选择）：托盘重建勾选、悬浮窗提示预设名、主窗口同步设置页。
-pub fn announce_default_preset(app: &tauri::AppHandle, preset: &att_core::prompts::Preset) {
+pub(crate) fn announce_default_preset(app: &tauri::AppHandle, preset: &att_core::prompts::Preset) {
     use tauri::Emitter;
     tracing::info!("默认优化预设切换为「{}」", preset.name);
     tray::refresh(app);
@@ -405,7 +403,8 @@ fn cycle_default_preset(app: &tauri::AppHandle) {
     }
 }
 
-pub fn show_main_window(app: &tauri::AppHandle) {
+/// 显示并聚焦主窗口（二次启动 / Dock 唤起 / 悬浮窗「设置」按钮共用）。
+pub(crate) fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -414,7 +413,7 @@ pub fn show_main_window(app: &tauri::AppHandle) {
 }
 
 /// 显示 / 隐藏主窗口（快捷键「显示主窗口」用）：已经在前台时隐藏，否则显示并聚焦。
-pub fn toggle_main_window(app: &tauri::AppHandle) {
+pub(crate) fn toggle_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else { return };
     let focused = window.is_focused().unwrap_or(false);
     let visible = window.is_visible().unwrap_or(false);

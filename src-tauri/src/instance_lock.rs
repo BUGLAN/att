@@ -18,15 +18,15 @@ use std::time::{Duration, Instant};
 const LOCK_FILE: &str = ".instance.lock";
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 /// 应用内更新后重启时，旧进程拉起新进程后才退出：留一点重叠时间，别把更新后的新进程误判成二次启动。
-pub const DEFAULT_WAIT: Duration = Duration::from_secs(3);
+pub(crate) const DEFAULT_WAIT: Duration = Duration::from_secs(3);
 
 /// 持有期间锁一直有效；随应用状态（`app.manage`）存活到进程退出。
-pub struct InstanceLock {
+pub(crate) struct InstanceLock {
     _file: File,
 }
 
 /// 在 `dir` 下加单实例锁，最多等 `wait`。`Ok(None)`：另一个实例持有锁。
-pub fn acquire(dir: &Path, wait: Duration) -> io::Result<Option<InstanceLock>> {
+pub(crate) fn acquire(dir: &Path, wait: Duration) -> io::Result<Option<InstanceLock>> {
     std::fs::create_dir_all(dir)?;
     let file = OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(LOCK_FILE))?;
     let deadline = Instant::now() + wait;

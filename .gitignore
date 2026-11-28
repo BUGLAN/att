@@ -11,8 +11,6 @@
 
 # Data（用户数据不入库）
 data/
-data/cache/*
-data/fragments.db
 
 # Models（大文件不入库）
 models/
@@ -23,9 +21,6 @@ logs/
 
 # 前端构建产物
 dist/
-
-# 测试临时产物
-tests/.tmp/
 
 # OS
 .DS_Store
@@ -39,8 +34,6 @@ yarn.lock
 
 # 审计与设计工具产物（保留在本地，不纳入版本库）
 .tmp-shots/
-docs/ui-audit/
-docs/prototype/
 
 # 本地临时目录
 tmp/
@@ -51,8 +44,3 @@ tmp/
 src-tauri/target/
 src-tauri/target-*/
 src-tauri/gen/
-
-# claude
-.claude/
-
-volc_page.html

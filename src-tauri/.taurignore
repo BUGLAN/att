@@ -1,6 +1,5 @@
 # Tauri dev 文件监听的额外忽略项（gitignore 语法，相对于 src-tauri/）。
 # 自定义 CARGO_TARGET_DIR（如 CUDA 构建用的 target-cuda）不在 Tauri 默认忽略的 target/ 内，
 # 它里面的 CMake / 编译器产物在构建过程中会不断变动，会让 dev 反复 “Rebuilding application”
-# 触发完整重编译，形成永不结束的重建循环。这里把它排除掉。
-target-cuda/
+# 触发完整重编译，形成永不结束的重建循环。target-* 覆盖所有自定义产物目录。
 target-*/

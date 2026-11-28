@@ -34,7 +34,7 @@ const RETRY_INTERVAL: Duration = Duration::from_millis(40);
 
 /// 把一张 RGBA 图片写进系统剪贴板。`rgba` 必须是 `width * height * 4` 字节。
 /// `png`：手上已有的同一张图的 PNG 字节（如剪贴板历史里的原图文件），有就直接用，省掉一次整图编码。
-pub fn write_rgba(
+pub(crate) fn write_rgba(
     app: &tauri::AppHandle,
     rgba: &[u8],
     width: u32,

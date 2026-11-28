@@ -19,7 +19,7 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 /// 已下载、待安装的更新包
 type Ready = (Update, Vec<u8>);
 
-pub struct TauriUpdater {
+pub(crate) struct TauriUpdater {
     app: AppHandle,
     /// 弱引用：CoreState 持有本对象，反过来强引用会成环
     core: Weak<CoreState>,
@@ -27,7 +27,7 @@ pub struct TauriUpdater {
 }
 
 /// 创建并注入到 `core.updater`（需在启动时的自动检查之前调用）。
-pub fn install_driver(app: AppHandle, core: &Arc<CoreState>) {
+pub(crate) fn install_driver(app: AppHandle, core: &Arc<CoreState>) {
     let driver = TauriUpdater { app, core: Arc::downgrade(core), ready: Arc::new(Mutex::new(None)) };
     core.updater.set_in_app(Arc::new(driver));
 }

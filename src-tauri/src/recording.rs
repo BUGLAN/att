@@ -506,7 +506,7 @@ fn recording_state_uses_asr(state: &Value) -> bool {
 }
 
 #[derive(Clone)]
-pub struct RecordingController {
+pub(crate) struct RecordingController {
     tx: mpsc::UnboundedSender<Cmd>,
     snapshot: Arc<Mutex<Value>>,
     cancel_binding: CancelBinding,
@@ -564,7 +564,7 @@ impl RecordingController {
     }
 
     pub fn hotkey(&self, action: HotkeyAction, phase: KeyPhase) {
-        if self.core.backup_maintenance_active() && action != HotkeyAction::CancelRecording {
+        if self.core.backup_maintenance_active() {
             return;
         }
         let _ = self.tx.send(Cmd::Hotkey(action, phase));
@@ -624,7 +624,7 @@ impl Actor {
                 Cmd::Stop => self.stop("正在完成转写"),
                 Cmd::Cancel => self.cancel(),
                 Cmd::Hotkey(action, key_phase) => {
-                    if !self.core.backup_maintenance_active() || action == HotkeyAction::CancelRecording {
+                    if !self.core.backup_maintenance_active() {
                         self.on_hotkey(action, key_phase).await;
                     }
                 }
@@ -1981,13 +1981,13 @@ fn finalize_budget_for_provider(
     engine + WATCHDOG_SLACK
 }
 
-/// 流式输入立即停手（丢弃未发出的按键）。
 /// 只写剪贴板（不粘贴）；返回是否写入成功。
 async fn copy_to_clipboard(text: &str) -> bool {
     let text = text.to_string();
     matches!(tokio::task::spawn_blocking(move || crate::desktop::write_clipboard(&text)).await, Ok(Ok(())))
 }
 
+/// 流式输入立即停手（丢弃未发出的按键）。
 async fn abort_typing(typing: Option<StreamTyping>) {
     if let Some(typing) = typing {
         let _ = tokio::task::spawn_blocking(move || typing.abort()).await;

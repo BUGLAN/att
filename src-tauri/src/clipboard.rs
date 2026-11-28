@@ -29,7 +29,7 @@ static INTERNAL_CHANGES: Mutex<Vec<i64>> = Mutex::new(Vec::new());
 const INTERNAL_CHANGES_KEPT: usize = 8;
 
 /// 写剪贴板成功后调用：记下此刻的换代计数（拿不到计数的平台什么也不做，靠内容标记）。
-pub fn mark_internal_change() {
+pub(crate) fn mark_internal_change() {
     if let Some(change) = crate::desktop::clipboard_change_count() {
         push_change(change);
     }
@@ -55,7 +55,7 @@ fn consume_change(change: i64) -> bool {
     }
 }
 
-pub fn mark_internal_write(text: &str) {
+pub(crate) fn mark_internal_write(text: &str) {
     let normalized = normalize_text(text);
     if !normalized.is_empty() {
         push_mark(normalized);
@@ -63,7 +63,7 @@ pub fn mark_internal_write(text: &str) {
 }
 
 /// 写入图片前标记（键与监控读到的原始 RGBA 哈希一致）。
-pub fn mark_internal_image(rgba: &[u8]) {
+pub(crate) fn mark_internal_image(rgba: &[u8]) {
     push_mark(format!("image:{}", hex(&Sha256::digest(rgba))));
 }
 
@@ -89,7 +89,7 @@ fn consume_mark(key: &str) -> bool {
 }
 
 /// 启动后台监控线程（应用生命周期内常驻）。
-pub fn start(core: Arc<CoreState>) {
+pub(crate) fn start(core: Arc<CoreState>) {
     let spawned = std::thread::Builder::new().name("att-clipboard-monitor".into()).spawn(move || {
         if let Err(error) = std::fs::create_dir_all(core.clipboard.images_dir()) {
             tracing::warn!("创建剪贴板图片目录失败: {error}");

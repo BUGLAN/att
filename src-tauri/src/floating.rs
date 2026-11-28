@@ -14,7 +14,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 
-pub const LABEL: &str = "floating";
+pub(crate) const LABEL: &str = "floating";
 /// 窗口按胶囊最大尺寸（约 342×42，单行）再留一点边；胶囊在窗口内贴底居中、按内容横向生长
 const WIDTH: f64 = 360.0;
 const HEIGHT: f64 = 64.0;
@@ -37,7 +37,7 @@ fn shown_signal() -> &'static Notify {
 }
 
 /// 预创建隐藏的悬浮窗（首次录音时立即可显示，不等页面加载）。
-pub fn create(app: &AppHandle) -> tauri::Result<()> {
+pub(crate) fn create(app: &AppHandle) -> tauri::Result<()> {
     if app.get_webview_window(LABEL).is_some() {
         tracing::debug!("悬浮窗已存在，复用（label={LABEL}）");
         return Ok(());
@@ -74,7 +74,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// 页面上报胶囊区域（尺寸变化、进入 / 退出淡出时）。
-pub fn set_hit_rect(rect: Option<[f64; 4]>) {
+pub(crate) fn set_hit_rect(rect: Option<[f64; 4]>) {
     if let Ok(mut slot) = HIT_RECT.lock() {
         *slot = rect;
     }
@@ -184,7 +184,7 @@ fn is_settled(state: Option<&Value>) -> bool {
 
 /// 切换优化预设的提示：会话进行中不打断；空闲时弹出一枚「潤」+ 预设名，
 /// 停留片刻后收起（与成 / 敗同样由页面计时发起收起）。
-pub fn preset_notice(app: &AppHandle, name: &str) {
+pub(crate) fn preset_notice(app: &AppHandle, name: &str) {
     if !is_settled(Some(&last_state())) {
         return;
     }
@@ -236,7 +236,7 @@ fn show_window(app: &AppHandle) {
 }
 
 /// 推送状态；`show=true` 时同时显示（不抢焦点，避免打断用户正在输入的窗口）。
-pub fn update(app: &AppHandle, state: Value, show: bool) {
+pub(crate) fn update(app: &AppHandle, state: Value, show: bool) {
     if !show {
         publish(app, |last| Some(carry_live_text(state, last)));
         return;
@@ -255,7 +255,7 @@ pub fn update(app: &AppHandle, state: Value, show: bool) {
 
 /// 识别中间结果（流式 / 多段）：只在悬浮窗仍处于「聽」时生效。
 /// 识别回调与录音 Actor 不在同一线程，松开后 Actor 已推「轉」，晚到的中间结果不能再把它推回「聽」。
-pub fn update_partial(app: &AppHandle, state: Value) {
+pub(crate) fn update_partial(app: &AppHandle, state: Value) {
     publish(app, |last| (phase_of(last) == "recording").then_some(state));
 }
 
@@ -264,7 +264,7 @@ pub fn update_partial(app: &AppHandle, state: Value) {
 /// 不能当场隐藏：系统会留着窗口隐藏前的最后一帧，下次显示时先露出这张旧胶囊（比如「聽」），
 /// 页面随后换成新会话、胶囊从透明重新淡入，看起来就是闪一下。
 /// 淡出期间若已开始新一次录音，[`dismiss`] 见会话未结束就不再隐藏。
-pub fn hide(app: &AppHandle) {
+pub(crate) fn hide(app: &AppHandle) {
     publish(app, |_| Some(idle_state()));
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -277,7 +277,7 @@ pub fn hide(app: &AppHandle) {
 
 /// 结果态停留到点后由页面发起的收起：只收已结束的会话。
 /// 页面的计时器与新一次录音是并发的——收起请求晚到时，新会话的悬浮窗不能被一起藏掉。
-pub fn dismiss(app: &AppHandle) {
+pub(crate) fn dismiss(app: &AppHandle) {
     if !publish(app, |last| is_settled(last).then(idle_state)) {
         return;
     }
@@ -295,13 +295,13 @@ pub fn dismiss(app: &AppHandle) {
 
 /// 这次按键没生效（收尾中 / 单段优化中按了录音键）：让印章摇一下，免得用户以为热键坏了。
 /// 胶囊已收起（或正在淡出）时不必提示。
-pub fn nudge(app: &AppHandle) {
+pub(crate) fn nudge(app: &AppHandle) {
     if !is_settled(Some(&last_state())) {
         let _ = app.emit_to(LABEL, "floating:nudge", ());
     }
 }
 
-pub fn last_state() -> Value {
+pub(crate) fn last_state() -> Value {
     LAST_STATE.lock().ok().and_then(|s| s.clone()).unwrap_or_else(idle_state)
 }
 
@@ -312,7 +312,7 @@ pub fn last_state() -> Value {
 ///
 /// complete 带 `ok`：有结果且优化、输出都没出错才算「成」，否则「敗」并把原因放进 text。
 /// 没说话 / 误触（载荷带 `silent`）不算失败，取消优化也不算完成：返回 None，由调用方直接收起悬浮窗。
-pub fn from_recording_state(payload: &Value) -> Option<(Value, bool)> {
+pub(crate) fn from_recording_state(payload: &Value) -> Option<(Value, bool)> {
     let mode = payload["mode"].as_str().unwrap_or("single");
     let message = payload["message"].as_str().unwrap_or("");
     let state = |phase: &str, text: &str| json!({ "phase": phase, "mode": mode, "text": text, "duration": 0 });

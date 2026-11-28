@@ -11,7 +11,7 @@
 //! 窗口跨屏换缩放时（`ScaleFactorChanged`）再调一次。
 
 /// 按窗口当前 DPI 重设窗口图标；需在主线程调用（窗口创建处 / 窗口事件回调里）。
-pub fn apply(window: &tauri::Window) {
+pub(crate) fn apply(window: &tauri::Window) {
     platform::apply(window);
 }
 

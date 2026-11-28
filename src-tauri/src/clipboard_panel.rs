@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
-pub const LABEL: &str = "clipboard-panel";
+pub(crate) const LABEL: &str = "clipboard-panel";
 /// 面板离屏幕左右与底边的最小距离（逻辑像素，不含阴影边）
 const SCREEN_GAP: f64 = 8.0;
 /// 阴影边：窗口四周透明留白（与 clipboard-panel.css 的 #app padding 一致）
@@ -21,7 +21,7 @@ const SHADOW_EDGE: f64 = 16.0;
 static PREVIOUS_APP: Mutex<Option<platform::AppRef>> = Mutex::new(None);
 
 /// 预创建隐藏的悬浮框（首次唤起不等页面加载）。
-pub fn create(app: &AppHandle, backend_port: u16, backend_token: &str) -> tauri::Result<()> {
+pub(crate) fn create(app: &AppHandle, backend_port: u16, backend_token: &str) -> tauri::Result<()> {
     if app.get_webview_window(LABEL).is_some() {
         return Ok(());
     }
@@ -45,12 +45,12 @@ pub fn create(app: &AppHandle, backend_port: u16, backend_token: &str) -> tauri:
     Ok(())
 }
 
-pub fn is_visible(app: &AppHandle) -> bool {
+pub(crate) fn is_visible(app: &AppHandle) -> bool {
     app.get_webview_window(LABEL).is_some_and(|w| w.is_visible().unwrap_or(false))
 }
 
 /// 快捷键入口：显示中就收起（焦点还给原应用），否则唤起。
-pub fn toggle(app: &AppHandle) {
+pub(crate) fn toggle(app: &AppHandle) {
     if is_visible(app) {
         hide(app, true);
     } else {
@@ -58,7 +58,7 @@ pub fn toggle(app: &AppHandle) {
     }
 }
 
-pub fn show(app: &AppHandle) {
+pub(crate) fn show(app: &AppHandle) {
     let Some(window) = app.get_webview_window(LABEL) else { return };
     let front = platform::frontmost_app();
     if let Ok(mut previous) = PREVIOUS_APP.lock() {
@@ -79,7 +79,7 @@ pub fn show(app: &AppHandle) {
 ///
 /// 必须先还焦点再隐藏：先隐藏的话，本应用在那一瞬间处于激活态却没有可见窗口，
 /// 系统会先切到桌面再切回原应用，看起来是一次闪烁。
-pub fn hide(app: &AppHandle, restore_focus: bool) {
+pub(crate) fn hide(app: &AppHandle, restore_focus: bool) {
     let previous = PREVIOUS_APP.lock().ok().and_then(|mut p| p.take());
     if restore_focus {
         if let Some(previous) = previous {
@@ -92,14 +92,14 @@ pub fn hide(app: &AppHandle, restore_focus: bool) {
 }
 
 /// 失焦（点到别处 / 切走）：直接隐藏。
-pub fn on_blur(app: &AppHandle) {
+pub(crate) fn on_blur(app: &AppHandle) {
     if is_visible(app) {
         hide(app, false);
     }
 }
 
 /// 页面需要的上下文：回车行为、唤起快捷键与记住的尺寸（每次唤起时读，设置页改了立即生效）。
-pub fn context(core: &att_core::state::CoreState) -> Value {
+pub(crate) fn context(core: &att_core::state::CoreState) -> Value {
     use att_core::settings::hotkey::HotkeyAction;
     let settings = core.settings();
     json!({
@@ -116,7 +116,7 @@ pub fn context(core: &att_core::state::CoreState) -> Value {
 
 /// 拖动调整：按面板尺寸（逻辑像素，不含阴影边）重新布局，仍贴底居中；`save` 时记进设置。
 /// 宽度拉到屏幕可用宽度即记为「铺满」（0），换到更宽的屏幕也跟着铺满。返回夹取后的实际尺寸。
-pub fn resize(app: &AppHandle, width: f64, height: f64, save: bool) -> Value {
+pub(crate) fn resize(app: &AppHandle, width: f64, height: f64, save: bool) -> Value {
     let Some(window) = app.get_webview_window(LABEL) else { return json!(null) };
     let Some(monitor) = window.current_monitor().ok().flatten() else { return json!(null) };
     let screen = Screen::of(&monitor);
@@ -130,7 +130,7 @@ pub fn resize(app: &AppHandle, width: f64, height: f64, save: bool) -> Value {
 }
 
 /// 上下拖动：按离底距离重新布局（尺寸用记住的），`save` 时记进设置。返回夹取后的实际离底距离。
-pub fn move_to(app: &AppHandle, bottom_offset: f64, save: bool) -> Value {
+pub(crate) fn move_to(app: &AppHandle, bottom_offset: f64, save: bool) -> Value {
     let Some(window) = app.get_webview_window(LABEL) else { return json!(null) };
     let Some(monitor) = window.current_monitor().ok().flatten() else { return json!(null) };
     let saved = saved_layout(app);
@@ -142,13 +142,13 @@ pub fn move_to(app: &AppHandle, bottom_offset: f64, save: bool) -> Value {
 }
 
 /// 恢复默认尺寸；悬浮框正显示着就当场重排。
-pub fn reset_size(app: &AppHandle) {
+pub(crate) fn reset_size(app: &AppHandle) {
     save_settings(app, |s| s.reset_clipboard_panel_size());
     relayout_if_visible(app);
 }
 
 /// 恢复默认位置（贴底）；悬浮框正显示着就当场重排。
-pub fn reset_position(app: &AppHandle) {
+pub(crate) fn reset_position(app: &AppHandle) {
     save_settings(app, |s| s.reset_clipboard_panel_position());
     relayout_if_visible(app);
 }

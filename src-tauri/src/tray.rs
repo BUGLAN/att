@@ -84,7 +84,7 @@ fn tooltip(state: &str) -> &'static str {
     }
 }
 
-pub fn create(app: &AppHandle) -> tauri::Result<()> {
+pub(crate) fn create(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app)?;
     let image = tauri::image::Image::from_bytes(icon_bytes(app, "idle"))?;
     TrayIconBuilder::with_id(TRAY_ID)
@@ -109,7 +109,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// 切换图标状态：idle / recording / transcribing / disconnected（未知按 idle）。
-pub fn set_icon(app: &AppHandle, state: &str) {
+pub(crate) fn set_icon(app: &AppHandle, state: &str) {
     let state = normalize(state);
     if let Ok(mut current) = CURRENT.lock() {
         if *current == state {
@@ -125,7 +125,7 @@ pub fn set_icon(app: &AppHandle, state: &str) {
 }
 
 /// 按记录库重建菜单（最近 10 条在前）。
-pub fn refresh(app: &AppHandle) {
+pub(crate) fn refresh(app: &AppHandle) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
     match build_menu(app) {
         Ok(menu) => {

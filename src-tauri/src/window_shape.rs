@@ -12,7 +12,7 @@
 const WINDOW_RADIUS: f64 = 10.0;
 
 /// 按当前是否全屏设置圆角；需在主线程调用（窗口创建处 / 窗口事件回调里）。
-pub fn apply(window: &tauri::Window) {
+pub(crate) fn apply(window: &tauri::Window) {
     let fullscreen = window.is_fullscreen().unwrap_or(false);
     platform::round(window, if fullscreen { 0.0 } else { WINDOW_RADIUS });
 }

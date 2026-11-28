@@ -304,7 +304,6 @@ dependencies = [
  "futures-util",
  "image 0.25.10",
  "objc2",
- "serde",
  "serde_json",
  "sha2",
  "tauri",

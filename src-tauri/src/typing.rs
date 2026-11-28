@@ -17,7 +17,7 @@ const NEWLINE_SETTLE: Duration = Duration::from_millis(150);
 /// 每发出这么多字（或回删这么多次）就检查一次 halt。
 const HALT_CHECK_CHARS: usize = 10;
 /// 录音开始时的目标窗口已不是前台：停止继续输入，剩余文本由调用方复制到剪贴板。
-pub const FOCUS_CHANGED: &str = "目标窗口已切换";
+pub(crate) const FOCUS_CHANGED: &str = "目标窗口已切换";
 
 enum Op {
     Text(String),
@@ -25,7 +25,7 @@ enum Op {
 }
 
 /// 一次自动优化的流式输入会话：已打出的文本 + 发键线程。
-pub struct StreamTyping {
+pub(crate) struct StreamTyping {
     tx: Option<mpsc::Sender<Op>>,
     worker: Option<JoinHandle<Result<(), String>>>,
     halt: Arc<AtomicBool>,

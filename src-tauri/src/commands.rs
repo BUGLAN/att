@@ -1,4 +1,4 @@
-//! Tauri 命令层：对旧 electronAPI 31 个方法的 1:1 替换（前端 useElectron.js 换内核不换形状）。
+//! Tauri 命令层：对旧 electronAPI 的 1:1 替换（当前注册 44 个命令，前端 useElectron.js 换内核不换形状）。
 //!
 //! 端口/平台/窗口/桌面设置/剪贴板/粘贴模拟/录音会话/麦克风枚举/热键状态/托盘/悬浮窗。
 
@@ -6,34 +6,34 @@ use crate::AppState;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
 
-pub fn err(message: impl Into<String>) -> String {
+pub(crate) fn err(message: impl Into<String>) -> String {
     message.into()
 }
 
 // ---------------- 基础 ----------------
 
 #[tauri::command]
-pub fn get_backend_port(state: State<'_, AppState>) -> u16 {
+pub(crate) fn get_backend_port(state: State<'_, AppState>) -> u16 {
     state.backend_port
 }
 
 /// 数据面令牌：与端口一样优先走 initialization_script 注入，这里是注入失败时的兜底。
 #[tauri::command]
-pub fn get_backend_token(state: State<'_, AppState>) -> String {
+pub(crate) fn get_backend_token(state: State<'_, AppState>) -> String {
     state.backend_token.clone()
 }
 
 // ---------------- 窗口 ----------------
 
 #[tauri::command]
-pub fn window_minimize(app: AppHandle) {
+pub(crate) fn window_minimize(app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.minimize();
     }
 }
 
 #[tauri::command]
-pub fn window_toggle_maximize(app: AppHandle) {
+pub(crate) fn window_toggle_maximize(app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let is_max = window.is_maximized().unwrap_or(false);
         let _ = if is_max { window.unmaximize() } else { window.maximize() };
@@ -41,7 +41,7 @@ pub fn window_toggle_maximize(app: AppHandle) {
 }
 
 #[tauri::command]
-pub fn window_close(app: AppHandle) {
+pub(crate) fn window_close(app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.close();
     }
@@ -50,7 +50,7 @@ pub fn window_close(app: AppHandle) {
 // ---------------- 桌面设置（单一真相源 = data/settings.json）----------------
 
 /// 旧版 userData/desktop-settings.json 的兼容形状，并补充启动与窗口桌面设置。
-pub fn desktop_settings_view(state: &AppState) -> Value {
+pub(crate) fn desktop_settings_view(state: &AppState) -> Value {
     let settings = state.core.settings();
     json!({
         "hotkey": settings.legacy_hotkey_view(state.core.platform),
@@ -61,14 +61,18 @@ pub fn desktop_settings_view(state: &AppState) -> Value {
 }
 
 #[tauri::command]
-pub fn get_desktop_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+pub(crate) fn get_desktop_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
     crate::launch::reconcile_launch_at_login(&app, &state.core)?;
     Ok(desktop_settings_view(&state))
 }
 
 /// 保存桌面设置（hotkey 旧形状 + 静音策略 + 开机自启），写回唯一真相源。
 #[tauri::command]
-pub fn save_desktop_settings(app: AppHandle, state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
+pub(crate) fn save_desktop_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> Result<Value, String> {
     if let Some(value) = payload.get("launch_at_login").filter(|value| !value.is_null()) {
         let enabled = value.as_bool().ok_or("字段 launch_at_login 类型非法，期望布尔值")?;
         crate::launch::set_launch_at_login(&app, &state.core, enabled)?;
@@ -90,7 +94,7 @@ pub fn save_desktop_settings(app: AppHandle, state: State<'_, AppState>, payload
 /// 旧 desktop:sync-input-settings 通道：更新按住录音的组合键。
 /// 热键监听每次按键都读取最新设置，不需要重新注册。
 #[tauri::command]
-pub fn sync_input_settings(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
+pub(crate) fn sync_input_settings(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
     let mut restart_hint = false;
     let result = state.core.update_settings(|settings| {
         if let Some(hotkey) = payload.get("hotkey").filter(|h| h.is_object()) {
@@ -116,7 +120,7 @@ pub fn sync_input_settings(state: State<'_, AppState>, payload: Value) -> Result
 
 /// 旧 desktop:sync-settings：静音策略等。
 #[tauri::command]
-pub fn sync_desktop_settings(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
+pub(crate) fn sync_desktop_settings(state: State<'_, AppState>, payload: Value) -> Result<Value, String> {
     let result = state.core.update_settings(|settings| {
         if let Some(pause) = payload.get("pause_audio_on_recording").and_then(|v| v.as_bool()) {
             settings.pause_audio_on_recording = pause;
@@ -131,7 +135,7 @@ pub fn sync_desktop_settings(state: State<'_, AppState>, payload: Value) -> Resu
 // ---------------- 剪贴板 ----------------
 
 #[tauri::command]
-pub async fn write_clipboard_text(text: String) -> Result<bool, String> {
+pub(crate) async fn write_clipboard_text(text: String) -> Result<bool, String> {
     // 不能在主线程上写：剪贴板被占用时要等几轮重试，期间所有窗口都卡住
     tauri::async_runtime::spawn_blocking(move || crate::desktop::write_clipboard(&text))
         .await
@@ -146,7 +150,11 @@ pub async fn write_clipboard_text(text: String) -> Result<bool, String> {
 ///
 /// 放到阻塞线程：读文件 + 整图解码 + 转位图，大截图要几百毫秒，不能卡住主线程（所有窗口都会冻住）。
 #[tauri::command]
-pub async fn write_clipboard_image(app: AppHandle, state: State<'_, AppState>, payload: Value) -> Result<bool, String> {
+pub(crate) async fn write_clipboard_image(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> Result<bool, String> {
     let raw_path = payload.get("imagePath").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let data_dir = state.core.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || write_clipboard_image_blocking(&app, &data_dir, &raw_path))
@@ -176,7 +184,10 @@ fn write_clipboard_image_blocking(app: &AppHandle, data_dir: &std::path::Path, r
 ///
 /// 必须先 canonicalize 再比较：`Path::starts_with` 只按路径分段比较、不解析 `..`，
 /// `data/clipboard/../../x` 这类路径会原样通过；符号链接同理。
-pub fn resolve_clipboard_image_path(data_dir: &std::path::Path, raw_path: &str) -> Result<std::path::PathBuf, String> {
+pub(crate) fn resolve_clipboard_image_path(
+    data_dir: &std::path::Path,
+    raw_path: &str,
+) -> Result<std::path::PathBuf, String> {
     let raw_path = raw_path.trim();
     if raw_path.is_empty() {
         return Err(err("imagePath 不能为空"));
@@ -195,43 +206,43 @@ pub fn resolve_clipboard_image_path(data_dir: &std::path::Path, raw_path: &str) 
 
 /// 悬浮框页面的上下文（回车行为、唤起快捷键），每次唤起时读取。
 #[tauri::command]
-pub fn get_clipboard_panel_context(state: State<'_, AppState>) -> Value {
+pub(crate) fn get_clipboard_panel_context(state: State<'_, AppState>) -> Value {
     crate::clipboard_panel::context(&state.core)
 }
 
 /// Esc 收起：焦点还给唤起前的应用。
 #[tauri::command]
-pub fn hide_clipboard_panel(app: AppHandle) {
+pub(crate) fn hide_clipboard_panel(app: AppHandle) {
     crate::clipboard_panel::hide(&app, true);
 }
 
 /// 拖动调整悬浮框尺寸（面板宽高，逻辑像素）；`save` 时记进设置。返回夹取后的实际尺寸。
 #[tauri::command]
-pub fn clipboard_panel_resize(app: AppHandle, width: f64, height: f64, save: bool) -> Value {
+pub(crate) fn clipboard_panel_resize(app: AppHandle, width: f64, height: f64, save: bool) -> Value {
     crate::clipboard_panel::resize(&app, width, height, save)
 }
 
 /// 上下拖动悬浮框（离屏幕底边的距离，逻辑像素）；`save` 时记进设置。返回夹取后的实际距离。
 #[tauri::command]
-pub fn clipboard_panel_move(app: AppHandle, bottom_offset: f64, save: bool) -> Value {
+pub(crate) fn clipboard_panel_move(app: AppHandle, bottom_offset: f64, save: bool) -> Value {
     crate::clipboard_panel::move_to(&app, bottom_offset, save)
 }
 
 /// 设置页「恢复默认尺寸」。
 #[tauri::command]
-pub fn clipboard_panel_reset_size(app: AppHandle) {
+pub(crate) fn clipboard_panel_reset_size(app: AppHandle) {
     crate::clipboard_panel::reset_size(&app);
 }
 
 /// 设置页「恢复默认位置」/ 悬浮框头部双击：回到贴底。
 #[tauri::command]
-pub fn clipboard_panel_reset_position(app: AppHandle) {
+pub(crate) fn clipboard_panel_reset_position(app: AppHandle) {
     crate::clipboard_panel::reset_position(&app);
 }
 
 /// 选中条目后收尾（条目已由页面写进系统剪贴板）：收起并还焦点，`paste` 时再模拟一次粘贴。
 #[tauri::command]
-pub async fn clipboard_panel_finish(app: AppHandle, paste: bool) -> Result<Value, String> {
+pub(crate) async fn clipboard_panel_finish(app: AppHandle, paste: bool) -> Result<Value, String> {
     crate::clipboard_panel::hide(&app, true);
     if paste {
         tauri::async_runtime::spawn_blocking(crate::desktop::paste_active).await.map_err(|e| err(e.to_string()))??;
@@ -242,34 +253,34 @@ pub async fn clipboard_panel_finish(app: AppHandle, paste: bool) -> Result<Value
 // ---------------- 录音（Rust 侧采集 + 识别，前端只做展示）----------------
 
 #[tauri::command]
-pub fn recording_start(state: State<'_, AppState>) {
+pub(crate) fn recording_start(state: State<'_, AppState>) {
     state.recorder.start();
 }
 
 #[tauri::command]
-pub fn recording_stop(state: State<'_, AppState>) {
+pub(crate) fn recording_stop(state: State<'_, AppState>) {
     state.recorder.stop();
 }
 
 #[tauri::command]
-pub fn recording_cancel(state: State<'_, AppState>) {
+pub(crate) fn recording_cancel(state: State<'_, AppState>) {
     state.recorder.cancel();
 }
 
 #[tauri::command]
-pub fn recording_get_state(state: State<'_, AppState>) -> Value {
+pub(crate) fn recording_get_state(state: State<'_, AppState>) -> Value {
     state.recorder.state()
 }
 
 /// 麦克风列表（设置页下拉框；Tauri 下不再走 getUserMedia 枚举）。
 #[tauri::command]
-pub async fn list_audio_devices() -> Vec<String> {
+pub(crate) async fn list_audio_devices() -> Vec<String> {
     tauri::async_runtime::spawn_blocking(att_audio::list_input_devices).await.unwrap_or_default()
 }
 
 /// 全局快捷键状态：{ enabled, error }（error 为权限缺失等引导文案）。
 #[tauri::command]
-pub fn get_hotkey_status(state: State<'_, AppState>) -> Value {
+pub(crate) fn get_hotkey_status(state: State<'_, AppState>) -> Value {
     let error = state.hotkey_error.lock().ok().and_then(|e| e.clone());
     json!({ "enabled": error.is_none(), "error": error })
 }
@@ -277,37 +288,37 @@ pub fn get_hotkey_status(state: State<'_, AppState>) -> Value {
 // ---------------- 托盘 / 悬浮窗 ----------------
 
 #[tauri::command]
-pub fn set_tray_icon(app: AppHandle, icon_type: String) {
+pub(crate) fn set_tray_icon(app: AppHandle, icon_type: String) {
     crate::tray::set_icon(&app, &icon_type);
 }
 
 /// 前端记录列表变化时触发；菜单内容以 Rust 记录库为准。
 #[tauri::command]
-pub fn update_tray_menu(app: AppHandle) {
+pub(crate) fn update_tray_menu(app: AppHandle) {
     crate::tray::refresh(&app);
 }
 
 /// 悬浮窗结果态停留到点后自行收起：只收已结束的会话（与新一次录音并发时不误藏）。
 #[tauri::command]
-pub fn hide_floating_window(app: AppHandle) {
+pub(crate) fn hide_floating_window(app: AppHandle) {
     crate::floating::dismiss(&app);
 }
 
 /// 悬浮窗页面上报胶囊区域 [x, y, 宽, 高]（CSS px）；null = 胶囊不可见。用于透明部分点击穿透。
 #[tauri::command]
-pub fn floating_hit_rect(rect: Option<[f64; 4]>) {
+pub(crate) fn floating_hit_rect(rect: Option<[f64; 4]>) {
     crate::floating::set_hit_rect(rect);
 }
 
 /// 悬浮窗失败态点胶囊：唤起主窗口（看完整原因与失败记录）。
 #[tauri::command]
-pub fn open_main_window(app: AppHandle) {
+pub(crate) fn open_main_window(app: AppHandle) {
     crate::show_main_window(&app);
 }
 
 /// 悬浮窗「设置」按钮：唤起主窗口并跳到设置页（旧 main:open-settings 通道）。
 #[tauri::command]
-pub fn open_main_settings(app: AppHandle) {
+pub(crate) fn open_main_settings(app: AppHandle) {
     use tauri::Emitter;
     crate::show_main_window(&app);
     let _ = app.emit_to("main", "navigate:settings", ());
@@ -315,7 +326,7 @@ pub fn open_main_settings(app: AppHandle) {
 
 /// 悬浮窗页面挂载时拉取最近状态（页面加载晚于首次推送的情形）。
 #[tauri::command]
-pub fn get_floating_state() -> Value {
+pub(crate) fn get_floating_state() -> Value {
     crate::floating::last_state()
 }
 
@@ -323,7 +334,7 @@ pub fn get_floating_state() -> Value {
 
 /// 系统「选择文件」对话框（可多选，按顺序排队转写）：只列音视频容器；用户取消返回空列表。
 #[tauri::command]
-pub async fn open_media_files(app: AppHandle) -> Vec<String> {
+pub(crate) async fn open_media_files(app: AppHandle) -> Vec<String> {
     use tauri_plugin_dialog::DialogExt;
     let extensions: Vec<&str> = att_core::transcribe::media::VIDEO_EXTENSIONS
         .iter()
@@ -350,7 +361,10 @@ pub async fn open_media_files(app: AppHandle) -> Vec<String> {
 
 /// 设置 → 诊断「导出备份」：系统保存对话框，默认文件名带日期；取消返回 None。
 #[tauri::command]
-pub async fn choose_backup_export_path(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>, String> {
+pub(crate) async fn choose_backup_export_path(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let suggested = format!("att-backup-{}.zip", chrono::Local::now().format("%Y-%m-%d"));
     let picked = tauri::async_runtime::spawn_blocking(move || {
@@ -380,7 +394,10 @@ pub async fn choose_backup_export_path(app: AppHandle, state: State<'_, AppState
 
 /// 设置 → 诊断「从备份恢复」：系统文件选择对话框，只列 zip；取消返回 None。
 #[tauri::command]
-pub async fn choose_backup_import_path(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>, String> {
+pub(crate) async fn choose_backup_import_path(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let picked = tauri::async_runtime::spawn_blocking(move || {
         app.dialog().file().set_title("选择要恢复的 ATT 备份").add_filter("ATT 备份", &["zip"]).blocking_pick_file()
@@ -412,7 +429,7 @@ fn ensure_zip_extension(mut path: std::path::PathBuf) -> std::path::PathBuf {
 
 /// 恢复备份后旧进程仍持有旧密钥与目录索引：由用户确认后重启整个应用。
 #[tauri::command]
-pub fn restart_app(app: AppHandle) {
+pub(crate) fn restart_app(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         // 重启不经过录音收尾：录音中被「暂停外放」静音的系统输出先恢复
@@ -423,7 +440,7 @@ pub fn restart_app(app: AppHandle) {
 
 /// 设置页「更改…」：选择本地模型根目录；用户取消返回 None。
 #[tauri::command]
-pub async fn open_models_directory(app: AppHandle) -> Option<String> {
+pub(crate) async fn open_models_directory(app: AppHandle) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
     let picked = tauri::async_runtime::spawn_blocking(move || {
         app.dialog().file().set_title("选择本地模型目录").blocking_pick_folder()
@@ -438,7 +455,7 @@ pub async fn open_models_directory(app: AppHandle) -> Option<String> {
 ///
 /// 数据面只认 `X-ATT-Token`；这里只确认路径存在，并把规范化结果返回给界面。
 #[tauri::command]
-pub fn allow_transcribe_path(state: State<'_, AppState>, path: String) -> Result<String, String> {
+pub(crate) fn allow_transcribe_path(state: State<'_, AppState>, path: String) -> Result<String, String> {
     let resolved = state.core.allow_transcribe_file(std::path::Path::new(&path))?;
     Ok(resolved.to_string_lossy().into_owned())
 }
@@ -447,33 +464,33 @@ pub fn allow_transcribe_path(state: State<'_, AppState>, path: String) -> Result
 
 /// 系统权限状态（只查询，不触发授权弹窗）。
 #[tauri::command]
-pub fn get_permission_status() -> Value {
+pub(crate) fn get_permission_status() -> Value {
     crate::permissions::status()
 }
 
 /// 打开对应权限的系统设置面板。
 #[tauri::command]
-pub fn open_permission_settings(id: String) -> Result<(), String> {
+pub(crate) fn open_permission_settings(id: String) -> Result<(), String> {
     crate::permissions::open_settings(&id)
 }
 
 /// 更新后首次启动的权限引导：`{ show, previous_version, current_version, items }`。
 /// 不是更新后首次启动、引导已关掉、或权限都正常时 `show` 为 false。
 #[tauri::command]
-pub fn get_update_permission_notice(app: AppHandle, state: State<'_, AppState>) -> Value {
+pub(crate) fn get_update_permission_notice(app: AppHandle, state: State<'_, AppState>) -> Value {
     let previous = state.update_notice.lock().unwrap_or_else(|e| e.into_inner()).clone();
     crate::permissions::update_notice(previous.as_deref(), &app.package_info().version.to_string())
 }
 
 /// 关掉更新后的权限引导（本次启动内不再提示；下次启动版本号已一致，也不会再出现）。
 #[tauri::command]
-pub fn dismiss_update_permission_notice(state: State<'_, AppState>) {
+pub(crate) fn dismiss_update_permission_notice(state: State<'_, AppState>) {
     *state.update_notice.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// 诊断信息：版本、数据目录、日志文件、提示词目录、数据面端口。
 #[tauri::command]
-pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> Value {
+pub(crate) fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> Value {
     json!({
         "version": app.package_info().version.to_string(),
         "data_dir": state.core.data_dir.display().to_string(),
@@ -486,7 +503,7 @@ pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> Value {
 /// 在文件管理器中显示数据目录（kind = "data"）、日志文件（kind = "log"）、模型目录
 /// （kind = "models"）或已下载的更新安装包（kind = "update"）。
 #[tauri::command]
-pub fn reveal_app_path(state: State<'_, AppState>, kind: String) -> Result<(), String> {
+pub(crate) fn reveal_app_path(state: State<'_, AppState>, kind: String) -> Result<(), String> {
     let path = match kind.as_str() {
         "data" => state.core.data_dir.clone(),
         "log" => state.core.data_dir.join("logs").join("att-app.log"),
@@ -503,7 +520,7 @@ pub fn reveal_app_path(state: State<'_, AppState>, kind: String) -> Result<(), S
 // ---------------- 调试 ----------------
 
 #[tauri::command]
-pub fn debug_log(scope: String, message: String, details: Option<Value>) {
+pub(crate) fn debug_log(scope: String, message: String, details: Option<Value>) {
     tracing::info!("[{scope}] {message} {details:?}");
 }
 

@@ -21,7 +21,7 @@ const COPY_POLL: Duration = Duration::from_millis(20);
 /// 重试几次：Windows 上剪贴板同一时刻只允许一个线程打开，别的程序（含剪贴板监控、历史记录）
 /// 正在读写时 `set_text` 会失败；arboard 自己用 NULL owner 打开剪贴板，偶发 1418
 /// 「线程没有打开的剪贴板」——失败发生在 `EmptyClipboard` 之后，等于把剪贴板清空了，重试能把内容放回去。
-pub fn write_clipboard(text: &str) -> Result<(), String> {
+pub(crate) fn write_clipboard(text: &str) -> Result<(), String> {
     /// 与 `clipboard_image` 一致：覆盖别的程序短暂占用的窗口
     const ATTEMPTS: usize = 5;
     const INTERVAL: Duration = Duration::from_millis(40);
@@ -66,7 +66,7 @@ fn read_clipboard_text() -> Option<String> {
 /// 选中的正好是剪贴板里已有的文字时，内容比较会误判成「没复制」。
 /// 返回 `Ok(None)`：没有选中文本（剪贴板没换代，或换代后不是文字）。剪贴板里会留下这段选中文字，
 /// 和用户自己按复制一样；它不进剪贴板历史（标记为内部写入）。
-pub fn copy_selection() -> Result<Option<String>, String> {
+pub(crate) fn copy_selection() -> Result<Option<String>, String> {
     copy_selection_inner(false)
 }
 
@@ -76,7 +76,7 @@ pub fn copy_selection() -> Result<Option<String>, String> {
 /// Alt / Shift / Win 污染，因此平台层会短暂送修饰键抬起、复制后再恢复按下。所有模拟事件都带
 /// [`att_hotkey::SYNTHETIC_EVENT_TAG`]；抬起到恢复期间还会暂停键态校正，并跳过用户在这段时间
 /// 真实松开的修饰键，避免打断本应用的热键状态机或留下粘滞按键。
-pub fn copy_selection_while_shortcut_held() -> Result<Option<String>, String> {
+pub(crate) fn copy_selection_while_shortcut_held() -> Result<Option<String>, String> {
     copy_selection_inner(true)
 }
 
@@ -112,20 +112,20 @@ fn copy_selection_inner(while_shortcut_held: bool) -> Result<Option<String>, Str
     Ok(text)
 }
 
-/// 模拟系统粘贴快捷键（阻塞约 200ms，调用方放到阻塞线程）。
 /// 系统剪贴板的换代计数（macOS `NSPasteboard.changeCount` / Windows `GetClipboardSequenceNumber`）：
 /// 任何程序写一次剪贴板就变；读取很便宜，不碰剪贴板内容。其他平台返回 `None`。
-pub fn clipboard_change_count() -> Option<i64> {
+pub(crate) fn clipboard_change_count() -> Option<i64> {
     platform::clipboard_change_count()
 }
 
-pub fn paste_active() -> Result<(), String> {
+/// 模拟系统粘贴快捷键（阻塞约 200ms，调用方放到阻塞线程）。
+pub(crate) fn paste_active() -> Result<(), String> {
     std::thread::sleep(PASTE_DELAY);
     platform::paste()
 }
 
 /// 同 [`paste_active`]，但粘贴前确认目标窗口仍是前台。`None` 表示不限制。
-pub fn paste_active_to(target: Option<FocusTarget>) -> Result<(), String> {
+pub(crate) fn paste_active_to(target: Option<FocusTarget>) -> Result<(), String> {
     std::thread::sleep(PASTE_DELAY);
     if !focus_matches(target) {
         return Err("目标窗口已切换".into());
@@ -135,15 +135,15 @@ pub fn paste_active_to(target: Option<FocusTarget>) -> Result<(), String> {
 
 /// 输出目标窗口：录音开始时的前台窗口。之后焦点变了就不再把结果打进去。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FocusTarget(u64);
+pub(crate) struct FocusTarget(u64);
 
 /// 记录当前前台窗口；平台拿不到时返回 None（不限制输出）。
-pub fn foreground_target() -> Option<FocusTarget> {
+pub(crate) fn foreground_target() -> Option<FocusTarget> {
     platform::foreground_target()
 }
 
 /// 当前前台是否仍是 `target`。`None`（没记录目标）时不拦截，保持旧行为。
-pub fn focus_matches(target: Option<FocusTarget>) -> bool {
+pub(crate) fn focus_matches(target: Option<FocusTarget>) -> bool {
     target_matches(target, platform::foreground_target())
 }
 
@@ -155,26 +155,26 @@ fn target_matches(target: Option<FocusTarget>, current: Option<FocusTarget>) -> 
 }
 
 /// 模拟键盘输入前的检查（macOS：辅助功能授权）。
-pub fn ensure_typing_ready() -> Result<(), String> {
+pub(crate) fn ensure_typing_ready() -> Result<(), String> {
     platform::ensure_typing_ready()
 }
 
 /// 以 Unicode 键盘事件把文本打进焦点窗口（不含换行：换行由调用方走粘贴，见 typing.rs）。
-pub fn type_unicode(text: &str) -> Result<(), String> {
+pub(crate) fn type_unicode(text: &str) -> Result<(), String> {
     platform::type_unicode(text)
 }
 
 /// 模拟按 `count` 次退格。
-pub fn press_backspace(count: usize) -> Result<(), String> {
+pub(crate) fn press_backspace(count: usize) -> Result<(), String> {
     platform::press_backspace(count)
 }
 
 /// 查询 / 设置系统输出静音。不支持的平台返回 None。
-pub fn output_muted() -> Option<bool> {
+pub(crate) fn output_muted() -> Option<bool> {
     platform::output_muted()
 }
 
-pub fn set_output_muted(muted: bool) -> bool {
+pub(crate) fn set_output_muted(muted: bool) -> bool {
     platform::set_output_muted(muted)
 }
 

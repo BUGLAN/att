@@ -72,7 +72,7 @@ mod platform {
 }
 
 /// 当前平台的权限清单。
-pub fn status() -> Value {
+pub(crate) fn status() -> Value {
     #[cfg(target_os = "macos")]
     let items = vec![
         item("microphone", "麦克风", "录音必需；首次录音时系统会询问", platform::microphone()),
@@ -94,7 +94,7 @@ const RELAUNCH_SENSITIVE: [&str; 2] = ["input_monitoring", "accessibility"];
 /// 本次启动是不是「更新后首次启动」：是则返回更新前的版本（更早的版本没记过版本号时为空串）。
 ///
 /// `had_settings`：启动前数据目录里已有 settings.json——没记过版本号时据此区分「全新安装」与「从旧版本升级」。
-pub fn previous_version_if_updated(last_run: &str, current: &str, had_settings: bool) -> Option<String> {
+pub(crate) fn previous_version_if_updated(last_run: &str, current: &str, had_settings: bool) -> Option<String> {
     let last = last_run.trim();
     if last.is_empty() {
         return had_settings.then(String::new);
@@ -116,7 +116,7 @@ fn relaunch_items(items: &[Value]) -> Vec<Value> {
 
 /// 更新后首次启动的权限引导：`previous` 为 None 表示不是更新后首次启动（或引导已关掉）。
 /// `show` 为 true 时 `items` 是要重新授权的项；权限都正常就不提示。
-pub fn update_notice(previous: Option<&str>, current: &str) -> Value {
+pub(crate) fn update_notice(previous: Option<&str>, current: &str) -> Value {
     let items = match previous {
         Some(_) if cfg!(target_os = "macos") => {
             let status = status();
@@ -133,7 +133,7 @@ pub fn update_notice(previous: Option<&str>, current: &str) -> Value {
 }
 
 /// 打开对应的系统隐私设置面板。
-pub fn open_settings(id: &str) -> Result<(), String> {
+pub(crate) fn open_settings(id: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let url = platform::settings_url(id).ok_or_else(|| format!("未知权限：{id}"))?;
@@ -154,7 +154,7 @@ pub fn open_settings(id: &str) -> Result<(), String> {
 }
 
 /// 在文件管理器中显示文件 / 打开目录。
-pub fn reveal(path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn reveal(path: &std::path::Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("路径不存在：{}", path.display()));
     }

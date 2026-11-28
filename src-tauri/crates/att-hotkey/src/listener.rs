@@ -26,7 +26,6 @@ pub fn suppresses_keys() -> bool {
     SUPPRESSES_KEYS.load(Ordering::SeqCst)
 }
 
-/// 当前启用的全部绑定快照（录音、剪贴板悬浮框…），每个动作至多一条。
 /// 推动匹配器的事件来源（写进触发日志）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
@@ -61,6 +60,7 @@ fn mods_label(mods: ModSet) -> String {
     }
 }
 
+/// 当前启用的全部绑定快照（录音、剪贴板悬浮框…），每个动作至多一条。
 pub type BindingSource = Arc<dyn Fn() -> Arc<Vec<HotkeySpec>> + Send + Sync>;
 pub type EventSink = Arc<dyn Fn(HotkeyAction, KeyPhase) + Send + Sync>;
 
