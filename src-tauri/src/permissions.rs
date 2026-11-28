@@ -85,8 +85,6 @@ pub fn status() -> Value {
         item("input_monitoring", "全局快捷键", "Windows 无需额外授权", "not_required"),
         item("accessibility", "自动粘贴", "Windows 无需额外授权；以管理员身份运行的窗口无法接收粘贴", "not_required"),
     ];
-    #[cfg(not(any(target_os = "macos", windows)))]
-    let items = vec![item("microphone", "麦克风", "由系统音频服务管理", "unknown")];
     json!({ "platform": att_core::Platform::current().as_str(), "items": items })
 }
 
@@ -153,11 +151,6 @@ pub fn open_settings(id: &str) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
-    {
-        let _ = id;
-        Err("当前平台不支持跳转系统权限设置".into())
-    }
 }
 
 /// 在文件管理器中显示文件 / 打开目录。
@@ -174,10 +167,6 @@ pub fn reveal(path: &std::path::Path) -> Result<(), String> {
         {
             std::process::Command::new("explorer").arg(path).spawn()
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
-        {
-            std::process::Command::new("xdg-open").arg(path).spawn()
-        }
     } else {
         #[cfg(target_os = "macos")]
         {
@@ -186,10 +175,6 @@ pub fn reveal(path: &std::path::Path) -> Result<(), String> {
         #[cfg(windows)]
         {
             std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn()
-        }
-        #[cfg(not(any(target_os = "macos", windows)))]
-        {
-            std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn()
         }
     };
     result.map(|_| ()).map_err(|e| e.to_string())

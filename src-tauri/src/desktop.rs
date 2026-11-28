@@ -514,49 +514,6 @@ mod platform {
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
-mod platform {
-    pub fn foreground_target() -> Option<super::FocusTarget> {
-        None
-    }
-
-    pub fn paste() -> Result<(), String> {
-        Err("当前平台暂不支持自动粘贴".into())
-    }
-
-    pub fn copy() -> Result<(), String> {
-        Err("当前平台暂不支持读取选中文本".into())
-    }
-
-    pub fn copy_while_shortcut_held() -> Result<(), String> {
-        Err("当前平台暂不支持读取选中文本".into())
-    }
-
-    pub fn clipboard_change_count() -> Option<i64> {
-        None
-    }
-
-    pub fn ensure_typing_ready() -> Result<(), String> {
-        Err("当前平台暂不支持自动输入".into())
-    }
-
-    pub fn type_unicode(_text: &str) -> Result<(), String> {
-        Err("当前平台暂不支持自动输入".into())
-    }
-
-    pub fn press_backspace(_count: usize) -> Result<(), String> {
-        Err("当前平台暂不支持自动输入".into())
-    }
-
-    pub fn output_muted() -> Option<bool> {
-        None
-    }
-
-    pub fn set_output_muted(_muted: bool) -> bool {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{target_matches, FocusTarget};

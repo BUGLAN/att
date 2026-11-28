@@ -6,6 +6,9 @@
 //! 3. CoreState 初始化 + axum 数据面（127.0.0.1，优先固定端口，占用时依次 +1）
 //! 4. 单实例锁（二次启动唤起已有窗口）；插件之外再加一把进程级文件锁兜底（见 instance_lock.rs）
 
+#[cfg(not(any(target_os = "macos", windows)))]
+compile_error!("ATT 桌面应用只支持 macOS 与 Windows");
+
 // 注意：Tauri generate_handler 需要命令模块公开可见（__cmd__ 宏重导出）
 pub mod app_update;
 pub mod clipboard;

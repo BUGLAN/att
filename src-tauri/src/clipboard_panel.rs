@@ -313,14 +313,3 @@ mod platform {
         unsafe { SetForegroundWindow(hwnd as _) };
     }
 }
-
-#[cfg(not(any(target_os = "macos", windows)))]
-mod platform {
-    pub type AppRef = ();
-
-    pub fn frontmost_app() -> Option<AppRef> {
-        None
-    }
-
-    pub fn activate(_: AppRef) {}
-}

@@ -68,8 +68,3 @@ mod platform {
         }
     }
 }
-
-#[cfg(not(any(target_os = "macos", windows)))]
-mod platform {
-    pub fn round(_window: &tauri::Window, _radius: f64) {}
-}

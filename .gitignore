@@ -39,7 +39,6 @@ yarn.lock
 
 # 审计与设计工具产物（保留在本地，不纳入版本库）
 .tmp-shots/
-.stitch/
 docs/ui-audit/
 docs/prototype/
 
@@ -47,10 +46,6 @@ docs/prototype/
 tmp/
 .worktrees/
 .claude/
-.superpowers/
-.watchdog/
-.kilo/
-.omx/
 
 # Tauri (Rust) 构建产物
 src-tauri/target/
