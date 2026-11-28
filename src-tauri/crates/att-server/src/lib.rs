@@ -2510,7 +2510,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 备份导出导入_返回快照与重启提示_拒绝相对路径() {
+    async fn 备份导出导入_返回重启提示并清理导入现场_拒绝相对路径() {
         let state = test_state("backup").await;
         let zip = state.core.data_dir.with_extension("zip");
         let destination = zip.display().to_string();
@@ -2544,7 +2544,12 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["restart_required"], json!(true));
         assert_eq!(body["credentials_reset"], json!(0));
-        assert!(std::path::PathBuf::from(body["pre_import_backup"].as_str().unwrap()).is_dir());
+        assert_eq!(body["pre_import_backup"], json!(""));
+        assert!(!state.core.data_dir.join(".import-pending").exists());
+        assert!(std::fs::read_dir(&state.core.data_dir).unwrap().flatten().all(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            !name.starts_with(".pre-import-") && !name.starts_with(".backup-import-")
+        }));
         assert!(state.core.data_dir.join("records/rec-x.json").is_file());
         assert!(state.core.backup_maintenance_active(), "恢复成功后必须保持维护态直到重启");
         let (status, error) =

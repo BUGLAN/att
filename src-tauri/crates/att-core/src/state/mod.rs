@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex, RwLock};
 pub enum CoreError {
     #[error("数据目录初始化失败: {0}")]
     Io(#[from] std::io::Error),
+    #[error("备份或恢复期间数据暂时不可修改")]
+    BackupMaintenance,
 }
 
 /// 核心状态：settings 读写锁持有当前用户设置；其余组件无内部可变态。
@@ -113,6 +115,8 @@ impl CoreState {
     }
 
     fn init_with_models_env(data_dir: &Path, platform: Platform, models_env: Option<&str>) -> Result<Self, CoreError> {
+        // 必须先处理导入日志，再加载记录、密钥和设置，避免用半导入的一套数据初始化组件。
+        crate::backup::recover_interrupted_import(data_dir)?;
         let records = RecordRepo::new(data_dir);
         records.ensure_dirs()?;
         for dir in ["audio/temp", "audio/permanent", "clipboard/images", "sessions"] {
@@ -192,6 +196,9 @@ impl CoreState {
 
     /// 在锁内修改设置并落盘（原子写）。
     pub fn update_settings<T>(&self, mutate: impl FnOnce(&mut UserSettings) -> T) -> Result<T, CoreError> {
+        if self.backup_maintenance_active() {
+            return Err(CoreError::BackupMaintenance);
+        }
         let mut current = self.settings.lock().unwrap_or_else(|e| e.into_inner());
         // 先在副本上应用：落盘成功后才替换内存，保存失败不能留下只改了一半的设置。
         let mut next = current.clone();
@@ -206,6 +213,9 @@ impl CoreState {
 
     /// PUT /api/settings：在设置锁内应用白名单更新并持久化。
     pub fn apply_settings_update(&self, body: &serde_json::Value) -> Result<settings::SettingsUpdate, String> {
+        if self.backup_maintenance_active() {
+            return Err("备份或恢复期间数据暂时不可修改".into());
+        }
         let mut current = self.settings.lock().unwrap_or_else(|e| e.into_inner());
         // 校验返回 Err 时不能进入保存流程：先在副本上应用，成功落盘后才替换内存。
         let mut next = current.clone();
@@ -229,6 +239,9 @@ impl CoreState {
 
     /// 按设置的上限清理剪贴板历史（入库后、每小时、改了上限时）；删了条目就通知列表刷新。返回删掉的条数。
     pub fn prune_clipboard(&self) -> usize {
+        if self.backup_maintenance_active() {
+            return 0;
+        }
         let removed = self.clipboard.prune(self.clipboard_limits());
         if removed > 0 {
             tracing::info!("剪贴板历史按上限清理了 {removed} 条");
@@ -239,6 +252,9 @@ impl CoreState {
 
     /// 按设置的录音音频保留天数删过期音频（每天一次、改了设置时）；0 = 永久保留，什么都不做。返回删掉的文件数。
     pub fn prune_record_audio(&self) -> usize {
+        if self.backup_maintenance_active() {
+            return 0;
+        }
         let days = self.settings().audio_retention_days;
         match self.records.prune_audio(days, chrono::Utc::now()) {
             Ok(0) => 0,
@@ -572,5 +588,35 @@ mod tests {
         let restarted = CoreState::init_with_models_env(&data_dir, Platform::Windows, None).unwrap();
         assert_eq!(restarted.models_dir, tidy(configured));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 备份维护态_阻止设置写入和自动清理() {
+        let dir = std::env::temp_dir().join(format!("att-backup-maintenance-{}", uuid::Uuid::new_v4()));
+        let mut core = CoreState::init(&dir, Platform::Macos).unwrap();
+        let prompts = dir.join("prompts-test");
+        std::fs::create_dir_all(&prompts).unwrap();
+        std::fs::write(prompts.join("通用优化.txt"), "通用").unwrap();
+        std::fs::write(prompts.join("程序员模式.txt"), "程序员").unwrap();
+        core.prompts_dir = prompts;
+        core.update_settings(|settings| settings.asr_provider = "chatgpt_asr".into()).unwrap();
+        let before = std::fs::read(&core.settings_path).unwrap();
+
+        assert!(core.begin_backup_maintenance());
+        assert!(matches!(
+            core.update_settings(|settings| settings.asr_provider = "qwen_asr".into()),
+            Err(CoreError::BackupMaintenance)
+        ));
+        assert!(core.apply_settings_update(&json!({"asr_provider": "qwen_asr"})).is_err());
+        assert!(core.select_default_preset("preset-程序员模式").is_err());
+        assert_eq!(std::fs::read(&core.settings_path).unwrap(), before, "维护态不能覆盖恢复后的设置");
+        assert_eq!(core.settings().asr_provider, "chatgpt_asr");
+        assert_eq!(core.prune_clipboard(), 0);
+        assert_eq!(core.prune_record_audio(), 0);
+
+        core.end_backup_maintenance();
+        core.update_settings(|settings| settings.asr_provider = "qwen_asr".into()).unwrap();
+        assert_eq!(core.settings().asr_provider, "qwen_asr");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

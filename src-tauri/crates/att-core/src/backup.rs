@@ -3,7 +3,8 @@
 //! - 只处理白名单里的数据：设置、记录、录音、剪贴板、自定义提示词、转写缓存、LLM 配置；
 //!   日志与临时文件永不进入备份。
 //! - `.encryption_key` 默认不导出；包含密钥时恢复后已保存的凭据可直接使用。
-//! - 导入前把当前数据目录完整复制到 `data/.pre-import-<时间>/`；解压或覆盖失败时回滚。
+//! - 导入前只把受管数据复制到 `data/.pre-import-<时间>/`；解压或覆盖失败时回滚。
+//! - 覆盖前写 `.import-pending` 日志；启动时据此恢复被中断的导入，成功后清理快照和 staging。
 //! - 不含密钥的备份会检查密文能否用本机当前密钥解开；解不开的凭据按「未设置」处理并
 //!   写回文件，重启后设置页显示未设置、LLM 档案提示重新填写，而不是启动报错。
 //!
@@ -25,6 +26,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 const BACKUP_FORMAT: &str = "att-backup";
 const BACKUP_FORMAT_VERSION: u32 = 1;
 const MANIFEST_NAME: &str = "manifest.json";
+const IMPORT_PENDING_NAME: &str = ".import-pending";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_KEY_BYTES: u64 = 4096;
@@ -150,6 +152,7 @@ pub struct ExportResult {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportResult {
+    /// 导入成功后快照会立即删除，因此成功结果里为空串。
     pub pre_import_backup: String,
     /// 因备份不含密钥、本机又解不开而按「未设置」处理的凭据数量。
     pub credentials_reset: u64,
@@ -464,6 +467,11 @@ fn import_backup_inner(
         }
     };
 
+    if let Err(error) = sanitize_staged_models_dir(&stage) {
+        let _ = remove_path(&stage);
+        return Err(error);
+    }
+
     let snapshot = match create_snapshot(data_dir) {
         Ok(path) => path,
         Err(error) => {
@@ -471,6 +479,11 @@ fn import_backup_inner(
             return Err(error.into());
         }
     };
+    if let Err(error) = write_import_journal(data_dir, &snapshot, &stage) {
+        let _ = remove_path(&snapshot);
+        let _ = remove_path(&stage);
+        return Err(error.into());
+    }
 
     // 录音不在清单里时必须清掉本机旧录音，否则恢复后的记录可能播放到旧文件。
     let restore_audio = manifest.sections.contains_key("audio");
@@ -483,6 +496,7 @@ fn import_backup_inner(
         let _ = remove_path(&stage);
         match rollback {
             Ok(()) => {
+                let _ = remove_path(&data_dir.join(IMPORT_PENDING_NAME));
                 let _ = remove_path(&snapshot);
                 Err(BackupError::RolledBack { cause: error.to_string() })
             }
@@ -493,14 +507,12 @@ fn import_backup_inner(
             }),
         }
     } else {
+        // 先删标记再删快照：若恰在清理途中退出，下次启动只会清理孤立目录，不会回滚已成功导入的数据。
+        let _ = remove_path(&data_dir.join(IMPORT_PENDING_NAME));
         let _ = remove_path(&stage);
-        remove_old_snapshots(data_dir, &snapshot);
-        Ok(ImportResult {
-            pre_import_backup: snapshot.display().to_string(),
-            credentials_reset,
-            manifest,
-            restart_required: true,
-        })
+        let _ = remove_path(&snapshot);
+        cleanup_orphan_import_artifacts(data_dir);
+        Ok(ImportResult { pre_import_backup: String::new(), credentials_reset, manifest, restart_required: true })
     }
 }
 
@@ -736,6 +748,28 @@ fn sanitize_credentials_without_key(stage: &Path, crypto: Option<&Crypto>) -> Re
     Ok(reset)
 }
 
+/// 跨机恢复时不要带回源机器上不存在于本机的模型目录。
+fn sanitize_staged_models_dir(stage: &Path) -> Result<(), BackupError> {
+    let path = stage.join("settings.json");
+    let Some(mut value) = read_backup_json(&path, "settings.json")? else {
+        return Ok(());
+    };
+    let Some(object) = value.as_object_mut() else {
+        return Err(BackupError::Invalid("备份里的 settings.json 顶层必须是对象".into()));
+    };
+    let keep = object
+        .get("models_dir")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|dir| !dir.is_empty())
+        .is_some_and(|dir| Path::new(dir).is_dir());
+    if object.contains_key("models_dir") && !keep {
+        object.remove("models_dir");
+        json_store::write_json_atomic(&path, &value)?;
+    }
+    Ok(())
+}
+
 fn decryptable(crypto: Option<&Crypto>, token: &str) -> bool {
     !token.trim().is_empty() && crypto.map(|crypto| crypto.decrypt(token).is_some()).unwrap_or(false)
 }
@@ -829,14 +863,13 @@ fn create_snapshot(data_dir: &Path) -> io::Result<PathBuf> {
     }
     fs::create_dir(&snapshot)?;
     let outcome = (|| {
-        let mut children = fs::read_dir(data_dir)?.flatten().collect::<Vec<_>>();
-        children.sort_by_key(|entry| entry.file_name());
-        for child in children {
-            let name = child.file_name().to_string_lossy().into_owned();
-            if is_internal_snapshot_name(&name) {
-                continue;
+        for root in MANAGED_ROOTS {
+            let source = data_dir.join(root);
+            match fs::symlink_metadata(&source) {
+                Ok(_) => copy_path(&source, &snapshot.join(root))?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
-            copy_path(&child.path(), &snapshot.join(name.as_str()))?;
         }
         Ok(())
     })();
@@ -847,8 +880,63 @@ fn create_snapshot(data_dir: &Path) -> io::Result<PathBuf> {
     Ok(snapshot)
 }
 
-fn is_internal_snapshot_name(name: &str) -> bool {
-    name.starts_with(".pre-import-") || name.starts_with(".backup-import-")
+#[derive(Serialize, Deserialize)]
+struct ImportJournal {
+    snapshot: String,
+    staging: String,
+}
+
+fn import_artifact_child(data_dir: &Path, name: &str, prefix: &str) -> Option<PathBuf> {
+    if !name.starts_with(prefix) || name.contains(['/', '\\']) {
+        return None;
+    }
+    Some(data_dir.join(name))
+}
+
+fn write_import_journal(data_dir: &Path, snapshot: &Path, stage: &Path) -> io::Result<()> {
+    let snapshot =
+        snapshot.file_name().and_then(|name| name.to_str()).ok_or_else(|| io::Error::other("导入快照路径无效"))?;
+    let staging =
+        stage.file_name().and_then(|name| name.to_str()).ok_or_else(|| io::Error::other("导入 staging 路径无效"))?;
+    json_store::write_json_atomic(
+        &data_dir.join(IMPORT_PENDING_NAME),
+        &ImportJournal { snapshot: snapshot.to_string(), staging: staging.to_string() },
+    )
+}
+
+fn cleanup_orphan_import_artifacts(data_dir: &Path) {
+    let Ok(entries) = fs::read_dir(data_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(".pre-import-") || name.starts_with(".backup-import-") {
+            let _ = remove_path(&entry.path());
+        }
+    }
+}
+
+/// 启动时恢复被强退 / 崩溃中断的导入，并清理没有日志引用的导入临时目录。
+pub(crate) fn recover_interrupted_import(data_dir: &Path) -> io::Result<()> {
+    let marker = data_dir.join(IMPORT_PENDING_NAME);
+    if marker.is_file() {
+        let journal: ImportJournal = serde_json::from_slice(&fs::read(&marker)?)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("导入恢复日志损坏：{error}")))?;
+        let snapshot = import_artifact_child(data_dir, &journal.snapshot, ".pre-import-")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "导入恢复日志里的快照路径无效"))?;
+        let staging = import_artifact_child(data_dir, &journal.staging, ".backup-import-")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "导入恢复日志里的 staging 路径无效"))?;
+        if !snapshot.is_dir() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "导入恢复快照不存在"));
+        }
+        let managed = MANAGED_ROOTS.iter().map(|root| (*root).to_string()).collect::<Vec<_>>();
+        rollback_import(data_dir, &snapshot, &managed)?;
+        remove_path(&marker)?;
+        remove_path(&staging)?;
+        remove_path(&snapshot)?;
+    }
+    cleanup_orphan_import_artifacts(data_dir);
+    Ok(())
 }
 
 /// 导入前先确认密钥文件本身合法，避免恢复后应用下次启动才因密钥损坏失败。
@@ -981,19 +1069,6 @@ fn rollback_import(data_dir: &Path, snapshot: &Path, touched: &[String]) -> io::
     Ok(())
 }
 
-fn remove_old_snapshots(data_dir: &Path, keep: &Path) {
-    let Ok(entries) = fs::read_dir(data_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let path = entry.path();
-        if name.starts_with(".pre-import-") && path != keep {
-            let _ = remove_path(&path);
-        }
-    }
-}
-
 fn copy_path(source: &Path, destination: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(source)?;
     if metadata.file_type().is_symlink() {
@@ -1093,6 +1168,17 @@ mod tests {
         write(&dir.join("logs/att-app.log"), b"private log");
         write(&dir.join("settings.json.tmp"), b"temp json");
         Crypto::load_or_create(dir).unwrap();
+    }
+
+    fn import_artifacts(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                name == IMPORT_PENDING_NAME || name.starts_with(".pre-import-") || name.starts_with(".backup-import-")
+            })
+            .collect()
     }
 
     fn read_zip(path: &Path) -> (Value, Vec<String>) {
@@ -1204,7 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn 导入恢复_覆盖数据_留存最近一份导入前快照() {
+    fn 导入恢复_覆盖数据_成功后不残留快照或staging() {
         let source = temp_dir("restore-source");
         seed_data(&source);
         let zip = source.join("att-backup.zip");
@@ -1223,19 +1309,12 @@ mod tests {
         assert_eq!(fs::read(target.join("records/r1.json")).unwrap(), r#"{"id":"r1","raw_text":"你好"}"#.as_bytes());
         assert_eq!(fs::read(target.join("audio/records/r1.flac")).unwrap(), b"flac-bytes");
         assert_eq!(fs::read_to_string(original_key.key_path()).unwrap(), original_key_text);
-        let snapshot = PathBuf::from(&result.pre_import_backup);
-        assert_eq!(snapshot.parent(), Some(target.as_path()));
-        assert!(snapshot.file_name().unwrap().to_string_lossy().starts_with(".pre-import-"));
-        assert_eq!(fs::read(snapshot.join("records/old.json")).unwrap(), b"old");
+        assert!(result.pre_import_backup.is_empty());
+        assert!(import_artifacts(&target).is_empty(), "成功后不能留下导入现场：{:?}", import_artifacts(&target));
 
-        // 第二次导入仍只保留一份导入前快照
+        // 连续导入也不应积累旧快照。
         import_backup(&target, &zip, Some(&original_key)).unwrap();
-        let snapshots = fs::read_dir(&target)
-            .unwrap()
-            .flatten()
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".pre-import-"))
-            .count();
-        assert_eq!(snapshots, 1);
+        assert!(import_artifacts(&target).is_empty());
         let _ = fs::remove_dir_all(&source);
         let _ = fs::remove_dir_all(&target);
     }
@@ -1398,7 +1477,7 @@ mod tests {
     }
 
     #[test]
-    fn 不含录音导入_清理旧录音并保留在导入前快照() {
+    fn 不含录音导入_清理旧录音且不残留快照() {
         let source = temp_dir("no-audio-source");
         seed_data(&source);
         let zip = source.join("no-audio.zip");
@@ -1410,12 +1489,10 @@ mod tests {
         write(&target.join("audio/temp/old.wav"), b"old-temp");
         let target_crypto = Crypto::load_or_create(&target).unwrap();
 
-        let result = import_backup(&target, &zip, Some(&target_crypto)).unwrap();
+        import_backup(&target, &zip, Some(&target_crypto)).unwrap();
         assert!(!target.join("audio").exists(), "备份不含录音时不能保留旧录音");
         assert!(target.join("records/r1.json").is_file());
-        let snapshot = PathBuf::from(&result.pre_import_backup);
-        assert_eq!(fs::read(snapshot.join("audio/records/old.flac")).unwrap(), b"old-audio");
-        assert_eq!(fs::read(snapshot.join("audio/temp/old.wav")).unwrap(), b"old-temp");
+        assert!(import_artifacts(&target).is_empty());
         let _ = fs::remove_dir_all(&source);
         let _ = fs::remove_dir_all(&target);
     }
@@ -1569,6 +1646,95 @@ mod tests {
         assert_eq!(fs::read(target.join("records/keep.json")).unwrap(), b"keep");
         assert_eq!(fs::read(target.join("audio/records/keep.flac")).unwrap(), b"keep-audio");
         assert_eq!(fs::read(target.join("clipboard/items/keep.json")).unwrap(), b"keep-clipboard");
+        assert!(import_artifacts(&target).is_empty());
+        let _ = fs::remove_dir_all(&source);
+        let _ = fs::remove_dir_all(&target);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 快照只覆盖受管数据_未受管模型与符号链接不影响导入() {
+        use std::os::unix::fs::symlink;
+
+        let source = temp_dir("managed-snapshot-source");
+        seed_data(&source);
+        write(&source.join("models/big.bin"), b"large-model");
+        write(&source.join("logs/private.log"), b"log");
+        let outside = temp_dir("managed-snapshot-outside");
+        symlink(&outside, source.join("models/outside-link")).unwrap();
+
+        let snapshot = create_snapshot(&source).unwrap();
+        assert!(!snapshot.join("models").exists(), "模型目录不进入导入前快照");
+        assert!(!snapshot.join("logs").exists(), "日志目录不进入导入前快照");
+        assert!(!snapshot.join("settings.json.tmp").exists(), "临时文件不进入导入前快照");
+        assert!(snapshot.join("records/r1.json").is_file());
+        assert!(snapshot.join("audio/records/r1.flac").is_file());
+        remove_path(&snapshot).unwrap();
+
+        let zip = source.join("scope.zip");
+        export_backup(&source, "2.9.0", &zip, ExportOptions { include_key: false, include_audio: true }).unwrap();
+        let target = temp_dir("managed-snapshot-target");
+        write(&target.join("models/big.bin"), b"target-model");
+        symlink(&outside, target.join("models/outside-link")).unwrap();
+        let crypto = Crypto::load_or_create(&target).unwrap();
+        import_backup(&target, &zip, Some(&crypto)).unwrap();
+        assert_eq!(fs::read(target.join("models/big.bin")).unwrap(), b"target-model");
+        assert!(target.join("models/outside-link").is_symlink());
+        assert!(import_artifacts(&target).is_empty());
+        let _ = fs::remove_dir_all(&source);
+        let _ = fs::remove_dir_all(&outside);
+        let _ = fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn 导入中断后_初始化从日志回滚并清理临时目录() {
+        let source = temp_dir("interrupted-source");
+        seed_data(&source);
+        let zip = source.join("interrupted.zip");
+        export_backup(&source, "2.9.0", &zip, ExportOptions { include_key: false, include_audio: true }).unwrap();
+
+        let target = temp_dir("interrupted-target");
+        write(&target.join("settings.json"), br#"{"asr_provider":"qwen_asr"}"#);
+        write(&target.join("records/keep.json"), b"keep");
+        write(&target.join("audio/records/keep.flac"), b"keep-audio");
+        let _crypto = Crypto::load_or_create(&target).unwrap();
+
+        let mut archive = ZipArchive::new(File::open(&zip).unwrap()).unwrap();
+        let manifest = read_manifest(&mut archive).unwrap();
+        let stage = target.join(format!(".backup-import-{}", uuid::Uuid::new_v4().simple()));
+        fs::create_dir(&stage).unwrap();
+        extract_archive(&mut archive, &stage, &manifest).unwrap();
+        let snapshot = create_snapshot(&target).unwrap();
+        write_import_journal(&target, &snapshot, &stage).unwrap();
+        let restore_audio = manifest.sections.contains_key("audio");
+        let error = apply_import(&target, &stage, &manifest, restore_audio, Some(1)).unwrap_err();
+        assert!(error.to_string().contains("测试注入"));
+        assert!(target.join(IMPORT_PENDING_NAME).is_file());
+        assert!(snapshot.is_dir() && stage.is_dir());
+
+        let core = crate::state::CoreState::init(&target, crate::Platform::Macos).unwrap();
+        assert_eq!(core.settings().asr_provider, "qwen_asr");
+        assert_eq!(fs::read(target.join("records/keep.json")).unwrap(), b"keep");
+        assert_eq!(fs::read(target.join("audio/records/keep.flac")).unwrap(), b"keep-audio");
+        assert!(import_artifacts(&target).is_empty(), "恢复后应清掉日志、快照与 staging");
+        let _ = fs::remove_dir_all(&source);
+        let _ = fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn 跨机导入_移除本机不存在的模型目录() {
+        let source = temp_dir("models-dir-source");
+        write(&source.join("settings.json"), br#"{"asr_provider":"qwen_asr","models_dir":"/source-machine/models"}"#);
+        Crypto::load_or_create(&source).unwrap();
+        let zip = source.join("models-dir.zip");
+        export_backup(&source, "2.9.0", &zip, ExportOptions { include_key: false, include_audio: false }).unwrap();
+
+        let target = temp_dir("models-dir-target");
+        let crypto = Crypto::load_or_create(&target).unwrap();
+        import_backup(&target, &zip, Some(&crypto)).unwrap();
+        let settings: Value = serde_json::from_str(&fs::read_to_string(target.join("settings.json")).unwrap()).unwrap();
+        assert!(settings.get("models_dir").is_none(), "源机器模型目录不能跨机带回");
+        assert_eq!(settings["asr_provider"], "qwen_asr");
         let _ = fs::remove_dir_all(&source);
         let _ = fs::remove_dir_all(&target);
     }
