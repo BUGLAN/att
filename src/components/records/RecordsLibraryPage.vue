@@ -149,6 +149,7 @@ import { DATE_RANGE_OPTIONS, STATUS_FILTER_OPTIONS, dateRangeFor, groupRecordsBy
 import { buildBatchExportFilename, downloadFromUrl } from '@/utils/exportDownload.mjs'
 import { RETRANSCRIBE_CONFIRM, needsRetranscribeConfirm } from './retranscribeModel.mjs'
 import { createLatestRequestGuard, runLatest } from '@/utils/latestRequest.mjs'
+import { retainVisibleRecordIds } from '@/stores/recordsBatch.mjs'
 
 const appStore = useAppStore()
 const recordsStore = useRecordsStore()
@@ -253,6 +254,7 @@ async function loadRecordsPage() {
     },
     onResult: (result) => {
       records.value = Array.isArray(result?.items) ? result.items.map(mergeRecordWithStore) : []
+      selectedIds.value = retainVisibleRecordIds(selectedIds.value, records.value)
       total.value = result?.total || 0
       totalPages.value = result?.total_pages || 1
     },
@@ -368,16 +370,17 @@ async function confirmDelete() {
   if (!ids.length) {
     return
   }
-  try {
-    await recordsStore.deleteRecords(ids)
-    appStore.showToast(ids.length > 1 ? `已删除 ${ids.length} 条记录` : '记录已删除', { tone: 'success' })
-    selectedIds.value = new Set()
-    if (selectMode.value && ids.length > 1) {
-      selectMode.value = false
-    }
-  } catch (error) {
-    console.error('Failed to delete records:', error)
-    appStore.showToast('删除记录失败', { tone: 'error' })
+  const { deletedIds, failedIds } = await recordsStore.deleteRecords(ids)
+  if (deletedIds.length) {
+    appStore.showToast(deletedIds.length > 1 ? `已删除 ${deletedIds.length} 条记录` : '记录已删除', { tone: 'success' })
+  }
+  if (failedIds.length) {
+    appStore.showToast(`${failedIds.length} 条记录删除失败`, { tone: 'error' })
+  }
+  const deleted = new Set(deletedIds)
+  selectedIds.value = new Set([...selectedIds.value].filter((id) => !deleted.has(id)))
+  if (!failedIds.length && selectMode.value && ids.length > 1) {
+    selectMode.value = false
   }
   await loadRecordsPage()
 }

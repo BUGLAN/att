@@ -155,7 +155,18 @@ onMounted(async () => {
   // macOS 更新后首次启动：输入监控 / 辅助功能没生效时弹一次重新授权的引导
   void checkUpdatePermissions()
 
-  await settingsStore.loadSettings()
+  // 设置读取失败也必须启动健康轮询，否则侧栏与托盘会一直停在未连接状态。
+  connect()
+
+  try {
+    await settingsStore.loadSettings()
+  } catch (error) {
+    console.error('[App] Failed to load settings on startup:', error)
+    appStore.showToast(`读取设置失败：${error?.message || error}。可在设置页点“重试读取”。`, {
+      tone: 'error',
+      duration: 10000
+    })
+  }
 
   try {
     await syncDesktopSettings({
@@ -164,8 +175,6 @@ onMounted(async () => {
   } catch (error) {
     console.error('[Desktop] Failed to sync settings on startup:', error)
   }
-
-  connect()
 })
 
 onUnmounted(() => {

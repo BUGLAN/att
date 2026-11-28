@@ -90,6 +90,7 @@ import BaseButton from '@/components/common/BaseButton.vue'
 import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 import { useElectron } from '@/composables/useElectron'
+import { createLatestRequestGuard, runLatest } from '@/utils/latestRequest.mjs'
 import { SETTINGS_CTX } from '../settingsContext.js'
 import {
   canFallbackToInstaller,
@@ -115,6 +116,8 @@ const isChecking = ref(false)
 const isStartingDownload = ref(false)
 const isInstalling = ref(false)
 let pollTimer = null
+let disposed = false
+const statusRequest = createLatestRequestGuard()
 
 const currentVersion = computed(() => appInfo.value?.version || status.value?.current_version || '')
 const versionText = computed(() => {
@@ -152,21 +155,22 @@ function applyStatus(next) {
 }
 
 function schedulePoll() {
-  if (pollTimer) {
+  if (disposed || pollTimer) {
     return
   }
   pollTimer = setTimeout(async () => {
     pollTimer = null
-    await refreshStatus()
+    if (!disposed) await refreshStatus()
   }, 1000)
 }
 
 async function refreshStatus() {
-  try {
-    applyStatus(await api.getUpdateStatus())
-  } catch (error) {
-    loadError.value = String(error?.message || error)
-  }
+  await runLatest(statusRequest, () => api.getUpdateStatus(), {
+    onResult: applyStatus,
+    onError: (error) => {
+      loadError.value = String(error?.message || error)
+    }
+  })
 }
 
 async function checkNow() {
@@ -226,6 +230,7 @@ watch(() => form.value.auto_download_updates, (enabled, previous) => {
 })
 
 onMounted(async () => {
+  disposed = false
   refreshStatus()
   try {
     appInfo.value = await getAppInfo()
@@ -235,6 +240,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  disposed = true
   if (pollTimer) {
     clearTimeout(pollTimer)
     pollTimer = null

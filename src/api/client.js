@@ -236,6 +236,47 @@ async function request(method, endpoint, options = {}) {
   return response.json()
 }
 
+/** GET 二进制资源：与普通请求共用端口、令牌、超时和错误文案。 */
+async function requestBlob(endpoint, options = {}) {
+  const baseUrl = await getBaseUrl()
+  const token = await getBackendToken()
+  const url = appendToken(`${baseUrl}${endpoint}`, token)
+  const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeout)
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: options.headers || {},
+      signal: controller.signal
+    })
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status}: ${response.statusText}`)
+      error.status = response.status
+      throw error
+    }
+    return await response.blob()
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`请求超时（超过 ${Math.round(timeout / 1000)} 秒未响应）`)
+    }
+    if (error?.status) throw error
+    // 二进制地址会把访问令牌拼在查询串里，日志只留不含 token 的接口路径。
+    console.error(`[API] 请求失败 GET ${endpoint}:`, error)
+    backendPort = null
+    throw new Error(`无法连接后端服务：${error?.message || error}`)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+export async function fetchClipboardImageBlob(id, version = '', kind = 'thumbnail') {
+  const resource = kind === 'image' ? 'image' : 'thumbnail'
+  const suffix = version ? `?v=${encodeURIComponent(version)}` : ''
+  return requestBlob(`/clipboard/items/${encodeURIComponent(id)}/${resource}${suffix}`)
+}
+
 /**
  * 读取 NDJSON 流式响应：每行一个 JSON 事件，边读边回调。
  * 返回 { eventCount }，供调用方判断是否已经收到过增量（决定能否安全降级）。
@@ -439,6 +480,7 @@ export const api = {
     const suffix = version ? `?v=${encodeURIComponent(version)}` : ''
     return appendToken(`${baseUrl}/clipboard/items/${id}/thumbnail${suffix}`, token)
   },
+  fetchClipboardImageBlob: (id, version = '', kind = 'thumbnail') => fetchClipboardImageBlob(id, version, kind),
   updateClipboardItem: (id, data) => request('PUT', `/clipboard/items/${id}`, { body: data }),
   deleteClipboardItem: (id) => request('DELETE', `/clipboard/items/${id}`),
   // 批量删除 / 清空历史（置顶与收藏保留）：连同不再被引用的图片一起删，返回 { deleted, kept? }

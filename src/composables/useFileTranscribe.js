@@ -33,6 +33,7 @@ import {
 import { buildTranscribeExport } from '@/composables/transcribe/subtitleExport.mjs'
 import { normalizeLanguageForProvider } from '@/components/settings/asrLanguages.mjs'
 import { downloadText } from '@/utils/exportDownload.mjs'
+import { createLatestRequestGuard, runLatest } from '@/utils/latestRequest.mjs'
 // 取消之后轮询改成短间隔：尽快看到任务真正退出、开始下一个
 const CANCEL_POLL_DELAY_MS = 400
 const UNSUPPORTED_MESSAGE = '暂不支持该文件类型：请选择音视频文件（mp4 / flv / webm / wav / mp3 / m4a 等）'
@@ -62,6 +63,7 @@ export function useFileTranscribe() {
   const error = ref('')
   const result = shallowRef(null)
   const history = shallowRef([])
+  const historyRequest = createLatestRequestGuard()
 
   /** 懒加载 LLM v2 模型条目（校对面板第一次展开时拉一次）。 */
   async function loadLlmModels() {
@@ -185,12 +187,16 @@ export function useFileTranscribe() {
 
   /** 从记录集读最近的文件转写（source=file）；读不到时保留现有列表。 */
   async function loadHistory() {
-    try {
-      const page = await api.searchRecords({ source: 'file', page: 1, page_size: TRANSCRIBE_HISTORY_LIMIT })
-      history.value = historyFromRecords(page?.items).map(withSessionResult)
-    } catch (err) {
-      // 数据面暂时不可用：历史留空 / 保持原样，不打扰转写
-    }
+    await runLatest(
+      historyRequest,
+      () => api.searchRecords({ source: 'file', page: 1, page_size: TRANSCRIBE_HISTORY_LIMIT }),
+      {
+        onResult: (page) => {
+          history.value = historyFromRecords(page?.items).map(withSessionResult)
+        }
+        // 数据面暂时不可用：历史保持原样，不打扰正在进行或刚完成的转写
+      }
+    )
   }
 
   function pushHistory(entry) {

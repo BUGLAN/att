@@ -14,6 +14,10 @@ import {
   localDateString,
   recordStatusMeta
 } from '../src/components/records/recordListModel.mjs'
+import {
+  retainVisibleRecordIds,
+  summarizeRecordDeleteResults
+} from '../src/stores/recordsBatch.mjs'
 
 const now = new Date(2026, 9, 31, 9, 40)
 
@@ -79,5 +83,21 @@ test('日期筛选：预设换算成本地日期范围，自定义可只填一�
   assert.deepEqual(dateRangeFor('custom', at, { from: 'bad' }), { date_from: '', date_to: '' })
   assert.deepEqual(DATE_RANGE_OPTIONS.map((option) => option.value), ['all', 'today', '7d', '30d', 'custom'])
   assert.deepEqual(STATUS_FILTER_OPTIONS.map((option) => option.value), ['', 'transcribed', 'optimized', 'failed'])
+})
+
+test('记录集选择：筛选或翻页后只保留当前页可见项', () => {
+  const selected = new Set(['a', 'b', 'old'])
+  const next = retainVisibleRecordIds(selected, [{ id: 'a' }, { id: 'c' }])
+  assert.deepEqual([...next], ['a'])
+  assert.deepEqual([...selected], ['a', 'b', 'old'], '返回新集合，不修改原选择')
+})
+
+test('批量删除：按 allSettled 结果区分成功与失败项', () => {
+  const summary = summarizeRecordDeleteResults(['a', 'b', 'c'], [
+    { status: 'fulfilled' },
+    { status: 'rejected', reason: new Error('删除失败') },
+    { status: 'fulfilled' }
+  ])
+  assert.deepEqual(summary, { deletedIds: ['a', 'c'], failedIds: ['b'] })
 })
 

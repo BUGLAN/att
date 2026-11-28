@@ -137,6 +137,7 @@ import {
   shouldLoadMore,
   splitLink
 } from './clipboardPanelModel.mjs'
+import { clipboardPreviewKey, createPreviewRequestCache } from './previewCache.mjs'
 
 const { clipboard, clipboardPanel, onClipboardChanged, platform } = useElectron()
 const modKey = platform === 'darwin' ? '⌘' : 'Ctrl+'
@@ -151,6 +152,9 @@ const loading = ref(false)
 const errorText = ref('')
 const context = ref({ enter_action: 'paste', hotkey_display: '' })
 const previews = reactive({})
+const previewKeys = new Map()
+const previewRequests = createPreviewRequestCache()
+let previewsDisposed = false
 const searchInput = ref(null)
 const stripEl = ref(null)
 let committing = false
@@ -214,6 +218,7 @@ async function loadFirstPage() {
   const page = await fetchPage(0, seq)
   if (!page) return
   items.value = page.items
+  revokeUnusedPreviews()
   total.value = page.total
   index.value = 0
   await nextTick()
@@ -228,6 +233,7 @@ async function loadMore() {
   const page = await fetchPage(items.value.length, seq)
   if (!page) return
   items.value = appendPage(items.value, page.items)
+  revokeUnusedPreviews()
   total.value = page.total
   await nextTick()
   updateEdges()
@@ -306,14 +312,49 @@ async function resetForShow() {
 // 图片卡片直接显示缩略图：按条目缓存成 blob 地址，只取前面一屏多的，往后翻到再取。
 // 取的是后端缩好的缩略图（长边 ≤ 560px）：原图常是 2K~4K 截图，每次唤起整张解码十几张会卡
 async function ensurePreview(item) {
-  if (!item || !isClipboardImageItem(item) || previews[item.id]) return
+  if (!item || !isClipboardImageItem(item)) return
+  const key = clipboardPreviewKey(item)
+  if (previewKeys.get(item.id) === key && previews[item.id]) return
   try {
-    const url = await api.getClipboardItemThumbnailUrl(item.id, item.updated_at || item.created_at || '')
-    const response = await fetch(url)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    previews[item.id] = URL.createObjectURL(await response.blob())
+    const version = item.updated_at || item.created_at || ''
+    const url = await previewRequests.run(item, async () => {
+      const blob = await api.fetchClipboardImageBlob(item.id, version, 'thumbnail')
+      const objectUrl = URL.createObjectURL(blob)
+      if (!isPreviewCurrent(item, key)) {
+        URL.revokeObjectURL(objectUrl)
+        return ''
+      }
+      return objectUrl
+    })
+    if (!url) return
+    if (!isPreviewCurrent(item, key)) {
+      URL.revokeObjectURL(url)
+      return
+    }
+    const previous = previews[item.id]
+    previews[item.id] = url
+    previewKeys.set(item.id, key)
+    if (previous && previous !== url) URL.revokeObjectURL(previous)
   } catch (error) {
     console.warn('[ClipboardPanel] 缩略图加载失败:', error)
+  }
+}
+
+function isPreviewCurrent(item, key) {
+  if (previewsDisposed) return false
+  return items.value.some((candidate) => (
+    candidate.id === item.id && clipboardPreviewKey(candidate) === key
+  ))
+}
+
+function revokeUnusedPreviews() {
+  const activeKeys = new Set(items.value.filter(isClipboardImageItem).map(clipboardPreviewKey))
+  for (const [id, url] of Object.entries(previews)) {
+    const key = previewKeys.get(id)
+    if (activeKeys.has(key)) continue
+    URL.revokeObjectURL(url)
+    delete previews[id]
+    previewKeys.delete(id)
   }
 }
 
@@ -501,9 +542,11 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  previewsDisposed = true
   clearTimeout(queryTimer)
   resizeObserver?.disconnect()
   for (const url of Object.values(previews)) URL.revokeObjectURL(url)
+  previewKeys.clear()
 })
 </script>
 

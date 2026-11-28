@@ -129,7 +129,7 @@ const previewRequested = ref(false)
 // 点击查看大图用的原图（悬停预览只取缩略图，原图点开时才取，取过就留着）
 let originalUrl = ''
 
-watch(() => props.item.id, () => {
+watch(() => [props.item.id, props.item.updated_at || props.item.created_at || ''], () => {
   previewPromise = null
   previewFailed.value = false
   previewLoading.value = false
@@ -254,7 +254,7 @@ async function handleRowClick(event) {
   }
   hidePeek()
   try {
-    originalUrl = originalUrl || await fetchImageDataUrl(api.getClipboardItemImageUrl)
+    originalUrl = originalUrl || await fetchImageDataUrl('image')
     emit('view-image', { item: props.item, src: originalUrl, title: displayTitle.value, meta: imageSize.value })
   } catch (error) {
     console.error('[ClipboardRow] Failed to load original image:', error)
@@ -262,14 +262,10 @@ async function handleRowClick(event) {
   }
 }
 
-/** 取图片（缩略图或原图）转成 data URL：`resolveUrl` 为 api 里对应的取地址函数 */
-async function fetchImageDataUrl(resolveUrl) {
-  const sourceUrl = await resolveUrl(props.item.id, props.item.updated_at || props.item.created_at || Date.now())
-  const response = await fetch(sourceUrl)
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
-  }
-  return blobToDataUrl(await response.blob())
+/** 取图片（缩略图或原图）转成 data URL，统一走客户端的超时与错误处理。 */
+async function fetchImageDataUrl(kind) {
+  const version = props.item.updated_at || props.item.created_at || ''
+  return blobToDataUrl(await api.fetchClipboardImageBlob(props.item.id, version, kind))
 }
 
 onBeforeUnmount(hidePeek)
@@ -294,7 +290,7 @@ async function fetchPreview() {
 
   try {
     // 悬停预览只要几百像素：取缩略图，不把整张 2K~4K 原图转成 data URL（主线程上要编码几 MB）
-    previewUrl.value = await fetchImageDataUrl(api.getClipboardItemThumbnailUrl)
+    previewUrl.value = await fetchImageDataUrl('thumbnail')
   } catch (error) {
     console.error('[ClipboardRow] Failed to resolve image preview URL:', error)
     previewFailed.value = true

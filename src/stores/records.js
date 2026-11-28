@@ -1,6 +1,7 @@
 ﻿import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useElectron } from '@/composables/useElectron'
+import { summarizeRecordDeleteResults } from './recordsBatch.mjs'
 
 export const useRecordsStore = defineStore('records', () => {
   const { api, tray } = useElectron()
@@ -64,14 +65,17 @@ export const useRecordsStore = defineStore('records', () => {
   }
 
   async function deleteRecords(ids) {
-    try {
-      await Promise.all(ids.map((id) => api.deleteRecord(id)))
-      records.value = records.value.filter((record) => !ids.includes(record.id))
-      syncTrayMenu()
-    } catch (e) {
-      console.error('Failed to delete records:', e)
-      throw e
+    const results = await Promise.allSettled(ids.map((id) => api.deleteRecord(id)))
+    const { deletedIds, failedIds } = summarizeRecordDeleteResults(ids, results)
+    const deleted = new Set(deletedIds)
+    records.value = records.value.filter((record) => !deleted.has(record.id))
+    syncTrayMenu()
+
+    if (failedIds.length) {
+      const firstFailure = results.find((result) => result.status === 'rejected')
+      console.error('Failed to delete records:', firstFailure?.reason)
     }
+    return { deletedIds, failedIds }
   }
 
   async function optimizeRecord(id) {

@@ -49,6 +49,12 @@
       <!-- 初始化完成前禁用全部表单控件：此阶段 watch(form) 的守卫会丢弃改动，
            用户若在这时勾选开关，改动既不会保存也不会提示（真实踩坑） -->
       <p v-if="!isInitialized" class="settings-pending">正在读取已保存的设置，稍后即可修改…</p>
+      <div v-if="settingsLoadError" class="settings-load-error" role="alert">
+        <span>读取已保存的设置失败：{{ settingsLoadError }}</span>
+        <button class="ui-tbtn" type="button" :disabled="retryingSettingsLoad" @click="retrySettingsLoad">
+          {{ retryingSettingsLoad ? '正在重试…' : '重试读取' }}
+        </button>
+      </div>
       <fieldset class="settings-fieldset" :disabled="!isInitialized">
         <component :is="SECTION_COMPONENTS[activeSection]" :key="activeSection" />
       </fieldset>
@@ -167,6 +173,8 @@ const hotkeyError = ref('')
 
 const selectedPresetId = ref('')
 const isInitialized = ref(false)
+const settingsLoadError = ref('')
+const retryingSettingsLoad = ref(false)
 const syncDepth = ref(0)
 const isSavingSettings = ref(false)
 const isSavingPreset = ref(false)
@@ -197,6 +205,30 @@ const activeSection = ref(resolveSectionId(appStore.settingsSection || readStore
 const currentSection = computed(() => findSection(activeSection.value))
 const navQuery = ref('')
 const navGroups = computed(() => buildNavGroups(navQuery.value))
+
+function syncFormFromSettings() {
+  runSyncUpdate(() => {
+    normalizeSettings(settings.value)
+    selectedPresetId.value = resolveSelectedPresetId()
+    lastSavedSettingsSnapshot.value = serializeSettingsPayload(buildSettingsPayload())
+    lastSavedPresetId.value = selectedPresetId.value
+  })
+}
+
+async function retrySettingsLoad() {
+  retryingSettingsLoad.value = true
+  try {
+    await settingsStore.loadSettings()
+    settingsLoadError.value = ''
+    syncFormFromSettings()
+    appStore.showToast('已重新读取设置', { tone: 'success' })
+  } catch (error) {
+    settingsLoadError.value = String(error?.message || error)
+    appStore.showToast('读取设置仍然失败', { tone: 'error' })
+  } finally {
+    retryingSettingsLoad.value = false
+  }
+}
 
 function goSection(id) {
   const next = resolveSectionId(id)
@@ -909,12 +941,11 @@ onMounted(async () => {
       console.warn('[Settings] 初始化子步骤失败：', index, result.reason)
     })
 
-  runSyncUpdate(() => {
-    normalizeSettings(settings.value)
-    selectedPresetId.value = resolveSelectedPresetId()
-    lastSavedSettingsSnapshot.value = serializeSettingsPayload(buildSettingsPayload())
-    lastSavedPresetId.value = selectedPresetId.value
-  })
+  if (initResults[0].status === 'rejected') {
+    settingsLoadError.value = String(initResults[0].reason?.message || initResults[0].reason)
+  }
+
+  syncFormFromSettings()
 
   isInitialized.value = true
   window.addEventListener('keydown', handleHotkeyKeydown, true)
@@ -1134,6 +1165,17 @@ onUnmounted(() => {
 .settings-pending {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
+}
+
+.settings-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid color-mix(in srgb, var(--err) 35%, var(--line));
+  border-radius: var(--r-md);
+  color: var(--err);
 }
 
 /* 最小窗口（800px）下侧栏仍在：导航收窄，内容区留足宽度 */

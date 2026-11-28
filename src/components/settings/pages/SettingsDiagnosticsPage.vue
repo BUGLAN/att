@@ -296,7 +296,7 @@
 </template>
 
 <script setup>
-import { computed, inject, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { providerLabel } from '../asrEngineStatus.mjs'
 import { SETTINGS_CTX } from '../settingsContext.js'
 import { apiTokenDisplay } from '../apiAccess.mjs'
@@ -318,6 +318,7 @@ import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useElectron } from '@/composables/useElectron'
+import { createLatestRequestGuard, runLatest } from '@/utils/latestRequest.mjs'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
@@ -414,6 +415,8 @@ async function copyToken() {
 const storage = ref(null)
 const storageLoading = ref(false)
 const storageError = ref('')
+const storageRequest = createLatestRequestGuard()
+let retentionRefreshTimer = null
 const clearingOrphans = ref(false)
 const isOrphanConfirmVisible = ref(false)
 const storageItems = computed(() => storageRows(storage.value))
@@ -425,15 +428,21 @@ const measuredAt = computed(() => {
 })
 
 async function loadStorage(refresh = false) {
-  storageLoading.value = true
-  storageError.value = ''
-  try {
-    storage.value = await api.getStorageUsage(refresh)
-  } catch (error) {
-    storageError.value = `统计数据占用失败：${error?.message || error}`
-  } finally {
-    storageLoading.value = false
-  }
+  await runLatest(storageRequest, () => api.getStorageUsage(refresh), {
+    onStart: () => {
+      storageLoading.value = true
+      storageError.value = ''
+    },
+    onResult: (result) => {
+      storage.value = result
+    },
+    onError: (error) => {
+      storageError.value = `统计数据占用失败：${error?.message || error}`
+    },
+    onFinally: () => {
+      storageLoading.value = false
+    }
+  })
 }
 
 async function clearOrphans() {
@@ -473,7 +482,8 @@ function applyPendingRetention() {
   if (value !== null) {
     form.value.audio_retention_days = value
     // 后端保存后立即按新天数清理：稍后重新统计，让占用数字跟上
-    setTimeout(() => loadStorage(true), 1500)
+    clearTimeout(retentionRefreshTimer)
+    retentionRefreshTimer = setTimeout(() => loadStorage(true), 1500)
   }
 }
 
@@ -587,6 +597,10 @@ onMounted(async () => {
   } catch (error) {
     console.warn('[Settings] 读取应用信息失败：', error)
   }
+})
+
+onBeforeUnmount(() => {
+  clearTimeout(retentionRefreshTimer)
 })
 </script>
 
