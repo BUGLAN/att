@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { normalizeToastTone } from './toastTone.mjs'
 
 const SIDEBAR_LAYOUT_STORAGE_KEY = 'att.sidebar.layout'
 const SIDEBAR_DEFAULT_WIDTH = 220
@@ -209,11 +210,11 @@ export const useAppStore = defineStore('app', () => {
   /**
    * 显示一条 Toast（保持向后兼容）。
    * - 旧签名：showToast('文案') / showToast('文案', 3000)
-   * - 新签名：showToast('文案', { tone: 'success' | 'error' | 'info', duration: 3000 })
+   * - 新签名：showToast('文案', { tone: 'success' | 'error' | 'warn' | 'info', duration: 3000 })
    */
   function showToast(message, options = {}) {
     const normalized = typeof options === 'number' ? { duration: options } : (options || {})
-    const tone = ['success', 'error', 'info'].includes(normalized.tone) ? normalized.tone : 'info'
+    const tone = normalizeToastTone(normalized.tone)
     const duration = Number.isFinite(normalized.duration) ? normalized.duration : TOAST_DEFAULT_DURATION
     const id = ++toastSeq
 

@@ -227,7 +227,7 @@
 .ui-tabs .ui-tabs-count {
   margin-left: 4px;
   font-size: var(--fs-cap);
-  color: var(--text-4, var(--text-3));
+  color: var(--text-3);
 }
 
 .ui-tabs > button:focus-visible { outline: none; color: var(--accent); }

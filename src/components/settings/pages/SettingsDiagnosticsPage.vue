@@ -660,7 +660,7 @@ onMounted(async () => {
   align-items: flex-start;
   gap: var(--s-4);
   width: min(430px, 100%);
-  padding: var(--s-5);
+  padding: var(--s-4);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-surface);
@@ -711,7 +711,7 @@ onMounted(async () => {
 .backup-restart-gate__body {
   display: grid;
   gap: var(--s-3);
-  margin-bottom: var(--s-5);
+  margin-bottom: var(--s-6);
   color: var(--text-2);
   font-size: var(--fs-sm);
   line-height: 1.7;

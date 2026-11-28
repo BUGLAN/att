@@ -1,5 +1,5 @@
 <template>
-  <!-- Toast 队列：支持 tone(success|error|info)，同一时刻最多堆叠 3 条 -->
+  <!-- Toast 队列：支持 tone(success|error|warn|info)，同一时刻最多堆叠 3 条 -->
   <Teleport to="body">
     <div class="ui-toast-stack" aria-live="polite">
       <TransitionGroup name="ui-toast">
@@ -82,6 +82,14 @@ const toasts = computed(() => appStore.toasts)
 
 .ui-toast--error .ui-toast__dot {
   background: var(--err);
+}
+
+.ui-toast--warn {
+  border-color: var(--warn-line);
+}
+
+.ui-toast--warn .ui-toast__dot {
+  background: var(--warn);
 }
 
 .ui-toast--info .ui-toast__dot {

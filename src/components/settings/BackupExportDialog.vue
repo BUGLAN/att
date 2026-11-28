@@ -169,7 +169,7 @@ onBeforeUnmount(() => {
 }
 
 .backup-dialog__desc {
-  margin: 0 0 var(--s-5);
+  margin: 0 0 var(--s-4);
   color: var(--text-2);
   font-size: var(--fs-sm);
   line-height: 1.7;
@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
 
 .backup-check--warning {
   margin-top: calc(-1 * var(--s-3));
-  color: var(--warn-text, var(--text-1));
+  color: var(--warn);
 }
 
 .backup-dialog__actions {
