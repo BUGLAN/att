@@ -53,7 +53,6 @@ const FRAME_SAMPLES: usize = 320;
 /// 单次音频上限：按 13 分钟切会话，避免一次会话过长。
 pub const MAX_SESSION_SECONDS: usize = 780;
 const MAX_SESSION_SAMPLES: usize = MAX_SESSION_SECONDS * SAMPLE_RATE;
-
 const FRAME_FIRST: u32 = 1;
 const FRAME_MIDDLE: u32 = 3;
 const FRAME_LAST: u32 = 9;
@@ -414,8 +413,8 @@ fn parse_response(data: &[u8]) -> Result<Parsed, DoubaoImeError> {
     }
 }
 
-/// 按段累积：保留每段最长的中间稿；收到最终稿时若它只是末段片段（不以中间稿为前缀），
-/// 就把前面累计的中间稿一起提交，避免只拿到最后一句。
+/// 按段累积：中间稿用最新一条覆盖；新稿与旧稿没有公共前缀时视为新段，先提交旧稿。
+/// 收到最终稿时若它属于另一段，就保留前面累计的中间稿，避免只拿到最后一句。
 #[derive(Default)]
 struct Accumulator {
     committed: String,
@@ -424,23 +423,28 @@ struct Accumulator {
 
 impl Accumulator {
     fn interim(&mut self, text: String) {
-        if text.chars().count() > self.pending.chars().count() {
-            self.pending = text;
+        if !self.pending.is_empty() && !has_common_prefix(&self.pending, &text) {
+            let pending = std::mem::take(&mut self.pending);
+            self.committed.push_str(&pending);
         }
+        self.pending = text;
     }
 
     fn final_result(&mut self, text: String) {
+        let pending = std::mem::take(&mut self.pending);
         let segment = if text.is_empty() {
-            std::mem::take(&mut self.pending)
-        } else if self.pending.is_empty() || text.starts_with(&self.pending) {
-            text
+            pending
+        } else if pending.is_empty() || has_common_prefix(&pending, &text) {
+            if pending.starts_with(&text) {
+                pending
+            } else {
+                text
+            }
         } else {
-            let mut merged = std::mem::take(&mut self.pending);
-            merged.push_str(&text);
-            merged
+            self.committed.push_str(&pending);
+            text
         };
         self.committed.push_str(&segment);
-        self.pending.clear();
     }
 
     fn vad_start(&mut self) {
@@ -463,6 +467,10 @@ impl Accumulator {
         }
         self.committed.trim().to_string()
     }
+}
+
+fn has_common_prefix(left: &str, right: &str) -> bool {
+    matches!((left.chars().next(), right.chars().next()), (Some(left), Some(right)) if left == right)
 }
 
 // ---------------- HTTP：注册设备 + 取 token ----------------
@@ -800,185 +808,6 @@ fn pcm16le_bytes(samples: &[i16]) -> Vec<u8> {
     bytes
 }
 
-struct SessionClient {
-    writer: WsWriter,
-    reader: WsReader,
-    timeout: Duration,
-    request_id: String,
-    token: String,
-    device_id: String,
-    accumulator: Accumulator,
-    session_started: bool,
-    session_finished: bool,
-}
-
-impl SessionClient {
-    async fn connect(config: &DoubaoImeConfig, credentials: &Credentials) -> Result<Self, DoubaoImeError> {
-        let stream = connect(config, credentials).await?;
-        let (writer, reader) = stream.split();
-        Ok(Self {
-            writer,
-            reader,
-            timeout: config.timeout,
-            request_id: Uuid::new_v4().to_string(),
-            token: credentials.token.clone(),
-            device_id: credentials.device_id.clone(),
-            accumulator: Accumulator::default(),
-            session_started: false,
-            session_finished: false,
-        })
-    }
-
-    async fn send(
-        &mut self,
-        method: &str,
-        payload: Option<&str>,
-        audio: Option<&[u8]>,
-        frame_state: Option<u32>,
-        with_token: bool,
-    ) -> Result<(), DoubaoImeError> {
-        let token = if with_token { Some(self.token.as_str()) } else { None };
-        let packet = encode_request(token, method, payload, audio, &self.request_id, frame_state);
-        self.writer.send(Message::binary(packet)).await.map_err(|error| {
-            tracing::debug!("发送豆包输入法请求失败: {error}");
-            DoubaoImeError::network("发送豆包输入法语音请求失败，请重试")
-        })
-    }
-
-    async fn next_parsed(&mut self, deadline: Instant) -> Result<Parsed, DoubaoImeError> {
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(DoubaoImeError::network("等待豆包输入法语音响应超时，请稍后重试"));
-            }
-            match timeout(remaining, self.reader.next()).await {
-                Err(_) => return Err(DoubaoImeError::network("等待豆包输入法语音响应超时，请稍后重试")),
-                Ok(None) => return Err(DoubaoImeError::network("豆包输入法语音连接在会话结束前关闭，请重试")),
-                Ok(Some(Ok(Message::Binary(data)))) => return parse_response(&data),
-                Ok(Some(Ok(Message::Close(_)))) => {
-                    return Err(DoubaoImeError::network("豆包输入法语音连接在会话结束前关闭，请重试"));
-                }
-                Ok(Some(Ok(_))) => continue,
-                Ok(Some(Err(error))) => {
-                    tracing::debug!("读取豆包输入法响应失败: {error}");
-                    return Err(DoubaoImeError::network("读取豆包输入法语音响应失败，请重试"));
-                }
-            }
-        }
-    }
-
-    fn process(&mut self, parsed: Parsed) -> Result<Option<&'static str>, DoubaoImeError> {
-        match parsed {
-            Parsed::TaskStarted => Ok(Some("TaskStarted")),
-            Parsed::SessionStarted => {
-                self.session_started = true;
-                Ok(Some("SessionStarted"))
-            }
-            Parsed::SessionFinished => {
-                self.session_finished = true;
-                Ok(Some("SessionFinished"))
-            }
-            Parsed::VadStart => {
-                self.accumulator.vad_start();
-                Ok(None)
-            }
-            Parsed::Interim(text) => {
-                self.accumulator.interim(text);
-                Ok(None)
-            }
-            Parsed::Final(text) => {
-                self.accumulator.final_result(text);
-                Ok(None)
-            }
-            Parsed::Heartbeat | Parsed::Other(_) => Ok(None),
-            Parsed::Failed(_) => Err(DoubaoImeError::server("豆包输入法语音服务返回失败，请稍后重试")),
-        }
-    }
-
-    async fn wait_for(
-        &mut self,
-        expected: &str,
-        deadline: Instant,
-        can_refresh_device: bool,
-    ) -> Result<(), DoubaoImeError> {
-        loop {
-            let parsed = self.next_parsed(deadline).await?;
-            let processed = self.process(parsed);
-            let tag = match processed {
-                Ok(tag) => tag,
-                Err(error) if can_refresh_device => return Err(error.retry_with_fresh_device()),
-                Err(error) => return Err(error),
-            };
-            if let Some(tag) = tag {
-                if tag == expected {
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    async fn run(
-        &mut self,
-        samples: &[i16],
-        on_push: &mut (dyn FnMut(usize) -> bool + Send),
-    ) -> Result<String, DoubaoImeError> {
-        let audio = Duration::from_secs_f64(samples.len() as f64 / SAMPLE_RATE as f64);
-        let deadline = Instant::now() + self.timeout + audio;
-
-        self.send("StartTask", None, None, None, true).await?;
-        self.wait_for("TaskStarted", deadline, true).await?;
-
-        let payload = session_payload(&self.device_id);
-        self.send("StartSession", Some(&payload), None, None, true).await?;
-        self.wait_for("SessionStarted", deadline, true).await?;
-
-        let total = samples.len().div_ceil(FRAME_SAMPLES).max(1);
-        let started = now_ms();
-        for index in 0..total {
-            let begin = index * FRAME_SAMPLES;
-            let end = (begin + FRAME_SAMPLES).min(samples.len());
-            let mut owned;
-            let chunk = if end - begin < FRAME_SAMPLES {
-                owned = samples[begin..end].to_vec();
-                owned.resize(FRAME_SAMPLES, 0);
-                owned.as_slice()
-            } else {
-                &samples[begin..end]
-            };
-            let frame_state = if index == 0 {
-                FRAME_FIRST
-            } else if index + 1 == total {
-                FRAME_LAST
-            } else {
-                FRAME_MIDDLE
-            };
-            let metadata = json!({ "extra": {}, "timestamp_ms": started + (index as i64) * 20 }).to_string();
-            let bytes = pcm16le_bytes(chunk);
-            self.send("TaskRequest", Some(&metadata), Some(&bytes), Some(frame_state), false).await?;
-            if !on_push(end.min(samples.len())) {
-                return Err(DoubaoImeError::input(super::TRANSCRIBE_CANCELLED));
-            }
-        }
-
-        self.send("FinishSession", None, None, None, true).await?;
-        self.wait_for("SessionFinished", deadline, false).await?;
-
-        let text = self.accumulator.finish();
-        if text.is_empty() {
-            return Err(DoubaoImeError::server("豆包输入法语音会话已结束，但没有识别结果"));
-        }
-        Ok(text)
-    }
-
-    async fn close(&mut self) {
-        let _ = timeout(
-            Duration::from_secs(1),
-            self.writer.send(Message::Close(Some(CloseFrame { code: CloseCode::Normal, reason: "".into() }))),
-        )
-        .await;
-    }
-}
-
 async fn transcribe_session(
     config: &DoubaoImeConfig,
     credentials: &Credentials,
@@ -988,13 +817,16 @@ async fn transcribe_session(
     if samples.is_empty() {
         return Err(DoubaoImeError::input("音频为空，无法转写"));
     }
-    let mut client = SessionClient::connect(config, credentials).await?;
-    let outcome = client.run(samples, on_push).await;
-    if client.session_started && !client.session_finished {
-        let _ = client.send("FinishSession", None, None, None, true).await;
+    let mut session = DoubaoImeSession::connect_with(config, credentials, None).await?;
+    for (index, frame) in samples.chunks(FRAME_SAMPLES).enumerate() {
+        session.push_samples(frame).await?;
+        let pushed = ((index + 1) * FRAME_SAMPLES).min(samples.len());
+        if !on_push(pushed) {
+            session.cancel().await;
+            return Err(DoubaoImeError::input(super::TRANSCRIBE_CANCELLED));
+        }
     }
-    client.close().await;
-    outcome
+    session.finish_result(config.timeout).await
 }
 
 async fn transcribe_pcm_with_progress_impl(
@@ -1152,10 +984,70 @@ impl DoubaoImeSession {
     ) -> Result<(), DoubaoImeError> {
         let token = if with_token { Some(self.token.as_str()) } else { None };
         let packet = encode_request(token, method, payload, audio, &self.request_id, frame_state);
-        self.writer.send(Message::binary(packet)).await.map_err(|error| {
-            tracing::debug!("发送豆包输入法流式请求失败: {error}");
-            DoubaoImeError::network("发送豆包输入法语音请求失败，请重试")
+        match timeout(self.timeout, self.writer.send(Message::binary(packet))).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                tracing::debug!("发送豆包输入法流式请求失败: {error}");
+                Err(DoubaoImeError::network("发送豆包输入法语音请求失败，请重试"))
+            }
+            Err(_) => Err(DoubaoImeError::network("发送豆包输入法语音请求超时，请稍后重试")),
+        }
+    }
+
+    /// 发送音频帧时同时读取已经到达的服务端响应；写缓冲反压期间仍持续排空读缓冲。
+    async fn send_task_request(
+        &mut self,
+        method: &str,
+        payload: Option<&str>,
+        audio: &[u8],
+        frame_state: u32,
+    ) -> Result<(), DoubaoImeError> {
+        let packet = encode_request(None, method, payload, Some(audio), &self.request_id, Some(frame_state));
+        let send = self.writer.send(Message::binary(packet));
+        tokio::pin!(send);
+        let mut responses = Vec::new();
+        let outcome = timeout(self.timeout, async {
+            loop {
+                tokio::select! {
+                    result = &mut send => {
+                        result.map_err(|error| {
+                            tracing::debug!("发送豆包输入法流式请求失败: {error}");
+                            DoubaoImeError::network("发送豆包输入法语音请求失败，请重试")
+                        })?;
+                        break;
+                    }
+                    message = self.reader.next() => match message {
+                        None => {
+                            return Err(DoubaoImeError::network(
+                                "豆包输入法语音连接在会话结束前关闭，请重试",
+                            ));
+                        }
+                        Some(Ok(Message::Binary(data))) => responses.push(parse_response(&data)?),
+                        Some(Ok(Message::Close(_))) => {
+                            return Err(DoubaoImeError::network(
+                                "豆包输入法语音连接在会话结束前关闭，请重试",
+                            ));
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(error)) => {
+                            tracing::debug!("读取豆包输入法流式响应失败: {error}");
+                            return Err(DoubaoImeError::network("读取豆包输入法语音响应失败，请重试"));
+                        }
+                    },
+                }
+            }
+            Ok::<(), DoubaoImeError>(())
         })
+        .await;
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Err(DoubaoImeError::network("发送豆包输入法语音请求超时，请稍后重试")),
+        }
+        for parsed in responses {
+            let _ = self.handle(parsed)?;
+        }
+        Ok(())
     }
 
     fn emit(&self) {
@@ -1230,7 +1122,7 @@ impl DoubaoImeSession {
     }
 
     async fn wait_for(&mut self, expected: &str) -> Result<(), DoubaoImeError> {
-        let deadline = Instant::now() + self.timeout + Duration::from_secs(5);
+        let deadline = Instant::now() + self.timeout;
         loop {
             let parsed = self.next_parsed(deadline).await?;
             let processed = self.handle(parsed);
@@ -1272,6 +1164,10 @@ impl DoubaoImeSession {
 
     /// 边录边推一段 PCM（16k/mono/PCM16），并即时把中间稿回调出去。
     pub async fn push(&mut self, samples: &[i16]) -> Result<(), String> {
+        self.push_samples(samples).await.map_err(|error| error.user_facing().message)
+    }
+
+    async fn push_samples(&mut self, samples: &[i16]) -> Result<(), DoubaoImeError> {
         if samples.is_empty() {
             return Ok(());
         }
@@ -1291,26 +1187,28 @@ impl DoubaoImeSession {
             let metadata =
                 json!({ "extra": {}, "timestamp_ms": self.started_at + (self.frame_index as i64) * 20 }).to_string();
             let bytes = pcm16le_bytes(chunk);
-            self.send("TaskRequest", Some(&metadata), Some(&bytes), Some(frame_state), false)
-                .await
-                .map_err(|error| error.user_facing().message)?;
+            self.send_task_request("TaskRequest", Some(&metadata), &bytes, frame_state).await?;
             self.frame_index += 1;
         }
-        self.drain_ready().map_err(|error| error.user_facing().message)
+        self.drain_ready()
     }
 
     /// 结束会话：补一个 LAST 帧 → FinishSession → 读到底，返回整段文本。
-    pub async fn finish(mut self, timeout: Duration) -> Result<String, String> {
+    pub async fn finish(self, timeout: Duration) -> Result<String, String> {
+        self.finish_result(timeout).await.map_err(|error| error.user_facing().message)
+    }
+
+    async fn finish_result(mut self, timeout: Duration) -> Result<String, DoubaoImeError> {
         let deadline = Instant::now() + timeout + Duration::from_secs(3);
         let silent = vec![0i16; FRAME_SAMPLES];
         let bytes = pcm16le_bytes(&silent);
         let metadata =
             json!({ "extra": {}, "timestamp_ms": self.started_at + (self.frame_index as i64) * 20 }).to_string();
         let _ = self.send("TaskRequest", Some(&metadata), Some(&bytes), Some(FRAME_LAST), false).await;
-        self.send("FinishSession", None, None, None, true).await.map_err(|error| error.user_facing().message)?;
+        self.send("FinishSession", None, None, None, true).await?;
         loop {
-            let parsed = self.next_parsed(deadline).await.map_err(|error| error.user_facing().message)?;
-            if let Some(tag) = self.handle(parsed).map_err(|error| error.user_facing().message)? {
+            let parsed = self.next_parsed(deadline).await?;
+            if let Some(tag) = self.handle(parsed)? {
                 if tag == "SessionFinished" {
                     break;
                 }
@@ -1318,7 +1216,7 @@ impl DoubaoImeSession {
         }
         let text = self.accumulator.finish();
         if text.is_empty() {
-            return Err("豆包输入法语音会话已结束，但没有识别结果".into());
+            return Err(DoubaoImeError::server("豆包输入法语音会话已结束，但没有识别结果"));
         }
         Ok(text)
     }
@@ -1420,6 +1318,24 @@ mod tests {
     }
 
     #[test]
+    fn 累积_新段中间稿无公共前缀时保留上一段() {
+        let mut accumulator = Accumulator::default();
+        accumulator.interim("好的。".into());
+        accumulator.interim("我们明天下午三点开会".into());
+        accumulator.final_result("我们明天下午三点开会。".into());
+        assert_eq!(accumulator.finish(), "好的。我们明天下午三点开会。");
+    }
+
+    #[test]
+    fn 累积_同长度修订中间稿时使用最新内容() {
+        let mut accumulator = Accumulator::default();
+        accumulator.interim("今天天汽不错".into());
+        accumulator.interim("今天天气不错".into());
+        accumulator.final_result("今天天气不错。".into());
+        assert_eq!(accumulator.finish(), "今天天气不错。");
+    }
+
+    #[test]
     fn 累积_最终稿只是末段短句时补上前面中间稿() {
         let mut accumulator = Accumulator::default();
         let long = "第一句话，今天天气不错。第二句话，明天开会。第五句话，谢谢大家的配合，我们。";
@@ -1445,6 +1361,7 @@ mod tests {
     struct StubBehavior {
         final_extends: bool,
         fail_midstream: bool,
+        large_interim: bool,
         silent: bool,
     }
 
@@ -1456,6 +1373,7 @@ mod tests {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
             let mut methods = Vec::new();
+            let large_interim = format!("{}。", "测".repeat(1300));
             if behavior.silent {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 let _ = tx.send(methods);
@@ -1486,11 +1404,19 @@ mod tests {
                             break;
                         }
                         frames += 1;
-                        let text = if frames == 1 { "你好" } else { "你好世界" };
-                        let _ = ws.send(Message::binary(response_with_interim(text))).await;
+                        let text = if behavior.large_interim {
+                            large_interim.clone()
+                        } else if frames == 1 {
+                            "你好".into()
+                        } else {
+                            "你好世界".into()
+                        };
+                        let _ = ws.send(Message::binary(response_with_interim(&text))).await;
                     }
                     "FinishSession" => {
-                        if behavior.final_extends {
+                        if behavior.large_interim {
+                            let _ = ws.send(Message::binary(response_with_final("结束。"))).await;
+                        } else if behavior.final_extends {
                             let _ = ws.send(Message::binary(response_with_final("你好世界。"))).await;
                         } else {
                             let _ = ws.send(Message::binary(response_with_interim("很长的前面内容。"))).await;
@@ -1617,7 +1543,21 @@ mod tests {
         let config = test_config(endpoint);
         let samples = vec![0i16; FRAME_SAMPLES * 2];
         let text = transcribe_pcm(&config, &samples).await.unwrap();
-        assert_eq!(text, "很长的前面内容。明天见。");
+        assert_eq!(text, "你好世界很长的前面内容。明天见。");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn 批量_长静音_逐帧大响应_边推边读不会互等() {
+        let (endpoint, _methods_rx) =
+            stub_server(StubBehavior { large_interim: true, ..StubBehavior::default() }).await;
+        let mut config = test_config(endpoint);
+        config.timeout = Duration::from_secs(30);
+        let samples = vec![0i16; MAX_SESSION_SAMPLES];
+        let text = timeout(Duration::from_secs(120), transcribe_pcm(&config, &samples))
+            .await
+            .expect("批量识别在收发互等时挂起")
+            .expect("批量识别失败");
+        assert!(text.ends_with("结束。"), "结果长度={}", text.len());
     }
 
     #[tokio::test]
