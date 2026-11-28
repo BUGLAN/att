@@ -294,8 +294,7 @@ impl UserSettings {
     /// 从 data/settings.json 加载：宽容读 + 剥离退役键 + 旧 hotkey 迁移 + 默认值兜底。
     pub fn load(path: &Path, platform: Platform) -> Self {
         json_store::with_resource_lock(path, || {
-            let raw: Value = json_store::read_json_lenient(path);
-            let mut object = json_store::ensure_object(raw);
+            let mut object = read_settings_object(path);
             let Some(map) = object.as_object_mut() else {
                 return Self::with_platform(platform);
             };
@@ -303,10 +302,7 @@ impl UserSettings {
             migrate_legacy_hotkey(map, platform);
             upgrade_legacy_defaults(map);
             merge_defaults_into(map, platform);
-            let mut settings: Self = serde_json::from_value(object).unwrap_or_else(|error| {
-                tracing::warn!("settings.json 结构异常，回落默认设置: {error}");
-                Self::with_platform(platform)
-            });
+            let mut settings = deserialize_per_key(object, platform);
             settings.ensure_default_bindings(platform);
             for binding in &mut settings.hotkeys {
                 if binding.enabled && !binding.is_valid() {
@@ -928,6 +924,90 @@ pub(crate) fn upgrade_legacy_defaults(object: &mut serde_json::Map<String, Value
 }
 
 /// 默认值合并进 JSON 对象（等价 Python `{**DEFAULT_SETTINGS, **payload}`）。
+/// 读 settings.json 的原始对象。文件不存在 → 空对象（全部用默认值）。
+///
+/// 文件存在却读不出、不是合法 JSON 或顶层不是对象时，先把原文件另存为同目录的
+/// `settings.json.bad-<时间戳>` 再回落默认值：回落后启动流程会立即整份写盘，不留备份的话
+/// 凭据密文、持久令牌和全部偏好就被永久覆盖了。读错误（杀软 / 同步盘占用）先短暂重试几次。
+fn read_settings_object(path: &Path) -> Value {
+    const READ_ATTEMPTS: u32 = 3;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let error = match std::fs::read(path) {
+            // Windows 记事本保存会带 UTF-8 BOM，serde_json 不认，先剥掉
+            Ok(bytes) => match serde_json::from_slice::<Value>(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes)) {
+                Ok(value) if value.is_object() => return value,
+                Ok(_) => "顶层不是对象".to_string(),
+                Err(error) => error.to_string(),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return json!({}),
+            Err(error) if attempt < READ_ATTEMPTS => {
+                tracing::warn!("读取 settings.json 失败，稍后重试: {error}");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            Err(error) => error.to_string(),
+        };
+        match quarantine_bad_file(path) {
+            Ok(backup) => tracing::error!(
+                "settings.json 无法读取（{error}），原文件已另存为 {}，本次使用默认设置",
+                backup.display()
+            ),
+            Err(copy_error) => {
+                tracing::error!("settings.json 无法读取（{error}），另存原文件也失败（{copy_error}），本次使用默认设置")
+            }
+        }
+        return json!({});
+    }
+}
+
+/// 把坏掉的设置文件复制成 `<文件名>.bad-<本地时间>`（同一秒内重复时追加序号），返回备份路径。
+fn quarantine_bad_file(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    let file_name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let mut backup = path.with_file_name(format!("{file_name}.bad-{stamp}"));
+    let mut index = 1;
+    while backup.exists() {
+        backup = path.with_file_name(format!("{file_name}.bad-{stamp}-{index}"));
+        index += 1;
+    }
+    std::fs::copy(path, &backup)?;
+    Ok(backup)
+}
+
+/// 反序列化设置；整体失败时逐键兜底：从默认值出发逐个套用文件里的键，套上后反序列化失败的键
+/// 保留默认值并记下键名，其余键（含 `*_encrypted` 密文）全部保留。
+///
+/// 以前任一字段类型不对（`"silence_threshold": "1.5"`、`"recording_mode": null`、`"auto_optimize": 1`）
+/// 都会整份回落默认值，随后启动写盘把凭据密文和全部偏好覆盖掉。
+fn deserialize_per_key(object: Value, platform: Platform) -> UserSettings {
+    let error = match serde_json::from_value::<UserSettings>(object.clone()) {
+        Ok(settings) => return settings,
+        Err(error) => error,
+    };
+    let defaults = serde_json::to_value(UserSettings::with_platform(platform)).unwrap_or_else(|_| json!({}));
+    let (Value::Object(file), Value::Object(mut merged)) = (object, defaults) else {
+        return UserSettings::with_platform(platform);
+    };
+    let mut reset = Vec::new();
+    for (key, value) in file {
+        let previous = merged.insert(key.clone(), value);
+        if serde_json::from_value::<UserSettings>(Value::Object(merged.clone())).is_err() {
+            match previous {
+                Some(previous) => merged.insert(key.clone(), previous),
+                None => merged.remove(&key),
+            };
+            reset.push(key);
+        }
+    }
+    tracing::warn!("settings.json 有字段类型不对，这些键已重置为默认值（其余设置保留）: {reset:?}（{error}）");
+    serde_json::from_value(Value::Object(merged)).unwrap_or_else(|error| {
+        tracing::warn!("settings.json 逐键兜底后仍无法解析，回落默认设置: {error}");
+        UserSettings::with_platform(platform)
+    })
+}
+
 fn merge_defaults_into(object: &mut serde_json::Map<String, Value>, platform: Platform) {
     let defaults = serde_json::to_value(UserSettings::with_platform(platform)).unwrap_or_else(|_| json!({}));
     if let Some(default_map) = defaults.as_object() {
@@ -1397,6 +1477,95 @@ mod tests {
 
         settings.save(&path).unwrap();
         assert_eq!(UserSettings::load(&path, Platform::Macos).asr_language, "auto");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 单个字段类型不对_只重置这几个键_其余设置与密文保留() {
+        let dir = temp_dir("per-key");
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            json!({
+                "asr_provider": "whisper",
+                "auto_copy_to_clipboard": false,
+                "silence_level": -30,
+                "doubao_asr_api_key_encrypted": "gAAAAB-doubao-cipher",
+                "deepseek_asr_api_key_encrypted": "gAAAAB-deepseek-cipher",
+                "last_run_version": "2.11.0",
+                "silence_threshold": "1.5",
+                "recording_mode": null,
+                "auto_optimize": 1
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let defaults = UserSettings::with_platform(Platform::Windows);
+        let settings = UserSettings::load(&path, Platform::Windows);
+        assert_eq!(settings.silence_threshold, defaults.silence_threshold);
+        assert_eq!(settings.recording_mode, defaults.recording_mode);
+        assert_eq!(settings.auto_optimize, defaults.auto_optimize);
+        assert_eq!(settings.asr_provider, "whisper");
+        assert!(!settings.auto_copy_to_clipboard);
+        assert_eq!(settings.silence_level, -30);
+        assert_eq!(settings.doubao_asr_api_key_encrypted.as_deref(), Some("gAAAAB-doubao-cipher"));
+        assert_eq!(settings.deepseek_asr_api_key_encrypted.as_deref(), Some("gAAAAB-deepseek-cipher"));
+        assert_eq!(settings.last_run_version, "2.11.0", "版本号保留：不会因为回落触发启动写盘");
+        assert!(bad_backups(&dir).is_empty(), "合法 JSON 只是个别字段不对，不另存坏文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 带_utf8_bom_的设置文件正常读取() {
+        let dir = temp_dir("bom");
+        let path = dir.join("settings.json");
+        let body = json!({ "asr_provider": "whisper", "doubao_asr_api_key_encrypted": "gAAAAB-cipher" }).to_string();
+        std::fs::write(&path, format!("\u{feff}{body}")).unwrap();
+        let settings = UserSettings::load(&path, Platform::Windows);
+        assert_eq!(settings.asr_provider, "whisper");
+        assert_eq!(settings.doubao_asr_api_key_encrypted.as_deref(), Some("gAAAAB-cipher"));
+        assert!(bad_backups(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn bad_backups(dir: &Path) -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with("settings.json.bad-"))
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn 不是合法_json_时另存原文件_之后保存不覆盖它() {
+        let dir = temp_dir("invalid-json");
+        let path = dir.join("settings.json");
+        let broken = r#"{"asr_provider": "whisper", "doubao_asr_api_key_encrypted": "gAAAAB-cipher""#;
+        std::fs::write(&path, broken).unwrap();
+        let settings = UserSettings::load(&path, Platform::Windows);
+        assert_eq!(settings.asr_provider, UserSettings::with_platform(Platform::Windows).asr_provider);
+        let backups = bad_backups(&dir);
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), broken, "原文件原样保留");
+
+        settings.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), broken, "之后的保存不覆盖备份");
+
+        // 顶层不是对象同样另存；同一秒内再坏一次不覆盖上一份备份
+        std::fs::write(&path, "[1, 2]").unwrap();
+        UserSettings::load(&path, Platform::Windows);
+        let backups = bad_backups(&dir);
+        assert_eq!(backups.len(), 2, "{backups:?}");
+        assert!(backups.iter().any(|backup| std::fs::read_to_string(backup).unwrap() == broken));
+        assert!(backups.iter().any(|backup| std::fs::read_to_string(backup).unwrap() == "[1, 2]"));
+
+        // 文件不存在：直接用默认值，不产生备份
+        std::fs::remove_file(&path).unwrap();
+        UserSettings::load(&path, Platform::Windows);
+        assert_eq!(bad_backups(&dir).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

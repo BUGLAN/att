@@ -166,9 +166,13 @@ pub fn read_json_lenient<T: Default + DeserializeOwned>(path: &Path) -> T {
 }
 
 /// 严格读：损坏时返回错误（调用方决定兜底策略）。
+///
+/// 开头的 UTF-8 BOM 会被剥掉：Windows 记事本保存的 JSON 带 BOM，serde_json 不认，
+/// 原样解析会被当成损坏文件整份回落默认值。
 pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> std::io::Result<T> {
     let raw = std::fs::read_to_string(path)?;
-    serde_json::from_str(&raw).map_err(std::io::Error::other)
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+    serde_json::from_str(raw).map_err(std::io::Error::other)
 }
 
 /// 顶层非对象收敛为 `{}`（对应 Python `ensure_dict`：`null`/`[]`/字符串都按空对象处理）。
@@ -249,5 +253,16 @@ mod tests {
         let a = resource_lock(Path::new("some/./nested/x.json"));
         let b = resource_lock(Path::new("some/nested/x.json"));
         assert!(Arc::ptr_eq(&a, &b), "`./` 必须被规范化，同一路径共享锁");
+    }
+
+    #[test]
+    fn 严格读_剥掉_utf8_bom() {
+        let dir = std::env::temp_dir().join(format!("att-json-bom-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bom.json");
+        std::fs::write(&path, "\u{feff}{\"a\": 1}").unwrap();
+        let value: serde_json::Value = read_json_file(&path).unwrap();
+        assert_eq!(value["a"], 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
