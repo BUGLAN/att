@@ -633,13 +633,14 @@ async fn settings_put(
 ) -> Result<Json<Value>, impl IntoResponse> {
     match state.core.apply_settings_update(&body) {
         Ok(outcome) => {
-            // 改了剪贴板历史上限：立即按新上限清理一次（不限时什么都不做）
-            if body.get("clipboard_max_items").is_some() || body.get("clipboard_retention_days").is_some() {
+            // 剪贴板历史上限的值变了：立即按新上限清理一次（不限时什么都不做）。
+            // 只看值是否变化：前端每次都提交整份表单，只看键是否出现会让每次保存都清理一遍
+            if outcome.clipboard_limits_changed {
                 let core = state.core.clone();
                 tokio::task::spawn_blocking(move || core.prune_clipboard());
             }
-            // 改了录音音频保留天数：立即按新天数删一次过期音频（永久保留时什么都不做）
-            if body.get("audio_retention_days").is_some() {
+            // 录音音频保留天数的值变了：立即按新天数删一次过期音频（永久保留时什么都不做）
+            if outcome.audio_retention_changed {
                 let core = state.core.clone();
                 tokio::task::spawn_blocking(move || core.prune_record_audio());
             }

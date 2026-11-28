@@ -482,11 +482,23 @@ const EXTRA_HOTKEY_FIELDS: &[(HotkeyAction, &str, &str)] = &[
     (HotkeyAction::CyclePreset, "cycle_preset_hotkey", "cycle_preset_enabled"),
 ];
 
-/// 设置更新结果：变更的运行时键（供上层触发停服务/重建 provider）。
+/// 设置更新结果：值真正变化的运行时键、清理相关的键（供上层触发重载模型 / 清理）。
+///
+/// 前端自动保存每次都提交整份表单，所以这里只看应用前后的值，不看请求里有没有这个键：
+/// 否则改任何一个开关都会把已经空闲释放的本地模型重新载入内存，并多跑两次清理。
 #[derive(Debug, Default)]
 pub struct SettingsUpdate {
     pub runtime_keys_changed: Vec<&'static str>,
     pub restart_hotkey_backend: bool,
+    /// `clipboard_max_items` / `clipboard_retention_days` 的值变了：按新上限清理一次剪贴板历史
+    pub clipboard_limits_changed: bool,
+    /// `audio_retention_days` 的值变了：按新天数清理一次过期录音
+    pub audio_retention_changed: bool,
+}
+
+/// 应用前后某个设置键的值是否不同（按落盘的 JSON 形式比较，键名即 settings.json 字段名）。
+fn setting_changed(before: &Value, after: &Value, key: &str) -> bool {
+    before.get(key) != after.get(key)
 }
 
 /// 应用 PUT /api/settings 请求体。
@@ -505,6 +517,8 @@ pub fn apply_settings_update(
     let body = json_store::ensure_object(body.clone());
     let map = body.as_object().ok_or("请求体必须是对象")?;
     let mut outcome = SettingsUpdate::default();
+    // 应用前的快照：结尾逐键比较，只有值真正变化的键才算变更
+    let before = serde_json::to_value(&*settings).map_err(|e| format!("读取当前设置失败: {e}"))?;
 
     // 整组绑定先落：前端常把 GET 回来的 hotkeys 原样带回，
     // 若按键名顺序在 hotkey / clipboard_panel_* 之后处理，会把同一请求里的改键覆盖回旧值
@@ -772,12 +786,6 @@ pub fn apply_settings_update(
             // 未知键：静默丢弃（契约如此）
             _ => {}
         }
-
-        if MODEL_RUNTIME_KEYS.contains(&key.as_str()) {
-            outcome
-                .runtime_keys_changed
-                .push(MODEL_RUNTIME_KEYS.iter().find(|k| **k == key.as_str()).copied().unwrap_or(""));
-        }
     }
 
     // 所有启用的绑定都必须符合设置页录入规则；默认空的动作只能在录入组合键后启用
@@ -803,6 +811,13 @@ pub fn apply_settings_update(
             return Err(format!("{}的快捷键与{}快捷键相同，请换一个", later.action.label(), earlier.action.label()));
         }
     }
+
+    let after = serde_json::to_value(&*settings).map_err(|e| format!("读取更新后的设置失败: {e}"))?;
+    outcome.runtime_keys_changed =
+        MODEL_RUNTIME_KEYS.iter().copied().filter(|key| setting_changed(&before, &after, key)).collect();
+    outcome.clipboard_limits_changed =
+        ["clipboard_max_items", "clipboard_retention_days"].iter().any(|key| setting_changed(&before, &after, key));
+    outcome.audio_retention_changed = setting_changed(&before, &after, "audio_retention_days");
 
     Ok(outcome)
 }
@@ -1127,7 +1142,8 @@ mod tests {
             "deepseek_asr_timeout_seconds": 90,
         });
         let outcome = apply_settings_update(&mut settings, &body, Platform::Windows, &crypto).unwrap();
-        assert!(outcome.runtime_keys_changed.contains(&"deepseek_asr_endpoint"));
+        // 接入点与默认值相同：值没变，不算运行时变更
+        assert!(!outcome.runtime_keys_changed.contains(&"deepseek_asr_endpoint"));
         assert!(outcome.runtime_keys_changed.contains(&"deepseek_asr_timeout_seconds"));
         assert_eq!(settings.deepseek_asr_timeout_seconds, 90);
         let cipher = settings.deepseek_asr_api_key_encrypted.clone().unwrap();
@@ -1385,6 +1401,61 @@ mod tests {
     }
 
     #[test]
+    fn 运行时键与清理键都是落盘字段名() {
+        let saved = serde_json::to_value(UserSettings::with_platform(Platform::Windows)).unwrap();
+        for key in MODEL_RUNTIME_KEYS.iter().chain(&[
+            "clipboard_max_items",
+            "clipboard_retention_days",
+            "audio_retention_days",
+        ]) {
+            assert!(saved.get(*key).is_some(), "{key} 不在 settings.json 里，按值比较会永远判成没变");
+        }
+    }
+
+    #[test]
+    fn 提交与当前相同的值_不算运行时变更也不触发清理() {
+        let dir = temp_dir("unchanged");
+        let crypto = Crypto::load_or_create(&dir).unwrap();
+        let mut settings = UserSettings::with_platform(Platform::Windows);
+        settings.asr_provider = "whisper".into();
+        // 前端自动保存提交整份表单：运行时键和保留期键全部原样带回
+        let current = serde_json::to_value(&settings).unwrap();
+        let mut body = serde_json::Map::new();
+        for key in MODEL_RUNTIME_KEYS.iter().chain(&[
+            "clipboard_max_items",
+            "clipboard_retention_days",
+            "audio_retention_days",
+        ]) {
+            body.insert((*key).to_string(), current[*key].clone());
+        }
+        body.insert("auto_copy_to_clipboard".into(), json!(!settings.auto_copy_to_clipboard));
+        let outcome = apply_settings_update(&mut settings, &Value::Object(body), Platform::Windows, &crypto).unwrap();
+        assert!(outcome.runtime_keys_changed.is_empty(), "{:?}", outcome.runtime_keys_changed);
+        assert!(!outcome.clipboard_limits_changed && !outcome.audio_retention_changed);
+
+        let outcome = apply_settings_update(
+            &mut settings,
+            &json!({ "whisper_model": "small", "asr_provider": "whisper", "audio_retention_days": 7 }),
+            Platform::Windows,
+            &crypto,
+        )
+        .unwrap();
+        assert_eq!(outcome.runtime_keys_changed, vec!["whisper_model"], "只报值真正变化的键");
+        assert!(outcome.audio_retention_changed && !outcome.clipboard_limits_changed);
+
+        let outcome = apply_settings_update(
+            &mut settings,
+            &json!({ "clipboard_retention_days": 30 }),
+            Platform::Windows,
+            &crypto,
+        )
+        .unwrap();
+        assert!(outcome.clipboard_limits_changed && !outcome.audio_retention_changed);
+        assert!(outcome.runtime_keys_changed.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn sensevoice_设置项进入运行时白名单并夹取线程数() {
         let dir = temp_dir("sensevoice");
         let crypto = Crypto::load_or_create(&dir).unwrap();
@@ -1403,9 +1474,10 @@ mod tests {
         assert_eq!(settings.sense_voice_model, "sense-voice-zh-en-ja-ko-yue-int8");
         assert!(!settings.sense_voice_use_itn);
         assert_eq!(settings.sense_voice_num_threads, 16);
-        for key in ["sense_voice_model", "sense_voice_use_itn", "sense_voice_num_threads"] {
+        for key in ["sense_voice_use_itn", "sense_voice_num_threads"] {
             assert!(outcome.runtime_keys_changed.contains(&key), "{key}");
         }
+        assert!(!outcome.runtime_keys_changed.contains(&"sense_voice_model"), "模型与默认值相同，值没变");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
