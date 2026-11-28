@@ -10,6 +10,7 @@ use att_core::settings::hotkey::ModSet;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(any(target_os = "macos", windows))]
 use std::time::Duration;
 
 /// 监听能不能吞掉命中的主键（macOS 有「辅助功能」权限时装的是可拦截监听；Windows 低级钩子总能吞）。
@@ -152,10 +153,12 @@ impl Shared {
         self.with_matchers(Source::Key, hid, |m| m.on_key(raw, hid, down))
     }
 
+    #[cfg(any(target_os = "macos", windows))]
     fn resync(&self, physical: ModSet) {
         self.with_matchers(Source::Resync, None, |m| m.resync(physical));
     }
 
+    #[cfg(any(target_os = "macos", windows))]
     fn is_latched(&self) -> bool {
         self.matchers.lock().map(|m| m.values().any(Matcher::is_latched)).unwrap_or(false)
     }
@@ -174,7 +177,10 @@ pub fn physical_modifiers() -> Option<ModSet> {
 /// 启动全局键盘监听。失败（无权限/平台不支持）返回可直接展示的中文原因。
 pub fn start(bindings: BindingSource, sink: EventSink) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", windows)))]
-    return Err("当前平台暂不支持全局快捷键（Linux 将在后续版本接入）".into());
+    {
+        let _ = (bindings, sink);
+        return Err("当前平台暂不支持全局快捷键（Linux 将在后续版本接入）".into());
+    }
 
     #[cfg(any(target_os = "macos", windows))]
     {
