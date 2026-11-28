@@ -106,23 +106,51 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
-      - name: 确保 Release 存在
+      - name: 检出标签
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - name: 生成最终版本说明
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="$(git tag -l --format='%(contents:body)' "$RELEASE_TAG")"
+          {
+            if [ -n "$notes" ]; then
+              printf '%s\n\n' "$notes"
+            fi
+            cat <<'EOF'
+          ## 安装
+          - **macOS（Apple Silicon）**：下载 `.dmg`。安装包未签名，首次打开若提示「无法验证开发者」，到「系统设置 → 隐私与安全性」点「仍要打开」。
+            全局快捷键与自动粘贴需要在「隐私与安全性」里给本应用「输入监控」和「辅助功能」权限。
+          - **Windows（x64）**：下载 `.exe`（推荐）或 `.msi`。安装包未签名，SmartScreen 提示时选「更多信息 → 仍要运行」。
+
+          已安装的版本支持应用内更新时（「设置 → 关于」检查更新后出现「重启并更新」），直接在应用里更新即可，无需下载安装包。
+
+          本地识别模型不随包，按设置页「识别引擎」的提示下载。
+          EOF
+          } > "$RUNNER_TEMP/release-body.md"
+
+      - name: 创建或更新 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG 已存在，复用。"
+            echo "更新已有 Release $RELEASE_TAG 的版本说明。"
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --notes-file "$RUNNER_TEMP/release-body.md"
           else
-            echo "为 $RELEASE_TAG 创建 Release……"
-            # 并发或重试时可能已被别人创建：create 失败（已存在）就再查一次确认，视为成功。
+            echo "用最终版本说明创建 Release $RELEASE_TAG。"
             gh release create "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "$RELEASE_TAG" \
-              --notes "安装包正在构建，完成后会自动写入发布说明。" \
-              || gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+              --notes-file "$RUNNER_TEMP/release-body.md"
           fi
 
   build:
@@ -143,6 +171,8 @@ jobs:
     timeout-minutes: 150
     env:
       RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      # 发布产物固定 CPU + int8，不跟随 runner 是否预装 CUDA Toolkit。
+      ATT_CPU: '1'
     steps:
       - name: 检出代码
         uses: actions/checkout@v4

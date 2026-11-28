@@ -5,6 +5,7 @@ import {
   assetKeyForTarget,
   isLibraryFile,
   loadManifest,
+  targetTripleForBuild,
   validateManifest
 } from '../scripts/prepare-sherpa-onnx.mjs'
 
@@ -28,6 +29,19 @@ assert.equal(assetKeyForTarget('', 'win32', 'x64'), 'windows-x64')
 assert.throws(() => assetKeyForTarget('aarch64-pc-windows-msvc'), /不支持/)
 assert.throws(() => assetKeyForTarget('aarch64-unknown-linux-gnu'), /不支持/)
 
+assert.equal(targetTripleForBuild('', { TAURI_ENV_TARGET_TRIPLE: ' x86_64-pc-windows-msvc ' }), 'x86_64-pc-windows-msvc')
+assert.equal(
+  assetKeyForTarget(targetTripleForBuild('', { TAURI_ENV_TARGET_TRIPLE: 'x86_64-pc-windows-msvc' }), 'darwin', 'arm64'),
+  'windows-x64',
+  'Tauri 注入的目标平台优先于宿主平台'
+)
+assert.equal(
+  targetTripleForBuild('aarch64-apple-darwin', { TAURI_ENV_TARGET_TRIPLE: 'x86_64-pc-windows-msvc' }),
+  'aarch64-apple-darwin',
+  '显式 --target 优先于环境变量'
+)
+assert.equal(targetTripleForBuild('', {}), '')
+
 assert.equal(isLibraryFile('windows-x64', 'sherpa-onnx-c-api.dll'), true)
 assert.equal(isLibraryFile('windows-x64', 'onnxruntime.dll'), true)
 assert.equal(isLibraryFile('windows-x64', 'LICENSE'), false)
@@ -42,5 +56,11 @@ assert.throws(() => validateManifest({ ...manifest, assets: { ...manifest.assets
 const tauriConfig = JSON.parse(fs.readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'))
 assert.equal(tauriConfig.bundle.resources['resources/sherpa-onnx/'], 'sherpa-onnx/')
 assert.equal(tauriConfig.build.beforeBuildCommand, 'npm run prepare:sherpa && npm run build')
+
+const releaseWorkflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8')
+assert.match(releaseWorkflow, /ATT_CPU: '1'/, '发布产物必须固定 CPU 变体')
+assert.match(releaseWorkflow, /gh release edit[\s\S]*--notes-file/, '已有 Release 要用最终正文更新')
+assert.match(releaseWorkflow, /gh release create[\s\S]*--notes-file/, '新建 Release 要直接写入最终正文')
+assert.doesNotMatch(releaseWorkflow, /安装包正在构建，完成后会自动写入发布说明/, '不得留下占位正文')
 
 console.log('[sherpa-packaging] 全部断言通过')

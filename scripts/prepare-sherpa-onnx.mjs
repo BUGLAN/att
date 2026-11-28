@@ -42,6 +42,11 @@ export function assetKeyForTarget(target = '', platform = process.platform, arch
   throw new Error(`当前构建平台没有对应的 sherpa-onnx 资产：${platform}/${arch}`)
 }
 
+/** 显式 --target 优先，其次读取 Tauri beforeBuildCommand 注入的目标三元组。 */
+export function targetTripleForBuild(explicitTarget = '', env = process.env) {
+  return String(explicitTarget ?? '').trim() || String(env?.TAURI_ENV_TARGET_TRIPLE ?? '').trim()
+}
+
 export function isLibraryFile(key, name) {
   const lower = name.toLowerCase()
   if (key === 'windows-x64') return lower.endsWith('.dll')
@@ -245,7 +250,8 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   const manifest = loadManifest()
-  const key = assetKeyForTarget(args.target)
+  const target = targetTripleForBuild(args.target)
+  const key = assetKeyForTarget(target)
   const asset = manifest.assets[key]
   if (alreadyPrepared(args.output, manifest, key, asset)) {
     console.log(`sherpa-onnx ${manifest.version} 已就绪：${args.output}`)
