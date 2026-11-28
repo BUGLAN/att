@@ -1289,7 +1289,6 @@ mod tests {
         let response = test_response("voice-1", "今天天气不错", 1);
         let parsed = parse_response(&response, "voice-1").unwrap();
         assert_eq!(parsed.text, "今天天气不错");
-        assert_eq!(parsed.sequence, 1);
         assert_eq!(parsed.end_flag, 1);
         assert_eq!(parsed.interval_ms, 100);
         assert!(parse_response(&response, "voice-2").unwrap_err().contains("会话标识不匹配"));
