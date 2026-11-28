@@ -107,20 +107,6 @@ impl Default for Record {
 }
 
 impl Record {
-    /// GET /api/records/{id}/status 的最小载荷（前端轮询契约）。
-    pub fn status_view(&self) -> serde_json::Value {
-        serde_json::json!({
-            "record_id": self.id,
-            "status": self.status.as_str(),
-            "raw_text": self.raw_text,
-            "optimized_text": self.optimized_text,
-            "duration": self.duration,
-            "processing_time": self.processing_time,
-            "optimize_time": self.optimize_time,
-            "is_favorite": self.is_favorite,
-        })
-    }
-
     /// 时间排序键：RFC3339 与 Python 旧版无时区格式都按绝对时间排序。
     fn sort_key(&self) -> (i64, String) {
         let parsed = parse_record_time(&self.created_at).map(|t| t.timestamp_micros()).unwrap_or(0);

@@ -1,4 +1,4 @@
-//! 剪贴板历史路由（契约同 Python `app/clipboard/routes.py`）。
+//! 剪贴板历史路由，只提供前端正在使用的接口。
 
 // 处理函数以 `Result<_, Response>` 提前返回错误响应是 axum 惯用写法
 #![allow(clippy::result_large_err)]
@@ -9,7 +9,7 @@ use att_core::events::AppEvent;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -21,7 +21,7 @@ pub fn routes() -> Router<Arc<ServerState>> {
     Router::new()
         .route("/api/clipboard/items", get(list).post(create).delete(remove_many))
         .route("/api/clipboard/stats", get(stats))
-        .route("/api/clipboard/items/{id}", get(item).put(update).delete(remove))
+        .route("/api/clipboard/items/{id}", put(update).delete(remove))
         .route("/api/clipboard/items/{id}/image", get(image))
         .route("/api/clipboard/items/{id}/thumbnail", get(thumbnail))
 }
@@ -114,10 +114,6 @@ async fn remove_many(State(state): Shared, body: Option<Json<Value>>) -> Result<
         state.core.events.publish(AppEvent::ClipboardRemoved { count: count as usize });
     }
     Ok(Json(reply))
-}
-
-async fn item(State(state): Shared, Path(id): Path<String>) -> Result<Json<Value>, Response> {
-    state.core.clipboard.get(&id).map(|i| Json(json!(i))).ok_or_else(|| detail(StatusCode::NOT_FOUND, NOT_FOUND))
 }
 
 async fn update(

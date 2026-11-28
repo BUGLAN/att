@@ -9,14 +9,14 @@
 //!
 //! 端点一览：
 //! - GET /api/health（前端 runtimeStatus：model_service_* 与 streaming_*）
-//! - GET/PUT /api/settings（白名单/脱敏契约保真）
+//! - GET/PUT /api/settings（白名单与脱敏）
 //! - GET /api/settings/api-token（诊断页显式显示 / 复制持久令牌，禁止缓存）
 //! - /api/records 全套（裸数组响应、乐观锁 409、音频播放、导出、重新识别）；
 //!   搜索支持状态与本地日期筛选，/api/records/export 批量导出（Markdown / TXT / JSON / CSV）
 //! - /api/prompts：列出（内置 + 自定义）、新建 / 修改 / 删除自定义预设、PUT /api/prompts/default 设默认
-//! - /api/llm/* LLM v2 全套（服务商目录 / 档案 / 模型 / 验证，见 [`llm`]）
+//! - /api/llm/*：前端在用的服务商目录、档案写入 / 验证、模型写入 / 验证 / 启用与优化接口（见 [`llm`]）
 //! - 模型服务三端点（在线引擎凭据配齐或匿名可用即就绪；验证确定失败时不就绪）
-//! - /api/asr/credential-check：在线引擎凭据 / 匿名连通性验证（见 [`asr`]）
+//! - /api/asr/credential-check：在线引擎凭据 / 微信输入法连接验证（见 [`asr`]）
 //! - /api/update：检查更新与安装包下载（见 [`update`]）
 //! - /api/storage：数据占用统计与清理孤儿音频（见 [`storage`]）
 //! - GET /api/stats?range=7d|30d|all：按天汇总录音条数、时长、识别字数与优化 token（见 `att_core::records::stats`）
@@ -77,7 +77,6 @@ pub fn router(state: Arc<ServerState>) -> Router {
     let guard_state = state.clone();
     let maintenance_core = state.core.clone();
     Router::new()
-        .route("/", get(root))
         .route("/api/health", get(health))
         // 设置
         .route("/api/settings", get(settings_get).put(settings_put))
@@ -85,10 +84,9 @@ pub fn router(state: Arc<ServerState>) -> Router {
         // 记录
         .route("/api/records", get(records_list))
         .route("/api/records/search", get(records_search))
-        // 静态段 export 优先于 {id}；GET 供下载链接用（带不了请求体），POST 与 GET 参数等价
-        .route("/api/records/export", get(records_export_batch_get).post(records_export_batch_post))
+        // 静态段 export 优先于 {id}；GET 供下载链接用（带不了请求体）
+        .route("/api/records/export", get(records_export_batch_get))
         .route("/api/records/{id}", get(records_get).put(records_put).delete(records_delete))
-        .route("/api/records/{id}/status", get(records_status))
         .route("/api/records/{id}/audio", get(records_audio))
         .route("/api/records/{id}/export", get(records_export))
         .route("/api/records/{id}/retranscribe", post(records_retranscribe))
@@ -392,10 +390,6 @@ fn parse_usize(params: &HashMap<String, String>, key: &str, default: usize, max:
 }
 
 // ---------------- 处理器 ----------------
-
-async fn root() -> Json<Value> {
-    Json(json!({ "name": "att-server", "status": "ok", "note": "前端由 Tauri 直接服务，本端点仅供探活" }))
-}
 
 /// 引擎运行态（在线 provider 无需「开启模型」，凭据配齐即就绪）。
 struct EngineStatus {
@@ -790,63 +784,12 @@ async fn records_export_batch_get(
     export_records(state, target, format, use_optimized).await
 }
 
-/// POST /api/records/export `{ ids?: [...], query?: {同 /records/search 的筛选条件}, format, use_optimized }`：
-/// ids 与 query 二选一（query = 当前筛选的全部结果，不受分页限制）。
-async fn records_export_batch_post(
-    State(state): State<Arc<ServerState>>,
-    Json(body): Json<Value>,
-) -> axum::response::Response {
-    let format = match export_format(body.get("format").and_then(Value::as_str)) {
-        Ok(format) => format,
-        Err(response) => return response,
-    };
-    let use_optimized = body.get("use_optimized").and_then(Value::as_bool).unwrap_or(true);
-    let target = match (body.get("ids").filter(|v| !v.is_null()), body.get("query").filter(|v| !v.is_null())) {
-        (Some(ids), None) => match ids.as_array() {
-            Some(ids) if ids.iter().all(Value::is_string) => {
-                ExportTarget::Ids(ids.iter().filter_map(Value::as_str).map(String::from).collect())
-            }
-            _ => return err(StatusCode::UNPROCESSABLE_ENTITY, "ids 必须是字符串数组".into()).into_response(),
-        },
-        (None, Some(Value::Object(query))) => {
-            let params: HashMap<String, String> = query
-                .iter()
-                .filter_map(|(key, value)| match value {
-                    Value::String(text) => Some((key.clone(), text.clone())),
-                    Value::Bool(flag) => Some((key.clone(), flag.to_string())),
-                    Value::Number(number) => Some((key.clone(), number.to_string())),
-                    _ => None,
-                })
-                .collect();
-            match record_filter(&params) {
-                Ok(filter) => ExportTarget::Filter(filter),
-                Err(message) => return err(StatusCode::UNPROCESSABLE_ENTITY, message).into_response(),
-            }
-        }
-        _ => {
-            return err(StatusCode::UNPROCESSABLE_ENTITY, "ids 与 query 必须二选一（query 是筛选条件对象）".into())
-                .into_response()
-        }
-    };
-    export_records(state, target, format, use_optimized).await
-}
-
 async fn records_get(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, impl IntoResponse> {
     match state.core.records.get(&id) {
         Ok(record) => Ok(Json(serde_json::to_value(record).unwrap_or_default())),
-        Err(e) => Err(map_record_error(e)),
-    }
-}
-
-async fn records_status(
-    State(state): State<Arc<ServerState>>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, impl IntoResponse> {
-    match state.core.records.get(&id) {
-        Ok(record) => Ok(Json(record.status_view())),
         Err(e) => Err(map_record_error(e)),
     }
 }
@@ -1854,14 +1797,6 @@ mod tests {
         let (status, _) =
             request_with_body(&state, "DELETE", &format!("/api/llm/profiles/{profile_id}"), json!({})).await;
         assert_eq!(status, StatusCode::CONFLICT);
-        // fallback 显式 null = 清除；指向不存在的模型 404
-        let (status, body) =
-            request_with_body(&state, "PUT", "/api/llm/settings", json!({"fallback_model_id": null})).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["fallback_model_id"], Value::Null);
-        let (status, _) =
-            request_with_body(&state, "PUT", "/api/llm/settings", json!({"fallback_model_id": "nope"})).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
         // 校验错误：缺必填字段 422、custom 无端点 400
         let (status, _) = request_with_body(&state, "POST", "/api/llm/profiles", json!({"name": "x"})).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -1881,6 +1816,30 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(error["detail"]["manual_only"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn 前端未使用的路由已删除() {
+        let state = test_state("removed-routes").await;
+
+        let (status, _) = get_json(&state, "/").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = get_json(&state, "/api/records/rec-x/status").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, _, _) = request_raw(&state, "POST", "/api/records/export", Some(json!({}))).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        let (status, _) = get_json(&state, "/api/llm/profiles").await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        let (status, _) = get_json(&state, "/api/llm/profiles/missing").await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        let (status, _) = get_json(&state, "/api/llm/models").await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        let (status, _, _) =
+            request_raw(&state, "PUT", "/api/llm/settings", Some(json!({ "fallback_model_id": null }))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = get_json(&state, "/api/clipboard/items/missing").await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
     }
 
     /// 原样取回响应体（导出是文件，不是 JSON）。
@@ -1970,9 +1929,9 @@ mod tests {
         // 选中的几条 → Markdown
         let (status, headers, body) = request_raw(
             &state,
-            "POST",
-            "/api/records/export",
-            Some(json!({ "ids": ["rec-batch-001", "rec-batch-002"], "format": "md", "use_optimized": true })),
+            "GET",
+            "/api/records/export?ids=rec-batch-001,rec-batch-002&format=md&use_optimized=true",
+            None,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1983,13 +1942,7 @@ mod tests {
         assert!(body.contains("第 1 条") && body.contains("第 2 条"));
 
         // 当前筛选的全部结果（失败的 25 条，超过一页 10 条）→ CSV
-        let (status, _, csv) = request_raw(
-            &state,
-            "POST",
-            "/api/records/export",
-            Some(json!({ "query": { "status": "failed" }, "format": "csv" })),
-        )
-        .await;
+        let (status, _, csv) = request_raw(&state, "GET", "/api/records/export?status=failed&format=csv", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(csv.trim_end().split("\r\n").count(), 26, "表头 + 25 行");
 
@@ -2003,16 +1956,11 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(txt.matches("\n[").count() + 1, 251);
 
-        // 参数错误与空结果
-        for (body, expected) in [
-            (json!({ "ids": ["rec-batch-001"], "format": "docx" }), StatusCode::UNPROCESSABLE_ENTITY),
-            (json!({ "format": "md" }), StatusCode::UNPROCESSABLE_ENTITY),
-            (json!({ "ids": ["a"], "query": {}, "format": "md" }), StatusCode::UNPROCESSABLE_ENTITY),
-            (json!({ "ids": ["missing"], "format": "md" }), StatusCode::NOT_FOUND),
-        ] {
-            let (status, _, text) = request_raw(&state, "POST", "/api/records/export", Some(body.clone())).await;
-            assert_eq!(status, expected, "{body} → {text}");
-        }
+        // 参数错误与不存在的记录
+        let (status, _, _) = request_raw(&state, "GET", "/api/records/export?format=docx", None).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, _, _) = request_raw(&state, "GET", "/api/records/export?ids=missing&format=md", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -2286,12 +2234,12 @@ mod tests {
         assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
         assert_eq!(accepted["status"], json!("transcribing"), "受理后记录置为识别中");
 
-        // 前端沿用状态查询：轮询到状态离开 transcribing
+        // 轮询完整记录，直到状态离开 transcribing
         let mut record = Value::Null;
         for _ in 0..100 {
-            let (_, current) = get_json(&state, "/api/records/rec-audio/status").await;
+            let (_, current) = get_json(&state, "/api/records/rec-audio").await;
             if current["status"] != json!("transcribing") {
-                record = get_json(&state, "/api/records/rec-audio").await.1;
+                record = current;
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;

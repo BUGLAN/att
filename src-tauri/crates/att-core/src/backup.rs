@@ -1374,7 +1374,8 @@ mod tests {
         assert_eq!(public["doubao_asr_api_key_set"], json!(false));
         assert_eq!(public["doubao_web_timeout_seconds"], json!(30), "旧备份恢复后补齐新设置默认值");
         assert!(public.get("doubao_web_asr_api_key_set").is_none(), "匿名引擎没有凭据字段");
-        assert!(core.llm.list_profiles()[0].api_key_encrypted.is_empty());
+        let llm_overview = core.llm.overview();
+        assert!(llm_overview["profiles"][0]["api_key_encrypted"].is_null(), "公共视图不暴露密文");
         let _ = fs::remove_dir_all(&source);
         let _ = fs::remove_dir_all(&target);
     }

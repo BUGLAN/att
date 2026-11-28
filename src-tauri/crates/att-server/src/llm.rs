@@ -1,4 +1,4 @@
-//! LLM v2 路由（契约与旧 Python 版 `/api/llm/*` 一致）。
+//! LLM v2 路由，只提供前端正在使用的接口。
 //!
 //! - 只做「解析请求 → 调 store/gateway → 组装响应」，业务规则在 `att_core::llm`；
 //! - 任何响应不得包含密钥明文/密文（档案统一走 `profile_public`）；
@@ -16,7 +16,7 @@ use att_core::llm::store::{
     model_public, profile_public, DraftVerify, ModelItemCreate, ModelUpdate, ProfileCreate, ProfileUpdate, StoreError,
     VerifyStatus,
 };
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -33,16 +33,15 @@ pub fn routes() -> Router<Arc<ServerState>> {
     Router::new()
         .route("/api/llm/providers", get(providers))
         .route("/api/llm/state", get(state))
-        .route("/api/llm/profiles", get(profiles_list).post(profile_create))
-        .route("/api/llm/profiles/{id}", get(profile_get).put(profile_update).delete(profile_delete))
+        .route("/api/llm/profiles", post(profile_create))
+        .route("/api/llm/profiles/{id}", put(profile_update).delete(profile_delete))
         .route("/api/llm/profiles/{id}/verify", post(profile_verify))
         .route("/api/llm/profiles/{id}/remote-models", post(remote_models))
         .route("/api/llm/verify-draft", post(verify_draft))
-        .route("/api/llm/models", get(models_list).post(models_create))
+        .route("/api/llm/models", post(models_create))
         .route("/api/llm/models/{id}", put(model_update).delete(model_delete))
         .route("/api/llm/models/{id}/verify", post(model_verify))
         .route("/api/llm/models/{id}/activate", post(model_activate))
-        .route("/api/llm/settings", put(settings_update))
         // 记录优化（流式 NDJSON / 非流式 / 取消）
         .route("/api/records/{id}/optimize", post(record_optimize))
         .route("/api/records/{id}/optimize/stream", post(record_optimize_stream))
@@ -86,19 +85,9 @@ async fn state(State(state): Shared) -> Json<Value> {
 
 // ==================== 供应商档案 ====================
 
-async fn profiles_list(State(state): Shared) -> Json<Value> {
-    let profiles: Vec<Value> = state.core.llm.list_profiles().iter().map(profile_public).collect();
-    Json(json!({ "profiles": profiles }))
-}
-
 async fn profile_create(State(state): Shared, Json(body): Json<Value>) -> Reply {
     let request: ProfileCreate = parse(body)?;
     let profile = state.core.llm.create_profile(request).map_err(|e| store_error(e, PROFILE_NOT_FOUND, ""))?;
-    Ok(Json(profile_public(&profile)))
-}
-
-async fn profile_get(State(state): Shared, Path(id): Path<String>) -> Reply {
-    let profile = state.core.llm.get_profile(&id).ok_or_else(|| detail(StatusCode::NOT_FOUND, PROFILE_NOT_FOUND))?;
     Ok(Json(profile_public(&profile)))
 }
 
@@ -173,16 +162,6 @@ async fn verify_draft(Json(body): Json<Value>) -> Reply {
 // ==================== 模型条目 ====================
 
 #[derive(Deserialize)]
-struct ModelsQuery {
-    profile_id: Option<String>,
-}
-
-async fn models_list(State(state): Shared, Query(query): Query<ModelsQuery>) -> Json<Value> {
-    let models: Vec<Value> = state.core.llm.list_models(query.profile_id.as_deref()).iter().map(model_public).collect();
-    Json(json!({ "models": models }))
-}
-
-#[derive(Deserialize)]
 struct ModelsBatchCreate {
     items: Vec<ModelItemCreate>,
 }
@@ -239,27 +218,6 @@ async fn model_verify(State(state): Shared, Path(id): Path<String>) -> Reply {
 async fn model_activate(State(state): Shared, Path(id): Path<String>) -> Reply {
     state.core.llm.set_default_model(&id).map_err(|e| store_error(e, MODEL_NOT_FOUND, ""))?;
     Ok(Json(json!({ "status": "updated", "default_model_id": id })))
-}
-
-/// 更新默认/备用模型绑定；fallback 显式传 null 表示清除。
-async fn settings_update(State(state): Shared, Json(body): Json<Value>) -> Reply {
-    let store = &state.core.llm;
-    if let Some(default_id) = body.get("default_model_id").and_then(Value::as_str) {
-        store.set_default_model(default_id).map_err(|e| store_error(e, "默认模型不存在", ""))?;
-    }
-    if let Some(fallback) = body.get("fallback_model_id") {
-        let fallback_id = match fallback {
-            Value::Null => None,
-            Value::String(id) => Some(id.as_str()),
-            _ => return Err(detail(StatusCode::UNPROCESSABLE_ENTITY, "fallback_model_id 必须是字符串或 null")),
-        };
-        store.set_fallback_model(fallback_id).map_err(|e| store_error(e, "备用模型不存在", ""))?;
-    }
-    Ok(Json(json!({
-        "status": "updated",
-        "default_model_id": store.default_model_id(),
-        "fallback_model_id": store.fallback_model_id(),
-    })))
 }
 
 // ==================== 记录优化 ====================

@@ -42,7 +42,7 @@ src-tauri/
   crates/att-qwen/     本地 Qwen3-ASR：sherpa-onnx C API（运行期 dlopen）+ ONNX 模型；C 桥见 src/shim.c，
                        推理库版本/哈希见 vendor/sherpa-onnx-libs.json
   crates/att-storage/  无业务依赖的原子文件 / JSON 原语，供 att-core 与本地引擎共用
-  crates/att-server/   axum 数据面（仅回环），HTTP 契约与旧 Python 版一致
+  crates/att-server/   axum 数据面（仅回环），只提供前端在用的接口和 README 写明的外部转写接口
   crates/att-audio/    cpal 麦克风采集
   crates/att-hotkey/   全局热键（macOS CGEventTap / Windows RegisterHotKey + WH_KEYBOARD_LL）
 src/                   Vue 前端；桌面能力只经 composables/useElectron.js，HTTP 只经 api/client.js

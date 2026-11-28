@@ -69,7 +69,6 @@
               <div class="llm-model-name">
                 <span class="llm-ellipsis">{{ model.display_name || model.model }}</span>
                 <span v-if="model.id === defaultModelId" class="llm-chip llm-chip-gold">默认优化</span>
-                <span v-else-if="model.id === fallbackModelId" class="llm-chip">备用</span>
               </div>
               <div class="llm-model-meta">
                 <span class="mono llm-model-string llm-ellipsis" :title="model.model">{{ model.model }}</span>
@@ -111,18 +110,11 @@
       </article>
     </div>
 
-    <!-- 默认 / 备用摘要：两项并排，与上方卡片同一套表面层级 -->
+    <!-- 默认模型摘要：与上方卡片同一套表面层级 -->
     <dl class="llm-summary">
       <div class="llm-summary-item">
         <dt>默认优化模型</dt>
         <dd :class="{ 'is-unset': !defaultModel }">{{ defaultModel?.display_name || defaultModel?.model || '未设置' }}</dd>
-      </div>
-      <div class="llm-summary-item">
-        <dt>备用模型</dt>
-        <dd :class="{ 'is-unset': !fallbackModelLabel }">
-          {{ fallbackModelLabel || '未设置' }}
-          <span v-if="fallbackModelLabel" class="llm-summary-note">默认模型失败时自动切换</span>
-        </dd>
       </div>
     </dl>
 
@@ -177,12 +169,6 @@ const {
   deleteModel,
   deleteProfile
 } = useLLMService()
-
-const fallbackModelId = computed(() => settingsStore.llmFallbackModelId)
-const fallbackModelLabel = computed(() => {
-  const fallback = models.value.find((model) => model.id === fallbackModelId.value)
-  return fallback ? (fallback.display_name || fallback.model) : ''
-})
 
 const groups = computed(() => groupModelsByProfile(profiles.value, models.value))
 // 正在验证的档案 / 模型 id：图标按钮没有文字，靠转圈告诉用户请求已发出
@@ -467,20 +453,18 @@ async function confirmDeleteModel() {
 .llm-model-empty .llm-btn-link { color: var(--accent-hi); }
 .llm-model-empty .llm-btn-link:hover:not(:disabled) { color: var(--accent-hi); background: var(--accent-faint); }
 
-/* ---------- 默认 / 备用摘要：一条两格的信息条，窄时上下叠放 ---------- */
+/* ---------- 默认模型摘要 ---------- */
 .llm-summary {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr); margin: 0;
   border: 1px solid var(--line); border-radius: var(--r-md);
 }
 .llm-summary-item { padding: 10px var(--s-4); min-width: 0; }
-.llm-summary-item + .llm-summary-item { border-left: 1px solid var(--line); }
 .llm-summary-item dt { font-size: var(--fs-cap); color: var(--text-3); }
 .llm-summary-item dd {
   margin: 2px 0 0; font-size: var(--fs-sm); font-weight: 600; color: var(--text-1);
   display: flex; align-items: baseline; flex-wrap: wrap; column-gap: var(--s-2);
 }
 .llm-summary-item dd.is-unset { color: var(--text-2); font-weight: 500; }
-.llm-summary-note { font-size: var(--fs-cap); font-weight: 400; color: var(--text-3); }
 
 .llm-ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mono { font-family: var(--font-mono); }
@@ -501,7 +485,5 @@ async function confirmDeleteModel() {
   .llm-profile-head > .llm-status,
   .llm-model-row > .llm-status { margin-top: 6px; }
   .llm-profile-card { --llm-indent: var(--s-4); }
-  .llm-summary { grid-template-columns: minmax(0, 1fr); }
-  .llm-summary-item + .llm-summary-item { border-left: none; border-top: 1px solid var(--line); }
 }
 </style>

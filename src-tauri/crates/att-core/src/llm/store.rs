@@ -417,22 +417,12 @@ impl LlmStore {
             "profiles": inner.data.profiles.iter().map(profile_public).collect::<Vec<_>>(),
             "models": inner.data.models.iter().map(model_public).collect::<Vec<_>>(),
             "default_model_id": inner.data.default_model_id,
-            "fallback_model_id": inner.data.fallback_model_id,
             "skipped_entries": inner.skipped,
         })
     }
 
-    pub fn list_profiles(&self) -> Vec<ProviderProfile> {
-        self.lock().data.profiles.clone()
-    }
-
     pub fn get_profile(&self, id: &str) -> Option<ProviderProfile> {
         self.lock().data.profiles.iter().find(|p| p.id == id).cloned()
-    }
-
-    pub fn list_models(&self, profile_id: Option<&str>) -> Vec<ModelEntry> {
-        let inner = self.lock();
-        inner.data.models.iter().filter(|m| profile_id.map(|p| m.profile_id == p).unwrap_or(true)).cloned().collect()
     }
 
     pub fn get_model(&self, id: &str) -> Option<ModelEntry> {
@@ -442,10 +432,6 @@ impl LlmStore {
     pub fn default_model_id(&self) -> Option<String> {
         let inner = self.lock();
         inner.data.default_model_id.clone().or_else(|| inner.data.models.first().map(|m| m.id.clone()))
-    }
-
-    pub fn fallback_model_id(&self) -> Option<String> {
-        self.lock().data.fallback_model_id.clone()
     }
 
     // ==================== 档案 ====================
@@ -674,19 +660,6 @@ impl LlmStore {
         })
     }
 
-    /// None = 清除备用模型（失败不自动切换）。
-    pub fn set_fallback_model(&self, id: Option<&str>) -> Result<(), StoreError> {
-        self.mutate(|data| {
-            if let Some(id) = id {
-                if !data.models.iter().any(|m| m.id == id) {
-                    return Err(StoreError::NotFound);
-                }
-            }
-            data.fallback_model_id = id.map(str::to_string);
-            Ok(())
-        })
-    }
-
     /// 解析可调用三元组（模型、档案、明文密钥）；model_id 为空时取默认模型。
     pub fn resolve_runtime(&self, model_id: Option<&str>) -> Result<RuntimeTarget, LlmError> {
         let model_id = model_id.map(str::to_string).or_else(|| self.default_model_id());
@@ -729,7 +702,7 @@ fn heal_custom_model_strings(data: &mut StoreData) -> bool {
     changed
 }
 
-/// default/fallback 指向不存在的模型时自动回落。
+/// default 或保留在旧数据里的 fallback 指向不存在的模型时自动回落。
 fn repair_bindings(data: &mut StoreData) -> bool {
     let valid = |id: &Option<String>| id.as_ref().map(|id| data.models.iter().any(|m| &m.id == id)).unwrap_or(false);
     let mut changed = false;
@@ -915,7 +888,7 @@ mod tests {
 
         // 重新加载：文件格式可读回
         let reloaded = LlmStore::load(&dir, crypto(&dir));
-        assert_eq!(reloaded.list_models(None).len(), 1);
+        assert_eq!(reloaded.overview()["models"].as_array().unwrap().len(), 1);
         let target = reloaded.resolve_runtime(None).unwrap();
         assert_eq!(target.api_key, "sk-1234567890abcd");
 
@@ -1014,18 +987,60 @@ mod tests {
         assert!(!dir.join(LEGACY_FILE_NAME).exists());
         assert!(dir.join("llm_configs.json.v1.bak").exists());
 
-        let profiles = store.list_profiles();
+        let overview = store.overview();
+        let profiles = overview["profiles"].as_array().unwrap();
         assert_eq!(profiles.len(), 2, "同 key 同端点的两条配置聚合为一个档案");
-        assert_eq!(store.decrypt_key(&profiles[0]).unwrap(), "sk-legacy-key-0001");
-        assert_eq!(profiles[1].status.state, "decrypt_failed");
-        let models = store.list_models(None);
+        let first_profile = store.get_profile(profiles[0]["id"].as_str().unwrap()).unwrap();
+        let second_profile = store.get_profile(profiles[1]["id"].as_str().unwrap()).unwrap();
+        assert_eq!(store.decrypt_key(&first_profile).unwrap(), "sk-legacy-key-0001");
+        assert_eq!(second_profile.status.state, "decrypt_failed");
+        let models = overview["models"].as_array().unwrap();
         assert_eq!(models.len(), 3);
-        assert_eq!(models[0].model, "deepseek/deepseek-chat");
-        assert_eq!(models[0].params.max_tokens, 2048);
+        assert_eq!(models[0]["model"], "deepseek/deepseek-chat");
+        assert_eq!(models[0]["params"]["max_tokens"], 2048);
         // 显示名取各自条目的名字（Python 版这里会沿用上一条的名字）
-        assert_eq!(models[1].display_name, "第二个");
-        assert_eq!(store.default_model_id().as_deref(), Some(models[1].id.as_str()));
-        assert_eq!(store.overview()["skipped_entries"].as_array().unwrap().len(), 1);
+        assert_eq!(models[1]["display_name"], "第二个");
+        assert_eq!(store.default_model_id().as_deref(), models[1]["id"].as_str());
+        assert_eq!(overview["skipped_entries"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 旧数据里的备用模型字段在保存后原样保留() {
+        let dir = temp_dir("fallback-compat");
+        let store = LlmStore::load(&dir, crypto(&dir));
+        let profile = store
+            .create_profile(ProfileCreate {
+                provider: "deepseek".into(),
+                name: "兼容测试".into(),
+                api_key: String::new(),
+                api_base: None,
+                extra_headers: BTreeMap::new(),
+                extra_query: BTreeMap::new(),
+            })
+            .unwrap();
+        let (created, _) = store
+            .create_models(vec![ModelItemCreate {
+                profile_id: profile.id,
+                model: "deepseek-chat".into(),
+                display_name: String::new(),
+                params: None,
+                set_default: true,
+            }])
+            .unwrap();
+        let model_id = created[0].id.clone();
+
+        let path = dir.join(STORE_FILE_NAME);
+        let mut persisted: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        persisted["fallback_model_id"] = json!(model_id);
+        std::fs::write(&path, serde_json::to_string(&persisted).unwrap()).unwrap();
+
+        let reloaded = LlmStore::load(&dir, crypto(&dir));
+        assert!(reloaded.overview().get("fallback_model_id").is_none(), "公共视图不再暴露备用模型");
+        reloaded.set_default_model(created[0].id.as_str()).unwrap();
+
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["fallback_model_id"], json!(created[0].id), "旧字段写入时原样保留");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

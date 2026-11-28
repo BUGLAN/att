@@ -47,7 +47,7 @@ export const SETTINGS_SECTIONS = Object.freeze([
     group: 'AI',
     label: 'LLM 服务',
     desc: '供应商档案与模型，决定「AI 优化」与文件校对用哪个模型。',
-    keywords: ['llm', '供应商', '模型', 'deepseek', 'openai', 'api key', '默认模型', '备用模型', '思考强度']
+    keywords: ['llm', '供应商', '模型', 'deepseek', 'openai', 'api key', '默认模型', '思考强度']
   },
   {
     id: 'presets',

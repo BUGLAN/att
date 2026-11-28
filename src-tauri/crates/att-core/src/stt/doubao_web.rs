@@ -470,17 +470,6 @@ async fn connect_gateway(config: &DoubaoWebConfig, context: &GuestContext) -> Re
     }
 }
 
-/// 只做游客初始化与 WebSocket 握手，不创建任务、不推音频。
-pub async fn check_connection(config: &DoubaoWebConfig) -> Result<(), DoubaoWebError> {
-    config.ensure()?;
-    let context = bootstrap_guest(config.timeout).await?;
-    let mut stream = connect_gateway(config, &context).await?;
-    let _ =
-        timeout(Duration::from_secs(1), stream.close(Some(CloseFrame { code: CloseCode::Normal, reason: "".into() })))
-            .await;
-    Ok(())
-}
-
 struct SessionClient {
     writer: WsWriter,
     reader: WsReader,

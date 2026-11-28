@@ -225,7 +225,6 @@ export const useSettingsStore = defineStore('settings', () => {
   const llmModels = ref([])
   const llmProviders = ref([])
   const llmDefaultModelId = ref(null)
-  const llmFallbackModelId = ref(null)
   const llmSkippedEntries = ref([])
   // 向导/编辑弹窗的当前编辑目标（与旧 currentLLMConfig 同一套模式）
   const currentLLMProfile = ref(null)
@@ -577,7 +576,6 @@ export const useSettingsStore = defineStore('settings', () => {
       llmProfiles.value = result.profiles || []
       llmModels.value = result.models || []
       llmDefaultModelId.value = result.default_model_id || null
-      llmFallbackModelId.value = result.fallback_model_id || null
       llmSkippedEntries.value = result.skipped_entries || []
       return result
     } catch (e) {
@@ -670,7 +668,6 @@ export const useSettingsStore = defineStore('settings', () => {
     llmModels,
     llmProviders,
     llmDefaultModelId,
-    llmFallbackModelId,
     llmSkippedEntries,
     llmDefaultModel,
     currentLLMProfile,
