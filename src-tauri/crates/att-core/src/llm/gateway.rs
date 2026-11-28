@@ -182,7 +182,7 @@ pub async fn chat(
 }
 
 fn is_transient(error: &LlmError) -> bool {
-    matches!(error.code, CODE_NETWORK | CODE_TIMEOUT | CODE_PROVIDER)
+    error.retryable()
 }
 
 fn log_success(model_string: &str, result: &ChatResult, options: &ChatOptions) {
@@ -391,8 +391,8 @@ const STREAM_USAGE_GRACE: Duration = Duration::from_millis(1500);
 ///
 /// 收到协议内的结束事件即视为完整：OpenAI 兼容流这时还没给用量的，再短暂读一会儿尾部的 usage 事件，
 /// 等不到、连接断开都按已完成返回（只是没有用量）。
-/// 看门狗：开流后 `first_token` 内必须收到首条正文增量，之后相邻增量间隔不超过 `chunk_idle`；
-/// 总时长受 `options.timeout` 约束。思考增量（reasoning_content / thinking）不计入正文。
+/// 看门狗：开流后 `first_token` 内必须收到首条任意增量，之后相邻增量间隔不超过 `chunk_idle`；
+/// 总时长受 `options.timeout` 约束。思考增量计入活动时间，但不作为正文回传。
 pub async fn chat_stream(
     endpoint: &Endpoint,
     model_string: &str,
@@ -407,7 +407,7 @@ pub async fn chat_stream(
     let mut result = ChatResult::default();
     let mut buffer: Vec<u8> = Vec::new();
     let mut deadline = Instant::now() + budget.first_token;
-    let mut got_text = false;
+    let mut got_increment = false;
     let mut done = false;
     // 已收到结束事件、正在等尾部用量（之后超时 / 断开都按完成处理）
     let mut ended = false;
@@ -416,7 +416,7 @@ pub async fn chat_stream(
         let now = Instant::now();
         let chunk = match tokio::time::timeout(deadline.saturating_duration_since(now), response.chunk()).await {
             Err(_) | Ok(Err(_)) if ended => break,
-            Err(_) if got_text => {
+            Err(_) if got_increment => {
                 return Err(LlmError::new(
                     CODE_TIMEOUT,
                     format!("流式输出中断（超过 {} 秒没有新内容）", budget.chunk_idle.as_secs()),
@@ -450,11 +450,13 @@ pub async fn chat_stream(
                     .unwrap_or_else(|| message.to_string());
                 return Err(LlmError::new(CODE_PROVIDER, redact_secrets(&text, &endpoint.secrets())));
             }
-            let delta = parse_stream_event(endpoint.spec.protocol, &event, &mut result);
+            let (delta, active) = parse_stream_event(endpoint.spec.protocol, &event, &mut result);
+            if active {
+                got_increment = true;
+            }
             if let Some(text) = delta.filter(|t| !t.is_empty()) {
                 result.text.push_str(&text);
                 on_delta(&text);
-                got_text = true;
             }
             if ended && result.total_tokens > 0 {
                 done = true;
@@ -470,7 +472,7 @@ pub async fn chat_stream(
                 break;
             }
         }
-        if got_text && !ended {
+        if got_increment && !ended {
             deadline = Instant::now() + budget.chunk_idle;
         }
     }
@@ -498,8 +500,8 @@ fn stream_ended(protocol: Protocol, event: &Value) -> bool {
     }
 }
 
-/// 解析一条 SSE 事件：返回正文增量，并把 finish_reason / usage 记进结果。
-fn parse_stream_event(protocol: Protocol, event: &Value, result: &mut ChatResult) -> Option<String> {
+/// 解析一条 SSE 事件：返回正文增量和是否收到任意模型增量，并把 finish_reason / usage 记进结果。
+fn parse_stream_event(protocol: Protocol, event: &Value, result: &mut ChatResult) -> (Option<String>, bool) {
     let number = |pointer: &str| event.pointer(pointer).and_then(Value::as_i64);
     match protocol {
         Protocol::OpenAiCompat => {
@@ -515,25 +517,35 @@ fn parse_stream_event(protocol: Protocol, event: &Value, result: &mut ChatResult
             if let Some(tokens) = number("/usage/total_tokens") {
                 result.total_tokens = tokens;
             }
-            event.pointer("/choices/0/delta/content").and_then(Value::as_str).map(str::to_string)
+            let text = event.pointer("/choices/0/delta/content").and_then(Value::as_str).map(str::to_string);
+            let reasoning = event.pointer("/choices/0/delta/reasoning_content").and_then(Value::as_str);
+            let active = text.is_some() || reasoning.is_some();
+            (text, active)
         }
         Protocol::Anthropic => match event.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 result.prompt_tokens = number("/message/usage/input_tokens").unwrap_or(0);
-                None
+                (None, false)
             }
             Some("content_block_delta")
                 if event.pointer("/delta/type").and_then(Value::as_str) == Some("text_delta") =>
             {
-                event.pointer("/delta/text").and_then(Value::as_str).map(str::to_string)
+                let text = event.pointer("/delta/text").and_then(Value::as_str).map(str::to_string);
+                let active = text.is_some();
+                (text, active)
+            }
+            Some("content_block_delta")
+                if event.pointer("/delta/type").and_then(Value::as_str) == Some("thinking_delta") =>
+            {
+                (None, event.pointer("/delta/thinking").and_then(Value::as_str).is_some())
             }
             Some("message_delta") => {
                 result.finish_reason =
                     anthropic_finish(event.pointer("/delta/stop_reason").and_then(Value::as_str)).to_string();
                 result.completion_tokens = number("/usage/output_tokens").unwrap_or(result.completion_tokens);
-                None
+                (None, false)
             }
-            _ => None,
+            _ => (None, false),
         },
     }
 }
@@ -665,6 +677,53 @@ mod tests {
             },
             StreamBudget { first_token: Duration::from_secs(2), chunk_idle: Duration::from_secs(2) },
         )
+    }
+
+    #[tokio::test]
+    async fn 普通_http_400_只请求一次() {
+        let (base, mut requests) = stub_routes(vec![StubRoute::json(
+            "POST /chat/completions",
+            400,
+            r#"{"error":{"message":"context length exceeded"}}"#,
+        )])
+        .await;
+        let mut options = stream_args().1;
+        options.retries = 2;
+        let error = chat(&endpoint("custom", &base, ""), "openai/m", &[ChatMessage::new("user", "Hi")], &options)
+            .await
+            .expect_err("400 应失败");
+        assert_eq!(error.status, Some(400));
+        assert!(error.message.contains("context length exceeded"));
+        requests.recv().await.expect("应收到一次请求");
+        assert!(requests.try_recv().is_err(), "确定性 400 不得重试");
+    }
+
+    #[tokio::test]
+    async fn 思考增量刷新首字看门狗_正文只回调一次() {
+        let chunks = vec![
+            (Duration::from_millis(400), "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想\"}}]}\n\n".into()),
+            (Duration::from_millis(400), "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"很\"}}]}\n\n".into()),
+            (Duration::from_millis(400), "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"久\"}}]}\n\n".into()),
+            (Duration::from_millis(400), "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"再\"}}]}\n\n".into()),
+            (Duration::from_millis(400), "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想\"}}]}\n\n".into()),
+            (
+                Duration::from_millis(400),
+                "data: {\"choices\":[{\"delta\":{\"content\":\"答案\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into(),
+            ),
+        ];
+        let (base, mut requests) = stub_routes(vec![StubRoute::sse_chunks("POST /chat/completions", chunks)]).await;
+        let (messages, options, _) = stream_args();
+        let budget = StreamBudget { first_token: Duration::from_secs(1), chunk_idle: Duration::from_millis(800) };
+        let mut deltas = Vec::new();
+        let result = chat_stream(&endpoint("custom", &base, ""), "openai/m", &messages, &options, budget, |delta| {
+            deltas.push(delta.to_string());
+        })
+        .await
+        .expect("思考增量应持续刷新 watchdog");
+        assert_eq!(result.text, "答案");
+        assert_eq!(deltas, ["答案"], "思考内容不能回传给正文回调");
+        requests.recv().await.expect("应收到一次请求");
+        assert!(requests.try_recv().is_err(), "成功流式不得回退重跑");
     }
 
     #[tokio::test]

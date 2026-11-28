@@ -14,6 +14,8 @@ pub struct StubRoute {
     pub body: String,
     /// 返回响应前等这么久：模拟上游排队 / 单块识别接近超时。
     pub delay: Duration,
+    /// 非空时按 `(间隔, 原始字节)` 分块发送 SSE，模拟思考模型持续输出。
+    pub stream_chunks: Vec<(Duration, String)>,
 }
 
 impl StubRoute {
@@ -25,6 +27,7 @@ impl StubRoute {
             content_type: "application/json",
             body: body.into(),
             delay: Duration::ZERO,
+            stream_chunks: Vec::new(),
         }
     }
 
@@ -42,6 +45,20 @@ impl StubRoute {
             content_type: "text/event-stream",
             body: body.into(),
             delay: Duration::ZERO,
+            stream_chunks: Vec::new(),
+        }
+    }
+
+    /// 分块发送原始 SSE：每块前等待指定时长，便于验证长思考期间的首字看门狗。
+    pub fn sse_chunks(request_line: &'static str, chunks: Vec<(Duration, String)>) -> Self {
+        Self {
+            request_line,
+            body_contains: Some(r#""stream":true"#),
+            status: 200,
+            content_type: "text/event-stream",
+            body: String::new(),
+            delay: Duration::ZERO,
+            stream_chunks: chunks,
         }
     }
 
@@ -110,13 +127,27 @@ pub async fn stub_routes(routes: Vec<StubRoute>) -> (String, tokio::sync::mpsc::
                 let route = routes.iter().find(|r| {
                     line.contains(r.request_line) && r.body_contains.map(|f| request.contains(f)).unwrap_or(true)
                 });
-                let (status, content_type, body, delay) = route
-                    .map(|r| (r.status, r.content_type, r.body.clone(), r.delay))
-                    .unwrap_or((404, "application/json", "{}".into(), Duration::ZERO));
+                let (status, content_type, body, delay, stream_chunks) = route
+                    .map(|r| (r.status, r.content_type, r.body.clone(), r.delay, r.stream_chunks.clone()))
+                    .unwrap_or((404, "application/json", "{}".into(), Duration::ZERO, Vec::new()));
                 if !delay.is_zero() {
                     tokio::time::sleep(delay).await;
                 }
                 let _ = tx.send(request);
+                if !stream_chunks.is_empty() {
+                    let head =
+                        format!("HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n");
+                    if socket.write_all(head.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    for (delay, chunk) in stream_chunks {
+                        tokio::time::sleep(delay).await;
+                        if socket.write_all(chunk.as_bytes()).await.is_err() || socket.flush().await.is_err() {
+                            return;
+                        }
+                    }
+                    return;
+                }
                 let reply = format!(
                     "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()

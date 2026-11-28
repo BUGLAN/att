@@ -292,7 +292,7 @@ async fn run_chat(
 
     let (optimized_text, result, degraded) = match streamed_result {
         Ok((text, result)) => (text, result, false),
-        // 首条增量前失败：回退一次非流式（兼容不支持 stream 的服务商）；确定性失败不回退
+        // 首条增量前遇到暂时性失败：回退一次非流式；4xx 与确定性失败不回退
         Err(error) if streamed.is_empty() && error.retryable() => {
             tracing::info!(error_code = error.code, "流式优化在首条增量前失败，回退非流式调用");
             let result = gateway::chat(&endpoint, model, &messages, &options).await?;
@@ -508,9 +508,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 流式首字前失败_回退非流式() {
+    async fn 流式首字前暂时失败_回退非流式() {
         let (base, _requests) = stub_routes(vec![
-            StubRoute::json("POST /v1/chat/completions", 400, r#"{"error":{"message":"stream not supported"}}"#)
+            StubRoute::json("POST /v1/chat/completions", 503, r#"{"error":{"message":"stream unavailable"}}"#)
                 .when_body(r#""stream":true"#),
             StubRoute::json(
                 "POST /v1/chat/completions",
@@ -527,6 +527,23 @@ mod tests {
         };
         assert!(success.degraded);
         assert_eq!(deltas.lock().unwrap().as_slice(), ["明天开会。"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn 流式_http_400_不回退非流式() {
+        let (base, mut requests) = stub_routes(vec![StubRoute::json(
+            "POST /v1/chat/completions",
+            400,
+            r#"{"error":{"message":"context length exceeded"}}"#,
+        )])
+        .await;
+        let (core, root) = setup(&base, "stream-400");
+        let outcome = optimize_record(&core, "rec-1", "嗯那个明天开会", |_| {}).await;
+        let OptimizeOutcome::Failed(message) = outcome else { panic!("应失败: {outcome:?}") };
+        assert!(message.contains("HTTP 400"), "{message}");
+        requests.recv().await.expect("应收到流式请求");
+        assert!(requests.try_recv().is_err(), "4xx 不得回退非流式重跑");
         let _ = std::fs::remove_dir_all(&root);
     }
 

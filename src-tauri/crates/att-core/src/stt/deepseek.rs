@@ -130,12 +130,12 @@ impl DeepSeekError {
 
     /// 暂时性错误：网络异常、超时、限流与服务端故障。
     fn retryable(&self) -> bool {
-        matches!(self.status, None | Some(200 | 408 | 429 | 500..=599))
+        matches!(self.status, None | Some(408 | 429 | 500..=599))
     }
 
     /// 鉴权、权限与端点错误继续请求也不会变好，分段循环不再尝试后续分段。
     fn fatal(&self) -> bool {
-        matches!(self.status, Some(401 | 403 | 404))
+        matches!(self.status, Some(401 | 402 | 403 | 404 | 413))
     }
 }
 
@@ -499,6 +499,28 @@ mod tests {
         assert_eq!(transcript.segments.len(), 1);
         assert!(transcript.warnings[0].contains("HTTP 400"), "{:?}", transcript.warnings);
         assert_eq!(request_count(&mut requests), 2, "400 是确定性失败，不重试");
+    }
+
+    #[tokio::test]
+    async fn 首块_402或413_立即停止后续块且不重试() {
+        for (status, expected) in [(402, "余额不足"), (413, "8 MiB")] {
+            let mut samples = vec![0x4141i16; 4];
+            samples.extend(vec![0x4242i16; 4]);
+            let (base, mut requests) =
+                stub_routes(vec![StubRoute::json("POST /v1/tools/asr", status, r#"{"error":"fatal"}"#)]).await;
+
+            let error = transcribe_pcm_with_limits(&config(&base), &samples, 4, 2, &mut |_, _| true).await.unwrap_err();
+            assert!(error.contains(expected), "{status}: {error}");
+            assert_eq!(request_count(&mut requests), 1, "{status} 不重试，也不请求后续块");
+        }
+    }
+
+    #[tokio::test]
+    async fn 返回_200_但非_json_不重试() {
+        let (base, mut requests) = stub_routes(vec![StubRoute::json("POST /v1/tools/asr", 200, "not json")]).await;
+        let error = transcribe_pcm_with_limits(&config(&base), &[0x4141; 4], 4, 2, &mut |_, _| true).await.unwrap_err();
+        assert!(error.contains("非 JSON"), "{error}");
+        assert_eq!(request_count(&mut requests), 1);
     }
 
     #[tokio::test]

@@ -710,6 +710,7 @@ mod tests {
                 content_type: "application/octet-stream",
                 body: "PKGDATA".into(),
                 delay: Duration::ZERO,
+                stream_chunks: Vec::new(),
             },
         ])
         .await;

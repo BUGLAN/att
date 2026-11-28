@@ -35,6 +35,8 @@ fn user_hint(code: &str) -> &'static str {
 #[derive(Debug, Clone)]
 pub struct LlmError {
     pub code: &'static str,
+    /// 上游 HTTP 状态；传输层、配置和解析错误没有状态码。
+    pub status: Option<u16>,
     pub message: String,
     /// 附带建议后的完整文案（对外展示用）
     pub user_message: String,
@@ -48,18 +50,19 @@ impl LlmError {
         } else {
             format!("{message}。建议：{}", user_hint(code))
         };
-        Self { code, message, user_message }
+        Self { code, status: None, message, user_message }
     }
 
-    /// false = 换一种传输方式重试也必然失败（不得回退重跑，否则耗时翻倍）。
+    /// 只有网络、超时、限流与服务端故障值得重试；4xx 和没有 HTTP 状态的协议错误都是确定性失败。
     pub fn retryable(&self) -> bool {
-        self.code != CODE_OUTPUT_TRUNCATED
+        matches!(self.status, Some(408 | 429 | 500..=599))
+            || (self.status.is_none() && matches!(self.code, CODE_NETWORK | CODE_TIMEOUT))
     }
 
     /// 不附加建议（文案本身已可执行）。
     pub fn plain(code: &'static str, message: impl Into<String>) -> Self {
         let message = message.into();
-        Self { code, user_message: message.clone(), message }
+        Self { code, status: None, user_message: message.clone(), message }
     }
 }
 
@@ -119,7 +122,9 @@ pub fn classify_http(status: u16, body: &str) -> LlmError {
     } else {
         format!("上游返回 HTTP {status}：{summary}")
     };
-    LlmError::new(code, message)
+    let mut error = LlmError::new(code, message);
+    error.status = Some(status);
+    error
 }
 
 /// 传输层错误（连接失败 / 超时）。
@@ -192,10 +197,15 @@ mod tests {
     #[test]
     fn 状态码与错误体归类() {
         assert_eq!(classify_http(401, "{}").code, CODE_AUTH);
+        assert_eq!(classify_http(401, "{}").status, Some(401));
         assert_eq!(classify_http(402, r#"{"error":{"message":"Insufficient Balance"}}"#).code, CODE_QUOTA);
         let missing = classify_http(400, r#"{"error":{"message":"Model Not Exist"}}"#);
         assert_eq!(missing.code, CODE_MODEL_NOT_FOUND);
         assert!(missing.message.contains("Model Not Exist"));
         assert_eq!(classify_http(503, "upstream down").code, CODE_PROVIDER);
+        assert!(classify_http(429, "{}").retryable(), "限流可重试");
+        assert!(classify_http(503, "{}").retryable(), "服务端故障可重试");
+        assert!(!classify_http(400, "{}").retryable(), "普通 4xx 不重试");
+        assert!(!classify_http(402, "{}").retryable(), "余额不足不重试");
     }
 }
