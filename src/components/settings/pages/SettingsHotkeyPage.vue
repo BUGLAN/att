@@ -17,7 +17,9 @@
               readonly
               aria-label="按住录音快捷键"
               placeholder="未设置 · 点击录入"
+              data-hotkey-capture="hotkey"
               @click="startHotkeyCapture('hotkey')"
+              @blur="stopHotkeyCapture()"
             />
             <BaseButton v-if="hotkeyDisplay" variant="ghost" icon title="清空快捷键" aria-label="清空按住录音快捷键" @click="clearHotkey('hotkey')">
               <template #icon>
@@ -50,7 +52,9 @@
               readonly
               aria-label="点按录音快捷键"
               placeholder="未设置 · 点击录入"
+              data-hotkey-capture="record_toggle_hotkey"
               @click="startHotkeyCapture('record_toggle_hotkey')"
+              @blur="stopHotkeyCapture()"
             />
             <BaseButton
               v-if="toggleHotkeyDisplay"
@@ -95,7 +99,9 @@
               readonly
               aria-label="显示主窗口快捷键"
               placeholder="未设置 · 点击录入"
+              data-hotkey-capture="show_main_window_hotkey"
               @click="startHotkeyCapture('show_main_window_hotkey')"
+              @blur="stopHotkeyCapture()"
             />
             <BaseButton
               v-if="showMainWindowHotkeyDisplay"
@@ -157,7 +163,9 @@
               :disabled="!form.rewrite_enabled"
               aria-label="优化选中文本快捷键"
               placeholder="点击录入快捷键"
+              data-hotkey-capture="rewrite_hotkey"
               @click="startHotkeyCapture('rewrite_hotkey')"
+              @blur="stopHotkeyCapture()"
             />
             <BaseButton
               variant="ghost"
@@ -196,7 +204,9 @@
               readonly
               aria-label="语音改写选中文本快捷键"
               placeholder="未设置 · 点击录入"
+              data-hotkey-capture="voice_rewrite_hotkey"
               @click="startHotkeyCapture('voice_rewrite_hotkey')"
+              @blur="stopHotkeyCapture()"
             />
             <BaseButton
               v-if="voiceRewriteHotkeyDisplay"
@@ -237,7 +247,9 @@
               readonly
               aria-label="切换优化预设快捷键"
               placeholder="未设置 · 点击录入"
+              data-hotkey-capture="cycle_preset_hotkey"
               @click="startHotkeyCapture('cycle_preset_hotkey')"
+              @blur="stopHotkeyCapture()"
             />
             <BaseButton
               v-if="cyclePresetHotkeyDisplay"
@@ -290,6 +302,7 @@ const {
   isCapturingCyclePresetHotkey,
   hotkeyError,
   startHotkeyCapture,
+  stopHotkeyCapture,
   resetHotkey,
   clearHotkey,
   goSection

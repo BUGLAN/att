@@ -129,3 +129,42 @@ export function recordHotkeySummary(settings) {
   }
   return parts.join(' · ')
 }
+
+/**
+ * 快捷键录入框的标记属性：值是正在录入的字段名（HOTKEY_TARGETS 的 field）。
+ * 设置页 keydown 监听挂在 window 捕获阶段、设置页 v-show 常驻，必须靠它确认焦点还在录入框上。
+ */
+export const HOTKEY_CAPTURE_ATTR = 'data-hotkey-capture'
+
+/** 元素是哪个快捷键的录入框（不是录入框返回 null）。 */
+export function hotkeyCaptureFieldOf(element) {
+  const field = element?.getAttribute?.(HOTKEY_CAPTURE_ATTR)
+  return field || null
+}
+
+/**
+ * 录入状态下一次 keydown 该怎么处理。
+ *
+ * 背景（真实踩坑）：录入状态原来只在录到组合、清空、恢复默认、切设置分区时复位；
+ * 点了录入框再切到「转文字」等页面，所有按键都被拦下，⌘V / Ctrl+V 还会被录成全局快捷键。
+ *
+ * @param {object} params
+ * @param {string | null} params.target 正在录入的字段（null = 没在录入）
+ * @param {string | null} params.focusedField 当前焦点所在录入框的字段（见 {@link hotkeyCaptureFieldOf}）
+ * @param {string} [params.key] KeyboardEvent.key
+ * @returns {'ignore' | 'release' | 'cancel' | 'capture'}
+ *   ignore：没在录入，不管；release：焦点已离开录入框，退出录入并放行这次按键；
+ *   cancel：按了 Esc，退出录入（拦下这次按键）；capture：按录入处理
+ */
+export function hotkeyCaptureKeyAction({ target, focusedField, key }) {
+  if (!target) {
+    return 'ignore'
+  }
+  if (focusedField !== target) {
+    return 'release'
+  }
+  if (key === 'Escape') {
+    return 'cancel'
+  }
+  return 'capture'
+}

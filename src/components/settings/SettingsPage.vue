@@ -85,6 +85,9 @@ import { useAsrCredentialCheck } from '@/composables/useAsrCredentialCheck'
 import {
   captureHotkey,
   clearHotkey as clearHotkeyPatch,
+  HOTKEY_CAPTURE_ATTR,
+  hotkeyCaptureFieldOf,
+  hotkeyCaptureKeyAction,
   isHotkeyEnabled,
   resetHotkey as resetHotkeyPatch
 } from './settingsHotkeys.mjs'
@@ -477,6 +480,12 @@ async function deletePreset(preset) {
 
 function startHotkeyCapture(target = 'hotkey') {
   hotkeyError.value = ''
+  // 录入只在焦点留在这个录入框时生效（见 hotkeyCaptureKeyAction）：个别 WebView 点只读输入框不给焦点，这里补一下。
+  // 先聚焦再进入录入：聚焦会让别的录入框失焦，它的 blur 会把录入状态清掉
+  const input = document.querySelector(`[${HOTKEY_CAPTURE_ATTR}="${target}"]`)
+  if (input && document.activeElement !== input) {
+    input.focus()
+  }
   captureTarget.value = target
 }
 
@@ -524,12 +533,27 @@ function hotkeyKeyFromCode(code) {
 
 function handleHotkeyKeydown(event) {
   const target = captureTarget.value
-  if (!target) {
+  const action = hotkeyCaptureKeyAction({
+    target,
+    focusedField: hotkeyCaptureFieldOf(document.activeElement),
+    key: event.key
+  })
+  if (action === 'ignore') {
+    return
+  }
+  if (action === 'release') {
+    // 焦点已经不在录入框（切了页面、点了别的输入框）：退出录入，这次按键照常交给页面
+    stopHotkeyCapture()
     return
   }
 
   event.preventDefault()
   event.stopPropagation()
+
+  if (action === 'cancel') {
+    stopHotkeyCapture()
+    return
+  }
 
   const modifiers = []
   if (event.altKey) modifiers.push('alt')
@@ -749,6 +773,7 @@ provide(SETTINGS_CTX, {
   isCapturingCyclePresetHotkey,
   hotkeyError,
   startHotkeyCapture,
+  stopHotkeyCapture,
   resetHotkey,
   clearHotkey,
   goSection

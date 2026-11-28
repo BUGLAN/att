@@ -12,7 +12,10 @@ import {
   isHotkeyEnabled,
   recordHotkeySummary,
   resetHotkey,
-  sameHotkey
+  sameHotkey,
+  HOTKEY_CAPTURE_ATTR,
+  hotkeyCaptureFieldOf,
+  hotkeyCaptureKeyAction
 } from '../src/components/settings/settingsHotkeys.mjs'
 
 const RECORD = { modifiers: ['cmd', 'shift'], key: 'r' }
@@ -203,4 +206,26 @@ test('切换优化预设：默认为空，录入即启用，清空只关开关�
     field: 'cycle_preset_hotkey',
     label: '切换优化预设'
   })
+})
+
+test('录入生命周期：焦点离开录入框就退出录入并放行按键，Esc 退出，焦点在框上才录', () => {
+  // 没在录入：一律不管
+  assert.equal(hotkeyCaptureKeyAction({ target: null, focusedField: null, key: 'v' }), 'ignore')
+  assert.equal(hotkeyCaptureKeyAction({ target: null, focusedField: 'hotkey', key: 'v' }), 'ignore')
+  // 点了「按住录音」录入框后切到别的页面 / 别的输入框：⌘V 等按键放行，不能被录成快捷键
+  assert.equal(hotkeyCaptureKeyAction({ target: 'hotkey', focusedField: null, key: 'v' }), 'release')
+  assert.equal(hotkeyCaptureKeyAction({ target: 'hotkey', focusedField: 'rewrite_hotkey', key: 'v' }), 'release')
+  // 焦点在正在录入的框上
+  assert.equal(hotkeyCaptureKeyAction({ target: 'hotkey', focusedField: 'hotkey', key: 'Escape' }), 'cancel')
+  assert.equal(hotkeyCaptureKeyAction({ target: 'hotkey', focusedField: 'hotkey', key: 'r' }), 'capture')
+  assert.equal(hotkeyCaptureKeyAction({ target: 'hotkey', focusedField: 'hotkey', key: 'Meta' }), 'capture')
+})
+
+test('录入框标记：按属性认出是哪个快捷键的录入框', () => {
+  const element = (attrs) => ({ getAttribute: (name) => attrs[name] ?? null })
+  assert.equal(HOTKEY_CAPTURE_ATTR, 'data-hotkey-capture')
+  assert.equal(hotkeyCaptureFieldOf(element({ 'data-hotkey-capture': 'rewrite_hotkey' })), 'rewrite_hotkey')
+  assert.equal(hotkeyCaptureFieldOf(element({})), null)
+  assert.equal(hotkeyCaptureFieldOf(null), null)
+  assert.equal(hotkeyCaptureFieldOf({}), null, 'document.activeElement 可能是 body 之外的任意节点')
 })

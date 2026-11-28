@@ -27,7 +27,9 @@
                 readonly
                 aria-label="剪贴板悬浮框快捷键"
                 placeholder="点击录入快捷键"
+                data-hotkey-capture="clipboard_panel_hotkey"
                 @click="startHotkeyCapture('clipboard_panel_hotkey')"
+                @blur="stopHotkeyCapture()"
               />
               <BaseButton
                 variant="ghost"
@@ -151,6 +153,7 @@ const {
   isCapturingPanelHotkey,
   hotkeyError,
   startHotkeyCapture,
+  stopHotkeyCapture,
   resetHotkey
 } = inject(SETTINGS_CTX)
 const { clipboardPanel, platform } = useElectron()
