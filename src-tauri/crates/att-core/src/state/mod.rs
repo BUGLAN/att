@@ -5,13 +5,13 @@ use crate::events::EventBus;
 use crate::llm::optimizer::OptimizationHub;
 use crate::llm::store::LlmStore;
 use crate::records::RecordRepo;
-use crate::settings::{self, UserSettings};
+use crate::settings::{self, HotkeyAction, HotkeySpec, UserSettings};
 use crate::storage::crypto::Crypto;
 use crate::Platform;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -29,6 +29,8 @@ pub struct CoreState {
     pub settings_path: PathBuf,
     pub platform: Platform,
     settings: Mutex<UserSettings>,
+    /// 键盘监听使用的无锁配置入口；只在设置成功落盘后整体替换。
+    hotkey_specs: RwLock<Arc<Vec<HotkeySpec>>>,
     pub crypto: Arc<Crypto>,
     pub records: RecordRepo,
     /// LLM v2 档案 + 模型（data/llm_v2.json）
@@ -122,6 +124,7 @@ impl CoreState {
         let llm = LlmStore::load(data_dir, crypto.clone());
         let settings_path = data_dir.join("settings.json");
         let settings = UserSettings::load(&settings_path, platform);
+        let hotkey_specs = Arc::new(enabled_hotkey_specs(&settings));
         let models_dir = choose_models_dir(data_dir, settings.models_dir.as_deref(), models_env);
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
@@ -130,6 +133,7 @@ impl CoreState {
             settings_path,
             platform,
             settings: Mutex::new(settings),
+            hotkey_specs: RwLock::new(hotkey_specs),
             crypto,
             records,
             llm,
@@ -172,6 +176,11 @@ impl CoreState {
         self.settings.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// 当前热键监听快照。事件线程只短暂持有读锁并克隆 `Arc`。
+    pub fn hotkey_specs(&self) -> Arc<Vec<HotkeySpec>> {
+        self.hotkey_specs.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// 录音 Actor 维护的「正在录音」标记；删除模型时用它拒绝危险操作。
     pub fn set_recording_active(&self, active: bool) {
         self.recording_active.store(active, Ordering::Relaxed);
@@ -189,6 +198,9 @@ impl CoreState {
         let outcome = mutate(&mut next);
         next.save(&self.settings_path)?;
         *current = next;
+        let hotkey_specs = Arc::new(enabled_hotkey_specs(&current));
+        drop(current);
+        *self.hotkey_specs.write().unwrap_or_else(|e| e.into_inner()) = hotkey_specs;
         Ok(outcome)
     }
 
@@ -200,6 +212,9 @@ impl CoreState {
         let outcome = settings::apply_settings_update(&mut next, body, self.platform, &self.crypto)?;
         next.save(&self.settings_path).map_err(|e| e.to_string())?;
         *current = next;
+        let hotkey_specs = Arc::new(enabled_hotkey_specs(&current));
+        drop(current);
+        *self.hotkey_specs.write().unwrap_or_else(|e| e.into_inner()) = hotkey_specs;
         Ok(outcome)
     }
 
@@ -358,6 +373,15 @@ impl CoreState {
     }
 }
 
+fn enabled_hotkey_specs(settings: &UserSettings) -> Vec<HotkeySpec> {
+    settings
+        .hotkeys
+        .iter()
+        .filter(|binding| binding.enabled && binding.action != HotkeyAction::CancelRecording)
+        .map(HotkeySpec::from_binding)
+        .collect()
+}
+
 /// 删除预设后各选用处的当前值（供接口回报给前端刷新）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PresetFallback {
@@ -427,6 +451,39 @@ mod tests {
         assert!(!core.settings().binding_of(HotkeyAction::VoiceRewriteSelection).unwrap().enabled);
         let reloaded = CoreState::init(&dir, Platform::Windows).unwrap();
         assert!(!reloaded.settings().binding_of(HotkeyAction::VoiceRewriteSelection).unwrap().enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 热键快照_设置成功落盘后立即替换_旧快照保持不变() {
+        let dir = std::env::temp_dir().join(format!("att-hotkey-snapshot-{}", uuid::Uuid::new_v4()));
+        let core = CoreState::init(&dir, Platform::Macos).unwrap();
+        let initial = core.hotkey_specs();
+        assert!(initial.iter().any(|spec| spec.action == HotkeyAction::Record));
+
+        core.update_settings(|settings| {
+            settings.hotkeys.iter_mut().find(|binding| binding.action == HotkeyAction::Record).unwrap().enabled = false;
+        })
+        .unwrap();
+
+        let updated = core.hotkey_specs();
+        assert!(!Arc::ptr_eq(&initial, &updated), "设置成功后要发布新的快照");
+        assert!(initial.iter().any(|spec| spec.action == HotkeyAction::Record), "读取者手里的旧快照必须继续有效");
+        assert!(
+            !updated.iter().any(|spec| spec.action == HotkeyAction::Record),
+            "下一次键盘事件应立即看到停用后的绑定"
+        );
+
+        core.apply_settings_update(&json!({"voice_rewrite_enabled": true})).unwrap_err();
+        assert!(Arc::ptr_eq(&updated, &core.hotkey_specs()), "校验失败不能发布半成品设置");
+
+        core.apply_settings_update(&json!({
+            "cycle_preset_hotkey": {"modifiers": ["ctrl", "alt"], "key": "p"},
+            "cycle_preset_enabled": true
+        }))
+        .unwrap();
+        let updated_again = core.hotkey_specs();
+        assert!(updated_again.iter().any(|spec| spec.action == HotkeyAction::CyclePreset));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

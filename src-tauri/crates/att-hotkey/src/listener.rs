@@ -1,6 +1,6 @@
 //! 底层键盘监听入口：平台钩子 → 每个动作一台 [`Matcher`] → 回调（动作 + 按下/松开）。
 //!
-//! 绑定由 `bindings()` 在每次键事件时读取（设置页改键即时生效，无需重启监听）；
+//! 绑定由 `bindings()` 在每次键事件时读取设置层发布的无锁快照（改键即时生效，无需重启监听）；
 //! 锁存期间每 250ms 用系统真实键态重同步一次（防粘滞：焦点切换/锁屏吞掉松开事件）。
 //! 每次触发（按下 / 松开）都记一行日志，带触发来源与当时的修饰键：按住录音被意外打断时据此判断是谁报的松开。
 
@@ -25,7 +25,7 @@ pub fn suppresses_keys() -> bool {
     SUPPRESSES_KEYS.load(Ordering::SeqCst)
 }
 
-/// 当前启用的全部绑定（录音、剪贴板悬浮框…），每个动作至多一条。
+/// 当前启用的全部绑定快照（录音、剪贴板悬浮框…），每个动作至多一条。
 /// 推动匹配器的事件来源（写进触发日志）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
@@ -60,7 +60,7 @@ fn mods_label(mods: ModSet) -> String {
     }
 }
 
-pub type BindingSource = Arc<dyn Fn() -> Vec<HotkeySpec> + Send + Sync>;
+pub type BindingSource = Arc<dyn Fn() -> Arc<Vec<HotkeySpec>> + Send + Sync>;
 pub type EventSink = Arc<dyn Fn(HotkeyAction, KeyPhase) + Send + Sync>;
 
 /// 录音会话期间的内部 Esc 取消绑定。
@@ -110,7 +110,7 @@ impl Shared {
         let mut owned = false;
         {
             let mut matchers = self.matchers.lock().unwrap_or_else(|e| e.into_inner());
-            for spec in &specs {
+            for spec in specs.iter() {
                 matchers.entry(spec.action).or_default();
             }
             for (action, matcher) in matchers.iter_mut() {
@@ -213,10 +213,10 @@ mod tests {
         let shared = Shared {
             matchers: Mutex::new(BTreeMap::new()),
             bindings: Arc::new(|| {
-                vec![
+                Arc::new(vec![
                     spec(HotkeyAction::Record, ModSet::new(false, true, false, true), None),
                     spec(HotkeyAction::ClipboardPanel, ModSet::new(true, true, false, false), Some('v')),
-                ]
+                ])
             }),
             sink: Arc::new(move |action, phase| sink_log.lock().unwrap().push((action, phase))),
         };
@@ -251,7 +251,7 @@ mod tests {
         let sink_log = fired.clone();
         let shared = Shared {
             matchers: Mutex::new(BTreeMap::new()),
-            bindings: Arc::new(move || binding_cancel.spec().into_iter().collect()),
+            bindings: Arc::new(move || Arc::new(binding_cancel.spec().into_iter().collect())),
             sink: Arc::new(move |action, phase| sink_log.lock().unwrap().push((action, phase))),
         };
 
@@ -284,7 +284,7 @@ mod tests {
         let binding_cancel = cancel.clone();
         let shared = Shared {
             matchers: Mutex::new(BTreeMap::new()),
-            bindings: Arc::new(move || binding_cancel.spec().into_iter().collect()),
+            bindings: Arc::new(move || Arc::new(binding_cancel.spec().into_iter().collect())),
             sink: Arc::new(|_, _| {}),
         };
 

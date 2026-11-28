@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 
-pub use hotkey::{HotkeyAction, HotkeyBinding, TriggerMode};
+pub use hotkey::{HotkeyAction, HotkeyBinding, HotkeySpec, TriggerMode};
 
 /// 已下线功能的僵尸配置键：读写两侧一律剥离（清单与 app/config.py:27-38 对齐）。
 pub const RETIRED_SETTINGS_KEYS: &[&str] = &[

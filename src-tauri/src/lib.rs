@@ -503,28 +503,13 @@ fn start_hotkey_listener(
     let binding_core = core.clone();
     let binding_cancel = cancel_binding.clone();
     let bindings: att_hotkey::listener::BindingSource = Arc::new(move || {
-        let mut specs: Vec<att_hotkey::HotkeySpec> = binding_core
-            .settings()
-            .hotkeys
-            .iter()
-            .filter(|b| {
-                b.enabled
-                    && matches!(
-                        b.action,
-                        HotkeyAction::Record
-                            | HotkeyAction::RecordToggle
-                            | HotkeyAction::ClipboardPanel
-                            | HotkeyAction::RewriteSelection
-                            | HotkeyAction::ShowMainWindow
-                            | HotkeyAction::VoiceRewriteSelection
-                            | HotkeyAction::CyclePreset
-                    )
-            })
-            .map(att_hotkey::HotkeySpec::from_binding)
-            .collect();
+        let specs = binding_core.hotkey_specs();
         // 录音会话期间的内部绑定，不来自设置项：非 Idle 时 Esc 取消并吞键
         if let Some(spec) = binding_cancel.spec() {
-            specs.push(spec);
+            let mut with_cancel = Vec::with_capacity(specs.len() + 1);
+            with_cancel.extend(specs.iter().cloned());
+            with_cancel.push(spec);
+            return Arc::new(with_cancel);
         }
         specs
     });

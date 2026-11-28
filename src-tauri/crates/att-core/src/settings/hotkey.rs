@@ -136,6 +136,20 @@ pub struct HotkeyBinding {
     pub enabled: bool,
 }
 
+/// 键盘监听使用的只读绑定快照，不包含触发模式等监听不需要的设置字段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotkeySpec {
+    pub action: HotkeyAction,
+    pub modifiers: ModSet,
+    pub hid_key: Option<u16>,
+}
+
+impl HotkeySpec {
+    pub fn from_binding(binding: &HotkeyBinding) -> Self {
+        Self { action: binding.action, modifiers: binding.modifiers, hid_key: binding.hid_key }
+    }
+}
+
 fn default_enabled() -> bool {
     true
 }
