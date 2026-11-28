@@ -306,6 +306,7 @@ impl RecordRepo {
     /// - `data\audio\records\<uuid>.wav`（Python 版按「相对仓库根」落盘）
     /// - `/app/data/audio/records/<uuid>.wav`（docker 部署时代）
     /// - `<uuid>.wav`（迁移后的规范形态）
+    ///
     /// 直接 `audio_dir.join(raw)` 会拼出 `...\records\data\audio\records\x.wav`
     /// 导致所有旧音频 404、删除清理失效、迁移误判未认领（已发生过 886 个 wav
     /// 被整体隔离进 orphans/ 的事故）。这里统一归一化为相对 audio_dir 的文件名。

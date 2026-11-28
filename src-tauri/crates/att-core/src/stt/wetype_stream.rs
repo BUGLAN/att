@@ -371,7 +371,7 @@ fn read_varint(data: &[u8], position: &mut usize) -> Result<u64, String> {
     Err("protobuf varint 过长".into())
 }
 
-fn field_value<'a>(fields: &'a Fields, field: u32, wire: u8) -> Result<Option<&'a WireValue>, String> {
+fn field_value(fields: &Fields, field: u32, wire: u8) -> Result<Option<&WireValue>, String> {
     let Some(entries) = fields.get(&field) else { return Ok(None) };
     if entries.len() != 1 || entries[0].0 != wire {
         return Err(format!("字段 {field} 的类型或数量不符"));
@@ -379,7 +379,7 @@ fn field_value<'a>(fields: &'a Fields, field: u32, wire: u8) -> Result<Option<&'
     Ok(Some(&entries[0].1))
 }
 
-pub(super) fn bytes_value<'a>(fields: &'a Fields, field: u32) -> Result<Option<&'a [u8]>, String> {
+pub(super) fn bytes_value(fields: &Fields, field: u32) -> Result<Option<&[u8]>, String> {
     Ok(match field_value(fields, field, 2)? {
         Some(WireValue::Bytes(bytes)) => Some(bytes),
         _ => None,

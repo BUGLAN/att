@@ -102,12 +102,16 @@ impl CancelToken {
     }
 }
 
+type ProgressReporter = Arc<dyn Fn(f64) + Send + Sync>;
+type SharedTotalSeconds = Arc<Mutex<f64>>;
+type AsrProgressReporter = (ProgressReporter, SharedTotalSeconds);
+
 /// 识别阶段的钩子：取消令牌 + 进度上报（已识别到的音频秒数）。同步请求用 [`AsrHook::none`]。
 #[derive(Clone)]
 struct AsrHook {
     token: CancelToken,
-    report: Arc<dyn Fn(f64) + Send + Sync>,
-    total_seconds: Arc<Mutex<f64>>,
+    report: ProgressReporter,
+    total_seconds: SharedTotalSeconds,
 }
 
 impl AsrHook {
@@ -968,11 +972,7 @@ fn start_job(
 /// 识别进度写进任务表：`{stage: "asr", done_seconds, total_seconds}`（秒，保留一位小数）。
 ///
 /// 豆包逐帧推流时每 200ms 音频回调一次，这里只在前进满 1 秒或到达末尾时才写，避免反复改任务表。
-fn asr_progress_reporter(
-    core: Arc<CoreState>,
-    job_id: String,
-    duration: f64,
-) -> (Arc<dyn Fn(f64) + Send + Sync>, Arc<Mutex<f64>>) {
+fn asr_progress_reporter(core: Arc<CoreState>, job_id: String, duration: f64) -> AsrProgressReporter {
     let total_seconds = Arc::new(Mutex::new((duration.max(0.0) * 10.0).round() / 10.0));
     let report_total = total_seconds.clone();
     let last = Mutex::new(f64::NEG_INFINITY);

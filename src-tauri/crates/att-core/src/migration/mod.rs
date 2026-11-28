@@ -231,7 +231,7 @@ fn repair_audio_mismatch(data_dir: &Path, report: &mut MigrationReport) {
         .collect();
     let unclaimed: Vec<(String, PathBuf)> = wav_files
         .into_iter()
-        .filter(|(name, _)| !referenced.contains(name) && !claimed_by_referenced_pending(&report, name))
+        .filter(|(name, _)| !referenced.contains(name) && !claimed_by_referenced_pending(report, name))
         .collect();
 
     for record in repo.load_all().0 {
@@ -303,7 +303,7 @@ fn repair_audio_mismatch(data_dir: &Path, report: &mut MigrationReport) {
 
 /// pass 2 内部：本轮已处理的文件不再参与匹配。
 fn claimed_by_referenced_pending(report: &MigrationReport, name: &str) -> bool {
-    report.renamed_audio.iter().any(|n| n == name) || report.matched_audio.iter().any(|m| &m.wav_file == name)
+    report.renamed_audio.iter().any(|n| n == name) || report.matched_audio.iter().any(|m| m.wav_file == name)
 }
 
 /// WAV 时长（秒）：hound 读头即可，不载入采样。

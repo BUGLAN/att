@@ -25,6 +25,9 @@
 //! 两个 WebSocket 端点（/api/ws、/api/asr/stream）按 D4 决策**移除**：
 //! 事件改由 Tauri events 下发（旧事件名重放）。
 
+// 处理函数以 `Result<_, Response>` 提前返回错误响应是 axum 惯用写法，错误分支本就是最终响应
+#![allow(clippy::result_large_err)]
+
 mod asr;
 mod backup;
 mod clipboard;
@@ -715,7 +718,7 @@ async fn records_search(
 
     let (items, total) =
         blocking(move || state.core.records.search_filtered(&filter, page, page_size)).await.unwrap_or_default();
-    let total_pages = if total == 0 { 0 } else { (total + page_size - 1) / page_size };
+    let total_pages = total.div_ceil(page_size);
     Ok(Json(json!({
         "items": serde_json::to_value(items).unwrap_or_default(),
         "total": total,
@@ -2425,10 +2428,11 @@ mod tests {
         assert_eq!(health["local_engine"]["available"], json!(false));
         // CI 用 --no-default-features 关闭本地引擎，此时构建必须明确说明不含本地引擎；
         // 默认构建才检查具体模型是否安装。
-        #[cfg(feature = "local-engines")]
-        let unavailable = "本地 SenseVoice 模型未安装";
-        #[cfg(not(feature = "local-engines"))]
-        let unavailable = att_core::stt::local::LOCAL_ENGINES_DISABLED;
+        let unavailable = if att_core::stt::local::LOCAL_ENGINES_ENABLED {
+            "本地 SenseVoice 模型未安装"
+        } else {
+            att_core::stt::local::LOCAL_ENGINES_DISABLED
+        };
         assert_eq!(health["local_engine"]["error"], unavailable);
         assert_eq!(health["model_service_ready"], json!(false));
         assert_eq!(health["model_service_mode"], "provider");
@@ -2451,10 +2455,11 @@ mod tests {
         state.core.apply_settings_update(&json!({ "recording_mode": "streaming" })).unwrap();
         let (_, health) = get_json(&state, "/api/health").await;
         assert_eq!(health["model_service_ready"], json!(false));
-        #[cfg(feature = "local-engines")]
-        let streaming_error = "本地 SenseVoice暂不支持流式录音";
-        #[cfg(not(feature = "local-engines"))]
-        let streaming_error = att_core::stt::local::LOCAL_ENGINES_DISABLED;
+        let streaming_error = if att_core::stt::local::LOCAL_ENGINES_ENABLED {
+            "本地 SenseVoice暂不支持流式录音"
+        } else {
+            att_core::stt::local::LOCAL_ENGINES_DISABLED
+        };
         assert!(health["model_service_error"].as_str().unwrap().contains(streaming_error), "{health}");
     }
 

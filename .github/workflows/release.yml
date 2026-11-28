@@ -42,6 +42,51 @@ permissions:
   contents: write
 
 jobs:
+  verify:
+    name: 发布前检查（${{ matrix.label }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS（Apple Silicon）
+            runner: macos-latest
+            target: aarch64-apple-darwin
+          - label: Windows（x64）
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.event.inputs.tag || github.ref }}
+
+      - name: 准备 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: 缓存 Rust 构建
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          key: verify-${{ matrix.target }}
+
+      - name: Clippy（完整工作区，warning 即失败）
+        working-directory: src-tauri
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: macOS 应用测试
+        if: runner.os == 'macOS'
+        working-directory: src-tauri
+        run: cargo test -p att-app -p att-audio
+
+      - name: Windows Qwen 测试
+        if: runner.os == 'Windows'
+        working-directory: src-tauri
+        run: cargo test -p att-qwen
+
   # 先一次性创建（或复用）该 tag 的 GitHub Release，再跑各平台矩阵打包。
   #
   # tauri-action v1 只有在找不到 release 时才调用 github.rest.repos.createRelease()。
@@ -55,6 +100,7 @@ jobs:
   # createRelease 这条易失败 / 易竞态的调用不再执行。
   create-release:
     name: 创建 Release
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -81,8 +127,8 @@ jobs:
 
   build:
     name: 打包 ${{ matrix.label }}
-    # 先建好 Release，矩阵任务只负责上传，避免并发 createRelease
-    needs: create-release
+    # 全平台检查通过后先建好 Release，矩阵任务只负责上传，避免并发 createRelease
+    needs: [verify, create-release]
     strategy:
       fail-fast: false
       matrix:

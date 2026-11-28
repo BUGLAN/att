@@ -1441,6 +1441,7 @@ impl Actor {
 
     /// 进入 Optimizing：优化在独立任务里跑（不阻塞 Actor 处理新命令），增量直接推给前端与悬浮窗，
     /// 开启自动输出时（优化选中文本则总是）同时流式打进录音开始时的目标输入框。
+    #[allow(clippy::too_many_arguments)]
     fn begin_optimization(
         &mut self,
         mode: Mode,

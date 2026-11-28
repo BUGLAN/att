@@ -24,6 +24,11 @@ pub const MIN_TAIL_SAMPLES: usize = SAMPLE_RATE;
 pub const MAX_ATTEMPTS_PER_CHUNK: usize = 3;
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 
+const _: () = {
+    assert!(MAX_CHUNK_SAMPLES / SAMPLE_RATE < 120);
+    assert!(MAX_CHUNK_SAMPLES * 2 < 8 * 1024 * 1024);
+};
+
 /// 一段识别结果在整段音频中的位置（秒）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptSegment {
@@ -349,8 +354,6 @@ mod tests {
     #[test]
     fn 切块上限不越过接口的_120_秒() {
         assert_eq!(MAX_CHUNK_SECONDS, 115);
-        assert!(MAX_CHUNK_SAMPLES / SAMPLE_RATE < 120);
-        assert!(MAX_CHUNK_SAMPLES * 2 < 8 * 1024 * 1024);
     }
 
     #[test]

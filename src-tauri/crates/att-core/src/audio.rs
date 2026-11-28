@@ -457,7 +457,9 @@ fn power_db(power: f64) -> f64 {
 pub fn speech_activity(samples: &[i16]) -> SpeechActivity {
     let total_seconds = samples.len() as f64 / TARGET_RATE as f64;
     let powers: Vec<f64> = samples
-        .chunks_exact(VOICE_FRAME)
+        .as_chunks::<VOICE_FRAME>()
+        .0
+        .iter()
         .map(|frame| frame.iter().map(|&s| (s as f64 / 32768.0).powi(2)).sum::<f64>() / VOICE_FRAME as f64)
         .collect();
     // 100ms 滑动平均（当前帧及之前 4 帧；开头不足 5 帧按实有帧数平均）
@@ -590,7 +592,7 @@ mod tests {
             let data = &bytes[pos + 4..pos + 4 + len];
             if kind == 3 {
                 assert_eq!(len % 18, 0, "SEEKTABLE 长度必须是 18 的倍数");
-                for point in data.chunks_exact(18) {
+                for point in data.as_chunks::<18>().0 {
                     points.push((
                         u64::from_be_bytes(point[0..8].try_into().unwrap()),
                         u64::from_be_bytes(point[8..16].try_into().unwrap()),

@@ -462,8 +462,7 @@ pub fn plan_chunks(
             chunks.push((start, samples_len));
             break;
         }
-        let end =
-            cut_points.iter().copied().filter(|cut| *cut > start && *cut <= limit_end).next_back().unwrap_or(limit_end);
+        let end = cut_points.iter().copied().rfind(|cut| *cut > start && *cut <= limit_end).unwrap_or(limit_end);
         chunks.push((start, end));
         start = end;
     }
@@ -530,25 +529,25 @@ fn to_c_path(path: &Path) -> Result<CString, String> {
     CString::new(text.clone()).map_err(|_| format!("路径包含非法字符（NUL）：{text}"))
 }
 
+/// 传给 Qwen C 桥的一组模型路径。
+struct QwenPaths<'a> {
+    lib_dir: &'a CString,
+    conv_frontend: &'a CString,
+    encoder: &'a CString,
+    decoder: &'a CString,
+    tokenizer: &'a CString,
+}
+
 /// 用指定 provider 建 Qwen 识别器（provider 字符串在调用期间有效即可）。
-fn qwen_create_handle(
-    lib_dir: &CString,
-    conv_frontend: &CString,
-    encoder: &CString,
-    decoder: &CString,
-    tokenizer: &CString,
-    config: &QwenConfig,
-    provider: &str,
-    err: *mut c_char,
-) -> *mut AttQwen {
+fn qwen_create_handle(paths: &QwenPaths<'_>, config: &QwenConfig, provider: &str, err: *mut c_char) -> *mut AttQwen {
     let provider_c = CString::new(provider).unwrap_or_else(|_| CString::new("cpu").unwrap());
     unsafe {
         att_qwen_create(
-            lib_dir.as_ptr(),
-            conv_frontend.as_ptr(),
-            encoder.as_ptr(),
-            decoder.as_ptr(),
-            tokenizer.as_ptr(),
+            paths.lib_dir.as_ptr(),
+            paths.conv_frontend.as_ptr(),
+            paths.encoder.as_ptr(),
+            paths.decoder.as_ptr(),
+            paths.tokenizer.as_ptr(),
             config.num_threads.clamp(0, 64) as i32,
             provider_c.as_ptr(),
             QWEN3_ASR_MAX_TOTAL_LEN as i32,
@@ -630,30 +629,19 @@ impl LocalQwen {
             "cpu".into()
         };
         let mut err = [0 as c_char; ERR_LEN];
-        let mut handle = qwen_create_handle(
-            &lib_dir_c,
-            &conv_frontend,
-            &encoder,
-            &decoder,
-            &tokenizer,
-            config,
-            &effective,
-            err.as_mut_ptr(),
-        );
+        let paths = QwenPaths {
+            lib_dir: &lib_dir_c,
+            conv_frontend: &conv_frontend,
+            encoder: &encoder,
+            decoder: &decoder,
+            tokenizer: &tokenizer,
+        };
+        let mut handle = qwen_create_handle(&paths, config, &effective, err.as_mut_ptr());
         if handle.is_null() && effective != "cpu" {
             let reason = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().to_string();
             tracing::warn!("本地 Qwen3-ASR 使用 {effective} 加载失败，回退 CPU：{}", reason.trim());
             err = [0 as c_char; ERR_LEN];
-            handle = qwen_create_handle(
-                &lib_dir_c,
-                &conv_frontend,
-                &encoder,
-                &decoder,
-                &tokenizer,
-                config,
-                "cpu",
-                err.as_mut_ptr(),
-            );
+            handle = qwen_create_handle(&paths, config, "cpu", err.as_mut_ptr());
             effective = "cpu".into();
         }
         if handle.is_null() {

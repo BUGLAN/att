@@ -10,6 +10,11 @@
 pub mod catalog;
 pub mod download;
 
+/// 关闭本地引擎 feature 时所有入口的统一结论；开启 feature 时也用于跨 crate 测试断言。
+pub const LOCAL_ENGINES_DISABLED: &str = "此构建不含本地引擎";
+/// 当前 `att-core` 是否包含本地引擎，供下游 crate 在 feature 合并后断言实际构建形态。
+pub const LOCAL_ENGINES_ENABLED: bool = cfg!(feature = "local-engines");
+
 #[cfg(feature = "local-engines")]
 mod imp;
 #[cfg(feature = "local-engines")]

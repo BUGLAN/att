@@ -10,9 +10,6 @@ pub const WHISPER: &str = "whisper";
 pub const QWEN: &str = "qwen_asr";
 /// 本地 SenseVoice 的 provider 标识。
 pub const SENSE_VOICE: &str = "sense_voice";
-/// 关闭 feature 时所有本地引擎入口的统一结论。
-pub const LOCAL_ENGINES_DISABLED: &str = "此构建不含本地引擎";
-
 /// 本地引擎种类（与开启 feature 时保持一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalKind {
