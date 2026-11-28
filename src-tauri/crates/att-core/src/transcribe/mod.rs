@@ -395,6 +395,7 @@ fn shape_payload(entry: &Value, want_segments: bool, cached: bool, variant: Opti
                 .or_else(|| variant.get("model_id").and_then(Value::as_str)).unwrap_or("default"),
             "windows": variant.get("windows").and_then(Value::as_i64).unwrap_or(0),
             "requests": variant.get("requests").and_then(Value::as_i64).unwrap_or(0),
+            "total_tokens": variant.get("total_tokens").and_then(Value::as_u64).unwrap_or(0),
             "fallback_batches": variant.get("fallback_batches").cloned().unwrap_or_else(|| json!([])),
             "prompt_version": proofread::PROMPT_VERSION,
         });
@@ -491,6 +492,7 @@ impl FileTranscriber {
                     "segments": result.segments,
                     "windows": result.windows,
                     "requests": result.requests,
+                    "total_tokens": result.total_tokens,
                     "fallback_batches": result.fallback_batches,
                     "model_id": result.model_id,
                     "model_label": result.model_label,
@@ -1099,6 +1101,12 @@ fn save_record(
     let text = payload.get("text").and_then(Value::as_str).unwrap_or("").to_string();
     let proofread_applied =
         payload.get("proofread").and_then(|p| p.get("applied")).and_then(Value::as_bool).unwrap_or(false);
+    let proofread_tokens = if proofread_applied {
+        payload.get("proofread").and_then(|p| p.get("total_tokens")).and_then(Value::as_u64).unwrap_or(0)
+    } else {
+        0
+    };
+    let proofread_was_cached = payload.get("cached").and_then(Value::as_bool).unwrap_or(false);
     let raw_text = match payload.get("raw_text").and_then(Value::as_str) {
         Some(raw) if proofread_applied => raw.to_string(),
         _ => text.clone(),
@@ -1114,10 +1122,18 @@ fn save_record(
                     .as_deref()
                     .is_some_and(|optimized| !record.is_modified && record.optimized_text.as_deref() != Some(optimized))
             };
-            if core.records.get(&id).is_ok_and(|record| stale(&record)) {
+            let update_text = core.records.get(&id).is_ok_and(|record| stale(&record));
+            let update_tokens = !proofread_was_cached && proofread_tokens > 0;
+            if update_text || update_tokens {
                 let outcome = core.records.patch(&id, |record| {
-                    record.optimized_text = optimized_text.clone();
-                    record.status = RecordStatus::Optimized;
+                    if update_text {
+                        record.optimized_text = optimized_text.clone();
+                        record.status = RecordStatus::Optimized;
+                    }
+                    if update_tokens {
+                        record.optimize_tokens =
+                            Some(record.optimize_tokens.unwrap_or(0).saturating_add(proofread_tokens));
+                    }
                 });
                 if let Err(error) = outcome {
                     tracing::warn!("更新文件转写记录 {id} 失败：{error}");
@@ -1137,6 +1153,7 @@ fn save_record(
                 engine: Some(engine.to_string()),
                 language: Some(crate::stt::effective_language(engine, &request.language)),
                 source_file,
+                optimize_tokens: (proofread_tokens > 0).then_some(proofread_tokens),
                 ..Default::default()
             };
             match core.records.insert(record) {
@@ -1479,14 +1496,19 @@ mod tests {
         assert_eq!(core.records.list(None, 10, 0).len(), 1);
 
         // 之后开了校对：同一条记录补上校对稿
-        let variant = json!({ "text": "校对稿", "windows": 1, "requests": 1 });
-        let proofread = shape_payload(&entry, false, true, Some(&variant));
+        let variant = json!({ "text": "校对稿", "windows": 1, "requests": 1, "total_tokens": 18 });
+        let proofread = shape_payload(&entry, false, false, Some(&variant));
         save_record(&core, &request, &path, "h1", "whisper", proofread);
         let record = core.records.get(&id).unwrap();
         assert_eq!(record.raw_text.as_deref(), Some("原文"));
         assert_eq!(record.optimized_text.as_deref(), Some("校对稿"));
+        assert_eq!(record.optimize_tokens, Some(18));
         assert_eq!(record.status, crate::records::RecordStatus::Optimized);
         assert_eq!(core.records.list(None, 10, 0).len(), 1);
+
+        // 缓存变体再次命中只复用结果，不把历史 token 重复记账。
+        save_record(&core, &request, &path, "h1", "whisper", shape_payload(&entry, false, true, Some(&variant)));
+        assert_eq!(core.records.get(&id).unwrap().optimize_tokens, Some(18));
 
         // 记录被删了：再转时重建
         core.records.delete(&id).unwrap();
