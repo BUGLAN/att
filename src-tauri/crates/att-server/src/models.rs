@@ -202,6 +202,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn 模型清单_旧目录只有短名模型时_large_v3_为_missing() {
+        let state = test_state("legacy-status");
+        let nested = state.core.models_dir.join("faster_whisper").join("faster-whisper-small");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("model.bin"), b"x").unwrap();
+        std::fs::write(nested.join("tokenizer.json"), b"{}").unwrap();
+
+        let (status, body) = request(&state, "GET", "/api/models").await;
+        assert_eq!(status, StatusCode::OK);
+        let models = body["models"].as_array().unwrap();
+        let small = models.iter().find(|model| model["id"] == "whisper-small").unwrap();
+        let large = models.iter().find(|model| model["id"] == "whisper-large-v3").unwrap();
+        assert_eq!(small["status"], "installed");
+        assert_eq!(large["status"], "missing");
+        assert_eq!(large["partial"], false);
+    }
+
+    #[tokio::test]
     async fn 删除模型_录音或转写中拒绝_空闲时删除() {
         let state = test_state("delete");
         // 伪造一份已安装的 Whisper small

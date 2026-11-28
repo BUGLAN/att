@@ -181,23 +181,28 @@ pub fn looks_like_model_dir(path: &Path) -> bool {
 
 /// 按 Python `_resolve_model_source()` 的顺序列出候选目录（不判存在）。
 ///
-/// 顺序：显式目录 → 模型根目录本身 → `faster_whisper`/`faster-whisper`/`whisper`（Python 版
-/// `download_root` 直接指向这几个目录，各机器上落盘位置不一）→ 每个根目录下的
+/// 顺序：显式目录 →（仅选择 large-v3 时）模型根目录本身 → 每个根目录下的
 /// 短名/`faster-whisper-<短名>`/`Systran--faster-whisper-<短名>`
 /// → HF 缓存 `models--Systran--faster-whisper-<短名>/snapshots/<hash>`。
+///
+/// Python 版曾把 `download_root` 直接指向 `faster_whisper` 等目录，因此这些目录本身只能是
+/// 旧版的 large-v3。选择其他模型时必须查根目录下的短名子目录，不能把根目录当成任意模型的安装位置。
 pub fn model_candidates(model: &str, models_dir: &Path) -> Vec<PathBuf> {
     let raw = Path::new(model);
     let short = model.replace('\\', "/");
     let short = short.rsplit('/').next().unwrap_or(model).to_string();
+    let short = short.strip_prefix("faster-whisper-").unwrap_or(&short);
     let mut roots = vec![models_dir.to_path_buf()];
     for name in ["faster_whisper", "faster-whisper", "whisper"] {
         roots.push(models_dir.join(name));
     }
     let mut candidates = vec![raw.to_path_buf()];
-    candidates.extend(roots.iter().cloned());
+    if short == "large-v3" {
+        candidates.extend(roots.iter().cloned());
+    }
     for root in &roots {
         for name in [
-            short.clone(),
+            short.to_string(),
             format!("faster-whisper-{short}"),
             format!("Systran--faster-whisper-{short}"),
             format!("models--Systran--faster-whisper-{short}"),
@@ -647,6 +652,20 @@ mod tests {
         let snapshot = make_model_dir(&snap_root, "08e178d");
         let config = WhisperConfig::new("medium", "cpu", &root);
         assert_eq!(resolve_model_dir(&config).unwrap(), snapshot);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 模型目录解析_旧版根目录不能顶替用户选择的短名() {
+        let root = temp_dir("legacy-root-wins-no-more");
+        let legacy = make_model_dir(&root, "faster_whisper");
+        let selected = make_model_dir(&root, "faster-whisper-small");
+
+        let small = WhisperConfig::new("small", "cpu", &root);
+        assert_eq!(resolve_model_dir(&small).unwrap(), selected);
+
+        let large = WhisperConfig::new("large-v3", "cpu", &root);
+        assert_eq!(resolve_model_dir(&large).unwrap(), legacy);
         let _ = std::fs::remove_dir_all(&root);
     }
 

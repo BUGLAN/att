@@ -403,7 +403,10 @@ impl ModelManager {
         }
         prepare(spec.engine);
         for path in &paths {
-            if path.is_dir() {
+            if spec.id == "whisper-large-v3" && path == &catalog::legacy_whisper_dir(&self.models_dir) {
+                remove_legacy_whisper_files(spec, path)?;
+            } else if path.is_dir() {
+                remove_hf_snapshot_blobs(path);
                 std::fs::remove_dir_all(path)
                     .map_err(|error| DeleteError::internal(format!("删除 {} 失败：{error}", path.display())))?;
             } else if path.is_file() {
@@ -425,6 +428,57 @@ impl ModelManager {
     /// VAD 的续传目录由 Whisper 任务与单独下载共用，避免同一文件两套半成品。
     fn vad_download_dir(&self) -> PathBuf {
         self.models_dir.join(".downloads").join("_vad")
+    }
+}
+
+/// 旧版把 `faster_whisper/` 目录本身当作 large-v3 的模型目录。这个目录还可能承载用户后来
+/// 下载的短名模型和 HF 缓存，所以删除 large-v3 时只移除清单中列出的文件，保留目录和其余内容。
+fn remove_legacy_whisper_files(spec: &ModelSpec, path: &Path) -> Result<(), DeleteError> {
+    for file in spec.files {
+        let target = path.join(file.path);
+        if target.is_file() || target.is_symlink() {
+            std::fs::remove_file(&target)
+                .map_err(|error| DeleteError::internal(format!("删除 {} 失败：{error}", target.display())))?;
+        }
+    }
+    Ok(())
+}
+
+/// HF snapshot 只保存指向仓库 `blobs/` 的链接。先删除链接目标，再删 snapshot 目录，
+/// 否则 GB 级权重会留在缓存里。只接受同一 HF 仓库 blobs 目录内的目标。
+fn remove_hf_snapshot_blobs(snapshot: &Path) {
+    let Some(repo_root) = snapshot.parent().and_then(Path::parent) else {
+        return;
+    };
+    if !repo_root.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("models--")) {
+        return;
+    }
+    let blobs = repo_root.join("blobs");
+    let Ok(blobs) = std::fs::canonicalize(blobs) else {
+        return;
+    };
+    remove_linked_blobs(snapshot, &blobs);
+}
+
+fn remove_linked_blobs(path: &Path, blobs: &Path) {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            remove_linked_blobs(&entry_path, blobs);
+        } else if kind.is_symlink() {
+            let Ok(target) = std::fs::canonicalize(&entry_path) else {
+                continue;
+            };
+            if target.starts_with(blobs) && target.is_file() {
+                let _ = std::fs::remove_file(target);
+            }
+        }
     }
 }
 
@@ -900,6 +954,58 @@ mod tests {
         let manager = ModelManager::new(dir.clone());
         manager.delete("whisper-small", |_| {}).unwrap();
         assert!(!staging.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 删除旧版_large_v3_只移除清单文件并保留同目录其他模型() {
+        let dir = temp_dir("delete-legacy-large");
+        let legacy = dir.join("faster_whisper");
+        std::fs::create_dir_all(&legacy).unwrap();
+        for name in ["model.bin", "tokenizer.json"] {
+            std::fs::write(legacy.join(name), b"large").unwrap();
+        }
+        let small = legacy.join("faster-whisper-small");
+        std::fs::create_dir_all(&small).unwrap();
+        std::fs::write(small.join("model.bin"), b"small").unwrap();
+        std::fs::write(small.join("tokenizer.json"), b"{}").unwrap();
+        std::fs::write(legacy.join("user-note.txt"), b"keep").unwrap();
+
+        let manager = ModelManager::new(dir.clone());
+        manager.delete("whisper-large-v3", |_| {}).unwrap();
+
+        assert!(legacy.is_dir(), "旧目录里还有别的模型，不能整体删除");
+        assert!(!legacy.join("model.bin").exists());
+        assert!(!legacy.join("tokenizer.json").exists());
+        assert_eq!(std::fs::read(small.join("model.bin")).unwrap(), b"small");
+        assert_eq!(std::fs::read(legacy.join("user-note.txt")).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 删除_hf_快照时清理其链接的_blob() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir("delete-hf-snapshot");
+        let cache = dir.join("models--Systran--faster-whisper-large-v3");
+        let blobs = cache.join("blobs");
+        let snapshot = cache.join("snapshots").join("revision");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::create_dir_all(&snapshot).unwrap();
+        for name in ["model.bin", "tokenizer.json"] {
+            let blob = blobs.join(name);
+            std::fs::write(&blob, b"blob").unwrap();
+            symlink(Path::new("../../blobs").join(name), snapshot.join(name)).unwrap();
+        }
+        let large = catalog::find("whisper-large-v3").unwrap();
+        assert_eq!(catalog::status(large, &dir).installed_bytes, 8);
+
+        let manager = ModelManager::new(dir.clone());
+        manager.delete("whisper-large-v3", |_| {}).unwrap();
+
+        assert!(!snapshot.exists());
+        assert!(std::fs::read_dir(&blobs).unwrap().next().is_none(), "链接目标的 blob 也应删除");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

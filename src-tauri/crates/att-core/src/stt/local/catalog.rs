@@ -5,7 +5,8 @@
 //! `Systran/faster-whisper-{短名}`：`large-v3-turbo` 不在 Systran 名下，拼接会 404。
 //!
 //! 安装布局与引擎的探测顺序对齐：
-//! - Whisper：`models/faster-whisper-<短名>/`（旧的单模型目录 `models/faster_whisper/` 仍识别为 large-v3）；
+//! - Whisper：`models/faster-whisper-<短名>/`（`models/faster_whisper/` 本身只在确实直接装有
+//!   large-v3 时识别为旧版安装位置）；
 //! - Qwen3-ASR：GitHub 的 `.tar.bz2` 解压后取模型目录，落到 `models/qwen3-asr-0.6B-int8/`；
 //! - SenseVoice：GitHub 的 `.tar.bz2` 解压后取模型目录，落到 `models/sense-voice-zh-en-ja-ko-yue-int8/`；
 //! - Silero VAD：单文件 `models/silero_vad.onnx`（sherpa-onnx 子目录里的旧位置也识别）。
@@ -561,7 +562,8 @@ pub fn existing_paths(spec: &ModelSpec, models_dir: &Path) -> Vec<PathBuf> {
                 }
             }
             if spec.id == "whisper-large-v3" {
-                push_existing(&mut paths, legacy_whisper_dir(models_dir), Path::exists);
+                let legacy = legacy_whisper_dir(models_dir);
+                push_existing(&mut paths, legacy.clone(), |path| is_installed_at(spec, path));
             }
         }
         Engine::Qwen => {
@@ -627,6 +629,11 @@ pub fn size_of(path: &Path) -> u64 {
     let Ok(metadata) = std::fs::symlink_metadata(path) else {
         return 0;
     };
+    if metadata.file_type().is_symlink() {
+        // HF 快照里的文件通常是指向 blobs/ 的符号链接。只跟随文件链接，目录链接不递归，
+        // 避免异常链接或循环把安装大小算到别处。
+        return std::fs::metadata(path).ok().filter(|target| target.is_file()).map_or(0, |target| target.len());
+    }
     if metadata.is_file() {
         return metadata.len();
     }
@@ -786,6 +793,23 @@ mod tests {
         assert_eq!(status(vad_spec(), &vad).state, "partial");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&vad);
+    }
+
+    #[test]
+    fn 旧目录只有短名模型时_large_v3_仍为缺失() {
+        let dir = temp_dir("legacy-large-missing");
+        let nested = dir.join("faster_whisper").join("faster-whisper-small");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("model.bin"), b"x").unwrap();
+        std::fs::write(nested.join("tokenizer.json"), b"{}").unwrap();
+
+        let small = find("whisper-small").unwrap();
+        assert_eq!(status(small, &dir).state, "installed");
+        let large = find("whisper-large-v3").unwrap();
+        let large_status = status(large, &dir);
+        assert_eq!(large_status.state, "missing");
+        assert!(large_status.paths.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
