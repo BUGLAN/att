@@ -233,7 +233,13 @@ pub struct FinishOutcome {
     pub text: String,
     /// 服务端回报的计费时长（毫秒）
     pub audio_duration_ms: i64,
+    /// 是否收到服务端末包（`is_last`）。
+    pub complete: bool,
+    /// 没收到末包时的降级原因；调用方应保留正文并展示或落库。
+    pub warning: Option<String>,
 }
+
+pub const INCOMPLETE_WARNING: &str = "识别可能不完整：未收到服务端末包";
 
 /// 预热连接的匹配键：握手时用到的参数（接入点、资源、凭据）任何一项变了，预热连接就不能用。
 /// 语言、断句时长、热词写在全量请求里，按下时才发，不影响复用。凭据只存摘要，不多留一份明文。
@@ -507,7 +513,10 @@ impl DoubaoSession {
     }
 
     /// 发送末包并收尾；中途已出错则返回归一化错误。
-    pub async fn finish(mut self, timeout: Duration, quiet: Duration) -> Result<FinishOutcome, SttError> {
+    ///
+    /// `quiet` 只适用于实时录音。批量识别传 `None`，一直等到服务端末包或 `timeout`，
+    /// 避免音频里的长停顿被误判为结果已收完。
+    pub async fn finish(mut self, timeout: Duration, quiet: Option<Duration>) -> Result<FinishOutcome, SttError> {
         let alive = self.check_alive();
         if alive.is_ok() {
             let tail = std::mem::take(&mut self.buffer);
@@ -524,9 +533,10 @@ impl DoubaoSession {
                     if state.server_final || state.closed || state.error.is_some() {
                         break;
                     }
-                    if state.frame_count > baseline
-                        && state.last_frame_at.map(|t| t.elapsed() >= quiet).unwrap_or(false)
-                    {
+                    if quiet.is_some_and(|quiet| {
+                        state.frame_count > baseline
+                            && state.last_frame_at.map(|t| t.elapsed() >= quiet).unwrap_or(false)
+                    }) {
                         break;
                     }
                 }
@@ -544,7 +554,13 @@ impl DoubaoSession {
         if let Some(error) = &state.error {
             return Err(error.clone());
         }
-        Ok(FinishOutcome { text: state.final_text(), audio_duration_ms: state.audio_duration_ms })
+        let complete = state.server_final;
+        Ok(FinishOutcome {
+            text: state.final_text(),
+            audio_duration_ms: state.audio_duration_ms,
+            complete,
+            warning: (!complete).then(|| INCOMPLETE_WARNING.to_string()),
+        })
     }
 
     /// 用户主动取消：不算失败。
@@ -633,7 +649,7 @@ pub async fn transcribe_pcm_with_progress(
     // 批量推流比实时快得多，服务端需要更长时间吐完结果
     let audio_seconds = samples.len() as u64 / sauc::SAMPLE_RATE as u64;
     let timeout = FINISH_TIMEOUT + Duration::from_secs(audio_seconds / 2);
-    session.finish(timeout, FINISH_QUIET * 2).await
+    session.finish(timeout, None).await
 }
 
 #[cfg(test)]
@@ -702,6 +718,36 @@ mod tests {
                     Some(Ok(_)) => {}
                     _ => return,
                 }
+            }
+        });
+        format!("ws://{address}")
+    }
+
+    /// 批量桩：收到音频后先回正文，再延迟发末包；验证批量收尾不会按静默窗口提前结束。
+    async fn delayed_final_stub() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut requested = false;
+            while let Some(Ok(message)) = ws.next().await {
+                if !matches!(message, Message::Binary(_)) {
+                    continue;
+                }
+                if !requested {
+                    requested = true;
+                    let ack = sauc::build_server_result_frame(&json!({ "result": { "text": "" } }), false, false);
+                    let _ = ws.send(Message::binary(ack)).await;
+                    continue;
+                }
+                let partial =
+                    sauc::build_server_result_frame(&json!({ "result": { "text": "半截结果" } }), false, false);
+                let _ = ws.send(Message::binary(partial)).await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let last = sauc::build_server_result_frame(&json!({ "result": { "text": "完整结果" } }), true, true);
+                let _ = ws.send(Message::binary(last)).await;
+                return;
             }
         });
         format!("ws://{address}")
@@ -787,6 +833,29 @@ mod tests {
         assert!(session.check_alive().is_err(), "断开的预热连接不能再用");
         assert!(session.begin(&config, "zh", "", None).await.is_err());
         assert!(session.ping().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn 批量收尾忽略静默窗口并等待末包() {
+        let endpoint = delayed_final_stub().await;
+        let mut session = DoubaoSession::connect(&local_config(endpoint), "zh", "", None).await.unwrap();
+        session.push(&vec![0i16; sauc::CHUNK_SAMPLES]).await.unwrap();
+        let outcome = session.finish(Duration::from_secs(2), None).await.unwrap();
+        assert_eq!(outcome.text, "完整结果");
+        assert!(outcome.complete);
+        assert!(outcome.warning.is_none());
+    }
+
+    #[tokio::test]
+    async fn 未收到末包时保留正文并标记不完整() {
+        let endpoint = stub_server(true, Some(Duration::from_millis(200))).await;
+        let mut session = DoubaoSession::connect(&local_config(endpoint), "zh", "", None).await.unwrap();
+        // 只送入不足一帧的尾音频，让 finish 发送的唯一音频包得到一次结果帧。
+        session.push(&[0i16; 16]).await.unwrap();
+        let outcome = session.finish(Duration::from_secs(2), Some(Duration::from_millis(30))).await.unwrap();
+        assert_eq!(outcome.text, "你好");
+        assert!(!outcome.complete);
+        assert_eq!(outcome.warning.as_deref(), Some(INCOMPLETE_WARNING));
     }
 
     #[test]

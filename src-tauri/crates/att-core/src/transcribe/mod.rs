@@ -666,7 +666,7 @@ async fn run_transcription_locked(
     let duration = decoded_duration_seconds(samples.len());
     hook.set_total_seconds(duration);
     hook.tick(0.0);
-    let payload = match crate::stt::local_kind(engine) {
+    let (payload, cacheable) = match crate::stt::local_kind(engine) {
         // 本地引擎（Whisper / Qwen3-ASR）：分段时间戳原样进入 payload，供校对窗口与前端使用
         Some(kind) => {
             let chunk_hook = hook.clone();
@@ -685,26 +685,36 @@ async fn run_transcription_locked(
                 .iter()
                 .map(|segment| json!({ "start": segment.start, "end": segment.end, "text": segment.text }))
                 .collect::<Vec<_>>();
-            json!({
-                "text": transcript.text,
-                "duration_seconds": if duration > 0.0 { duration } else { transcript.duration },
-                "engine": model_label,
-                "segments": segments,
-            })
+            (
+                json!({
+                    "text": transcript.text,
+                    "duration_seconds": if duration > 0.0 { duration } else { transcript.duration },
+                    "engine": model_label,
+                    "segments": segments,
+                }),
+                true,
+            )
         }
         None => match engine {
-            "deepseek_asr" => hook.token.run(run_deepseek(core, &samples, duration, hook)).await?,
-            "doubao_web_asr" => hook.token.run(run_doubao_web(core, &samples, duration, hook)).await?,
-            "doubao_ime_asr" => hook.token.run(run_doubao_ime(core, &samples, duration, hook)).await?,
-            "wetype_asr" => hook.token.run(run_wetype(core, &samples, duration, hook)).await?,
+            "deepseek_asr" => (hook.token.run(run_deepseek(core, &samples, duration, hook)).await?, true),
+            "doubao_web_asr" => (hook.token.run(run_doubao_web(core, &samples, duration, hook)).await?, true),
+            "doubao_ime_asr" => (hook.token.run(run_doubao_ime(core, &samples, duration, hook)).await?, true),
+            "wetype_asr" => (hook.token.run(run_wetype(core, &samples, duration, hook)).await?, true),
             _ => hook.token.run(run_doubao(core, language, &samples, duration, engine, hook)).await?,
         },
     };
     if hook.token.is_cancelled() {
         return Err(TranscribeError::cancelled());
     }
-    core.transcriber.cache_store(core, hash, engine, &payload);
+    store_transcription_cache(core, hash, engine, &payload, cacheable);
     Ok(payload)
+}
+
+/// 不完整结果仍可返回给调用方，但不能进入文件转写缓存，否则重跑会继续命中截断正文。
+fn store_transcription_cache(core: &CoreState, hash: &str, engine: &str, payload: &Value, cacheable: bool) {
+    if cacheable {
+        core.transcriber.cache_store(core, hash, engine, payload);
+    }
 }
 
 /// 豆包路径：按单会话上限分段推流，段偏移拼成时间戳。
@@ -715,11 +725,13 @@ async fn run_doubao(
     duration: f64,
     engine: &str,
     hook: &AsrHook,
-) -> Result<Value, TranscribeError> {
+) -> Result<(Value, bool), TranscribeError> {
     let config = crate::stt::doubao_config(core);
     let session_samples = DOUBAO_SESSION_SECONDS * SAMPLE_RATE;
     let mut segments = Vec::new();
     let mut billing_ms = 0i64;
+    let mut warnings = Vec::new();
+    let total_chunks = samples.chunks(session_samples).len();
     for (index, chunk) in samples.chunks(session_samples).enumerate() {
         let offset = (index * session_samples) as f64 / SAMPLE_RATE as f64;
         // 进度按已推送的音频秒数算（推流比实时快，推完后还要等服务端吐完结果）
@@ -734,6 +746,9 @@ async fn run_doubao(
                 }
             })?;
         billing_ms += outcome.audio_duration_ms.max(0);
+        if let Some(warning) = outcome.warning {
+            warnings.push(format!("第 {}/{} 段{warning}", index + 1, total_chunks));
+        }
         if !outcome.text.is_empty() {
             segments.push(json!({
                 "start": offset,
@@ -753,7 +768,10 @@ async fn run_doubao(
         payload["billing"] =
             json!({ "audio_duration_seconds": (billing_ms as f64 / 1000.0 * 1000.0).round() / 1000.0 });
     }
-    Ok(payload)
+    if !warnings.is_empty() {
+        payload["warnings"] = json!(warnings);
+    }
+    Ok((payload, warnings.is_empty()))
 }
 
 /// DeepSeek 路径：接口单次最长 120 秒，按 115 秒切块顺序识别，段偏移拼成时间戳。
@@ -1144,6 +1162,42 @@ fn save_record(
 mod tests {
     use super::*;
 
+    async fn incomplete_doubao_stub() -> String {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut requested = false;
+            while let Some(Ok(message)) = ws.next().await {
+                if !matches!(message, Message::Binary(_)) {
+                    continue;
+                }
+                if !requested {
+                    requested = true;
+                    let ack =
+                        crate::stt::sauc::build_server_result_frame(&json!({ "result": { "text": "" } }), false, false);
+                    let _ = ws.send(Message::binary(ack)).await;
+                    continue;
+                }
+                let partial = crate::stt::sauc::build_server_result_frame(
+                    &json!({ "result": { "text": "半截结果" } }),
+                    false,
+                    false,
+                );
+                let _ = ws.send(Message::binary(partial)).await;
+                let _ = ws.send(Message::Close(Some(CloseFrame { code: CloseCode::Error, reason: "".into() }))).await;
+                return;
+            }
+        });
+        format!("ws://{address}")
+    }
+
     #[test]
     fn 响应整形_校对变体覆盖正文() {
         let entry = json!({"text": "原文", "duration_seconds": 3.0, "engine": "doubao_asr:bigmodel",
@@ -1177,6 +1231,30 @@ mod tests {
         assert!(requires_async_job(&request, Some(ASYNC_THRESHOLD_SECONDS + 0.1)));
         assert!(!requires_async_job(&request, Some(30.0)));
         assert_eq!(decoded_duration_seconds(SAMPLE_RATE * 42), 42.0);
+    }
+
+    #[tokio::test]
+    async fn 豆包未收到末包时保留警告但不写文件转写缓存() {
+        let dir = std::env::temp_dir().join(format!("att-ft-incomplete-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let core = Arc::new(CoreState::init(&dir, crate::Platform::Macos).unwrap());
+        let endpoint = incomplete_doubao_stub().await;
+        core.apply_settings_update(&json!({
+            "doubao_asr_api_key": "test-token",
+            "doubao_asr_endpoint": endpoint,
+        }))
+        .unwrap();
+
+        let samples = vec![0i16; 2_000];
+        let (payload, cacheable) =
+            run_doubao(&core, "zh", &samples, 0.125, "doubao_asr", &AsrHook::none()).await.unwrap();
+        assert_eq!(payload["text"], "半截结果");
+        assert!(payload["warnings"][0].as_str().unwrap().contains("识别可能不完整"));
+        assert!(!cacheable, "未收到末包的结果不能缓存");
+
+        store_transcription_cache(&core, "incomplete-hash", "doubao_asr", &payload, cacheable);
+        assert!(core.transcriber.cache_lookup(&core, "incomplete-hash", "doubao_asr").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

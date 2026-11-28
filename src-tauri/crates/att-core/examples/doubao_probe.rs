@@ -148,7 +148,7 @@ async fn main() {
             session.push(chunk).await.expect("推流失败");
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        session.finish(doubao::FINISH_TIMEOUT, doubao::FINISH_QUIET).await
+        session.finish(doubao::FINISH_TIMEOUT, Some(doubao::FINISH_QUIET)).await
     } else {
         doubao::transcribe_pcm(&config, "zh", "", &samples).await
     };

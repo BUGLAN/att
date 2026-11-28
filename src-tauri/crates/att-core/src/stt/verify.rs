@@ -247,7 +247,7 @@ pub fn record_for_test(core: &CoreState, provider: &str, status: CheckStatus, me
 
 /// 豆包：握手成功即视为可用，随即断开（不推音频，不计费）。
 async fn check_doubao(config: &doubao::DoubaoConfig) -> (CheckStatus, String) {
-    match doubao::DoubaoSession::connect(config, "zh", "", None).await {
+    match doubao::DoubaoSession::open(config).await {
         Ok(session) => {
             session.cancel().await;
             (CheckStatus::Ok, String::new())
@@ -428,5 +428,40 @@ mod tests {
         assert!(is_online_provider("doubao_web_asr"));
         assert!(is_online_provider("deepseek_asr"));
         assert!(is_online_provider("wetype_asr"));
+    }
+
+    #[tokio::test]
+    async fn 豆包凭据验证只握手不发全量请求() {
+        use futures_util::StreamExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let sent_request = Arc::new(AtomicBool::new(false));
+        let observed = sent_request.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(message)) = ws.next().await {
+                match message {
+                    Message::Binary(_) => observed.store(true, Ordering::SeqCst),
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+        });
+        let config = doubao::DoubaoConfig {
+            api_key: "test-token".into(),
+            resource_id: "volc.seedasr.sauc.duration".into(),
+            endpoint: format!("ws://{address}"),
+            end_window_size: 0,
+            hotwords: Vec::new(),
+        };
+
+        assert_eq!(check_doubao(&config).await, (CheckStatus::Ok, String::new()));
+        tokio::time::timeout(Duration::from_secs(2), server).await.expect("验证断开后服务端应结束").unwrap();
+        assert!(!sent_request.load(Ordering::SeqCst), "只验证握手，不能发全量识别请求");
     }
 }

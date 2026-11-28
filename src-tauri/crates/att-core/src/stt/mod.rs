@@ -403,7 +403,7 @@ impl Engine {
         match self {
             Engine::Doubao(config) => doubao::transcribe_pcm(config, language, "", samples)
                 .await
-                .map(|outcome| BatchTranscript { text: outcome.text, warning: None })
+                .map(|outcome| BatchTranscript { text: outcome.text, warning: outcome.warning })
                 .map_err(|error| error.to_string()),
             Engine::DoubaoWeb(config) => {
                 doubao_web::transcribe_pcm(config, samples).await.map(|text| BatchTranscript { text, warning: None })

@@ -2019,14 +2019,16 @@ impl StreamingSession {
         }
     }
 
-    async fn finish(self, timeout: Duration, quiet: Duration) -> Result<String, String> {
+    async fn finish(self, timeout: Duration, quiet: Option<Duration>) -> Result<(String, Option<String>), String> {
         match self {
-            StreamingSession::Doubao(session) => {
-                session.finish(timeout, quiet).await.map(|outcome| outcome.text).map_err(|error| error.to_string())
-            }
-            StreamingSession::DoubaoIme(session) => session.finish(timeout).await,
+            StreamingSession::Doubao(session) => session
+                .finish(timeout, quiet)
+                .await
+                .map(|outcome| (outcome.text, outcome.warning))
+                .map_err(|error| error.to_string()),
+            StreamingSession::DoubaoIme(session) => session.finish(timeout).await.map(|text| (text, None)),
             #[cfg(windows)]
-            StreamingSession::WeType(session) => session.finish(timeout).await,
+            StreamingSession::WeType(session) => session.finish(timeout).await.map(|text| (text, None)),
         }
     }
 
@@ -2354,8 +2356,8 @@ async fn streaming_session(
             }
             (Some(active), None) => {
                 let partial = active.current_text();
-                match active.finish(config.finish_timeout(), doubao::FINISH_QUIET).await {
-                    Ok(text) => (text, None),
+                match active.finish(config.finish_timeout(), Some(doubao::FINISH_QUIET)).await {
+                    Ok((text, warning)) => (text, warning),
                     Err(error) => (partial, Some(error.to_string())),
                 }
             }
@@ -2624,6 +2626,8 @@ mod tests {
         Dead,
         /// 全量请求回一个空结果帧当回执，音频包回带文字的结果帧，末包回末包结果
         Alive,
+        /// 与 `Alive` 相同，但始终不回末包。
+        NoFinal,
     }
 
     fn stub_result_frame(text: &str, last: bool) -> Vec<u8> {
@@ -2663,7 +2667,8 @@ mod tests {
                             stub_result_frame("", false)
                         } else {
                             // 音频帧 flags 的 bit1 = 末包
-                            stub_result_frame("你好世界", data[1] & 0b0010 != 0)
+                            let last = !matches!(script, StubConn::NoFinal) && data[1] & 0b0010 != 0;
+                            stub_result_frame("你好世界", last)
                         };
                         let _ = ws.send(Message::binary(reply)).await;
                     }
@@ -2747,6 +2752,15 @@ mod tests {
         assert_eq!(accepted.load(Ordering::SeqCst), 2);
         assert!(started.elapsed() >= WARM_ACK_TIMEOUT, "等满回执超时才回退");
         assert!(started.elapsed() < WARM_ACK_TIMEOUT + Duration::from_secs(3), "回退后不该再拖");
+    }
+
+    #[tokio::test]
+    async fn 流式会话_未收末端包时保留正文并记录降级原因() {
+        let (endpoint, _) = stub_doubao(vec![StubConn::NoFinal]).await;
+        let (outcome, _) = run_streaming_session(stub_config(endpoint), None).await;
+        assert_eq!(outcome.text, "你好世界");
+        assert!(outcome.error.as_deref().unwrap().contains("识别可能不完整"));
+        assert!(!outcome.cancelled);
     }
 
     #[tokio::test]
