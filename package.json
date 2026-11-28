@@ -1,6 +1,6 @@
 {
   "name": "audio-to-text",
-  "version": "2.12.0",
+  "version": "2.13.0",
   "description": "落墨 — 录音转文字（Tauri 2 + Rust + Vue 3）",
   "packageManager": "npm@10.9.9",
   "scripts": {
