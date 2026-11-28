@@ -94,11 +94,7 @@ impl Fernet {
 
         let mut mac = HmacSha256::new_from_slice(&self.signing_key).expect("HMAC 接受任意长度密钥");
         mac.update(signed_part);
-        let expected = mac.finalize().into_bytes();
-        // 常数时间比较，防时序侧信道
-        if expected.as_slice() != hmac_bytes {
-            return Err(FernetError::InvalidSignature);
-        }
+        mac.verify_slice(hmac_bytes).map_err(|_| FernetError::InvalidSignature)?;
 
         let iv: [u8; 16] = signed_part[9..25].try_into().unwrap();
         let ciphertext = &signed_part[25..];

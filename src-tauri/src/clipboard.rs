@@ -12,6 +12,7 @@
 use att_core::clipboard::{hex, normalize_text, CaptureRequest};
 use att_core::events::AppEvent;
 use att_core::state::CoreState;
+use att_core::storage::json_store;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
@@ -253,9 +254,7 @@ fn capture_image(
     let image_hash = hex(&Sha256::digest(&png));
     let file_name = format!("{image_hash}.png");
     let path = core.clipboard.images_dir().join(&file_name);
-    if !path.exists() {
-        std::fs::write(&path, &png)?;
-    }
+    persist_png(&path, &png)?;
     // 整图已在内存里：顺手缩出悬浮框用的缩略图，免得之后再解码一次原图（失败不影响入库，请求时会补生成）
     if let Err(error) = core.clipboard.save_thumbnail(&file_name, &buffer) {
         tracing::warn!("生成剪贴板缩略图失败: {error}");
@@ -279,6 +278,22 @@ fn capture_image(
         }))
         .ok(),
     })
+}
+
+/// 内容一致时不重复写；已有文件损坏或截断时用完整 PNG 自愈。
+fn persist_png(path: &std::path::Path, png: &[u8]) -> std::io::Result<()> {
+    persist_png_with(path, png, json_store::write_bytes_atomic)
+}
+
+fn persist_png_with(
+    path: &std::path::Path,
+    png: &[u8],
+    write: impl FnOnce(&std::path::Path, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if std::fs::read(path).ok().as_deref() == Some(png) {
+        return Ok(());
+    }
+    write(path, png)
 }
 
 #[cfg(test)]
@@ -328,5 +343,33 @@ mod tests {
         assert!(accepted.is_none());
         assert_eq!(last_change, Some(10));
         assert_eq!(last_observed.as_deref(), Some("old text"));
+    }
+
+    #[test]
+    fn 剪贴板图片原子写_失败时保留旧文件() {
+        let dir = std::env::temp_dir().join(format!("att-clip-image-fail-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("image.png");
+        std::fs::write(&path, b"truncated").unwrap();
+
+        let result = persist_png_with(&path, b"complete png", |_, _| Err(std::io::Error::other("注入失败")));
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"truncated");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 剪贴板图片_已截断时会用完整内容重写() {
+        let dir = std::env::temp_dir().join(format!("att-clip-image-heal-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("image.png");
+        std::fs::write(&path, b"truncated").unwrap();
+
+        persist_png(&path, b"complete png").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete png");
+        assert!(!dir.join("image.png.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

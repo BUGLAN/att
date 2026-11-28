@@ -6,6 +6,7 @@
 //! 具体算法实现在 [`super::fernet`]（纯 Rust，无 OpenSSL 依赖）。
 
 use super::fernet::Fernet;
+use super::json_store;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
@@ -27,17 +28,15 @@ impl Crypto {
     /// `Fernet.generate_key()` 完全一致），首次创建时落盘。
     pub fn load_or_create(data_dir: &Path) -> Result<Self, CryptoError> {
         let key_path = data_dir.join(".encryption_key");
-        let key = if key_path.exists() {
-            std::fs::read_to_string(&key_path)?.trim().to_string()
-        } else {
-            let key = Fernet::generate_key();
-            if let Some(parent) = key_path.parent() {
-                std::fs::create_dir_all(parent)?;
+        let key = json_store::with_resource_lock(&key_path, || -> Result<String, CryptoError> {
+            if key_path.exists() {
+                Ok(std::fs::read_to_string(&key_path)?.trim().to_string())
+            } else {
+                let key = Fernet::generate_key();
+                write_new_key_locked(&key_path, &key)?;
+                Ok(key)
             }
-            std::fs::write(&key_path, &key)?;
-            restrict_permissions(&key_path);
-            key
-        };
+        })?;
 
         let fernet = Fernet::new(&key).ok_or_else(|| CryptoError::InvalidKey(key_path.display().to_string()))?;
         Ok(Self { fernet, key_path })
@@ -58,6 +57,11 @@ impl Crypto {
     }
 }
 
+/// 已持有密钥资源锁时创建新文件：临时文件先设为 0600，再原子替换目标文件。
+fn write_new_key_locked(path: &Path, key: &str) -> std::io::Result<()> {
+    json_store::write_bytes_atomic_locked_with(path, key.as_bytes(), restrict_permissions)
+}
+
 /// 从既有密钥构造（测试用）。
 #[cfg(test)]
 impl Crypto {
@@ -67,18 +71,17 @@ impl Crypto {
 }
 
 /// Unix 上把密钥文件权限收紧到 0600（Windows 无对应语义，忽略）。
-fn restrict_permissions(path: &Path) {
+fn restrict_permissions(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(path) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o600);
-            let _ = std::fs::set_permissions(path, perms);
-        }
+        let mut perms = std::fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(path, perms)?;
     }
     #[cfg(not(unix))]
     let _ = path;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -96,10 +99,28 @@ mod tests {
         let token = crypto.encrypt("secret-豆包-token");
         assert!(token.starts_with("gAAAAA"), "Fernet token 必须带 0x80 版本头");
         assert_eq!(crypto.decrypt(&token).as_deref(), Some("secret-豆包-token"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(crypto.key_path()).unwrap().permissions().mode() & 0o777, 0o600);
+        }
 
         // 密钥文件持久化后重载仍可解
         let reloaded = Crypto::load_or_create(&dir).unwrap();
         assert_eq!(reloaded.decrypt(&token).as_deref(), Some("secret-豆包-token"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 密钥原子写_失败时不创建目标文件() {
+        let dir = std::env::temp_dir().join(format!("att-crypto-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 用目录占住临时文件路径，稳定注入 File::create 失败。
+        std::fs::create_dir(dir.join(".encryption_key.tmp")).unwrap();
+
+        assert!(Crypto::load_or_create(&dir).is_err());
+        assert!(!dir.join(".encryption_key").exists(), "失败不能留下半截密钥");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

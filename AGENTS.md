@@ -41,6 +41,7 @@ src-tauri/
   crates/att-whisper/  本地 faster-whisper：ct2rs（CTranslate2）绑定，兼容应用内下载目录与旧 CT2 目录
   crates/att-qwen/     本地 Qwen3-ASR：sherpa-onnx C API（运行期 dlopen）+ ONNX 模型；C 桥见 src/shim.c，
                        推理库版本/哈希见 vendor/sherpa-onnx-libs.json
+  crates/att-storage/  无业务依赖的原子文件 / JSON 原语，供 att-core 与本地引擎共用
   crates/att-server/   axum 数据面（仅回环），HTTP 契约与旧 Python 版一致
   crates/att-audio/    cpal 麦克风采集
   crates/att-hotkey/   全局热键（macOS CGEventTap / Windows RegisterHotKey + WH_KEYBOARD_LL）
@@ -57,7 +58,7 @@ models/                本地模型（不入库）：faster-whisper-<短名>/（
 ## 3. 硬约束
 
 1. 注释与文档用中文。
-2. JSON 写入一律走 `att_core::storage::json_store`（同目录 tmp + rename），禁止原地截断写。
+2. JSON 写入一律走 `att_storage::json_store`（`att_core::storage::json_store` 为兼容 re-export；同目录 tmp + fsync + rename），禁止原地截断写。
 3. 密钥不落明文：豆包 / ChatGPT / DeepSeek 识别凭据与 LLM 密钥只存 Fernet 密文（`data/.encryption_key`，与旧 Python 密文互认）；
    任何响应、日志、错误文案不得出现密钥（LLM 错误文案统一过 `llm::errors::redact_secrets`）。
 4. 数据文件格式保持与旧版一致（`settings.json`、`records/`、`llm_v2.json`、`clipboard/`、`transcribe_file_cache.json`），

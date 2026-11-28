@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+att-storage = { path = "../att-storage" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -70,4 +71,5 @@ cuda-cudnn = ["local-engines", "att-whisper/cuda-cudnn"]
 test-support = []
 
 [dev-dependencies]
+tempfile = "3"
 tokio = { workspace = true, features = ["io-util"] }

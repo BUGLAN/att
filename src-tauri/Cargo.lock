@@ -338,6 +338,7 @@ version = "2.12.0"
 dependencies = [
  "aes",
  "att-qwen",
+ "att-storage",
  "att-whisper",
  "base64 0.22.1",
  "bzip2",
@@ -359,6 +360,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tar",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",
@@ -409,9 +411,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "att-storage"
+version = "2.12.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "att-whisper"
 version = "2.12.0"
 dependencies = [
+ "att-storage",
  "ct2rs",
  "hound",
  "serde_json",

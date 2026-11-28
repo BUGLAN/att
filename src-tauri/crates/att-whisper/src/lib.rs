@@ -21,6 +21,7 @@
 //! [CTranslate2]: https://github.com/OpenNMT/CTranslate2
 
 // ct2rs 0.11 起 sys 类型统一从 crate 根导出（0.10 的 `ct2rs::sys::*` 路径已移除）
+use att_storage::json_store;
 use ct2rs::{ComputeType, Config as Ct2Config, Device, Whisper, WhisperOptions};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -268,7 +269,11 @@ fn model_missing_hint(config: &WhisperConfig) -> String {
 /// 是 128（这一代多了粤语，`lang_ids` 有 100 个），其余 80。
 pub fn ensure_preprocessor_config(model_dir: &Path) -> Result<(), String> {
     let path = model_dir.join(PREPROCESSOR_CONFIG);
-    if path.is_file() {
+    let valid_existing = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some();
+    if valid_existing {
         return Ok(());
     }
     let feature_size = default_mel_bins(model_dir);
@@ -286,8 +291,7 @@ pub fn ensure_preprocessor_config(model_dir: &Path) -> Result<(), String> {
         "return_attention_mask": false,
         "sampling_rate": 16000,
     });
-    let body = serde_json::to_string_pretty(&body).unwrap_or_default();
-    std::fs::write(&path, body)
+    json_store::write_json_atomic(&path, &body)
         .map_err(|error| format!("模型目录缺少 {PREPROCESSOR_CONFIG}，自动补写失败（{}）：{error}", path.display()))?;
     tracing::info!(
         "本地 Whisper：模型目录缺少 {PREPROCESSOR_CONFIG}，已按默认值补写（{feature_size} 维 mel）：{}",
@@ -697,10 +701,28 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(v3.join(PREPROCESSOR_CONFIG)).unwrap()).unwrap();
         assert_eq!(written["feature_size"], 128);
 
-        // 已有文件不覆盖
-        std::fs::write(v3.join(PREPROCESSOR_CONFIG), "keep").unwrap();
+        // 合法的已有文件不覆盖
+        std::fs::write(v3.join(PREPROCESSOR_CONFIG), "{\"keep\":true}").unwrap();
         ensure_preprocessor_config(&v3).unwrap();
-        assert_eq!(std::fs::read_to_string(v3.join(PREPROCESSOR_CONFIG)).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(v3.join(PREPROCESSOR_CONFIG)).unwrap(), "{\"keep\":true}");
+
+        // 截断/损坏的文件用默认配置自愈
+        std::fs::write(v3.join(PREPROCESSOR_CONFIG), "{\"feature_size\":").unwrap();
+        ensure_preprocessor_config(&v3).unwrap();
+        let repaired: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(v3.join(PREPROCESSOR_CONFIG)).unwrap()).unwrap();
+        assert_eq!(repaired["feature_size"], 128);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 预处理配置原子写_失败时不创建目标文件() {
+        let root = temp_dir("preprocessor-fail");
+        // 用目录占住临时文件路径，稳定注入 File::create 失败。
+        std::fs::create_dir(root.join(format!("{PREPROCESSOR_CONFIG}.tmp"))).unwrap();
+
+        assert!(ensure_preprocessor_config(&root).is_err());
+        assert!(!root.join(PREPROCESSOR_CONFIG).exists(), "失败不能留下半截配置");
         let _ = std::fs::remove_dir_all(&root);
     }
 

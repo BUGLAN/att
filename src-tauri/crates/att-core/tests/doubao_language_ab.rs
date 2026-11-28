@@ -114,13 +114,11 @@ async fn doubao_ab() {
     let variants = variants();
     let labels = [variants[0].0, variants[1].0];
 
-    let sandbox = std::env::temp_dir().join(format!("att-doubao-ab-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&sandbox);
-    std::fs::create_dir_all(&sandbox).expect("创建临时目录");
+    let sandbox = tempfile::tempdir().expect("创建临时目录");
     for name in ["settings.json", ".encryption_key"] {
-        std::fs::copy(data.join(name), sandbox.join(name)).unwrap_or_else(|e| panic!("复制 {name} 失败：{e}"));
+        std::fs::copy(data.join(name), sandbox.path().join(name)).unwrap_or_else(|e| panic!("复制 {name} 失败：{e}"));
     }
-    let core = CoreState::init(&sandbox, Platform::Macos).expect("初始化核心状态");
+    let core = CoreState::init(sandbox.path(), Platform::Macos).expect("初始化核心状态");
     let mut config = stt::doubao_config(&core);
     assert!(!config.api_key.is_empty(), "设置里没有豆包密钥，也没有 DOUBAO_ASR_API_KEY");
 
@@ -180,5 +178,4 @@ async fn doubao_ab() {
         std::fs::write(&out, header + &report).expect("写出对比报告");
         println!("报告：{out}");
     }
-    let _ = std::fs::remove_dir_all(&sandbox);
 }

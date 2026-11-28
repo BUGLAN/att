@@ -580,20 +580,9 @@ impl RecordRepo {
     }
 }
 
-/// 生成新记录 id（时间前缀 + 随机后缀，无 uuid 依赖）。
+/// 生成新记录 id（UUID v4，保持文件名安全且不依赖时间精度）。
 pub fn new_record_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let millis = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    // 简单 xorshift：避免引入 uuid 依赖，id 只需唯一即可
-    let mut state = millis as u64 ^ 0x9E3779B97F4A7C15;
-    let mut rand = || {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        state
-    };
-    let (r1, r2) = (rand(), rand());
-    format!("rec-{millis:x}-{r1:08x}{r2:08x}")
+    format!("rec-{}", uuid::Uuid::new_v4().simple())
 }
 
 #[cfg(test)]
@@ -648,6 +637,18 @@ mod tests {
         repo.delete("rec-1").unwrap();
         assert!(matches!(repo.get("rec-1"), Err(RecordError::NotFound)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 新记录id_同一毫秒内批量生成不重复() {
+        let ids: std::collections::HashSet<String> = (0..1_000).map(|_| new_record_id()).collect();
+        assert_eq!(ids.len(), 1_000);
+        assert!(ids.iter().all(|id| {
+            id.strip_prefix("rec-")
+                .and_then(|hex| uuid::Uuid::parse_str(hex).ok().filter(|uuid| uuid.get_version_num() == 4))
+                .is_some()
+                && is_safe_identifier(id)
+        }));
     }
 
     #[test]

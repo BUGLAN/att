@@ -5,6 +5,8 @@
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
+use crate::storage::json_store;
+
 pub const TARGET_RATE: u32 = 16_000;
 
 /// 写 16k 单声道 PCM16 WAV（先写 .tmp 再 rename，异常退出不留半截文件）。
@@ -52,26 +54,13 @@ pub fn wav_bytes_16k(samples: &[i16]) -> std::io::Result<Vec<u8>> {
 /// 新录音落盘的扩展名（见 [`write_recording_16k`]）。
 pub const RECORDING_EXTENSION: &str = "flac";
 
-/// 录音落盘：16k 单声道 PCM16 无损压缩为 FLAC（先写 .tmp 再 rename，异常退出不留半截文件）。
+/// 录音落盘：16k 单声道 PCM16 无损压缩为 FLAC（tmp 写入并 fsync 后再 rename）。
 pub fn write_recording_16k(path: &Path, samples: &[i16]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
-    tmp_name.push(".tmp");
-    let tmp = path.with_file_name(tmp_name);
-    let result = (|| {
-        let file = std::fs::File::create(&tmp)?;
+    json_store::write_file_atomic(path, |file| {
         let mut writer = std::io::BufWriter::new(file);
         encode_flac_16k(samples, &mut writer)?;
-        writer.flush()?;
-        drop(writer);
-        std::fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
+        writer.flush()
+    })
 }
 
 /// 编码 16k 单声道 PCM16 FLAC 到内存。

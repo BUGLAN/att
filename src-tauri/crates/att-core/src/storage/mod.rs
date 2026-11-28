@@ -4,5 +4,5 @@
 pub mod crypto;
 pub mod dir_index;
 pub mod fernet;
-pub mod json_store;
+pub use att_storage::json_store;
 pub mod usage;

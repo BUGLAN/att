@@ -1,5 +1,6 @@
-//! JSON 持久化原语：语义与 Python 版 `app/repositories/json_store.py` 对齐。
+//! 原子文件与 JSON 持久化原语：语义与 Python 版 `app/repositories/json_store.py` 对齐。
 //!
+//! - [`write_bytes_atomic`]：同目录 tmp → fsync → rename，二进制文件与密钥共用。
 //! - [`write_json_atomic`]：同目录 tmp → fsync → rename（Windows 上
 //!   `std::fs::rename` 走 MoveFileEx(REPLACE_EXISTING)，同卷原子覆盖）。
 //!   任何一步失败都清理临时文件，目标文件要么是旧内容要么是完整新内容。
@@ -9,6 +10,7 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -38,24 +40,103 @@ pub fn with_resource_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
 
 /// 原子写 JSON（pretty 格式，与 Python 版 indent=2 对齐）。
 pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    with_resource_lock(path, || write_json_atomic_locked(path, value))
+    write_json_atomic_with(path, value, |_| Ok(()))
+}
+
+/// 原子写 JSON，并允许在 rename 前调整临时文件（例如先收紧密钥权限）。
+pub fn write_json_atomic_with<T: Serialize>(
+    path: &Path,
+    value: &T,
+    prepare: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    with_resource_lock(path, || write_json_atomic_locked_with(path, value, prepare))
 }
 
 /// 已持有资源锁时的写入口（供「锁内读-改-写」组合使用，避免双重加锁）。
 pub fn write_json_atomic_locked<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    write_json_atomic_locked_with(path, value, |_| Ok(()))
+}
+
+/// 已持有资源锁时的可注入写入入口。
+pub fn write_json_atomic_locked_with<T: Serialize>(
+    path: &Path,
+    value: &T,
+    prepare: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let data = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
+    write_bytes_atomic_locked_with(path, &data, prepare)
+}
+
+/// 原子写任意字节（同目录 tmp → fsync → rename）。
+pub fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_bytes_atomic_with(path, bytes, |_| Ok(()))
+}
+
+/// 原子写任意字节，并允许在 rename 前调整临时文件。
+pub fn write_bytes_atomic_with(
+    path: &Path,
+    bytes: &[u8],
+    prepare: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    with_resource_lock(path, || write_bytes_atomic_locked_with(path, bytes, prepare))
+}
+
+/// 流式写同目录临时文件；回调返回并 fsync 成功后才原子替换目标文件。
+pub fn write_file_atomic<T>(
+    path: &Path,
+    write: impl FnOnce(&std::fs::File) -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    write_file_atomic_with(path, write, |_| Ok(()))
+}
+
+/// 流式原子写，并允许在 rename 前调整临时文件。
+pub fn write_file_atomic_with<T>(
+    path: &Path,
+    write: impl FnOnce(&std::fs::File) -> std::io::Result<T>,
+    prepare: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<T> {
+    with_resource_lock(path, || write_file_atomic_locked_with(path, write, prepare))
+}
+
+/// 已持有资源锁时原子写任意字节。
+pub fn write_bytes_atomic_locked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_bytes_atomic_locked_with(path, bytes, |_| Ok(()))
+}
+
+/// 已持有资源锁时的底层原子写。写入与 fsync 全部完成后才 rename。
+pub fn write_bytes_atomic_locked_with(
+    path: &Path,
+    bytes: &[u8],
+    prepare: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    write_file_atomic_locked_with(path, |mut file| file.write_all(bytes), prepare)
+}
+
+/// 已持有资源锁时的流式原子写。
+pub fn write_file_atomic_locked<T>(
+    path: &Path,
+    write: impl FnOnce(&std::fs::File) -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    write_file_atomic_locked_with(path, write, |_| Ok(()))
+}
+
+/// 已持有资源锁时的底层流式原子写。
+pub fn write_file_atomic_locked_with<T>(
+    path: &Path,
+    write: impl FnOnce(&std::fs::File) -> std::io::Result<T>,
+    prepare: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<T> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = sibling_tmp_path(path);
     let result = (|| {
-        let data = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
-        {
-            use std::io::Write;
-            let mut file = std::fs::File::create(&tmp)?;
-            file.write_all(data.as_bytes())?;
-            file.sync_all()?;
-        }
-        std::fs::rename(&tmp, path)
+        let file = std::fs::File::create(&tmp)?;
+        let value = write(&file)?;
+        file.sync_all()?;
+        prepare(&tmp)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(value)
     })();
     if result.is_err() {
         // 失败必须清理临时文件，避免积累半截残留
@@ -117,6 +198,22 @@ mod tests {
         let loaded: serde_json::Value = read_json_file(&path).unwrap();
         assert_eq!(loaded["a"], json!(2));
         assert!(!dir.join("data.json.tmp").exists(), "临时文件必须被 rename 掉");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 原子写_提交前失败保留旧内容并清理临时文件() {
+        let dir = std::env::temp_dir().join(format!("att-test-atomic-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.bin");
+        std::fs::write(&path, b"old").unwrap();
+
+        let result = write_bytes_atomic_with(&path, b"new", |_| Err(std::io::Error::other("注入失败")));
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+        assert!(!dir.join("data.bin.tmp").exists(), "失败后必须清理临时文件");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

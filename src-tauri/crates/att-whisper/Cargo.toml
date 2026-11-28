@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+att-storage = { path = "../att-storage" }
 tracing = { workspace = true }
 # 读 CTranslate2 模型的 config.json（缺 preprocessor_config.json 时推断 mel 维度）
 serde_json = { workspace = true }

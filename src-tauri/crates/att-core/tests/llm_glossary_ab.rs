@@ -56,13 +56,11 @@ async fn llm_glossary_ab() {
         .filter(|id| !id.is_empty())
         .collect();
 
-    let sandbox = std::env::temp_dir().join(format!("att-llm-ab-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&sandbox);
-    std::fs::create_dir_all(&sandbox).expect("创建临时目录");
+    let sandbox = tempfile::tempdir().expect("创建临时目录");
     for name in ["settings.json", "llm_v2.json", ".encryption_key"] {
-        std::fs::copy(data.join(name), sandbox.join(name)).unwrap_or_else(|e| panic!("复制 {name} 失败：{e}"));
+        std::fs::copy(data.join(name), sandbox.path().join(name)).unwrap_or_else(|e| panic!("复制 {name} 失败：{e}"));
     }
-    let core = CoreState::init(&sandbox, Platform::Macos).expect("初始化核心状态");
+    let core = CoreState::init(sandbox.path(), Platform::Macos).expect("初始化核心状态");
     let settings = core.settings();
     let glossary = settings.asr_hotwords.clone();
     assert!(!glossary.is_empty(), "设置里的词表为空");
@@ -72,7 +70,7 @@ async fn llm_glossary_ab() {
     let template = core
         .prompt_library()
         .resolve_template(&wanted)
-        .or_else(|| att_core::prompts::PromptLibrary::new(&repo_prompts, &sandbox).resolve_template(&wanted))
+        .or_else(|| att_core::prompts::PromptLibrary::new(&repo_prompts, sandbox.path()).resolve_template(&wanted))
         .unwrap_or_else(|| prompt::DEFAULT_PROMPT.to_string());
 
     let target = core.llm.resolve_runtime(None).expect("默认 LLM 模型");
@@ -119,5 +117,4 @@ async fn llm_glossary_ab() {
             outputs[1]
         );
     }
-    let _ = std::fs::remove_dir_all(&sandbox);
 }

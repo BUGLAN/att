@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "crates/att-audio",
     "crates/att-core",
+    "crates/att-storage",
     "crates/att-hotkey",
     "crates/att-qwen",
     "crates/att-server",
