@@ -183,13 +183,18 @@ pub fn run() {
                 tracing::info!("更新后首次启动：{} → {}", if previous.is_empty() { "旧版本" } else { previous }, core.app_version);
             }
             let core = Arc::new(core);
-            // 上次退出时还在「重新识别」的记录：后台任务随进程没了，标成失败（文字不动），免得一直显示「转写中」。
+            // 上次退出时还在「重新识别」/「优化」的记录：后台任务随进程没了，复位状态（文字不动），免得一直显示「转写中」「优化中」。
             // 放后台线程：要扫一遍记录目录，不挡启动
             let recover_core = core.clone();
             std::thread::spawn(move || {
                 let recovered = att_core::records::retranscribe::recover_interrupted(&recover_core);
                 if recovered > 0 {
                     tracing::info!("{recovered} 条记录的重新识别被上次退出打断，已标为失败");
+                }
+                // 还停在「优化中」的记录同理：否则界面上没有「优化」按钮，也一直显示优化中
+                let recovered = att_core::llm::optimizer::recover_interrupted(&recover_core);
+                if recovered > 0 {
+                    tracing::info!("{recovered} 条记录的优化被上次退出打断，已复位");
                 }
             });
 

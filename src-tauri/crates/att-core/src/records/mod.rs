@@ -563,6 +563,13 @@ impl RecordRepo {
         index.items().iter().filter(|r| r.status == RecordStatus::Transcribing).map(|r| r.id.clone()).collect()
     }
 
+    /// 列出处于「优化中」的记录 id（启动时复位被中断的优化用）。
+    pub fn optimizing_ids(&self) -> Vec<String> {
+        let mut index = self.guard();
+        index.refresh(scan_records);
+        index.items().iter().filter(|r| r.status == RecordStatus::Optimizing).map(|r| r.id.clone()).collect()
+    }
+
     /// 音频错位修复用（migration 模块）：按 id 直接改写 audio_path 字段。
     pub fn set_audio_path(&self, id: &str, audio_file_name: &str) -> Result<(), RecordError> {
         if !is_safe_identifier(id) {

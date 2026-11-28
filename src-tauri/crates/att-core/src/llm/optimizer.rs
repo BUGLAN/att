@@ -2,7 +2,9 @@
 //!
 //! 一次优化：记录置 optimizing → 解析预设模板与默认模型 → 流式补全（增量回调）→ 清洗 → 落盘。
 //! 约束（每条都是 Python 版踩过的坑）：
-//! - 任何失败/取消都必须把记录从 optimizing 复位为 transcribed，否则会永久卡状态；
+//! - 任何失败/取消都必须把记录从 optimizing 复位为 transcribed，否则会永久卡状态：登记由 [`OptimizingLease`]
+//!   持有，请求断开、调用方 future 被丢弃时由它的 Drop 兜底复位；被新任务取代的旧任务不再改记录状态；
+//!   进程退出时还在优化的记录由启动时的 [`recover_interrupted`] 复位；
 //! - 流式在首条增量前失败时回退一次非流式；已产出增量后不回退（避免重复计费/重复追加）；
 //! - 确定性失败（思考 token 吃满预算 → 正文为空）不回退；
 //! - 同一记录同时只允许一条优化，后来的请求取代旧请求；
@@ -69,11 +71,14 @@ impl OptimizationHub {
         (id, rx)
     }
 
-    fn unregister(&self, record_id: &str, id: u64) {
+    /// 注销任务；返回它注销时是否仍是该记录的当前任务（false = 已被新任务取代，不能再改记录状态）。
+    fn unregister(&self, record_id: &str, id: u64) -> bool {
         let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
-        if active.get(record_id).map(|(current, _)| *current == id).unwrap_or(false) {
+        let current = active.get(record_id).map(|(current, _)| *current == id).unwrap_or(false);
+        if current {
             active.remove(record_id);
         }
+        current
     }
 
     /// 取消指定记录正在执行的优化；没有活动任务返回 false。
@@ -88,6 +93,69 @@ impl OptimizationHub {
     pub fn is_active(&self, record_id: &str) -> bool {
         self.active.lock().map(|a| a.contains_key(record_id)).unwrap_or(false)
     }
+}
+
+/// 一条优化任务的登记凭据：注册时把记录置为 optimizing，结束时由 [`OptimizingLease::finish`] 注销。
+///
+/// 没走到 `finish` 就被丢弃（HTTP 请求断开、调用方超时丢弃 future、任务被中止）时，Drop 兜底：
+/// 注销登记；如果自己仍是该记录的当前任务、记录还停在 optimizing，就复位为 transcribed。
+struct OptimizingLease<'a> {
+    core: &'a CoreState,
+    record_id: String,
+    id: u64,
+    finished: bool,
+}
+
+impl<'a> OptimizingLease<'a> {
+    fn register(core: &'a CoreState, record_id: &str) -> (Self, watch::Receiver<bool>) {
+        let (id, cancel_rx) = core.optimizer.register(record_id);
+        set_status(core, record_id, RecordStatus::Optimizing, None);
+        (Self { core, record_id: record_id.to_string(), id, finished: false }, cancel_rx)
+    }
+
+    /// 正常结束：注销登记；返回是否仍是当前任务。
+    fn finish(mut self) -> bool {
+        self.finished = true;
+        self.core.optimizer.unregister(&self.record_id, self.id)
+    }
+}
+
+impl Drop for OptimizingLease<'_> {
+    fn drop(&mut self) {
+        if self.finished || !self.core.optimizer.unregister(&self.record_id, self.id) {
+            return;
+        }
+        tracing::info!("优化被中断（记录 {}），复位状态", self.record_id);
+        let result = self.core.records.patch(&self.record_id, |record| {
+            if record.status == RecordStatus::Optimizing {
+                record.status = RecordStatus::Transcribed;
+            }
+        });
+        if let Err(error) = result {
+            tracing::warn!("复位优化状态失败（记录 {}）: {error}", self.record_id);
+        }
+    }
+}
+
+/// 启动时调用：上次退出时还停在 optimizing 的记录（优化任务随进程没了）复位。
+/// 已有优化稿的复位为 optimized，否则为 transcribed；正在优化的不动。返回改了几条。
+pub fn recover_interrupted(core: &CoreState) -> usize {
+    core.records
+        .optimizing_ids()
+        .into_iter()
+        .filter(|id| {
+            let mut changed = false;
+            let result = core.records.patch(id, |record| {
+                // 锁内再确认一次：恢复跑的同时用户可能已经点了新的优化
+                if record.status == RecordStatus::Optimizing && !core.optimizer.is_active(&record.id) {
+                    let has_optimized = record.optimized_text.as_deref().is_some_and(|text| !text.trim().is_empty());
+                    record.status = if has_optimized { RecordStatus::Optimized } else { RecordStatus::Transcribed };
+                    changed = true;
+                }
+            });
+            result.is_ok() && changed
+        })
+        .count()
 }
 
 /// 是否配置了可用的默认优化模型（自动优化的前置条件；未配置时不该把录音卡在「优化中」）。
@@ -114,19 +182,15 @@ pub async fn optimize_record_with_preset(
     preset_id: Option<&str>,
     mut on_event: impl FnMut(OptimizeEvent),
 ) -> OptimizeOutcome {
-    let (task_id, mut cancel_rx) = core.optimizer.register(record_id);
-    let outcome = async {
-        set_status(core, record_id, RecordStatus::Optimizing, None);
-        on_event(OptimizeEvent::Started);
-        tokio::select! {
-            biased;
-            _ = cancel_rx.wait_for(|cancelled| *cancelled) => None,
-            result = run(core, text, preset_id, &mut on_event) => Some(result),
-        }
-    }
-    .await;
-    core.optimizer.unregister(record_id, task_id);
-    finish_optimization(core, record_id, outcome)
+    let (lease, mut cancel_rx) = OptimizingLease::register(core, record_id);
+    on_event(OptimizeEvent::Started);
+    let outcome = tokio::select! {
+        biased;
+        _ = cancel_rx.wait_for(|cancelled| *cancelled) => None,
+        result = run(core, text, preset_id, &mut on_event) => Some(result),
+    };
+    let current = lease.finish();
+    finish_optimization(core, record_id, outcome, current)
 }
 
 /// 用内置的「语音指令改写选中文本」模板执行一次优化。
@@ -140,26 +204,32 @@ pub async fn optimize_record_with_voice_rewrite(
     selection: &str,
     mut on_event: impl FnMut(OptimizeEvent),
 ) -> OptimizeOutcome {
-    let (task_id, mut cancel_rx) = core.optimizer.register(record_id);
-    let outcome = async {
-        set_status(core, record_id, RecordStatus::Optimizing, None);
-        on_event(OptimizeEvent::Started);
-        tokio::select! {
-            biased;
-            _ = cancel_rx.wait_for(|cancelled| *cancelled) => None,
-            result = run_voice_rewrite(core, instruction, selection, &mut on_event) => Some(result),
-        }
-    }
-    .await;
-    core.optimizer.unregister(record_id, task_id);
-    finish_optimization(core, record_id, outcome)
+    let (lease, mut cancel_rx) = OptimizingLease::register(core, record_id);
+    on_event(OptimizeEvent::Started);
+    let outcome = tokio::select! {
+        biased;
+        _ = cancel_rx.wait_for(|cancelled| *cancelled) => None,
+        result = run_voice_rewrite(core, instruction, selection, &mut on_event) => Some(result),
+    };
+    let current = lease.finish();
+    finish_optimization(core, record_id, outcome, current)
 }
 
+/// 按结果落盘。`current` 为 false 表示本任务已被同一记录的新任务取代：记录状态归新任务管，这里一律不写。
 fn finish_optimization(
     core: &CoreState,
     record_id: &str,
     outcome: Option<Result<OptimizeSuccess, LlmError>>,
+    current: bool,
 ) -> OptimizeOutcome {
+    if !current {
+        tracing::info!("优化已被新任务取代（记录 {record_id}），旧任务不改记录");
+        return match outcome {
+            Some(Ok(success)) => OptimizeOutcome::Completed(success),
+            Some(Err(error)) => OptimizeOutcome::Failed(error.user_message),
+            None => OptimizeOutcome::Cancelled,
+        };
+    }
     match outcome {
         None => {
             set_status(core, record_id, RecordStatus::Transcribed, Some(String::new()));
@@ -621,6 +691,84 @@ mod tests {
         assert!(matches!(task.await.unwrap(), OptimizeOutcome::Cancelled));
         assert_eq!(core.records.get("rec-1").unwrap().status, RecordStatus::Transcribed);
         assert!(!core.optimizer.cancel("rec-1"), "已结束的优化不可再取消");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn slow_sse(delay: std::time::Duration) -> StubRoute {
+        StubRoute::sse(
+            "POST /v1/chat/completions",
+            &[r#"{"choices":[{"delta":{"content":"明天开会。"},"finish_reason":"stop"}]}"#],
+        )
+        .after(delay)
+    }
+
+    #[tokio::test]
+    async fn 调用方丢弃_future_后记录复位且不再登记() {
+        let (base, _requests) = stub_routes(vec![slow_sse(std::time::Duration::from_secs(30))]).await;
+        let (core, root) = setup(&base, "dropped");
+        let (_deltas, on_event) = collect();
+        // 模拟请求断开 / 前端超时：handler future 被丢弃，走不到正常收尾
+        let timed_out = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            optimize_record(&core, "rec-1", "嗯那个明天开会", on_event),
+        )
+        .await;
+        assert!(timed_out.is_err(), "桩挂起，应超时");
+        assert_eq!(core.records.get("rec-1").unwrap().status, RecordStatus::Transcribed, "不能卡在优化中");
+        assert!(!core.optimizer.is_active("rec-1"), "登记必须随 future 一起清掉");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn 被取代的旧任务不回退新任务的状态() {
+        let (base, _requests) = stub_routes(vec![slow_sse(std::time::Duration::from_millis(400))]).await;
+        let (core, root) = setup(&base, "superseded");
+        let (_first_deltas, first_events) = collect();
+        let (_second_deltas, second_events) = collect();
+        let ms = std::time::Duration::from_millis;
+        let first = optimize_record(&core, "rec-1", "嗯那个明天开会", first_events);
+        let second = async {
+            tokio::time::sleep(ms(50)).await;
+            optimize_record(&core, "rec-1", "嗯那个明天开会", second_events).await
+        };
+        let probe = async {
+            // 旧任务此时已被取消并收尾；新任务仍在等上游
+            tokio::time::sleep(ms(200)).await;
+            core.records.get("rec-1").unwrap().status
+        };
+        let (first, second, during) = tokio::join!(first, second, probe);
+        assert!(matches!(first, OptimizeOutcome::Cancelled), "{first:?}");
+        assert_eq!(during, RecordStatus::Optimizing, "新任务进行期间状态保持优化中");
+        assert!(matches!(second, OptimizeOutcome::Completed(_)), "{second:?}");
+        assert_eq!(core.records.get("rec-1").unwrap().status, RecordStatus::Optimized);
+        assert!(!core.optimizer.is_active("rec-1"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 启动恢复_卡在优化中的记录复位_进行中的不动() {
+        let (core, root) = setup("http://127.0.0.1:9", "recover");
+        for (id, optimized) in [("rec-stuck", None), ("rec-stuck-optimized", Some("旧优化稿")), ("rec-running", None)]
+        {
+            core.records
+                .insert(Record {
+                    id: id.into(),
+                    raw_text: Some("原文".into()),
+                    optimized_text: optimized.map(str::to_string),
+                    status: RecordStatus::Optimizing,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let (_running_id, _cancel) = core.optimizer.register("rec-running");
+
+        assert_eq!(recover_interrupted(&core), 2);
+        assert_eq!(core.records.get("rec-stuck").unwrap().status, RecordStatus::Transcribed);
+        let optimized = core.records.get("rec-stuck-optimized").unwrap();
+        assert_eq!(optimized.status, RecordStatus::Optimized, "有优化稿的复位为已优化");
+        assert_eq!(optimized.optimized_text.as_deref(), Some("旧优化稿"), "恢复不能动文字");
+        assert_eq!(core.records.get("rec-running").unwrap().status, RecordStatus::Optimizing);
+        assert_eq!(core.records.get("rec-1").unwrap().status, RecordStatus::Transcribed);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
