@@ -15,6 +15,8 @@ pub const CODE_PROVIDER: &str = "provider_error";
 pub const CODE_UNSUPPORTED_PROVIDER: &str = "unsupported_provider";
 /// 输出预算被思考 token 吃光（正文为空 + finish_reason=length）：重试必然同样失败
 pub const CODE_OUTPUT_TRUNCATED: &str = "output_truncated";
+/// 待优化 / 改写的正文超过单次上限：不调用上游，请用户分段
+pub const CODE_INPUT_TOO_LONG: &str = "input_too_long";
 
 /// 面向用户的建议文案（失败原因要可执行，而不是一坨异常字符串）。
 fn user_hint(code: &str) -> &'static str {

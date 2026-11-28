@@ -152,6 +152,14 @@ test('自动优化完成态：成功输入优化文，失败兜底原文并用�
   assert.equal(partial.toast, '优化中断：输入框里是部分优化结果，原文已复制到剪贴板')
   assert.equal(partial.toastTone, 'error')
 
+  // 优化选中文本失败、一个字没打出：选区没动，提示后端给的原因（不说「转写文本」）
+  const selectionFailed = deriveNativeSessionPatch({
+    phase: 'completed', mode: 'batch', source: 'selection', text: '原文', copied: false, pasted: false,
+    optimize_error: '输出被截断，已保留原文', message: '优化失败，选中的文字没有改动：输出被截断，已保留原文'
+  })
+  assert.equal(selectionFailed.toast, '优化失败，选中的文字没有改动：输出被截断，已保留原文')
+  assert.equal(selectionFailed.toastTone, 'error')
+
   const cancelled = deriveNativeSessionPatch({
     phase: 'completed', mode: 'single', text: '原文', optimization_cancelled: true
   })

@@ -1659,7 +1659,6 @@ impl Actor {
                 (original_text.clone(), false, None, "已取消优化，保留原始文本".to_string())
             }
         };
-        let truncated = matches!(&outcome, OptimizeOutcome::Completed(s) if s.truncated);
         let cancelled = matches!(outcome, OptimizeOutcome::Cancelled);
 
         if pending.detached.load(Ordering::SeqCst) {
@@ -1682,7 +1681,6 @@ impl Actor {
         };
         let message = match &pending.transcribe_error {
             Some(error) => format!("识别中断，已保存已识别内容：{error}"),
-            None if truncated => "优化完成，但输出已达 Max Tokens 上限被截断，可在设置 → LLM 服务里调优".to_string(),
             None => base_message,
         };
         self.emit_state(
@@ -1697,7 +1695,7 @@ impl Actor {
                 "copied": copied,
                 "pasted": pasted,
                 "copy_error": copy_error,
-                "degraded": pending.transcribe_error.is_some() || truncated,
+                "degraded": pending.transcribe_error.is_some(),
                 "optimized": optimized,
                 "optimization_cancelled": cancelled,
                 "optimize_error": optimize_error,

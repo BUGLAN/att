@@ -1,13 +1,15 @@
 //! 提示词组装（移植自 Python `app/llm/prompt_builder.py`）：预设模板 → system / user 两条消息，正文进 XML 信封。
 //!
 //! 1. system / user 分离：规则放 system，正文只出现在 user 消息里，防止正文里的话被当成新指令；
-//! 2. 信封隔离：正文包进 `<transcript>…</transcript>`，中和正文里伪造的开/闭标签；超长正文截断；
+//! 2. 信封隔离：正文包进 `<transcript>…</transcript>`，中和正文里伪造的开/闭标签；
+//!    超长正文不在这里截断：调用方先按 [`MAX_ENVELOPE_CHARS`] 拒绝（静默截断会让尾部从结果里消失）；
 //! 3. 用户词表（设置 `asr_hotwords`）：非空时作为「仅用于纠错」的参考块追加在 system 正文之后；
 //! 4. 安全约定尾块：统一追加在 system 末尾。
 
 use super::gateway::ChatMessage;
 
-/// 信封内正文的字符上限（按字符数，避免切坏多字节字符）。
+/// 单次优化 / 改写允许的正文字符上限（按字符数计）。超过时调用方直接报错、不调用上游，
+/// 不再截断后照常优化：截断稿会被当成完整结果写进记录、替换选区。
 pub const MAX_ENVELOPE_CHARS: usize = 16_000;
 const TAG: &str = "transcript";
 
@@ -127,16 +129,12 @@ fn match_tag_at(chars: &[char], start: usize) -> Option<usize> {
     ENVELOPE_TAGS.iter().find_map(|tag| match_named_tag_at(chars, start, tag))
 }
 
-/// 截断 + 中和信封标签（把命中的 `<` 换成 `&lt;`，正文仍可读但不再构成边界）。
+/// 中和信封标签（把命中的 `<` 换成 `&lt;`，正文仍可读但不再构成边界）。不截断，长度由调用方把关。
 pub fn sanitize_for_envelope(raw: &str) -> String {
-    let mut chars: Vec<char> = raw.chars().collect();
-    if chars.len() > MAX_ENVELOPE_CHARS {
-        chars.truncate(MAX_ENVELOPE_CHARS);
-        chars.extend("\u{2026}[truncated]".chars());
+    if !raw.contains('<') {
+        return raw.to_string();
     }
-    if !chars.contains(&'<') {
-        return chars.into_iter().collect();
-    }
+    let chars: Vec<char> = raw.chars().collect();
     let mut out = String::with_capacity(chars.len() + 8);
     let mut index = 0;
     while index < chars.len() {
@@ -230,11 +228,9 @@ mod tests {
     }
 
     #[test]
-    fn 超长正文截断() {
+    fn 超长正文不截断() {
         let long = "字".repeat(MAX_ENVELOPE_CHARS + 10);
-        let safe = sanitize_for_envelope(&long);
-        assert!(safe.ends_with("[truncated]"));
-        assert_eq!(safe.chars().count(), MAX_ENVELOPE_CHARS + "\u{2026}[truncated]".chars().count());
+        assert_eq!(sanitize_for_envelope(&long), long, "长度由调用方把关，信封里不得悄悄截掉尾部");
     }
 
     #[test]

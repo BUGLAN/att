@@ -122,10 +122,14 @@ export function deriveNativeSessionPatch(payload = {}) {
         toast = message || '没有识别到语音内容'
       } else if (optimization === 'fail') {
         // 自动优化失败兜底粘贴原文，保证「总有输出」；已流式输入部分优化文时由后端说明去向（copy_error）。
-        // 完整原因在记录详情的 error 字段
+        // 完整原因在记录详情的 error 字段。优化 / 改写选中文本失败且一个字没打出时选区原样留着，
+        // 直接用后端文案说明原因（如「原文超过 16000 字」「输出被截断，已保留原文」）
+        const selection = payload.source === 'selection' || payload.source === 'voice_selection'
         toast = copyResult.pasted
           ? '优化失败，已粘贴转写文本'
-          : (copyResult.copied && payload.copy_error) || '优化失败，转写文本已保留在记录集中'
+          : (copyResult.copied && payload.copy_error) ||
+            (selection && message) ||
+            '优化失败，转写文本已保留在记录集中'
         toastTone = 'error'
       } else if (optimization === 'cancel') {
         toast = '已取消优化，保留原始文本'

@@ -238,7 +238,6 @@ fn done_event(id: &str, success: &OptimizeSuccess) -> Value {
         "optimized_text": success.optimized_text,
         "processing_time": success.processing_time,
         "tokens_used": success.tokens_used,
-        "truncated": success.truncated,
         "model_string": success.model_string,
         "degraded": success.degraded,
     })
@@ -254,7 +253,6 @@ async fn record_optimize(State(state): Shared, Path(id): Path<String>) -> Reply 
             "optimized_text": success.optimized_text,
             "processing_time": success.processing_time,
             "tokens_used": success.tokens_used,
-            "truncated": success.truncated,
         }))),
         OptimizeOutcome::Failed(message) => Err(detail(StatusCode::BAD_GATEWAY, format!("文本优化失败：{message}"))),
         OptimizeOutcome::Cancelled => Err(detail(StatusCode::CONFLICT, "已取消优化")),

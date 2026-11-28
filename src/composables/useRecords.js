@@ -111,12 +111,6 @@ export function useRecords() {
       if (doneEvent.degraded) {
         // 服务端在首条增量前发现上游不支持 stream，已回退一次性优化
         appStore.showToast('当前上游不支持流式，已自动降级为一次性返回')
-      } else if (doneEvent.truncated) {
-        // 输出达到 Max Tokens 上限被截断（思考 token 也计入），文本可能不完整
-        appStore.showToast('优化完成，但输出已达 Max Tokens 上限被截断，可在设置 → LLM 服务里调优', {
-          tone: 'warn',
-          duration: 8000
-        })
       } else {
         appStore.showToast('优化完成')
       }

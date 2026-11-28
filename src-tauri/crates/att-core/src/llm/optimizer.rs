@@ -7,11 +7,13 @@
 //!   进程退出时还在优化的记录由启动时的 [`recover_interrupted`] 复位；
 //! - 流式在首条增量前失败时回退一次非流式；已产出增量后不回退（避免重复计费/重复追加）；
 //! - 确定性失败（思考 token 吃满预算 → 正文为空）不回退；
+//! - 输入超过 [`prompt::MAX_ENVELOPE_CHARS`] 直接失败、不调用上游；输出被 max_tokens 截断
+//!   （finish_reason=length）一律按失败处理，截断稿不写进记录、不交付；
 //! - 同一记录同时只允许一条优化，后来的请求取代旧请求；
 //! - 失败文案全部已脱敏（网关层保证）。
 
 use super::cleaning::clean_output;
-use super::errors::{LlmError, CODE_OUTPUT_TRUNCATED, CODE_PROVIDER, CODE_UNSUPPORTED_PROVIDER};
+use super::errors::{LlmError, CODE_INPUT_TOO_LONG, CODE_OUTPUT_TRUNCATED, CODE_PROVIDER, CODE_UNSUPPORTED_PROVIDER};
 use super::gateway::{self, ChatOptions, Endpoint, StreamBudget};
 use super::{prompt, registry, timeouts};
 use crate::records::RecordStatus;
@@ -37,7 +39,6 @@ pub struct OptimizeSuccess {
     /// 本次优化耗时；记录里另存为 `optimize_time`，不要写进 `processing_time`
     pub processing_time: f64,
     pub tokens_used: i64,
-    pub truncated: bool,
     pub model_string: String,
     /// true = 流式在首条增量前失败，本次结果来自回退的非流式调用
     pub degraded: bool,
@@ -284,6 +285,7 @@ async fn run(
     if text.trim().is_empty() {
         return Ok(unchanged(text));
     }
+    check_input_len(text, "原文", "请分段优化")?;
     let settings = core.settings();
     // 查找链：本次指定 → 设置里的默认预设 → 内置默认；指定的预设被删了也落到用户自己选的默认，而不是直接跳内置
     let template = core
@@ -307,9 +309,23 @@ async fn run_voice_rewrite(
     if instruction.trim().is_empty() || selection.trim().is_empty() {
         return Ok(unchanged(selection));
     }
+    check_input_len(selection, "选中的文字", "请分段改写")?;
+    check_input_len(instruction, "改写要求", "请说得简短一些")?;
     let messages = prompt::build_voice_rewrite_messages(instruction, selection);
     let input_chars = instruction.chars().count() + selection.chars().count();
     run_chat(core, messages, input_chars, "语音改写选中文本", 0, on_event).await
+}
+
+/// 输入超过单次上限时直接报错（不截断、不调用上游）：截断后的结果会被当成完整稿落盘、替换选区。
+fn check_input_len(text: &str, what: &str, advice: &str) -> Result<(), LlmError> {
+    let chars = text.chars().count();
+    if chars <= prompt::MAX_ENVELOPE_CHARS {
+        return Ok(());
+    }
+    Err(LlmError::plain(
+        CODE_INPUT_TOO_LONG,
+        format!("{what}超过 {} 字（当前 {chars} 字），{advice}", prompt::MAX_ENVELOPE_CHARS),
+    ))
 }
 
 fn unchanged(text: &str) -> OptimizeSuccess {
@@ -317,7 +333,6 @@ fn unchanged(text: &str) -> OptimizeSuccess {
         optimized_text: text.to_string(),
         processing_time: 0.0,
         tokens_used: 0,
-        truncated: false,
         model_string: String::new(),
         degraded: false,
     }
@@ -377,7 +392,6 @@ async fn run_chat(
         optimized_text,
         processing_time: started.elapsed().as_secs_f64(),
         tokens_used: result.total_tokens,
-        truncated: result.truncated(),
         model_string: model.to_string(),
         degraded,
     };
@@ -392,12 +406,23 @@ async fn run_chat(
     Ok(success)
 }
 
-/// 截断判定 + 输出清洗：正文为空且被截断 → 不可重试；清洗后为空 → 失败可见（不把空文本写进记录）。
+/// 截断判定 + 输出清洗。被 max_tokens 截断的结果一律失败（确定性失败，不回退重跑）：
+/// 正文为空 → 思考 token 吃满预算；正文不为空 → 截断稿不完整，不写进记录、不替换选区。
+/// 清洗后为空 → 失败可见（不把空文本写进记录）。
 fn finalize(result: gateway::ChatResult, max_tokens: i64) -> Result<(String, gateway::ChatResult), LlmError> {
-    if result.text.trim().is_empty() && result.truncated() {
-        return Err(LlmError::new(
+    if result.truncated() {
+        if result.text.trim().is_empty() {
+            return Err(LlmError::new(
+                CODE_OUTPUT_TRUNCATED,
+                format!("模型的思考 token 占满了 max_tokens={max_tokens}，正文为空"),
+            ));
+        }
+        return Err(LlmError::plain(
             CODE_OUTPUT_TRUNCATED,
-            format!("模型的思考 token 占满了 max_tokens={max_tokens}，正文为空"),
+            format!(
+                "输出被截断，已保留原文：输出达到 Max Tokens 上限（max_tokens={max_tokens}）。\
+                 可在 设置 → LLM 服务 里调大 Max Tokens，或分段优化"
+            ),
         ));
     }
     let cleaned = clean_output(&result.text);
@@ -663,6 +688,62 @@ mod tests {
         assert!(record.error.unwrap().contains("思考 token"));
         requests.recv().await.unwrap();
         assert!(requests.try_recv().is_err(), "确定性失败不得回退重跑");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn 输出被截断_按失败处理_不改写优化稿() {
+        let (base, mut requests) = stub_routes(vec![StubRoute::sse(
+            "POST /v1/chat/completions",
+            &[
+                r#"{"choices":[{"delta":{"content":"明天开会，"}}]}"#,
+                r#"{"choices":[{"delta":{"content":"议题是"},"finish_reason":"length"}]}"#,
+            ],
+        )])
+        .await;
+        let (core, root) = setup(&base, "output-truncated");
+        core.records.patch("rec-1", |record| record.optimized_text = Some("旧优化稿".into())).unwrap();
+        let (deltas, on_event) = collect();
+        let outcome = optimize_record(&core, "rec-1", "嗯那个明天开会", on_event).await;
+        let OptimizeOutcome::Failed(message) = outcome else { panic!("截断稿不得当成完成: {outcome:?}") };
+        assert!(message.contains("输出被截断，已保留原文") && message.contains("max_tokens="), "{message}");
+        assert_eq!(deltas.lock().unwrap().join(""), "明天开会，议题是", "增量照常推送，由调用方决定怎么收尾");
+        let record = core.records.get("rec-1").unwrap();
+        assert_eq!(record.status, RecordStatus::Transcribed);
+        assert_eq!(record.optimized_text.as_deref(), Some("旧优化稿"), "截断稿不得写进记录");
+        assert!(record.error.unwrap().contains("输出被截断"));
+        requests.recv().await.unwrap();
+        assert!(requests.try_recv().is_err(), "截断是确定性失败，不得回退重跑");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn 输入超过上限_直接失败_不调用上游() {
+        let (base, mut requests) = stub_routes(vec![StubRoute::sse(
+            "POST /v1/chat/completions",
+            &[r#"{"choices":[{"delta":{"content":"明天开会。"},"finish_reason":"stop"}]}"#],
+        )])
+        .await;
+        let (core, root) = setup(&base, "input-too-long");
+        let at_limit = "字".repeat(prompt::MAX_ENVELOPE_CHARS);
+        let too_long = "字".repeat(prompt::MAX_ENVELOPE_CHARS + 1);
+
+        let outcome = optimize_record(&core, "rec-1", &too_long, |_| {}).await;
+        let OptimizeOutcome::Failed(message) = outcome else { panic!("应失败: {outcome:?}") };
+        assert!(message.contains("原文超过 16000 字（当前 16001 字），请分段优化"), "{message}");
+        let record = core.records.get("rec-1").unwrap();
+        assert_eq!(record.status, RecordStatus::Transcribed);
+        assert!(record.optimized_text.is_none());
+
+        let outcome = optimize_record_with_voice_rewrite(&core, "rec-1", "改正式一点", &too_long, |_| {}).await;
+        let OptimizeOutcome::Failed(message) = outcome else { panic!("应失败: {outcome:?}") };
+        assert!(message.contains("选中的文字超过 16000 字"), "{message}");
+        assert!(requests.try_recv().is_err(), "超长输入不得调用上游");
+
+        let outcome = optimize_record(&core, "rec-1", &at_limit, |_| {}).await;
+        assert!(matches!(outcome, OptimizeOutcome::Completed(_)), "恰好到上限仍可优化: {outcome:?}");
+        let request = requests.recv().await.unwrap();
+        assert!(request.contains(&at_limit) && !request.contains("[truncated]"), "正文完整送出");
         let _ = std::fs::remove_dir_all(&root);
     }
 
