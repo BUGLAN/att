@@ -234,7 +234,8 @@ mod tests {
             hash.to_string(),
             json!({
                 "engines": {
-                    "doubao_web_asr": {
+                    // 桶键：引擎|本地模型（在线引擎为空）|实际识别语言（豆包网页恒为 auto）
+                    "doubao_web_asr||auto": {
                         "text": "任意目录也可转写",
                         "duration_seconds": 1.0,
                         "engine": "doubao_web_asr",

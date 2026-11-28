@@ -219,6 +219,30 @@ fn variant_key(model_id: Option<&str>) -> String {
     format!("{}@{}", model_id.unwrap_or("default"), proofread::PROMPT_VERSION)
 }
 
+/// 缓存引擎桶的键：`引擎|模型|实际识别语言`。
+///
+/// 同一文件换识别语言或换本地模型再转，必须重新识别，不能命中旧桶。模型取设置里所选的本地模型
+/// （在线引擎为空）；语言按引擎实际生效的值（忽略语言参数的引擎恒为 `auto`）。
+/// 旧版只按引擎名分桶，那些键不会再被查到，视为未命中重新识别（缓存文件格式不变）。
+fn cache_bucket(core: &CoreState, engine: &str, language: &str) -> String {
+    use crate::stt::local::LocalKind;
+
+    let settings = core.settings();
+    let model = match crate::stt::local_kind(engine) {
+        Some(LocalKind::Whisper) => settings.whisper_model,
+        Some(LocalKind::Qwen) => settings.qwen_asr_model,
+        Some(LocalKind::SenseVoice) => settings.sense_voice_model,
+        None => String::new(),
+    };
+    let language = crate::stt::effective_language(engine, language);
+    format!("{engine}|{}|{}", model.trim(), language.trim())
+}
+
+/// 校对变体是否完整：有窗口保留了原文（`fallback_batches` 非空）的不算，命中时要重新校对。
+fn variant_is_complete(variant: &Value) -> bool {
+    variant.get("fallback_batches").and_then(Value::as_array).is_none_or(|batches| batches.is_empty())
+}
+
 /// 引擎解析：显式 > auto（本地优先，其次豆包、DeepSeek、豆包网页）；本地模型/推理库缺失、在线凭据缺失 → 409。
 ///
 /// 本地引擎只做**文件是否就位**的探测，不触发模型加载（加载发生在真正转写时）。
@@ -438,18 +462,18 @@ impl FileTranscriber {
         }
     }
 
-    /// 按（内容哈希, 引擎）查缓存；命中刷新最近使用时间。
-    fn cache_lookup(&self, core: &CoreState, hash: &str, engine: &str) -> Option<Value> {
+    /// 按（内容哈希, 引擎桶键）查缓存；命中刷新最近使用时间。桶键见 [`cache_bucket`]。
+    fn cache_lookup(&self, core: &CoreState, hash: &str, bucket_key: &str) -> Option<Value> {
         self.with_cache(core, |cache| {
             let entry = cache.get_mut(hash)?.as_object_mut()?;
-            let bucket = entry.get("engines")?.get(engine)?.clone();
+            let bucket = entry.get("engines")?.get(bucket_key)?.clone();
             entry.insert("_last_used".into(), json!(now_secs()));
             Some(bucket)
         })
     }
 
     /// 写入引擎桶；按整文件条目做 LRU 淘汰（最近使用时间最旧的先淘汰）。
-    fn cache_store(&self, core: &CoreState, hash: &str, engine: &str, payload: &Value) {
+    fn cache_store(&self, core: &CoreState, hash: &str, bucket_key: &str, payload: &Value) {
         self.with_cache(core, |cache| {
             let entry = cache.entry(hash.to_string()).or_insert_with(|| json!({ "engines": {} }));
             if !entry.get("engines").map(Value::is_object).unwrap_or(false) {
@@ -460,7 +484,7 @@ impl FileTranscriber {
                 object.retain(|k, _| !k.starts_with('_'));
                 object.insert("cached_at".into(), json!(now_secs()));
             }
-            entry["engines"][engine] = bucket;
+            entry["engines"][bucket_key] = bucket;
             entry["_last_used"] = json!(now_secs());
             while cache.len() > CACHE_SIZE {
                 let oldest =
@@ -474,16 +498,18 @@ impl FileTranscriber {
         });
     }
 
+    /// 写入校对变体；每个引擎桶最多留 [`PROOFREAD_VARIANTS_PER_ENGINE`] 个，超出时淘汰写入最早的。
     fn store_proofread_variant(
         &self,
         core: &CoreState,
         hash: &str,
-        engine: &str,
+        bucket_key: &str,
         model_id: Option<&str>,
         result: &proofread::ProofreadResult,
     ) {
         self.with_cache(core, |cache| {
-            let Some(bucket) = cache.get_mut(hash).and_then(|e| e.get_mut("engines")).and_then(|e| e.get_mut(engine))
+            let Some(bucket) =
+                cache.get_mut(hash).and_then(|e| e.get_mut("engines")).and_then(|e| e.get_mut(bucket_key))
             else {
                 return;
             };
@@ -491,8 +517,9 @@ impl FileTranscriber {
                 bucket["proofread"] = json!({});
             }
             let variants = bucket["proofread"].as_object_mut().expect("刚确保为对象");
+            let key = variant_key(model_id);
             variants.insert(
-                variant_key(model_id),
+                key.clone(),
                 json!({
                     "text": result.text,
                     "segments": result.segments,
@@ -502,28 +529,37 @@ impl FileTranscriber {
                     "fallback_batches": result.fallback_batches,
                     "model_id": result.model_id,
                     "model_label": result.model_label,
+                    "cached_at": now_secs(),
                 }),
             );
+            // Map 按键的字典序排列，不能取第一个键：按写入时间淘汰最旧的（旧数据没有 cached_at，最先淘汰），
+            // 刚写入的这个不参与淘汰
             while variants.len() > PROOFREAD_VARIANTS_PER_ENGINE {
-                let first = variants.keys().next().cloned();
-                if let Some(key) = first {
-                    variants.remove(&key);
-                }
+                let oldest = variants
+                    .iter()
+                    .filter(|(k, _)| **k != key)
+                    .min_by(|a, b| cached_at(a.1).total_cmp(&cached_at(b.1)))
+                    .map(|(k, _)| k.clone());
+                match oldest {
+                    Some(oldest) => variants.remove(&oldest),
+                    None => break,
+                };
             }
             Self::save_cache(core, cache);
         });
     }
 
     /// 缓存引擎桶里记着的记录 id（转写结果存进记录集时写入）。
-    fn bucket_record_id(&self, core: &CoreState, hash: &str, engine: &str) -> Option<String> {
+    fn bucket_record_id(&self, core: &CoreState, hash: &str, bucket_key: &str) -> Option<String> {
         self.with_cache(core, |cache| {
-            cache.get(hash)?.get("engines")?.get(engine)?.get("record_id")?.as_str().map(str::to_string)
+            cache.get(hash)?.get("engines")?.get(bucket_key)?.get("record_id")?.as_str().map(str::to_string)
         })
     }
 
-    fn set_bucket_record_id(&self, core: &CoreState, hash: &str, engine: &str, record_id: &str) {
+    fn set_bucket_record_id(&self, core: &CoreState, hash: &str, bucket_key: &str, record_id: &str) {
         self.with_cache(core, |cache| {
-            let Some(bucket) = cache.get_mut(hash).and_then(|e| e.get_mut("engines")).and_then(|e| e.get_mut(engine))
+            let Some(bucket) =
+                cache.get_mut(hash).and_then(|e| e.get_mut("engines")).and_then(|e| e.get_mut(bucket_key))
             else {
                 return;
             };
@@ -628,6 +664,11 @@ async fn wait_for_job(core: &Arc<CoreState>, job_id: &str) -> Result<Value, Tran
     }
 }
 
+/// 校对变体的写入时间；旧数据没有该字段按 0 算（最先淘汰）。
+fn cached_at(variant: &Value) -> f64 {
+    variant.get("cached_at").and_then(Value::as_f64).unwrap_or(0.0)
+}
+
 fn last_used(entry: &Value) -> f64 {
     entry.get("_last_used").and_then(Value::as_f64).unwrap_or_else(|| {
         entry
@@ -662,13 +703,15 @@ pub async fn handle(core: Arc<CoreState>, request: TranscribeRequest) -> Result<
     let hash = content_hash(&path).await?;
     let transcriber = &core.transcriber;
 
-    if let Some(cached) = transcriber.cache_lookup(&core, &hash, engine) {
+    if let Some(cached) = transcriber.cache_lookup(&core, &hash, &cache_bucket(&core, engine, &request.language)) {
         let variant = request
             .proofread
             .then(|| {
                 cached.get("proofread").and_then(|p| p.get(variant_key(request.proofread_model_id.as_deref()))).cloned()
             })
-            .flatten();
+            .flatten()
+            // 旧缓存里可能有部分窗口保留原文的变体：不复用，重新校对
+            .filter(variant_is_complete);
         if !request.proofread || variant.is_some() {
             tracing::info!("文件转写缓存命中: {}（{engine}）", path.display());
             let payload = shape_payload(&cached, request.want_segments, true, variant.as_ref());
@@ -758,14 +801,14 @@ async fn run_transcription_locked(
     if hook.token.is_cancelled() {
         return Err(TranscribeError::cancelled());
     }
-    store_transcription_cache(core, hash, engine, &payload, cacheable);
+    store_transcription_cache(core, hash, &cache_bucket(core, engine, language), &payload, cacheable);
     Ok(payload)
 }
 
 /// 不完整结果仍可返回给调用方，但不能进入文件转写缓存，否则重跑会继续命中截断正文。
-fn store_transcription_cache(core: &CoreState, hash: &str, engine: &str, payload: &Value, cacheable: bool) {
+fn store_transcription_cache(core: &CoreState, hash: &str, bucket_key: &str, payload: &Value, cacheable: bool) {
     if cacheable {
-        core.transcriber.cache_store(core, hash, engine, payload);
+        core.transcriber.cache_store(core, hash, bucket_key, payload);
     }
 }
 
@@ -1107,7 +1150,8 @@ async fn execute_job(
     engine: &str,
     cancel: &CancelToken,
 ) -> Result<Value, TranscribeError> {
-    let mut payload = match core.transcriber.cache_lookup(core, hash, engine) {
+    let bucket_key = cache_bucket(core, engine, &request.language);
+    let mut payload = match core.transcriber.cache_lookup(core, hash, &bucket_key) {
         Some(bucket) => bucket,
         None => {
             // 解码前先刷新一次心跳，避免长文件在拿到真实时长前被前端判成停滞。
@@ -1154,14 +1198,16 @@ async fn execute_job(
         if result.applied {
             payload["text"] = json!(result.text);
             payload["segments"] = json!(result.segments);
-            // 校对成功才写缓存变体（降级不写，下次可重试校对）
-            core.transcriber.store_proofread_variant(
-                core,
-                hash,
-                engine,
-                request.proofread_model_id.as_deref(),
-                &result,
-            );
+            // 全部窗口都校对成功才写缓存变体：整体降级或部分窗口保留原文都不写，下次可重试校对
+            if result.is_complete() {
+                core.transcriber.store_proofread_variant(
+                    core,
+                    hash,
+                    &bucket_key,
+                    request.proofread_model_id.as_deref(),
+                    &result,
+                );
+            }
         }
         payload["proofread"] = result.meta();
     }
@@ -1172,7 +1218,7 @@ async fn execute_job(
 /// 把转写结果存进记录集，并在响应里带上 `record_id`。
 ///
 /// 无音频的文本记录：`raw_text` 是识别原文，校对成功时 `optimized_text` 是校对稿；`source_file` 是原文件名。
-/// 同一文件同一引擎只建一条：记录 id 记在缓存引擎桶里，记录还在时只在有新校对稿时更新它，被删了才重建。
+/// 同一文件同一引擎桶（引擎 + 模型 + 识别语言）只建一条：记录 id 记在缓存引擎桶里，记录还在时只在有新校对稿时更新它，被删了才重建。
 /// 存记录失败只写日志，不影响转写结果。
 fn save_record(
     core: &CoreState,
@@ -1199,7 +1245,8 @@ fn save_record(
     };
     let optimized_text = proofread_applied.then(|| text.clone());
 
-    let existing = core.transcriber.bucket_record_id(core, hash, engine).filter(|id| core.records.get(id).is_ok());
+    let bucket_key = cache_bucket(core, engine, &request.language);
+    let existing = core.transcriber.bucket_record_id(core, hash, &bucket_key).filter(|id| core.records.get(id).is_ok());
     let record_id = match existing {
         Some(id) => {
             // 已有记录：只在这次带来了新的校对稿时更新（用户改过的不覆盖）
@@ -1244,7 +1291,7 @@ fn save_record(
             };
             match core.records.insert(record) {
                 Ok(()) => {
-                    core.transcriber.set_bucket_record_id(core, hash, engine, &id);
+                    core.transcriber.set_bucket_record_id(core, hash, &bucket_key, &id);
                     tracing::info!("文件转写已存入记录集：{id}（{}）", path.display());
                     Some(id)
                 }
@@ -1355,8 +1402,9 @@ mod tests {
         assert!(payload["warnings"][0].as_str().unwrap().contains("识别可能不完整"));
         assert!(!cacheable, "未收到末包的结果不能缓存");
 
-        store_transcription_cache(&core, "incomplete-hash", "doubao_asr", &payload, cacheable);
-        assert!(core.transcriber.cache_lookup(&core, "incomplete-hash", "doubao_asr").is_none());
+        let bucket = cache_bucket(&core, "doubao_asr", "zh");
+        store_transcription_cache(&core, "incomplete-hash", &bucket, &payload, cacheable);
+        assert!(core.transcriber.cache_lookup(&core, "incomplete-hash", &bucket).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1589,7 +1637,10 @@ mod tests {
         .expect("取消后任务应退出");
         assert_eq!(job["status"], "cancelled");
         assert_eq!(job["cancel_requested"], false);
-        assert!(core.transcriber.cache_lookup(&core, "cancel-hash", "deepseek_asr").is_none(), "取消不写缓存");
+        assert!(
+            core.transcriber.cache_lookup(&core, "cancel-hash", &cache_bucket(&core, "deepseek_asr", "zh")).is_none(),
+            "取消不写缓存"
+        );
 
         // 再次取消已结束的任务：原样返回，不改状态
         assert_eq!(core.transcriber.cancel_job(&job_id).unwrap()["status"], "cancelled");
@@ -1654,7 +1705,7 @@ mod tests {
         };
         let path = PathBuf::from("/media/周会 录音.mp4");
         let entry = json!({ "text": "原文", "duration_seconds": 61.5, "engine": "whisper:large-v3", "segments": [] });
-        core.transcriber.cache_store(&core, "h1", "whisper", &entry);
+        core.transcriber.cache_store(&core, "h1", &cache_bucket(&core, "whisper", "zh"), &entry);
 
         let first = save_record(&core, &request, &path, "h1", "whisper", shape_payload(&entry, false, false, None));
         let id = first["record_id"].as_str().unwrap().to_string();
@@ -1693,17 +1744,180 @@ mod tests {
         assert_ne!(rebuilt["record_id"], json!(id));
         assert_eq!(core.records.list(None, 10, 0).len(), 1);
         // 换引擎是另一条
-        core.transcriber.cache_store(&core, "h1", "doubao_asr", &entry);
+        core.transcriber.cache_store(&core, "h1", &cache_bucket(&core, "doubao_asr", "zh"), &entry);
         save_record(&core, &request, &path, "h1", "doubao_asr", shape_payload(&entry, false, false, None));
         assert_eq!(core.records.list(None, 10, 0).len(), 2);
         // 豆包网页与官方豆包必须使用独立缓存桶 / 记录，不能相互覆盖
-        core.transcriber.cache_store(&core, "h1", "doubao_web_asr", &entry);
+        core.transcriber.cache_store(&core, "h1", &cache_bucket(&core, "doubao_web_asr", "zh"), &entry);
         let web =
             save_record(&core, &request, &path, "h1", "doubao_web_asr", shape_payload(&entry, false, false, None));
         assert_eq!(core.records.list(None, 10, 0).len(), 3);
         assert_ne!(web["record_id"], json!(id));
-        assert!(core.transcriber.cache_lookup(&core, "h1", "doubao_asr").is_some());
-        assert!(core.transcriber.cache_lookup(&core, "h1", "doubao_web_asr").is_some());
+        assert!(core.transcriber.cache_lookup(&core, "h1", &cache_bucket(&core, "doubao_asr", "zh")).is_some());
+        assert!(core.transcriber.cache_lookup(&core, "h1", &cache_bucket(&core, "doubao_web_asr", "zh")).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 缓存桶键_换识别语言或本地模型不命中旧桶() {
+        let dir = std::env::temp_dir().join(format!("att-ft-bucket-{}", uuid::Uuid::new_v4()));
+        let core = CoreState::init(&dir, crate::Platform::Macos).unwrap();
+        let entry =
+            json!({ "text": "中文原文", "duration_seconds": 3.0, "engine": "whisper:large-v3", "segments": [] });
+        let zh = cache_bucket(&core, "whisper", "zh");
+        assert_eq!(zh, "whisper|large-v3|zh");
+        core.transcriber.cache_store(&core, "h1", &zh, &entry);
+        assert!(core.transcriber.cache_lookup(&core, "h1", &zh).is_some());
+
+        // 同一文件改成 language=en：桶键不同，会重新识别
+        let en = cache_bucket(&core, "whisper", "en");
+        assert_ne!(en, zh);
+        assert!(core.transcriber.cache_lookup(&core, "h1", &en).is_none());
+
+        // 换 whisper_model：同样不命中
+        core.update_settings(|settings| settings.whisper_model = "small".into()).unwrap();
+        let small = cache_bucket(&core, "whisper", "zh");
+        assert_eq!(small, "whisper|small|zh");
+        assert!(core.transcriber.cache_lookup(&core, "h1", &small).is_none());
+
+        // 忽略语言参数的引擎（Qwen3-ASR）按 auto 分桶，换语言仍命中；换 qwen_asr_model 不命中
+        let qwen = cache_bucket(&core, "qwen_asr", "zh");
+        assert_eq!(qwen, cache_bucket(&core, "qwen_asr", "en"));
+        core.update_settings(|settings| settings.qwen_asr_model = "Qwen/Qwen3-ASR-0.6B".into()).unwrap();
+        assert_ne!(qwen, cache_bucket(&core, "qwen_asr", "zh"));
+
+        // 旧版只按引擎名分桶的缓存：读得进来，但不会被新键命中
+        core.transcriber.cache_store(&core, "h2", "whisper", &entry);
+        assert!(core.transcriber.cache_lookup(&core, "h2", &cache_bucket(&core, "whisper", "zh")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 校对变体超出上限时淘汰最早写入的() {
+        let dir = std::env::temp_dir().join(format!("att-ft-variants-{}", uuid::Uuid::new_v4()));
+        let core = CoreState::init(&dir, crate::Platform::Macos).unwrap();
+        let bucket = cache_bucket(&core, "whisper", "zh");
+        core.transcriber.cache_store(&core, "h1", &bucket, &json!({ "text": "原文", "segments": [] }));
+        let result = |label: &str| proofread::ProofreadResult {
+            applied: true,
+            text: format!("校对稿 {label}"),
+            segments: Vec::new(),
+            model_id: Some(label.to_string()),
+            model_label: label.to_string(),
+            windows: 1,
+            requests: 1,
+            total_tokens: 1,
+            fallback_batches: Vec::new(),
+            error: String::new(),
+            reason: String::new(),
+        };
+        // 写入顺序与键的字典序相反：最早写入的 "z9" 字典序最大，最后写入的 "a0" 字典序最小
+        let ids: Vec<String> =
+            (0..=PROOFREAD_VARIANTS_PER_ENGINE).rev().map(|i| format!("{}{i}", (b'a' + i as u8) as char)).collect();
+        for id in &ids {
+            core.transcriber.store_proofread_variant(&core, "h1", &bucket, Some(id), &result(id));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let cached = core.transcriber.cache_lookup(&core, "h1", &bucket).unwrap();
+        let variants = cached["proofread"].as_object().unwrap();
+        assert_eq!(variants.len(), PROOFREAD_VARIANTS_PER_ENGINE);
+        assert!(!variants.contains_key(&variant_key(Some(&ids[0]))), "淘汰的是最早写入的那个");
+        for id in &ids[1..] {
+            assert!(variants.contains_key(&variant_key(Some(id))), "{id} 不应被淘汰");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn 校对部分窗口失败_不写缓存变体_再次请求重新调用_llm() {
+        use crate::llm::store::{ModelItemCreate, ProfileCreate};
+        use crate::llm::testing::{stub_routes, StubRoute};
+        use std::collections::BTreeMap;
+
+        let good = StubRoute::json(
+            "POST /v1/chat/completions",
+            200,
+            r#"{"choices":[{"message":{"content":"{\"0\":\"甲乙丙丁。\"}"},"finish_reason":"stop"}],"usage":{"total_tokens":7}}"#,
+        )
+        .when_body("甲乙丙丁");
+        // 第二窗每次都回非 JSON：验证耗尽后保留原文
+        let bad = StubRoute::json(
+            "POST /v1/chat/completions",
+            200,
+            r#"{"choices":[{"message":{"content":"抱歉，我无法处理"},"finish_reason":"stop"}],"usage":{"total_tokens":3}}"#,
+        )
+        .when_body("戊己庚辛");
+        let (base, mut requests) = stub_routes(vec![good, bad]).await;
+        let dir = std::env::temp_dir().join(format!("att-ft-partial-{}", uuid::Uuid::new_v4()));
+        let core = Arc::new(CoreState::init(&dir, crate::Platform::Macos).unwrap());
+        let profile = core
+            .llm
+            .create_profile(ProfileCreate {
+                provider: "custom".into(),
+                name: "校对桩".into(),
+                api_key: "sk-stub-key-0001".into(),
+                api_base: Some(format!("{base}/v1")),
+                extra_headers: BTreeMap::new(),
+                extra_query: BTreeMap::new(),
+            })
+            .unwrap();
+        core.llm
+            .create_models(vec![ModelItemCreate {
+                profile_id: profile.id,
+                model: "m".into(),
+                display_name: String::new(),
+                params: None,
+                set_default: true,
+            }])
+            .unwrap();
+
+        let request = TranscribeRequest {
+            path: "unused.wav".into(),
+            language: "zh".into(),
+            want_segments: false,
+            engine: "whisper".into(),
+            proofread: true,
+            proofread_model_id: None,
+            proofread_options: Some(json!({ "batch_segments": 1, "context_chars": 0 })),
+            async_job: true,
+        };
+        let bucket = cache_bucket(&core, "whisper", "zh");
+        // ASR 结果已在缓存里：只跑校对阶段
+        core.transcriber.cache_store(
+            &core,
+            "h1",
+            &bucket,
+            &json!({
+                "text": "甲乙丙丁。 戊己庚辛。",
+                "duration_seconds": 4.0,
+                "engine": "whisper:large-v3",
+                "segments": [
+                    { "start": 0.0, "end": 2.0, "text": "甲乙丙丁。" },
+                    { "start": 2.0, "end": 4.0, "text": "戊己庚辛。" },
+                ],
+            }),
+        );
+        let path = PathBuf::from("unused.wav");
+        let cancel = CancelToken::default();
+        let drain = |requests: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
+            let mut count = 0;
+            while requests.try_recv().is_ok() {
+                count += 1;
+            }
+            count
+        };
+
+        let first = execute_job(&core, "job-1", &request, &path, "h1", 4.0, "whisper", &cancel).await.unwrap();
+        assert_eq!(first["proofread"]["applied"], true);
+        assert_eq!(first["proofread"]["partial"], true, "meta 标明部分窗口保留了原文");
+        assert_eq!(first["proofread"]["fallback_batches"], json!([1]));
+        let cached = core.transcriber.cache_lookup(&core, "h1", &bucket).unwrap();
+        assert!(cached.get("proofread").is_none(), "部分失败的校对结果不能写进缓存变体");
+        assert!(drain(&mut requests) > 0);
+
+        let second = execute_job(&core, "job-2", &request, &path, "h1", 4.0, "whisper", &cancel).await.unwrap();
+        assert_eq!(second["proofread"]["partial"], true);
+        assert!(drain(&mut requests) > 0, "再次请求要重新调用 LLM");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

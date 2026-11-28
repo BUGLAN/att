@@ -79,6 +79,11 @@ pub struct ProofreadResult {
 }
 
 impl ProofreadResult {
+    /// 全部窗口都校对成功：只有这种结果才写进缓存变体。
+    pub fn is_complete(&self) -> bool {
+        self.applied && self.fallback_batches.is_empty()
+    }
+
     /// 响应 proofread 字段（不含正文）。
     pub fn meta(&self) -> Value {
         let mut meta = json!({
@@ -90,6 +95,10 @@ impl ProofreadResult {
             "fallback_batches": self.fallback_batches,
             "prompt_version": PROMPT_VERSION,
         });
+        if self.applied && !self.fallback_batches.is_empty() {
+            // 部分窗口保留了原文（验证耗尽、输出被截断或请求失败）：结果不进缓存，下次会重新校对
+            meta["partial"] = json!(true);
+        }
         if !self.error.is_empty() {
             meta["error"] = json!(self.error);
         }
