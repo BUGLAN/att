@@ -130,9 +130,10 @@ impl Mode {
 fn cancel_binding_modifiers(phase: Phase, held_modifiers: ModSet) -> Option<ModSet> {
     match phase {
         Phase::Idle => None,
-        // 转写结束后的优化不再按着录音快捷键；Esc 保持无修饰键，避免吞掉系统快捷键。
-        Phase::Optimizing => Some(ModSet::default()),
-        Phase::Connecting | Phase::Recording | Phase::Finalizing => Some(held_modifiers),
+        // 收尾（按住录音松开后经过松开缓冲才进来，修饰键已经全松开）与之后的优化都不再按着录音快捷键：
+        // Esc 用无修饰键绑定，单按 Esc 就能取消，也不会吞掉带修饰键的系统快捷键。
+        Phase::Finalizing | Phase::Optimizing => Some(ModSet::default()),
+        Phase::Connecting | Phase::Recording => Some(held_modifiers),
     }
 }
 
@@ -3109,7 +3110,11 @@ mod tests {
         assert_eq!(cancel_binding_modifiers(Phase::Idle, held), None);
         assert_eq!(cancel_binding_modifiers(Phase::Connecting, held), Some(held));
         assert_eq!(cancel_binding_modifiers(Phase::Recording, held), Some(held));
-        assert_eq!(cancel_binding_modifiers(Phase::Finalizing, held), Some(held));
+        assert_eq!(
+            cancel_binding_modifiers(Phase::Finalizing, held),
+            Some(ModSet::default()),
+            "收尾阶段已松开录音快捷键，单按 Esc 就要能取消"
+        );
         assert_eq!(
             cancel_binding_modifiers(Phase::Optimizing, held),
             Some(ModSet::default()),
