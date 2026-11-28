@@ -154,7 +154,7 @@
       <span class="wiz-footer-spacer"></span>
       <BaseButton variant="outline" @click="close">取消</BaseButton>
       <BaseButton v-if="step === 1" variant="solid" :disabled="!selectedProvider" @click="goCredentials">下一步：填写凭据</BaseButton>
-      <BaseButton v-else-if="step === 2" variant="solid" :disabled="!canSubmitCredentials" @click="verifyAndCreateProfile">
+      <BaseButton v-else-if="step === 2" variant="solid" :disabled="!canSubmitCredentials || verifying" @click="verifyAndCreateProfile">
         下一步：验证并选择模型
       </BaseButton>
       <BaseButton v-else variant="solid" :disabled="!pendingModels.length" @click="saveModels">
@@ -185,6 +185,7 @@ const remoteLoading = ref(false)
 const remoteError = ref('')
 const manualInput = ref('')
 const setAsDefault = ref(true)
+const verifying = ref(false)
 const verifyState = ref({ status: false, ok: false, title: '', detail: '', latency: '' })
 const form = ref(defaultForm())
 
@@ -302,7 +303,14 @@ function goCredentials() {
 }
 
 async function verifyAndCreateProfile() {
+  if (verifying.value) {
+    return
+  }
   const provider = selectedProvider.value
+  if (!provider || !canSubmitCredentials.value) {
+    return
+  }
+  verifying.value = true
   const draft = {
     provider: provider.id,
     api_key: form.value.api_key,
@@ -335,6 +343,8 @@ async function verifyAndCreateProfile() {
     step.value = 3
   } catch (error) {
     verifyState.value = { status: true, ok: false, title: '验证请求失败', detail: error?.message || '', latency: '' }
+  } finally {
+    verifying.value = false
   }
 }
 
