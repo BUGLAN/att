@@ -179,7 +179,7 @@ pub fn start(bindings: BindingSource, sink: EventSink) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (bindings, sink);
-        return Err("当前平台暂不支持全局快捷键（Linux 将在后续版本接入）".into());
+        Err("当前平台暂不支持全局快捷键（Linux 将在后续版本接入）".into())
     }
 
     #[cfg(any(target_os = "macos", windows))]
