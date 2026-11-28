@@ -1,4 +1,4 @@
-//! 音频工具：16k 单声道 PCM16 的 FLAC / WAV 读写与线性重采样（录音落盘 / 批量转写共用）。
+//! 音频工具：16k 单声道 PCM16 的 FLAC / WAV 读写与抗混叠线性重采样（录音落盘 / 批量转写共用）。
 //!
 //! 录音落盘用 FLAC（无损，语音约为 WAV 体积的一半）；旧版本留下的 WAV 照常可读可播。
 
@@ -191,23 +191,34 @@ pub fn f32_to_i16(sample: f32) -> i16 {
     (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
 }
 
-/// 流式线性重采样器（跨块保持相位，语音识别场景足够）。
+/// 抗混叠低通截止频率。16k 目标采样率的 Nyquist 为 8k，留 1k 过渡带。
+const ANTI_ALIAS_CUTOFF_HZ: f64 = 7_000.0;
+/// 抗混叠 FIR 抽头数。Blackman 窗下 10k 输入约有 70dB 抑制，计算量仍可忽略。
+const ANTI_ALIAS_TAPS: usize = 63;
+
+/// 流式线性重采样器；降采样时先经窗函数 sinc 低通，避免高频折叠进语音频带。
 pub struct LinearResampler {
     step: f64,
     /// 下一个输出样本在「上一块末样本 + 当前块」坐标系中的位置
     position: f64,
     last: Option<f32>,
     passthrough: bool,
+    anti_alias: Option<AntialiasFilter>,
+    filtered: Vec<f32>,
 }
 
 impl LinearResampler {
     pub fn new(from_rate: u32, to_rate: u32) -> Self {
         let from_rate = from_rate.max(1);
+        let to_rate = to_rate.max(1);
+        let passthrough = from_rate == to_rate;
         Self {
-            step: from_rate as f64 / to_rate.max(1) as f64,
+            step: from_rate as f64 / to_rate as f64,
             position: 0.0,
             last: None,
-            passthrough: from_rate == to_rate,
+            passthrough,
+            anti_alias: (!passthrough && from_rate > to_rate).then(|| AntialiasFilter::new(from_rate, to_rate)),
+            filtered: Vec::new(),
         }
     }
 
@@ -219,27 +230,85 @@ impl LinearResampler {
         if input.is_empty() {
             return;
         }
+        let Self { step, position, last, anti_alias, filtered, .. } = self;
+        let source = if let Some(filter) = anti_alias {
+            filtered.clear();
+            filtered.reserve(input.len());
+            filtered.extend(input.iter().copied().map(|sample| filter.push(sample)));
+            filtered.as_slice()
+        } else {
+            input
+        };
         // 坐标系：索引 0 = 上一块末样本（首块时为当前块首样本）
-        let offset = if self.last.is_some() { 1usize } else { 0 };
+        let offset = if last.is_some() { 1usize } else { 0 };
+        let previous = *last;
         let sample_at = |index: usize| -> f32 {
             if offset == 1 && index == 0 {
-                self.last.unwrap_or(0.0)
+                previous.unwrap_or(0.0)
             } else {
-                input[index - offset]
+                source[index - offset]
             }
         };
-        let available = input.len() + offset;
-        while self.position + 1.0 < available as f64 {
-            let base = self.position.floor() as usize;
-            let frac = (self.position - base as f64) as f32;
+        let available = source.len() + offset;
+        while *position + 1.0 < available as f64 {
+            let base = position.floor() as usize;
+            let frac = (*position - base as f64) as f32;
             let a = sample_at(base);
             let b = sample_at(base + 1);
             out.push(a + (b - a) * frac);
-            self.position += self.step;
+            *position += *step;
         }
         // 平移坐标系：新块的索引 0 是本块末样本
-        self.position -= (available - 1) as f64;
-        self.last = input.last().copied();
+        *position -= (available - 1) as f64;
+        *last = source.last().copied();
+    }
+}
+
+/// 因果 FIR 低通，环形缓冲只占几十个样本，分块调用时滤波器状态连续。
+struct AntialiasFilter {
+    coefficients: [f32; ANTI_ALIAS_TAPS],
+    history: [f32; ANTI_ALIAS_TAPS],
+    next_write: usize,
+}
+
+impl AntialiasFilter {
+    fn new(from_rate: u32, to_rate: u32) -> Self {
+        let sample_rate = from_rate.max(1) as f64;
+        // 目标 Nyquist 的 7/8 作为上限；当前 16k 目标固定落在 7k。
+        let cutoff = ANTI_ALIAS_CUTOFF_HZ.min(to_rate.max(1) as f64 * 0.4375);
+        let center = (ANTI_ALIAS_TAPS - 1) as f64 / 2.0;
+        let normalized_cutoff = cutoff / sample_rate;
+        let mut coefficients = [0.0f32; ANTI_ALIAS_TAPS];
+        let mut sum = 0.0f64;
+        for (index, coefficient) in coefficients.iter_mut().enumerate() {
+            let distance = index as f64 - center;
+            let sinc = if distance.abs() < f64::EPSILON {
+                2.0 * normalized_cutoff
+            } else {
+                (2.0 * std::f64::consts::PI * normalized_cutoff * distance).sin() / (std::f64::consts::PI * distance)
+            };
+            let phase = 2.0 * std::f64::consts::PI * index as f64 / (ANTI_ALIAS_TAPS - 1) as f64;
+            let window = 0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos();
+            *coefficient = (sinc * window) as f32;
+            sum += sinc * window;
+        }
+        for coefficient in &mut coefficients {
+            *coefficient /= sum as f32;
+        }
+        Self { coefficients, history: [0.0; ANTI_ALIAS_TAPS], next_write: 0 }
+    }
+
+    fn push(&mut self, sample: f32) -> f32 {
+        self.history[self.next_write] = sample;
+        self.next_write = (self.next_write + 1) % ANTI_ALIAS_TAPS;
+
+        let mut history_index = self.next_write;
+        let mut filtered = 0.0f32;
+        for coefficient in &self.coefficients {
+            history_index = (history_index + ANTI_ALIAS_TAPS - 1) % ANTI_ALIAS_TAPS;
+            filtered += coefficient * self.history[history_index];
+        }
+        filtered
     }
 }
 
@@ -433,6 +502,15 @@ impl Segmenter {
 mod tests {
     use super::*;
 
+    fn tone_amplitude(samples: &[f32], sample_rate: u32, frequency: f64) -> f64 {
+        let omega = 2.0 * std::f64::consts::PI * frequency / sample_rate as f64;
+        let (sin_sum, cos_sum) = samples.iter().enumerate().fold((0.0, 0.0), |(sin, cos), (index, sample)| {
+            let phase = omega * index as f64;
+            (sin + f64::from(*sample) * phase.sin(), cos + f64::from(*sample) * phase.cos())
+        });
+        2.0 * sin_sum.hypot(cos_sum) / samples.len() as f64
+    }
+
     /// 读 FLAC 元数据，返回音频帧起点和 SEEKTABLE 里的 (sample, offset, frame_samples)。
     fn flac_seekpoints(bytes: &[u8]) -> (usize, Vec<(u64, u64, u16)>) {
         assert_eq!(&bytes[..4], b"fLaC");
@@ -463,12 +541,12 @@ mod tests {
 
     #[test]
     fn 重采样_48k到16k_样本数与分块无关() {
-        let input: Vec<f32> = (0..48_000).map(|i| (i as f32 * 0.001).sin()).collect();
+        let input: Vec<f32> = (0..48_000).map(|i| (i as f32 * 0.001).sin() + 0.25 * (i as f32 * 0.73).sin()).collect();
         let mut whole = Vec::new();
         LinearResampler::new(48_000, 16_000).process(&input, &mut whole);
         let mut chunked = Vec::new();
         let mut resampler = LinearResampler::new(48_000, 16_000);
-        for chunk in input.chunks(441) {
+        for chunk in input.chunks(37) {
             resampler.process(chunk, &mut chunked);
         }
         assert!((whole.len() as i64 - 16_000).abs() <= 1, "样本数 {}", whole.len());
@@ -476,6 +554,30 @@ mod tests {
         for (a, b) in whole.iter().zip(&chunked) {
             assert!((a - b).abs() < 1e-4);
         }
+    }
+
+    #[test]
+    fn 重采样_降采样前低通抑制混叠并保留语音频带() {
+        const AMPLITUDE: f32 = 0.8;
+        let make_tone = |frequency: f64| -> Vec<f32> {
+            (0..96_000)
+                .map(|index| {
+                    AMPLITUDE * (2.0 * std::f64::consts::PI * frequency * index as f64 / 48_000.0).sin() as f32
+                })
+                .collect()
+        };
+
+        let mut speech = Vec::new();
+        LinearResampler::new(48_000, 16_000).process(&make_tone(1_000.0), &mut speech);
+        let speech_amplitude = tone_amplitude(&speech[1_600..17_600], 16_000, 1_000.0);
+        assert!(speech_amplitude > f64::from(AMPLITUDE) * 0.99, "1kHz 幅度 {speech_amplitude}");
+
+        let mut alias = Vec::new();
+        LinearResampler::new(48_000, 16_000).process(&make_tone(10_000.0), &mut alias);
+        // 48k 的 10kHz 在 16k 抽样后会折叠到 6kHz。
+        let alias_amplitude = tone_amplitude(&alias[1_600..17_600], 16_000, 6_000.0);
+        let attenuation_db = 20.0 * (f64::from(AMPLITUDE) / alias_amplitude).log10();
+        assert!(attenuation_db >= 40.0, "10kHz 混叠仅衰减 {attenuation_db:.1}dB");
     }
 
     #[test]
