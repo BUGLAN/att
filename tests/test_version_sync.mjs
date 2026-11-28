@@ -8,7 +8,7 @@ test('仓库里各处版本号一致', () => {
   const versions = readVersions(loadTexts())
   const distinct = new Set(Object.values(versions).flat())
   assert.equal(distinct.size, 1, `版本号不一致：${JSON.stringify(versions)}`)
-  assert.equal(versions.cargoLock.length, 7, 'Cargo.lock 里应有 7 个工作区成员')
+  assert.equal(versions.cargoLock.length, 8, 'Cargo.lock 里应有 8 个工作区成员')
   assert.equal(versions.packageLock.length, 2, 'package-lock.json 顶层与 packages[""] 各一处')
 })
 

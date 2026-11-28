@@ -5,7 +5,7 @@
 import { reactive } from 'vue'
 import { useElectron } from '@/composables/useElectron'
 import { useSettingsStore } from '@/stores/settings'
-import { requiresCredential } from '@/components/settings/onlineEngineStatus.mjs'
+import { isWetypeProvider, requiresCredential } from '@/components/settings/onlineEngineStatus.mjs'
 
 // provider → { status: 'checking'|'ok'|'invalid'|'unknown', message }；没验过不存在
 const checks = reactive({})
@@ -17,7 +17,7 @@ export function useAsrCredentialCheck() {
 
   /** 读取后端记下的最近一次结论（不发起验证）。 */
   async function load(provider) {
-    if (!requiresCredential(provider) || inflight.has(provider)) {
+    if (!(requiresCredential(provider) || isWetypeProvider(provider)) || inflight.has(provider)) {
       return checks[provider] || null
     }
     try {
@@ -31,7 +31,7 @@ export function useAsrCredentialCheck() {
 
   /** 立即验证（同一引擎同时只跑一次）；结束后刷新运行时状态，首页的就绪判定随之更新。 */
   function verify(provider) {
-    if (!requiresCredential(provider)) {
+    if (!(requiresCredential(provider) || isWetypeProvider(provider))) {
       return Promise.resolve(null)
     }
     if (inflight.has(provider)) {

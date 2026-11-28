@@ -3,6 +3,8 @@
 // 锁死的真实问题：填一个假 Token，卡片和首页都显示「已配置 / 已就绪」，要到录音时才失败。
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import { registerHooks } from 'node:module'
 
 import {
   credentialNote,
@@ -14,6 +16,32 @@ import {
   wetypeEngineChip,
   WETYPE_PROVIDER
 } from '../src/components/settings/onlineEngineStatus.mjs'
+
+const credentialHookSource = await readFile(new URL('../src/composables/useAsrCredentialCheck.js', import.meta.url), 'utf8')
+const credentialHookUrl = `data:text/javascript;base64,${Buffer.from(credentialHookSource).toString('base64')}`
+const onlineEngineStatusUrl = new URL('../src/components/settings/onlineEngineStatus.mjs', import.meta.url).href
+const vueModuleUrl = import.meta.resolve('vue')
+const virtualModules = new Map([
+  ['@/composables/useElectron', 'export function useElectron() { return { api: globalThis.__asrTestApi } }'],
+  ['@/stores/settings', 'export function useSettingsStore() { return globalThis.__asrTestSettings }'],
+  ['@/components/settings/onlineEngineStatus.mjs', `export * from ${JSON.stringify(onlineEngineStatusUrl)}`]
+])
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === 'vue') {
+      return { url: vueModuleUrl, shortCircuit: true }
+    }
+    const source = virtualModules.get(specifier)
+    if (!source) {
+      return nextResolve(specifier, context)
+    }
+    return {
+      url: `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`,
+      shortCircuit: true
+    }
+  }
+})
 
 test('没保存凭据：未配置（警示色）', () => {
   assert.deepEqual(onlineEngineChip({ keySet: false }), { chip: '在线 · 未配置', tone: 'warn', loading: false })
@@ -108,4 +136,31 @@ test('微信输入法语音：换引擎或改 PID / 超时后重新检测', () =
   assert.equal(needsCredentialCheck({ ...saved, wetype_asr_pid: 1234 }, saved), true)
   assert.equal(needsCredentialCheck({ ...saved, wetype_asr_timeout_seconds: 120 }, saved), true)
   assert.equal(needsCredentialCheck(saved, { ...saved, asr_provider: 'deepseek_asr' }), true)
+})
+
+test('微信输入法语音：verify 发起本机探活并更新检测状态', async () => {
+  const checkedProviders = []
+  let runtimeRefreshCount = 0
+  globalThis.__asrTestApi = {
+    getAsrCredentialCheck: async () => assert.fail('verify 不应读取旧结论'),
+    checkAsrCredential: async (provider) => {
+      checkedProviders.push(provider)
+      return { check: { provider, status: 'ok', message: '' } }
+    }
+  }
+  globalThis.__asrTestSettings = {
+    loadRuntimeStatus: async () => {
+      runtimeRefreshCount += 1
+    }
+  }
+
+  const { useAsrCredentialCheck } = await import(`${credentialHookUrl}#wetype-verify`)
+  const credential = useAsrCredentialCheck()
+  const task = credential.verify(WETYPE_PROVIDER)
+
+  assert.equal(credential.checks[WETYPE_PROVIDER].status, 'checking')
+  await task
+  assert.deepEqual(checkedProviders, [WETYPE_PROVIDER])
+  assert.equal(credential.checks[WETYPE_PROVIDER].status, 'ok')
+  assert.equal(runtimeRefreshCount, 1)
 })
