@@ -15,6 +15,7 @@ pub mod stats;
 use crate::now_rfc3339;
 use crate::storage::dir_index::DirIndex;
 use crate::storage::json_store;
+use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -120,9 +121,9 @@ impl Record {
         })
     }
 
-    /// 时间排序键：优先解析 RFC3339，失败退化字符串比较（兼容旧格式时间戳）。
+    /// 时间排序键：RFC3339 与 Python 旧版无时区格式都按绝对时间排序。
     fn sort_key(&self) -> (i64, String) {
-        let parsed = chrono::DateTime::parse_from_rfc3339(&self.created_at).map(|t| t.timestamp_micros()).unwrap_or(0);
+        let parsed = parse_record_time(&self.created_at).map(|t| t.timestamp_micros()).unwrap_or(0);
         (parsed, self.created_at.clone())
     }
 }
@@ -264,9 +265,18 @@ impl RecordFilter {
     }
 }
 
-/// 记录创建时间对应的本机日期（按日期筛选用；时间读不出来时为 None）。
+/// 解析记录时间：新版 RFC3339 优先，旧 Python `datetime.isoformat()` 无时区值按本机时间处理。
+pub(crate) fn parse_record_time(value: &str) -> Option<chrono::DateTime<chrono::Local>> {
+    if let Ok(time) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Some(time.with_timezone(&chrono::Local));
+    }
+    let local = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+    chrono::Local.from_local_datetime(&local).earliest()
+}
+
+/// 记录创建时间对应的本机日期（按日期筛选与统计用；时间读不出来时为 None）。
 pub fn local_date(created_at: &str) -> Option<chrono::NaiveDate> {
-    chrono::DateTime::parse_from_rfc3339(created_at).ok().map(|time| time.with_timezone(&chrono::Local).date_naive())
+    parse_record_time(created_at).map(|time| time.date_naive())
 }
 
 /// 搜索命中判定（`q` 已转小写；空串视为全部命中）。
@@ -524,7 +534,8 @@ impl RecordRepo {
         let expired = |record: &Record| {
             !record.is_favorite
                 && !record.audio_path.is_empty()
-                && chrono::DateTime::parse_from_rfc3339(&record.created_at).is_ok_and(|created| created < cutoff)
+                && parse_record_time(&record.created_at)
+                    .is_some_and(|created| created.with_timezone(&chrono::Utc) < cutoff)
         };
         let mut index = self.guard();
         index.refresh(scan_records);
@@ -755,6 +766,44 @@ mod tests {
         assert!(repo.audio_dir().join("rec-old-fav.flac").exists());
         assert_eq!(repo.get("rec-new").unwrap().audio_path, "rec-new.flac", "没过期的不删");
         assert_eq!(repo.prune_audio(1, now).unwrap(), 0, "再跑一次没有可删的");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 旧版无时区时间_参与日期筛选排序和音频清理() {
+        let (repo, dir) = repo("legacy-time");
+        let legacy_created = "2025-06-01T09:30:12.345678";
+
+        let audio_name = "rec-legacy.wav";
+        std::fs::write(repo.audio_dir().join(audio_name), b"RIFF").unwrap();
+        repo.insert(Record {
+            id: "rec-legacy".into(),
+            audio_path: audio_name.into(),
+            raw_text: Some("旧记录文字".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        repo.patch("rec-legacy", |record| record.created_at = legacy_created.into()).unwrap();
+
+        repo.insert(Record { id: "rec-newer".into(), created_at: "2025-06-02T09:30:12Z".into(), ..Default::default() })
+            .unwrap();
+
+        let june_first = chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
+        let filter = RecordFilter { date_from: Some(june_first), date_to: Some(june_first), ..Default::default() };
+        let (filtered, total) = repo.search_filtered(&filter, 1, 20);
+        assert_eq!(total, 1);
+        assert_eq!(filtered[0].id, "rec-legacy");
+        assert_eq!(repo.filtered(&filter).len(), 1, "按当前筛选结果导出时也要命中旧记录");
+
+        let (records, _) = repo.load_all();
+        assert_eq!(records[0].id, "rec-newer", "无时区旧值也按实际时间参与排序");
+
+        let now = chrono::DateTime::parse_from_rfc3339("2025-07-02T00:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        assert_eq!(repo.prune_audio(30, now).unwrap(), 1);
+        let legacy = repo.get("rec-legacy").unwrap();
+        assert_eq!(legacy.audio_path, "");
+        assert_eq!(legacy.raw_text.as_deref(), Some("旧记录文字"));
+        assert!(!repo.audio_dir().join(audio_name).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

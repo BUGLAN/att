@@ -9,7 +9,7 @@
 //!
 //! 数据来自记录仓库的内存索引（[`super::RecordRepo::usage_stats`]），不逐个读文件。
 
-use super::{local_date, Record};
+use super::{parse_record_time, Record};
 use chrono::NaiveDate;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -122,7 +122,7 @@ pub fn text_chars(text: &str) -> u64 {
 pub fn summarize<'a>(records: impl IntoIterator<Item = &'a Record>, range: StatsRange, today: NaiveDate) -> UsageStats {
     let mut by_day: BTreeMap<NaiveDate, UsageTotals> = BTreeMap::new();
     for record in records {
-        let Some(day) = local_date(&record.created_at) else { continue };
+        let Some(day) = parse_record_time(&record.created_at).map(|time| time.date_naive()) else { continue };
         if day > today {
             continue;
         }
@@ -225,6 +225,16 @@ mod tests {
         let stats = summarize(&records, StatsRange::Days30, day("2026-11-21"));
         assert_eq!(stats.days.len(), 30);
         assert_eq!(stats.total, UsageTotals::default());
+    }
+
+    #[test]
+    fn 旧版无时区时间计入全部统计() {
+        let mut legacy = record("2025-06-01", 2.0, "旧 记录", Some(9));
+        legacy.created_at = "2025-06-01T09:30:12.345678".into();
+        let stats = summarize(&[legacy], StatsRange::All, day("2025-06-01"));
+        assert_eq!(stats.from.as_deref(), Some("2025-06-01"));
+        assert_eq!(stats.total, UsageTotals { count: 1, duration: 2.0, chars: 3, tokens: 9 });
+        assert_eq!(stats.today, stats.total);
     }
 
     #[test]
